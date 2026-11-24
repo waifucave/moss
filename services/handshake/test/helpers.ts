@@ -176,13 +176,13 @@ interface SigningKeys {
 
 const signingKeys = JSON.parse(env.TEST_SIGNING_KEYS ?? "{}") as SigningKeys;
 
-export async function accountToken(options: { account: string; device: string; key?: keyof SigningKeys; aud?: string; exp?: number }): Promise<string> {
+export async function accountToken(options: { account: string; device: string; key?: keyof SigningKeys; aud?: string; exp?: number; erase?: boolean }): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const which = options.key ?? "es256";
   const jwk = signingKeys[which];
   const alg = which === "es256" ? "ES256" : "EdDSA";
   const header = { alg, kid: jwk.kid, typ: "JWT" };
-  const claims = { iss: env.ACCOUNT_ISSUER, aud: options.aud ?? env.HANDSHAKE_AUDIENCE, sub: options.account, dev: options.device, iat: now, exp: options.exp ?? now + 300 };
+  const claims = { iss: env.ACCOUNT_ISSUER, aud: options.aud ?? env.HANDSHAKE_AUDIENCE, sub: options.account, dev: options.device, iat: now, exp: options.exp ?? now + 300, ...(options.erase ? { erase: true } : {}) };
   const input = `${b64u(utf8(JSON.stringify(header)))}.${b64u(utf8(JSON.stringify(claims)))}`;
   const { kid: _kid, ...bare } = jwk;
   const key =

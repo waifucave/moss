@@ -7,6 +7,7 @@
 //   POST /v1/groups/<group>/members       join a group (the joiner's and a member's signatures)
 //   …    /v1/groups/<group>[/…]           a group's calls, signed by a member
 //   …    /v1/accounts/self[/…]            the account channel, with the device's account token
+//   DELETE /v1/accounts/self              the account's deletion, with the account service's erase token only
 //   GET  /v1/socket?ticket=…              a member's WebSocket
 //   PUT|GET|DELETE /v1/rendezvous/<slot>  a short pairing code's slot (unsigned: the box is sealed under the code)
 //
@@ -16,7 +17,7 @@
 import { bearerToken } from "../../shared/account-token";
 import { b64u, fromB64u, sha256 } from "../../shared/encoding";
 import { errorResponse, json, readBodyCapped, TooLarge } from "../../shared/http";
-import { verifyAccountTokenFrom } from "../../shared/jwks";
+import { verifyAccountTokenFrom, verifyEraseTokenFrom } from "../../shared/jwks";
 import { addressKey, originsFrom, preflight, withCors } from "../../shared/web";
 import {
   admitStatement,
@@ -95,6 +96,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         return await signedCall(request, env, url, "group", id, rest);
       }
     }
+    if (area === "accounts" && id === "self" && rest.length === 0 && request.method === "DELETE") return await eraseAccount(request, env);
     if (area === "accounts" && id === "self") return await accountCall(request, env, rest);
     if (area === "rendezvous" && id !== undefined && SLOT_RE.test(id) && rest.length === 0) return await rendezvous(request, env, id);
     return errorResponse(404, "not_found");
@@ -413,6 +415,15 @@ async function accountCall(request: Request, env: Env, rest: string[]): Promise<
   const { op, args } = accountOp(request.method, rest, await readJson(request));
   const call: Call = { scope: "account", id: identity.account, member: identity.device, op, ...(args ? { args } : {}) };
   return finish(env, call, await stubFor(env, "account", identity.account).call(call), identity.expiresAt * 1000);
+}
+
+/** The account's deletion (services/accounts PROTOCOL.md, "Deleting the account"), on the account service's erase token
+ *  alone: a device's own token is refused here, and an erase token on every other call. */
+async function eraseAccount(request: Request, env: Env): Promise<Response> {
+  const token = bearerToken(request);
+  const identity = token ? await verifyEraseTokenFrom(token, env, env.HANDSHAKE_AUDIENCE) : null;
+  if (!identity) return errorResponse(401, "unauthorized");
+  return reply(await stubFor(env, "account", identity.account).eraseAccount());
 }
 
 // ---- rendezvous: a short pairing code's slot ----

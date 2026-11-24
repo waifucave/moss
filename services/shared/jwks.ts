@@ -120,11 +120,33 @@ async function currentJwks(env: JwksEnv, kid: string | null, fetcher: typeof fet
  * Verifies an account token against the service's configured keys (see the top of this file). Returns the identity,
  * or null for any token that isn't valid for this service.
  */
+/** A device's account token: an erase token is refused here, so no ordinary call takes one. */
 export async function verifyAccountTokenFrom(
   token: string,
   env: JwksEnv,
   audience: string,
   fetcher: typeof fetch = fetch,
+): Promise<AccountIdentity | null> {
+  const identity = await verifyAnyTokenFrom(token, env, audience, fetcher);
+  return identity && !identity.erase ? identity : null;
+}
+
+/** The account service's erase token, and nothing else: the one token a service's account wipe takes. */
+export async function verifyEraseTokenFrom(
+  token: string,
+  env: JwksEnv,
+  audience: string,
+  fetcher: typeof fetch = fetch,
+): Promise<AccountIdentity | null> {
+  const identity = await verifyAnyTokenFrom(token, env, audience, fetcher);
+  return identity?.erase ? identity : null;
+}
+
+async function verifyAnyTokenFrom(
+  token: string,
+  env: JwksEnv,
+  audience: string,
+  fetcher: typeof fetch,
 ): Promise<AccountIdentity | null> {
   const jwks = await currentJwks(env, kidOf(token), fetcher, Date.now());
   if (jwks === null) return null;

@@ -8,6 +8,8 @@
 //   GET  /auth/v1/user                             the bearer's user
 //   POST /auth/v1/logout                           revokes the session's refresh tokens
 //   POST /auth/v1/admin/users                      creates a user (service key only)
+//   DELETE /auth/v1/admin/users/<id>               deletes a user, its sessions and refresh tokens (service key only;
+//                                                  GoTrue's admin delete, what the account service's deletion calls)
 //   GET  /auth/v1/settings                         the enabled providers
 // and, outside the auth API, the stand-in for waifucave's email sign-in page (`emailSignInUrl`):
 //   GET  /signin?redirect_to&code_challenge&code_challenge_method   a form: email and password
@@ -316,6 +318,20 @@ export function startSignInStub(opts: { accessTokenTtlSeconds?: number } = {}): 
         } catch (err) {
           return fail(422, "email_exists", err instanceof Error ? err.message : "exists");
         }
+      }
+      const deleted = /^\/admin\/users\/([^/]+)$/.exec(route);
+      if (deleted && req.method === "DELETE") {
+        if (req.headers.get("authorization") !== `Bearer ${serviceRoleKey}`) return fail(403, "not_admin", "User not allowed");
+        const id = decodeURIComponent(deleted[1]!);
+        const at = users.findIndex((u) => u.id === id);
+        if (at < 0) return fail(404, "user_not_found", "User not found");
+        const [user] = users.splice(at, 1);
+        for (const s of [...sessions.values()]) {
+          if (s.userId !== id) continue;
+          sessions.delete(s.id);
+          for (const t of refreshTokens.values()) if (t.sessionId === s.id) t.revoked = true;
+        }
+        return json(200, userJson(user!));
       }
       return json(404, { message: "no route" });
     },

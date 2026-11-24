@@ -53,8 +53,19 @@
         // Set at the live gates: waifucave's Supabase project and its public anon key.
         "AUTH_URL": "",
         "AUTH_ANON_KEY": "",
-        "AUDIENCES": "hooks.waifucave.com,push.waifucave.com,handshake.waifucave.com"
+        "AUDIENCES": "hooks.waifucave.com,push.waifucave.com,handshake.waifucave.com",
+        // The account's deletion (PROTOCOL.md, "Deleting the account"): the bindings below carry the wipes; these are
+        // the fallback. AUTH_SERVICE_ROLE_KEY (the project's service-role key, for the sign-in's deletion) is a secret
+        // from `wrangler secret put`, never in this file.
+        "HOOKS_URL": "https://hooks.waifucave.com",
+        "PUSH_URL": "https://push.waifucave.com",
+        "HANDSHAKE_URL": "https://handshake.waifucave.com"
       },
+      "services": [
+        { "binding": "HOOKS_SERVICE", "service": "clover-forwarder" },
+        { "binding": "PUSH_SERVICE", "service": "clover-push" },
+        { "binding": "HANDSHAKE_SERVICE", "service": "clover-handshake" }
+      ],
       "durable_objects": {
         "bindings": [
           { "name": "ACCOUNTS", "class_name": "AccountDO" },

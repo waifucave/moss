@@ -64,7 +64,7 @@ export interface Caller {
   device: string;
 }
 
-export type Refusal = { ok: false; status: 400 | 401 | 403 | 404 | 405 | 409 | 413 | 503; error: string; device?: string };
+export type Refusal = { ok: false; status: 400 | 401 | 403 | 404 | 405 | 409 | 410 | 413 | 503; error: string; device?: string };
 
 export type ReceiveResult = { ok: true; id: string; seq: number; delivered: boolean } | Refusal;
 
@@ -106,6 +106,9 @@ const KEY_TAG_BYTES = 8;
 
 /** How long a revocation is kept: the longest account-token lifetime (24 h), plus clock skew and margin. */
 export const REVOCATION_KEEP_MS = 24 * 3600 * 1000 + 10 * 60 * 1000;
+/** After the account is deleted, how long the mark that refuses its tokens is kept: as long as any token minted before
+ *  the deletion can live (a revocation's window). Then the object forgets the account entirely. */
+export const ERASED_KEEP_MS = REVOCATION_KEEP_MS;
 
 function keyTag(keyHash: Uint8Array): ArrayBuffer {
   return own(keyHash.subarray(0, KEY_TAG_BYTES)).buffer;
@@ -181,8 +184,15 @@ export class ForwarderDO extends DurableObject<Env> {
     return this.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM held WHERE routine = ?", routine).one().n;
   }
 
-  /** Common checks for a device API call: the right account, and a computer that has not been revoked. */
+  /** When the account was deleted here (`eraseAccount`), while its tokens may still be live. */
+  private erasedAt(): number | undefined {
+    const v = this.sql.exec<{ v: string }>("SELECT v FROM meta WHERE k = 'erased'").toArray()[0]?.v;
+    return v === undefined ? undefined : Number(v);
+  }
+
+  /** Common checks for a device API call: the account not deleted, the right account, and a computer that has not been revoked. */
   private refuse(caller: Caller): Refusal | null {
+    if (this.erasedAt() !== undefined) return { ok: false, status: 410, error: "account_deleted" };
     if (!this.ownerMatches(caller.owner)) return { ok: false, status: 403, error: "wrong_account" };
     if (this.isRevoked(caller.device)) return { ok: false, status: 403, error: "revoked" };
     return null;
@@ -251,6 +261,27 @@ export class ForwarderDO extends DurableObject<Env> {
     this.sql.exec("DELETE FROM drops WHERE routine IN (SELECT id FROM routines WHERE device = ?)", deviceId);
     this.sql.exec("DELETE FROM routines WHERE device = ?", deviceId);
     for (const ws of this.ctx.getWebSockets(SOCKET_TAG(deviceId))) this.closeSocket(ws, CLOSE_REVOKED, "revoked");
+    return { ok: true };
+  }
+
+  /**
+   * The account's deletion (the account service's erase token, never a device's): its computers' keys and names, its
+   * routines, every webhook held for it, its tickets and drop counts go, and its computers' sockets close. A mark then
+   * refuses every token of the account until the last one minted before the deletion has ended, and the alarm clears the
+   * object. Again: the same answer.
+   */
+  async eraseAccount(owner: string): Promise<{ ok: true } | Refusal> {
+    if (this.erasedAt() !== undefined) return { ok: true };
+    if (!this.ownerMatches(owner)) return { ok: false, status: 403, error: "wrong_account" };
+    const now = Date.now();
+    for (const table of ["held", "routines", "drops", "tickets", "revoked", "devices"]) this.sql.exec(`DELETE FROM ${table}`);
+    this.totals = { count: 0, bytes: 0 };
+    this.sql.exec("DELETE FROM meta WHERE k = 'owner'");
+    this.sql.exec("INSERT INTO meta (k, v) VALUES ('erased', ?)", String(now));
+    this.owner = undefined;
+    for (const ws of this.ctx.getWebSockets()) this.closeSocket(ws, CLOSE_REVOKED, "account deleted");
+    await this.ctx.storage.setAlarm(now + ERASED_KEEP_MS);
+    this.alarmAt = now + ERASED_KEEP_MS;
     return { ok: true };
   }
 
@@ -540,6 +571,20 @@ export class ForwarderDO extends DurableObject<Env> {
    */
   override async alarm(): Promise<void> {
     this.alarmAt = null;
+    const erased = this.erasedAt();
+    if (erased !== undefined) {
+      if (Date.now() < erased + ERASED_KEEP_MS) {
+        await this.ctx.storage.setAlarm(erased + ERASED_KEEP_MS);
+        this.alarmAt = erased + ERASED_KEEP_MS;
+        return;
+      }
+      await this.ctx.storage.deleteAll();
+      this.owner = undefined;
+      this.totals = undefined;
+      this.alarmAt = undefined;
+      this.migrate();
+      return;
+    }
     this.dropWhere("seq <= ?", "expired", (Date.now() + this.limits.expiryGapMs - this.limits.holdMs) * SEQ_PER_MS);
     await this.ensureAlarm();
   }

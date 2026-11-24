@@ -9,11 +9,13 @@
 //   GET    /v1/targets                                 -> { targets }
 //   DELETE /v1/devices/:id                             -> 204                     revokes a device (any id, 24 h 10 min)
 //   POST   /v1/notify        { badge, urgent?, phones? } -> { sent, removed, failed }   phones: device ids of the phones to wake first
+//   DELETE /v1/account                                 -> 204                     the account's deletion: everything here goes
 //
-// All but /v1/vapid take the device's waifucave account token.
+// All but /v1/vapid take the device's waifucave account token; DELETE /v1/account takes only the account service's erase
+// token (services/accounts PROTOCOL.md, "Deleting the account"), which nothing else takes.
 
 import { bearerToken } from "../../shared/account-token";
-import { verifyAccountTokenFrom } from "../../shared/jwks";
+import { verifyAccountTokenFrom, verifyEraseTokenFrom } from "../../shared/jwks";
 import { b64u, fromB64u, sha256, utf8 } from "../../shared/encoding";
 import { errorResponse, json, readJsonObject } from "../../shared/http";
 import { APNS_TOKEN_RE } from "./apns";
@@ -54,6 +56,7 @@ async function accountObject(env: Env, account: string): Promise<DurableObjectSt
 }
 
 async function authenticated(request: Request, env: Env, path: string[]): Promise<Response> {
+  if (request.method === "DELETE" && path.length === 1 && path[0] === "account") return eraseAccount(request, env);
   const token = bearerToken(request);
   const identity = token
     ? await verifyAccountTokenFrom(token, env, env.PUSH_AUDIENCE)
@@ -110,6 +113,16 @@ async function authenticated(request: Request, env: Env, path: string[]): Promis
     default:
       return errorResponse(404, "not_found");
   }
+}
+
+/** The account's deletion, on the account service's erase token alone. */
+async function eraseAccount(request: Request, env: Env): Promise<Response> {
+  const token = bearerToken(request);
+  const identity = token ? await verifyEraseTokenFrom(token, env, env.PUSH_AUDIENCE) : null;
+  if (!identity) return errorResponse(401, "unauthorized");
+  const stub = await accountObject(env, identity.account);
+  const result = await stub.eraseAccount(b64u(await sha256(utf8(`owner|${identity.account}`))));
+  return result.ok ? new Response(null, { status: 204 }) : errorResponse(result.status, result.error);
 }
 
 /** `phones` on a notify: absent (no preference), or a short list of device ids; null when it is anything else. */

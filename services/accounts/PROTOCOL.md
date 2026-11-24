@@ -20,6 +20,8 @@ The wire is lane H's proposal (the core's `identity/account.ts`, which `AccountC
 | `GET /v1/devices` | | `{"devices":[…]}`: every device of the account, the revoked ones with `revokedAt` |
 | `DELETE /v1/devices/<id>` | | 204, again 204; 404 for a device the account never had |
 | `POST /v1/tokens` | `{"aud","dev","t","sig"}` | `{"token","expiresAt"}` |
+| `POST /v1/devices/leave` | `{"dev","t","sig"}` | 204: the device's row is gone (again: 204) |
+| `POST /v1/account/delete` | `{"dev","t","sig"}` | 200 `{"deletion":{"deletedAt","pending":[…]}}` |
 
 Every `/v1` call takes the Supabase access token as `Authorization: Bearer`. The service asks the project who it belongs to (`GET <project>/auth/v1/user`, with the project's public key as `apikey`), so a signed-out session is refused as soon as Supabase refuses it. An anonymous Supabase sign-in is not an account.
 
@@ -46,6 +48,13 @@ A registration signs lane H's `clover-account-v2 register` statement: the determ
 ```
 
 with each device field exactly as the request carries it (`publicKey` in whichever base64 it was sent) and `t` a CBOR unsigned integer. It covers the whole record, so a session holder can't re-send a device's signature with another box key, name or kind.
+
+A leave and the account's deletion sign their own statements, deterministic CBOR like a registration's, each with its own purpose tag so no other statement's signature passes as one:
+
+```
+["moss-account-v1 leave",  <account>, <device id>, t]
+["moss-account-v1 delete", <account>, <device id>, t]
+```
 
 A mint signs UTF-8 lines joined by `\n`:
 
@@ -80,9 +89,31 @@ The token is a JWS (compact JWT), signed EdDSA or ES256 under a key of the JWKS:
 
 ## Revocation
 
-- `DELETE /v1/devices/<id>` revokes a device of the account, taken from any of the account's sessions. The device stays listed with `revokedAt`, so every other device learns of it.
+- `DELETE /v1/devices/<id>` revokes a device of the account, taken from any of the account's sessions. The device stays listed with `revokedAt` for 30 days, so every other device learns of it at its next sync. After that its row is cut to its id and the time: its name, keys, kind and system are deleted, and it is no longer listed. A device of the account whose local registry still has a device the list no longer names (`via: "account"`) drops it (the core's `syncAccountDevices`).
+- Why the id stays: a revoked device may still hold a working Supabase session (the project's refresh tokens don't end on their own), and the id is what refuses its key if it tries to register again. At most 1,024 ids are kept per account, the oldest forgotten first; all of them go with the account.
 - A revoked device can't register again (403 `revoked`), and gets no tokens.
 - The tokens it already holds end within 5 minutes. The other services hear of the revoke from the revoking device itself (lane H's fan-out: their `DELETE /v1/devices/<id>` calls), not from here.
+
+## Leaving
+
+`POST /v1/devices/leave` is what a device sends when it signs out, before it ends its Supabase session: signed by the device's own link key, with a `t` newer than its last registration's. Its row and its mint records go, so it can register again at its next sign-in (a revoke would refuse it for good). A revoked device can't leave (403 `revoked`): its revoke stays. Leaving again, or a device the account doesn't list, is 204.
+
+## Deleting the account
+
+`POST /v1/account/delete` deletes the account. It takes the account's Supabase session and the signature of a device the account lists and hasn't revoked, over the delete statement, with `t` within 10 minutes: as strong as a mint, the most protected call. What happens, in order:
+
+1. At once: every row of the account here goes (devices, revoked ids, mint records), and a mark refuses every later call of the account with 410 `account_deleted` (list, register, mint, revoke, leave). No device can get a token from then on.
+2. The account service tells each other service to forget the account, with an **erase token** it mints for itself: `sub` the account, `dev` `account-erase`, `erase: true`, 5 minutes. A service takes an erase token on its account wipe alone, and refuses it everywhere else; a device's own token is refused there.
+   - the hooks forwarder: `DELETE /v1/account` (its computers' keys and names, routines, held webhooks; sockets closed);
+   - push: `DELETE /v1/account` (every phone and browser target, the revocations);
+   - the handshake: `DELETE /v1/accounts/self` (the account scope's sealed records, waiting messages, the lease).
+   Each keeps only a mark that refuses the account's tokens until the last one minted before the deletion has ended, then forgets the account.
+3. Last, once the three have confirmed: the person's sign-in, with the project's service-role key (`AUTH_SERVICE_ROLE_KEY`, a secret): GoTrue's admin delete, `DELETE <AUTH_URL>/auth/v1/admin/users/<account>`. 404 counts as done.
+4. When every step is confirmed the account's object forgets everything, the mark included.
+
+A step that fails is retried by the object's alarm (after 1 minute, 10 minutes, an hour, then every 6 hours) until it is confirmed: the deletion finishes without the device that asked. Asking again while it runs answers how far it got (the rows being gone, any session of the account may ask) and tries the pending steps at once. The answer's `pending` names the steps not confirmed yet: `hooks`, `push`, `handshake`, `sign-in`. Until `sign-in` is done the person's Supabase account exists but every call of it here is refused; with no service-role key set it stays pending.
+
+Where the wipes go: the service bindings `HOOKS_SERVICE`, `PUSH_SERVICE` and `HANDSHAKE_SERVICE` when set (production), else `HOOKS_URL`, `PUSH_URL` and `HANDSHAKE_URL`. A service with neither stays pending.
 
 ## Limits
 
@@ -101,6 +132,7 @@ The body is `{"error": "<code>"}`:
 | 400 | `bad_request`, `bad_device_id`, `bad_time`, `bad_audience` |
 | 401 | `unauthorized`: no session, or one Supabase refuses; the client refreshes its session and tries once more |
 | 403 | `bad_signature`, `revoked`, `not_member` |
+| 410 | `account_deleted`: the account was deleted (or is being deleted); the device signs out |
 | 404 | `not_found` |
 | 409 | `replay`, `full`, `conflict` (an id already listed with another key) |
 | 429 | `rate_limited` |

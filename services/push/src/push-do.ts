@@ -44,13 +44,16 @@ export interface NotifyResult {
   failed: number;
 }
 
-export type Refusal = { ok: false; status: 403 | 409; error: string };
+export type Refusal = { ok: false; status: 403 | 409 | 410; error: string };
 
 const TTL_SECONDS = 24 * 3600;
 /** Bad-token answers in a row before a phone's target is forgotten. */
 const SUSPECT_LIMIT = 3;
 /** How long a revocation is kept: the longest account-token lifetime (24 h), plus clock skew and margin. */
 export const REVOCATION_KEEP_MS = 24 * 3600 * 1000 + 10 * 60 * 1000;
+/** After the account is deleted, how long the mark that refuses its tokens is kept: as long as any token minted before
+ *  the deletion can live (the same window as a revocation's). Then the object forgets the account entirely. */
+export const ERASED_KEEP_MS = REVOCATION_KEEP_MS;
 
 export class PushDO extends DurableObject<Env> {
   private readonly sql: SqlStorage;
@@ -59,6 +62,10 @@ export class PushDO extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
+    this.migrate();
+  }
+
+  private migrate(): void {
     this.sql.exec("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
     if (!this.sql.exec("SELECT 1 AS x FROM meta WHERE k = 'schema'").toArray().length) {
       // Frozen at the first deploy: any later change needs a new schema version and a step that migrates to it.
@@ -82,7 +89,14 @@ export class PushDO extends DurableObject<Env> {
     return this.owner === owner;
   }
 
+  /** When the account was deleted here (`eraseAccount`), while its tokens may still be live. */
+  private erasedAt(): number | undefined {
+    const v = this.sql.exec<{ v: string }>("SELECT v FROM meta WHERE k = 'erased'").toArray()[0]?.v;
+    return v === undefined ? undefined : Number(v);
+  }
+
   private refuse(caller: Caller): Refusal | null {
+    if (this.erasedAt() !== undefined) return { ok: false, status: 410, error: "account_deleted" };
     if (!this.ownerMatches(caller.owner)) return { ok: false, status: 403, error: "wrong_account" };
     if (this.sql.exec("SELECT 1 AS x FROM revoked WHERE id = ? AND at > ?", caller.device, Date.now() - REVOCATION_KEEP_MS).toArray().length > 0) {
       return { ok: false, status: 403, error: "revoked" };
@@ -132,6 +146,36 @@ export class PushDO extends DurableObject<Env> {
     this.sql.exec("INSERT INTO revoked (id, at) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET at = excluded.at", id, now);
     this.sql.exec("DELETE FROM targets WHERE id = ?", id);
     return { ok: true };
+  }
+
+  /**
+   * The account's deletion (the account service's erase token, never a device's): every target and revocation goes, and
+   * a mark refuses every token of the account until the last one minted before the deletion has ended; then the alarm
+   * clears the object. Again: the same answer.
+   */
+  async eraseAccount(owner: string): Promise<{ ok: true } | Refusal> {
+    if (this.erasedAt() !== undefined) return { ok: true };
+    if (!this.ownerMatches(owner)) return { ok: false, status: 403, error: "wrong_account" };
+    const now = Date.now();
+    this.sql.exec("DELETE FROM targets");
+    this.sql.exec("DELETE FROM revoked");
+    this.sql.exec("DELETE FROM meta WHERE k = 'owner'");
+    this.sql.exec("INSERT INTO meta (k, v) VALUES ('erased', ?)", String(now));
+    this.owner = undefined;
+    await this.ctx.storage.setAlarm(now + ERASED_KEEP_MS);
+    return { ok: true };
+  }
+
+  override async alarm(): Promise<void> {
+    const at = this.erasedAt();
+    if (at === undefined) return;
+    if (Date.now() < at + ERASED_KEEP_MS) {
+      await this.ctx.storage.setAlarm(at + ERASED_KEEP_MS);
+      return;
+    }
+    await this.ctx.storage.deleteAll();
+    this.owner = undefined;
+    this.migrate();
   }
 
   async listTargets(caller: Caller): Promise<{ ok: true; targets: TargetInfo[] } | Refusal> {

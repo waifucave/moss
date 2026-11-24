@@ -27,6 +27,16 @@ export const mintStatement = (account: string, audience: string, device: string,
   utf8(["clover-account-v1 mint", account, audience, device, String(t)].join("\n"));
 
 /**
+ * The account's deletion (PROTOCOL.md, "Deleting the account"): the deterministic CBOR of
+ * `["moss-account-v1 delete", account, device, t]`, signed by a listed device that isn't revoked. Its own purpose tag,
+ * so no registration's or mint's signature can pass as one.
+ */
+export const deleteStatement = (account: string, device: string, t: number): Uint8Array => cborArray(["moss-account-v1 delete", account, device, t]);
+
+/** A device leaving the account at sign-out (PROTOCOL.md, "Leaving"): `["moss-account-v1 leave", account, device, t]`. */
+export const leaveStatement = (account: string, device: string, t: number): Uint8Array => cborArray(["moss-account-v1 leave", account, device, t]);
+
+/**
  * The deterministic CBOR (RFC 8949, shortest heads) of an array of text strings, nulls and non-negative safe
  * integers: the subset a statement uses, encoded as the core's links/codec encodes it.
  */
@@ -83,6 +93,12 @@ export const LIMITS = {
   /** A device name, in code points. */
   maxName: 64,
   maxBodyBytes: 16 * 1024,
+  /** How long a revoked device's whole row (name, keys, kind, system) is kept: long enough for every device of the
+   *  account that was away to learn of the revoke at its next sync. After it only the id and the time are kept
+   *  (`revoked_ids`), which is what refuses the device's key if it tries to register again. */
+  revokedRowKeepMs: 30 * 24 * 3600_000,
+  /** Revoked ids kept per account; past it the oldest is forgotten first. */
+  maxRevokedIds: 1024,
 } as const;
 
 export interface AccountDevice {
@@ -96,6 +112,17 @@ export interface AccountDevice {
   os?: Os;
   addedAt: number;
   revokedAt?: number;
+}
+
+/** What the account's deletion still has to do (PROTOCOL.md, "Deleting the account"), in the order it does it. */
+export const DELETION_STEPS = ["hooks", "push", "handshake", "sign-in"] as const;
+export type DeletionStep = (typeof DELETION_STEPS)[number];
+
+export interface DeletionView {
+  /** When the deletion was asked for (ms). Everything of the account at this service went then. */
+  deletedAt: number;
+  /** The steps not confirmed yet; the service retries them on its own until each is. */
+  pending: DeletionStep[];
 }
 
 /** Lane B's `deviceIdFor` (packages/core/src/contracts/device-registry.ts), which the id must equal. */

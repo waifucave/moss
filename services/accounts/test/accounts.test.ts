@@ -229,6 +229,8 @@ describe("devices", () => {
     expect((await register(session, extra)).status).toBe(201);
 
     // At the row cap, the longest-revoked row goes first: fill the account with old revoked rows, then add one more.
+    // Revoked within the last hour: a row revoked over 30 days ago is cut to its id anyway (deletion.test.ts).
+    const revokedBase = Date.now() - 3600_000;
     const fillers = await runInDurableObject(env.ACCOUNTS.getByName(session.account), async (_o: AccountDO, state) => {
       const rows = state.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM devices").one().n;
       const ids: string[] = [];
@@ -238,7 +240,7 @@ describe("devices", () => {
         state.storage.sql.exec(
           "INSERT INTO devices (id, public_key, box_key, name, kind, os, added_at, revoked_at, last_t) VALUES (?, 'k', 'b', 'old', 'desktop', NULL, 1, ?, 1)",
           id,
-          1000 + i,
+          revokedBase + i,
         );
       }
       return ids;

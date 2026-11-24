@@ -29,4 +29,17 @@ export interface Env {
   EPHEMERAL_KEYS?: string;
   /** The local profile only: "1" opens POST /dev/token, a mint without a sign-in, for emulator tests. */
   DEV_MINT?: string;
+
+  // The account's deletion (deletion.ts): where it tells the other services to forget the account, through a service
+  // binding when there is one (production: a Worker can't fetch another Worker's route on its own zone), else the URL.
+  // A service with neither stays pending in the deletion's answer and is retried.
+  HOOKS_URL?: string;
+  PUSH_URL?: string;
+  HANDSHAKE_URL?: string;
+  HOOKS_SERVICE?: Fetcher;
+  PUSH_SERVICE?: Fetcher;
+  HANDSHAKE_SERVICE?: Fetcher;
+  /** Secret: the Supabase project's service-role key, for the one call that deletes the person's sign-in
+   *  (`DELETE <AUTH_URL>/auth/v1/admin/users/<id>`). Unset, that step stays pending and the account stays refused here. */
+  AUTH_SERVICE_ROLE_KEY?: string;
 }

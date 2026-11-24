@@ -13,6 +13,10 @@ export interface AccountIdentity {
   account: string;
   device: string;
   expiresAt: number;
+  /** An erase token (the account's deletion, services/accounts PROTOCOL.md "Deleting the account"): minted only by the
+   *  account service itself while it deletes the account, never for a device. Good for one call alone, the service's
+   *  account wipe (`verifyEraseTokenFrom`); every other call refuses it (`verifyAccountTokenFrom`). */
+  erase?: true;
 }
 
 export interface AccountTokenConfig {
@@ -113,7 +117,7 @@ export async function verifyAccountToken(token: string, config: AccountTokenConf
   if (iat > now + skew) return null;
   if (exp - iat > maxLifetime) return null;
   if (nbf !== undefined && (typeof nbf !== "number" || nbf > now + skew)) return null;
-  return { account: sub, device: dev, expiresAt: exp };
+  return { account: sub, device: dev, expiresAt: exp, ...(claims.erase === true ? { erase: true as const } : {}) };
 }
 
 /** The bearer token in an Authorization header, or null. */

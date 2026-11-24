@@ -271,6 +271,8 @@ export class HandshakeDO extends DurableObject<Env> {
         this.metaSet("id", c.id);
         this.sql.exec("INSERT INTO lease (one, holder, epoch, expires) VALUES (1, NULL, 0, 0)");
       } else if (this.kind() !== "account") return fail(404, "not_found");
+      // The account was deleted (`eraseAccount`): every token of it is refused until the last one minted before has ended.
+      if (this.ended()) return fail(410, "account_deleted");
       if (this.isRevoked(c.member, now)) return fail(403, "revoked");
       return undefined;
     }
@@ -402,6 +404,26 @@ export class HandshakeDO extends DurableObject<Env> {
     this.metaSet("ended", String(now));
     for (const ws of this.ctx.getWebSockets()) this.closeSocket(ws, CLOSE.ended, "ended");
     await this.scheduleExpiry(now + LIMITS.tombstoneMs, true);
+    return { status: 204 };
+  }
+
+  /**
+   * The account's deletion (the account service's erase token, never a device's): the account scope's sealed address
+   * records, waiting messages, lease, revocations and tickets go, its sockets close, and its id is forgotten. A mark
+   * refuses every token of the account until the last one minted before the deletion has ended; then the alarm clears
+   * the object. Again: the same answer.
+   */
+  async eraseAccount(): Promise<Reply> {
+    const kind = this.kind();
+    if (kind !== undefined && kind !== "account") return fail(404, "not_found");
+    if (this.ended()) return { status: 204 };
+    const now = Date.now();
+    for (const table of ["members", "changes", "change_signers", "records", "messages", "lease", "removed", "tickets"]) this.sql.exec(`DELETE FROM ${table}`);
+    this.sql.exec("DELETE FROM meta WHERE k = 'id'");
+    this.metaSet("kind", "account");
+    this.metaSet("ended", String(now));
+    for (const ws of this.ctx.getWebSockets()) this.closeSocket(ws, CLOSE.ended, "ended");
+    await this.scheduleExpiry(now + LIMITS.revocationKeepMs, true);
     return { status: 204 };
   }
 
@@ -880,14 +902,16 @@ export class HandshakeDO extends DurableObject<Env> {
     const now = Date.now();
     const ended = Number(this.metaGet("ended") ?? "0");
     if (ended > 0) {
-      if (now >= ended + LIMITS.tombstoneMs) {
+      // A deleted account's mark lasts as long as its tokens can; an ended pair's tombstone its own 30 days.
+      const keep = this.kind() === "account" ? LIMITS.revocationKeepMs : LIMITS.tombstoneMs;
+      if (now >= ended + keep) {
         await this.ctx.storage.deleteAlarm();
         await this.ctx.storage.deleteAll();
         this.migrate();
         return;
       }
-      await this.ctx.storage.setAlarm(ended + LIMITS.tombstoneMs);
-      this.alarmAt = ended + LIMITS.tombstoneMs;
+      await this.ctx.storage.setAlarm(ended + keep);
+      this.alarmAt = ended + keep;
       return;
     }
     const horizon = now + ALARM_GAP_MS / 3;

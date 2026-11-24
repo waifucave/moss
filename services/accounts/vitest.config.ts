@@ -19,6 +19,11 @@ const signingJwks = JSON.stringify({
 });
 
 const ANON_KEY = "test-anon-key";
+const SERVICE_ROLE_KEY = "test-service-role-key";
+/** What the deletion told the fake services (hooks, push, the handshake), and whether they answer. */
+const erases: { host: string; path: string; method: string; claims: Record<string, unknown> }[] = [];
+let servicesDown = false;
+let adminDown = false;
 const sessions = new Map<string, { id: string; anonymous: boolean }>();
 let down = false;
 let userCalls = 0;
@@ -52,8 +57,42 @@ async function fakeSupabase(request: Request): Promise<Response> {
       return json({});
     case "GET /__calls":
       return json({ userCalls });
+    case "POST /__admin-down":
+      adminDown = ((await request.json()) as { down: boolean }).down;
+      return json({});
+  }
+  // GoTrue's admin delete: the person's sign-in goes, and every session of theirs with it.
+  const deleted = /^\/auth\/v1\/admin\/users\/([^/]+)$/.exec(url.pathname);
+  if (deleted && request.method === "DELETE") {
+    if (adminDown) return json({ msg: "unavailable" }, 503);
+    if (request.headers.get("authorization") !== `Bearer ${SERVICE_ROLE_KEY}`) return json({ msg: "not admin" }, 403);
+    const id = decodeURIComponent(deleted[1]!);
+    erases.push({ host: "auth.test", path: url.pathname, method: "DELETE", claims: {} });
+    for (const [token, user] of sessions) if (user.id === id) sessions.delete(token);
+    return json({ id });
   }
   return json({ msg: "not found" }, 404);
+}
+
+/** The other services' account wipe, recorded with the token's claims (read, not verified: the services' own tests
+ *  check the erase token; this checks what was sent). */
+async function fakeService(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  if (url.host === "push.test" && url.pathname === "/__erases") return json(erases);
+  if (url.host === "push.test" && url.pathname === "/__down") {
+    servicesDown = ((await request.json()) as { down: boolean }).down;
+    return json({});
+  }
+  if (servicesDown) return json({ error: "unavailable" }, 503);
+  const token = /^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "")?.[1] ?? "";
+  let claims: Record<string, unknown> = {};
+  try {
+    claims = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as Record<string, unknown>;
+  } catch {
+    // recorded as sent
+  }
+  erases.push({ host: url.host, path: url.pathname, method: request.method, claims });
+  return new Response(null, { status: 204 });
 }
 
 export default defineConfig({
@@ -66,11 +105,16 @@ export default defineConfig({
           AUTH_URL: "https://auth.test",
           AUTH_ANON_KEY: ANON_KEY,
           SIGNING_JWKS: signingJwks,
+          AUTH_SERVICE_ROLE_KEY: SERVICE_ROLE_KEY,
+          HOOKS_URL: "https://hooks.test",
+          PUSH_URL: "https://push.test",
+          HANDSHAKE_URL: "https://handshake.test",
         },
         cf: false,
         // Only the fake project answers; anything else fails loudly instead of reaching a network.
         outboundService: (request: Request) => {
           if (new URL(request.url).host === "auth.test") return fakeSupabase(request);
+          if (["hooks.test", "push.test", "handshake.test"].includes(new URL(request.url).host)) return fakeService(request);
           return new Response(`outbound request refused in tests: ${new URL(request.url).host}`, { status: 599 });
         },
       },

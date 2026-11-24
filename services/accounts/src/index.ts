@@ -7,6 +7,8 @@
 //   POST   /v1/devices              {device, t, sig}: registers this device, signed by its link key
 //   GET    /v1/devices              {devices}: the account's devices, the revoked ones with `revokedAt`
 //   DELETE /v1/devices/<id>         revokes a device of the account
+//   POST   /v1/devices/leave        {dev, t, sig}: this device leaves the account at sign-out, signed by its link key
+//   POST   /v1/account/delete       {dev, t, sig} -> {deletion}: deletes the account, signed by a device of it
 //   POST   /v1/tokens               {aud, dev, t, sig} -> {token, expiresAt}: a token for one service, 5 minutes
 //   POST   /dev/token               the local profile's mint without a sign-in (DEV_MINT = "1" only)
 //
@@ -73,6 +75,8 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (area === "devices" && id === undefined && request.method === "GET") handler = (account) => listDevices(env, account);
   else if (area === "devices" && id === undefined && request.method === "POST") handler = (account) => register(request, env, account);
   else if (area === "devices" && id !== undefined && DEVICE_ID_RE.test(id) && request.method === "DELETE") handler = (account) => revoke(env, account, id);
+  else if (area === "devices" && id === "leave" && request.method === "POST") handler = (account) => signedByDevice(request, env, account, "leave");
+  else if (area === "account" && id === "delete" && request.method === "POST") handler = (account) => signedByDevice(request, env, account, "delete");
   else if (area === "tokens" && id === undefined && request.method === "POST") handler = (account) => mint(request, env, account);
   if (!handler) return errorResponse(404, "not_found");
 
@@ -159,7 +163,19 @@ async function register(request: Request, env: Env, account: string): Promise<Re
 }
 
 async function listDevices(env: Env, account: string): Promise<Response> {
-  return json({ devices: await accountObject(env, account).list() });
+  return answer(await accountObject(env, account).list(Date.now()));
+}
+
+/** A leave or the account's deletion: `{dev, t, sig}`, the signature checked against the device's key in the object. */
+async function signedByDevice(request: Request, env: Env, account: string, what: "leave" | "delete"): Promise<Response> {
+  const body = await readJsonObject(request, LIMITS.maxBodyBytes);
+  if (!body) return errorResponse(400, "bad_request");
+  const { dev, t, sig } = body;
+  if (typeof dev !== "string" || !DEVICE_ID_RE.test(dev) || typeof sig !== "string" || !SIG_RE.test(sig)) return errorResponse(400, "bad_request");
+  const now = Date.now();
+  if (!withinWindow(t, now)) return errorResponse(400, "bad_time");
+  const object = accountObject(env, account);
+  return answer(what === "leave" ? await object.leave(account, dev, t, sig) : await object.deleteAccount(account, dev, t, sig, now));
 }
 
 async function revoke(env: Env, account: string, id: string): Promise<Response> {

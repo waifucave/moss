@@ -10,7 +10,7 @@
 // Object, which seals and holds it. Nothing here logs a payload, a key or a token.
 
 import { bearerToken } from "../../shared/account-token";
-import { verifyAccountTokenFrom } from "../../shared/jwks";
+import { verifyAccountTokenFrom, verifyEraseTokenFrom } from "../../shared/jwks";
 import { b64u, fromB64u } from "../../shared/encoding";
 import { errorResponse, json, readBodyCapped, readJsonObject, TooLarge } from "../../shared/http";
 import { encodeRequestRecord, ROUTINE_ID_RE } from "../../../plugins/moss/plugins/forwarder/src/wire/envelope";
@@ -127,6 +127,7 @@ async function webhook(request: Request, env: Env, url: URL, tag: string, routin
 
 async function api(request: Request, env: Env, url: URL, path: string[]): Promise<Response> {
   if (path.length === 1 && path[0] === "connect") return connect(request, env, url);
+  if (path.length === 1 && path[0] === "account" && request.method === "DELETE") return eraseAccount(request, env);
 
   const token = bearerToken(request);
   const identity = token
@@ -211,6 +212,17 @@ async function api(request: Request, env: Env, url: URL, path: string[]): Promis
     default:
       return errorResponse(404, "not_found");
   }
+}
+
+/** The account's deletion (services/accounts PROTOCOL.md, "Deleting the account"), on the account service's erase token
+ *  alone: a device's own token is refused here, and an erase token everywhere else. */
+async function eraseAccount(request: Request, env: Env): Promise<Response> {
+  const token = bearerToken(request);
+  const identity = token ? await verifyEraseTokenFrom(token, env, env.HOOKS_AUDIENCE) : null;
+  if (!identity) return errorResponse(401, "unauthorized");
+  const stub: DurableObjectStub<ForwarderDO> = env.FORWARDER.getByName(await accountObject(env.ACCOUNT_ID_KEY, identity.account));
+  const result = await stub.eraseAccount(await ownerHash(identity.account));
+  return result.ok ? new Response(null, { status: 204 }) : refusal(result);
 }
 
 /** Opens a computer's WebSocket to its account's Durable Object, on a ticket from POST /v1/tickets. */

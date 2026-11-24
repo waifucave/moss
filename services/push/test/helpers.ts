@@ -11,10 +11,10 @@ export const ORIGIN = "https://push.test";
 
 const signingKeys = JSON.parse(env.TEST_SIGNING_KEYS ?? "{}") as { es256: JsonWebKey & { kid: string } };
 
-export async function accountToken(options: { account: string; device: string; aud?: string }): Promise<string> {
+export async function accountToken(options: { account: string; device: string; aud?: string; erase?: boolean }): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: "ES256", kid: signingKeys.es256.kid, typ: "JWT" };
-  const claims = { iss: env.ACCOUNT_ISSUER, aud: options.aud ?? env.PUSH_AUDIENCE, sub: options.account, dev: options.device, iat: now, exp: now + 300 };
+  const claims = { iss: env.ACCOUNT_ISSUER, aud: options.aud ?? env.PUSH_AUDIENCE, sub: options.account, dev: options.device, iat: now, exp: now + 300, ...(options.erase ? { erase: true } : {}) };
   const input = `${b64u(utf8(JSON.stringify(header)))}.${b64u(utf8(JSON.stringify(claims)))}`;
   const { kid: _kid, alg: _alg, use: _use, key_ops: _ops, ...bare } = signingKeys.es256 as JsonWebKey & { kid: string; use?: string };
   const key = await crypto.subtle.importKey("jwk", bare, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
