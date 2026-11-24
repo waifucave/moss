@@ -16,7 +16,13 @@ leaves this file out of the site.
 
 ## To shoot again
 
-* All of the window and the card at 2x, from today's app: they show the app of 2026-11-17, and at 1x they are soft on
-  a sharp screen.
-* MOSS Code: there is no clean picture of it yet. Wanted: its canvas with sample sessions on several agents, and one
-  session with its panels, light and dark, at 2x, with no test titles, no temporary paths and no preview label.
+* All of the window and the card at 2x. On 2026-11-24 the render script was run again on today's app: its pictures
+  match these (the same scenes, the same words), but it draws only at 1x. Its window is an offscreen one
+  (`offscreen: true` in `apps/moss/src/main/index.ts`), which draws at a scale of 1 whatever Chromium's
+  `--force-device-scale-factor=2` says (tried: still 1280 by 820). A 2x render needs a scale in the render's own
+  window, `offscreen: { deviceScaleFactor: 2 }` for `--moss-render`, which is the MOSS app's code, not this site's.
+* MOSS Code: there is no clean picture of it yet. Wanted: its canvas with sample sessions, and one session with its
+  panels, light and dark, at 2x, with no test titles, no temporary paths and no preview label. The site names agents
+  in text only, so a canvas picture must hold only MOSS's own agent's sessions and bots: the preview's sample world
+  (`scripts/preview/seed.ts`) also starts Codex, Claude Code and Gemini sessions, whose blocks carry those agents'
+  marks.
