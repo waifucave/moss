@@ -34,6 +34,16 @@
 // serves, but it is the Pro tier: $4 / $20 per million tokens on Google's own API against 3.8 Flash's $0.75 / $3.75 (the
 // catalog's google rows; every vertex row is unpriced), not an everyday default.
 //
+// THE GEMINI 4 EFFORT (2026-11-24). Hydrogen is the default with NO effort, so no thinking budget is sent and the model
+// thinks at its own default (high). The agent SDK's Google adapter turns an effort into `thinkingConfig.thinkingBudget`
+// only. Vertex's card, https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/4-hydrogen (read
+// 2026-11-24), says setting `thinking_budget` on Hydrogen "returns an HTTP 400 error"; Google AI Studio's
+// https://aistudio.google.com/docs/thinking (read 2026-11-24) documents only `thinking_level` for Gemini 4 and says
+// nothing either way about a budget. No real call has been made, so the default takes the form that cannot fail.
+// Restore `effort: "medium"` when the adapter sends the level form (`thinkingLevel`), or when one real call shows the
+// budget is accepted. A person who PICKS an effort for Hydrogen on Google today gets it sent as a budget (the row lists
+// low/medium/high/xhigh, so the picker offers them).
+//
 // THE EFFORT STATES WHAT IS SENT (2026-11-24): `recommended()` drops a declared effort the row does not list, so a
 // declaration the rows cannot take was a promise nobody got. Where every vendor row's vocabulary is low/high/max
 // (DeepSeek V4 Pro, Kimi K3.1 Pro, GLM-5.3) the default is `high`: the nearest level to the medium every other family
@@ -63,7 +73,9 @@ export function choicesOf(entry: FamilyDefault | undefined): FamilyChoice[] {
 export const FAMILY_DEFAULTS: Readonly<Record<string, FamilyDefault>> = {
   claude: { model: "claude-opus-5.5", effort: "medium" }, // the owner's
   gpt: { model: "gpt-6.2-sol", effort: "medium" }, // the owner's
-  gemini: { model: "gemini-4-hydrogen", effort: "medium", then: [{ model: "gemini-3.8-flash", effort: "medium" }] }, // 3.8 Flash where Hydrogen isn't served (Vertex)
+  // NO EFFORT on Hydrogen (the controller's ruling, 2026-11-24): see THE GEMINI 4 EFFORT above. 3.8 Flash, where Hydrogen
+  // isn't served (Vertex), keeps medium: the thinking budget is how Gemini 3.x takes an effort.
+  gemini: { model: "gemini-4-hydrogen", then: [{ model: "gemini-3.8-flash", effort: "medium" }] },
   grok: { model: "grok-4.7", effort: "medium" }, // xAI's current model (https://docs.x.ai/docs/release-notes.md, September 2026), same price as 4.6
   deepseek: { model: "deepseek-v4-pro", effort: "high" }, // rows take low, high, max: no medium
   kimi: { model: "kimi-k3.1-pro", effort: "high" }, // rows take low, high, max: no medium

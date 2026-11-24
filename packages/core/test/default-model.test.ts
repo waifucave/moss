@@ -4,6 +4,7 @@ import { catalogFromModelPlugins, loadCatalog, type ModelEntry } from "@waifucav
 import { defaultEffortFor, effectiveDefault, isWeak, LEGACY_DEFAULT_MODEL, NO_DEFAULT_MODEL_REASON, NO_RECOMMENDED_DEFAULT_REASON, noDefaultModelReason, onlyWeakFamilies, setNoDefaultModelContext, providerOfTag, recommended, recommendedFor, recommendedModel, settledDefault, setupMissing } from "../src/default-model";
 import { choicesOf, FAMILY_DEFAULTS } from "../src/runtime-sdk/model-plugins/family-defaults";
 import { toolsRefusedFor } from "../src/runtime-sdk/provider-selection";
+import { mapGoogleEffort } from "@waifucave/clover-provider-runtime";
 import { BUNDLED_CHILDREN_DIR, modelPluginFolder, modelPluginId } from "../src/runtime-sdk/model-plugins/bundled";
 
 const catalog = loadCatalog();
@@ -59,10 +60,21 @@ describe("the recommended default: the family's one default, as the provider ser
     expect(catalog.models.some((m) => m.providerId === "vertex" && m.canonicalModelId === "gemini-4-hydrogen")).toBe(false);
     expect(recommendedFor(catalog, "vertex", "gemini")).toEqual({ model: "vertex/gemini-3.8-flash", effort: "medium" });
     expect(rec("vertex")).toEqual({ model: "vertex/gemini-3.8-flash", effort: "medium" });
-    expect(recommendedFor(catalog, "google", "gemini")).toEqual({ model: "google/gemini-4-hydrogen", effort: "medium" });
+    expect(recommendedFor(catalog, "google", "gemini")).toEqual({ model: "google/gemini-4-hydrogen" });
     // A weak fallback is never chosen: with 3.8 Flash reclassed weak, Vertex recommends nothing for Gemini.
     const weakFlash = { families: catalog.families, models: catalog.models.map((m) => (m.key === "vertex/gemini-3.8-flash" ? { ...m, strength: "weak" as const } : m)) };
     expect(recommendedFor(weakFlash, "vertex", "gemini")).toBeUndefined();
+  });
+  test("the Gemini default sends no thinkingConfig: Hydrogen is recommended with no effort, so the adapter maps none (2026-11-24: Vertex's card says a thinking budget returns 400)", () => {
+    const google = rec("google")!;
+    expect(google).toEqual({ model: "google/gemini-4-hydrogen" });
+    expect(defaultEffortFor(catalog, google.model)).toBeUndefined();
+    expect(recommendedFor(catalog, "google-openai", "gemini")?.effort).toBeUndefined();
+    const row = catalog.models.find((m) => m.key === google.model)!;
+    // No effort: the adapter's mapping refuses to make one, so `thinkingConfig` gets no budget.
+    expect(mapGoogleEffort(undefined, row).ok).toBe(false);
+    // What a person who picks an effort gets today: a budget (the adapter's only form). Restore medium when this changes.
+    expect(mapGoogleEffort("medium", row)).toEqual({ ok: true, value: { thinkingBudget: 4096 } });
   });
   test("a weak row is never recommended, whatever the table says; a row with no class is weak", () => {
     const row = catalog.models.find((m) => m.key === recM("anthropic"))!;
