@@ -56,6 +56,8 @@ const LOOSE: Limits = Limits { max_items: 1 << 20, max_depth: 64 };
 /// What the fake computer answers a client call with.
 enum Reply {
     Result(Value),
+    /// A JSON-RPC error.
+    Error(i64, &'static str),
 }
 
 type Script = Arc<dyn Fn(&str, &Value) -> Reply + Send + Sync>;
@@ -175,8 +177,10 @@ async fn stream(conn: Connection, mut send: SendStream, mut recv: RecvStream, id
                 if method == "session.stageFile" && msg["params"]["id"] == "s_slow" && msg["params"].get("offset").is_some() {
                     tokio::time::sleep(Duration::from_millis(1000)).await;
                 }
-                let Reply::Result(r) = (b.rpc)(&method, &msg["params"]);
-                let frame = serde_json::to_vec(&json!({ "jsonrpc": "2.0", "id": msg["id"], "result": r })).unwrap();
+                let frame = match (b.rpc)(&method, &msg["params"]) {
+                    Reply::Result(r) => serde_json::to_vec(&json!({ "jsonrpc": "2.0", "id": msg["id"], "result": r })).unwrap(),
+                    Reply::Error(code, m) => serde_json::to_vec(&json!({ "jsonrpc": "2.0", "id": msg["id"], "error": { "code": code, "message": m } })).unwrap(),
+                };
                 // Written raw (length, then body), so a hostile computer can send past the link's own cap.
                 let mut raw = (frame.len() as u32).to_be_bytes().to_vec();
                 raw.extend_from_slice(&frame);
@@ -925,5 +929,46 @@ async fn the_event_queue_holds_its_byte_cap_for_large_questions() {
     }
     assert!(c.queued_event_bytes() <= 32 << 20, "the queue holds {} bytes", c.queued_event_bytes());
     assert!(matches!(c.next_event().await, Some(ConnEvent::Lagged { .. })), "the oldest were dropped and the app is told");
+    c.disconnect();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_open_question_comes_from_its_door_or_from_the_log_on_an_older_engine() {
+    let asked = |id: &str, seq: u64| json!({ "callId": id, "seq": seq, "askedAt": 5, "questions": [{ "question": "Which one?", "options": [], "multiSelect": false }] });
+    let (a1, a2) = (asked("c1", 3), asked("c2", 9));
+    let door = Fake::link(Behaviour {
+        rpc: Arc::new(move |m, p| match m {
+            "session.openQuestions" => Reply::Result(json!({ "open": [a1.clone(), a2.clone(), { "callId": "bad\u{202E}", "seq": 1, "askedAt": 1, "questions": [{ "question": "x", "options": [], "multiSelect": false }] }] })),
+            "session.history" => panic!("the log isn't read when the door answers"),
+            _ => honest(m, p),
+        }),
+        after_hello: vec![],
+        lane_after_hello: None,
+    })
+    .await;
+    let older = Fake::link(Behaviour {
+        rpc: Arc::new(|m, p| match m {
+            "session.openQuestions" => Reply::Error(-32601, "method not found"),
+            "session.history" => Reply::Result(json!({ "events": [
+                { "type": "question_asked", "seq": 4, "sessionId": "s_alpha", "ts": 7, "callId": "old", "questions": [{ "question": "Go?", "options": [], "multiSelect": false }] }
+            ], "hasMore": false })),
+            _ => honest(m, p),
+        }),
+        after_hello: vec![],
+        lane_after_hello: None,
+    })
+    .await;
+    let (core, _) = phone_for(&[&door, &older]).await;
+    let c = core.clone().connect(door.id.clone(), opts()).await.unwrap();
+    until(&c, "up", |e| matches!(e, ConnEvent::Up)).await;
+    let open = c.open_questions("s_alpha".into()).await.unwrap();
+    assert_eq!(open.iter().map(|q| q.call_id.as_str()).collect::<Vec<_>>(), ["c1", "c2"], "a call id with a hidden character is left out");
+    let newest = c.pending_question("s_alpha".into()).await.unwrap().unwrap();
+    assert_eq!((newest.call_id.as_str(), newest.seq, newest.asked_at), ("c2", 9, 5));
+    c.disconnect();
+    let c = core.clone().connect(older.id.clone(), opts()).await.unwrap();
+    until(&c, "up", |e| matches!(e, ConnEvent::Up)).await;
+    let q = c.pending_question("s_alpha".into()).await.unwrap().unwrap();
+    assert_eq!((q.call_id.as_str(), q.seq, q.asked_at), ("old", 4, 7));
     c.disconnect();
 }

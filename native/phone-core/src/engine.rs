@@ -301,6 +301,8 @@ pub fn session_row(v: &Value) -> Option<SessionRow> {
 pub struct QuestionOption {
     pub label: String,
     pub description: Option<String>,
+    /// A preview drawn beside the option (a diff, a scheme), when it has one.
+    pub preview: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
@@ -319,6 +321,9 @@ pub struct Question {
 pub struct AskQuestion {
     pub call_id: String,
     pub questions: Vec<Question>,
+    /// The log record that asked it, and when.
+    pub seq: u64,
+    pub asked_at: i64,
 }
 
 /// What one event of a session's log is, for a conversation. Kinds a conversation doesn't draw (tool calls, deltas,
@@ -365,7 +370,8 @@ pub struct SessionItem {
 
 const MESSAGE_MAX: usize = 1_000_000;
 
-fn ask(v: &Value) -> Option<AskQuestion> {
+/// The questions of an `AskUserQuestion` (`question_asked`, or one of `session.openQuestions`' `open`).
+fn ask(v: &Value, seq: u64, asked_at: i64) -> Option<AskQuestion> {
     let call_id = raw_str(v, "callId").filter(|c| !c.is_empty() && c.len() <= 128 && !c.chars().any(unshown))?.to_string();
     let questions: Vec<Question> = arr(v, "questions")
         .iter()
@@ -379,14 +385,20 @@ fn ask(v: &Value) -> Option<AskQuestion> {
                 options: arr(q, "options")
                     .iter()
                     .take(4)
-                    .filter_map(|o| Some(QuestionOption { label: text(o, "label", 200)?, description: text(o, "description", 1000) }))
+                    .filter_map(|o| Some(QuestionOption { label: text(o, "label", 200)?, description: text(o, "description", 1000), preview: text(o, "preview", 4000) }))
                     .collect(),
                 multi_select: boolean(q, "multiSelect").unwrap_or(false),
                 placeholder: text(q, "placeholder", 80),
             })
         })
         .collect();
-    (!questions.is_empty()).then_some(AskQuestion { call_id, questions })
+    (!questions.is_empty()).then_some(AskQuestion { call_id, questions, seq, asked_at })
+}
+
+/// `session.openQuestions`' answer: the open questions in the order asked (at most 4).
+pub fn open_questions(r: &Value) -> Result<Vec<AskQuestion>, CoreError> {
+    answer_of(r, "session.openQuestions")?;
+    Ok(arr(r, "open").iter().take(4).filter_map(|o| ask(o, get(o, "seq").and_then(Value::as_u64)?, int(o, "askedAt").unwrap_or(0))).collect())
 }
 
 pub fn session_item(v: &Value) -> Option<SessionItem> {
@@ -405,7 +417,7 @@ pub fn session_item(v: &Value) -> Option<SessionItem> {
         "note" => ItemKind::Note { label: text(v, "label", 200).filter(|l| !l.trim().is_empty()), text: msg("text").unwrap_or_default() },
         "agent_error" => ItemKind::TurnError { text: text(v, "message", 2000).unwrap_or_default() },
         "turn_completed" => ItemKind::TurnEnded { reason: raw_str(v, "stopReason").map(other).unwrap_or_default() },
-        "question_asked" => ItemKind::QuestionAsked { question: ask(v)? },
+        "question_asked" => ItemKind::QuestionAsked { question: ask(v, seq, int(v, "ts").unwrap_or(0))? },
         "question_resolved" => ItemKind::QuestionResolved { call_id: raw_str(v, "callId").filter(|c| !c.is_empty() && c.len() <= 128 && !c.chars().any(unshown))?.to_string() },
         x => ItemKind::Other { kind: other(x) },
     };
@@ -783,11 +795,20 @@ pub async fn composer(c: &impl Caller, session: &str) -> Result<ComposerOffers, 
     composer_offers(&c.call_json("session.composerOffers", json!({ "id": session })).await?)
 }
 
-/// The question waiting in a session, from the newest page of its log (200 events). A question asked before that
-/// page and still open isn't found: the engine has no door that names the open question (only `needsYou.questions`
-/// counts it), so the app then shows the count without the question.
+/// The questions open in a session, in the order asked (`session.openQuestions`). An engine without that door is
+/// read from the newest page of the log (200 events), which misses a question asked before it.
+pub async fn open_questions_of(c: &impl Caller, session: &str) -> Result<Vec<AskQuestion>, CoreError> {
+    need_session(session)?;
+    match c.call_json("session.openQuestions", json!({ "id": session })).await {
+        Ok(r) => open_questions(&r),
+        Err(CoreError::Rpc { code: -32601 | -32010, .. }) => Ok(open_question(&history(c, session, None, 200).await?.items).into_iter().collect()),
+        Err(e) => Err(e),
+    }
+}
+
+/// The question waiting in a session: the newest open one.
 pub async fn pending_question(c: &impl Caller, session: &str) -> Result<Option<AskQuestion>, CoreError> {
-    Ok(open_question(&history(c, session, None, 200).await?.items))
+    Ok(open_questions_of(c, session).await?.pop())
 }
 
 pub async fn answer_question(c: &impl Caller, session: &str, call_id: &str, answers: HashMap<String, String>) -> Result<(), CoreError> {

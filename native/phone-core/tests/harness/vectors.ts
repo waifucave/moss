@@ -35,6 +35,7 @@ const TYPED = {
   "agent.recent": resultOf("agent.recent", { backend: "claude-code", model: "m1", effort: "high", computer: "Studio", roots: [{ root: "home/Studio/a", at: 1 }, { root: "home/Studio/b", at: 2 }], byBackend: [{ backend: "codex", model: "m2" }] }),
   "models.list": resultOf("models.list", { models: [{ id: "m1", name: "M1", provider: "fireworks", providerName: "Fireworks", plugin: "fireworks", efforts: ["low"], images: true, signedIn: true }], default: "m1" }),
   "command.list": resultOf("command.list", { commands: [{ name: "deploy", pluginId: "shipit", description: "Ship it" }] }),
+  "session.openQuestions": resultOf("session.openQuestions", { open: [{ callId: "toolu_01", seq: 42, askedAt: 1781270000000, questions: [{ question: "Which database?", header: "Database", options: [{ label: "Postgres", description: "the usual" }, { label: "SQLite", preview: "file: app.db" }], multiSelect: false, placeholder: "Or name one" }] }] }),
   "session.composerOffers": resultOf("session.composerOffers", { kind: "coding", pictures: true, files: { maxBytes: 52428800, perMessage: 10, chunkBytes: 524288 }, commands: [{ name: "deploy", description: "Ship it" }], models: [{ id: "m1", name: "M1", efforts: ["low"] }], model: "m1", efforts: ["low"], effort: "low" }),
 };
 
