@@ -24,7 +24,7 @@
 // webhooks) and hold up this computer's other routines.
 
 import type { ClientState, Delivery, ForwarderClient } from "./client";
-import { RoutineHeldElsewhere } from "./client";
+import { ForwarderError, RoutineHeldElsewhere } from "./client";
 import { fromB64u } from "./wire/bytes";
 import { MIN_ROUTINE_KEY_LENGTH } from "./wire/protocol";
 
@@ -56,6 +56,27 @@ export interface RegisterArgs {
   keyHash?: string;
   takeover?: boolean;
   allowGet?: boolean;
+}
+
+/** Why a routine got no webhook URL, in words the bot can pass on to the person: what is missing, never the service's
+ *  own text. An argument error stays as it is (the caller's mistake). The error keeps its `code`. */
+export function plainRegisterError(err: unknown): Error {
+  if (err instanceof TypeError && err.message.startsWith("register:")) return err;
+  const code = typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined;
+  const status = err instanceof ForwarderError ? err.status : undefined;
+  let text: string;
+  if (code === "no_account") {
+    text = "no waifucave account is signed in on this computer, and webhooks come in through hooks.waifucave.com with one (a tunnel or a cloud computer can take them instead)";
+  } else if (status === 401 || status === 403) {
+    text = "hooks.waifucave.com didn't accept this computer's account sign-in";
+  } else if (status !== undefined && status >= 400 && status < 500) {
+    text = `hooks.waifucave.com refused the routine (${status})`;
+  } else if (status !== undefined) {
+    text = `hooks.waifucave.com isn't working right now (${status})`;
+  } else {
+    text = "hooks.waifucave.com can't be reached from this computer right now";
+  }
+  return Object.assign(new Error(text), typeof code === "string" ? { code } : {});
 }
 
 /** Long polls end within the plugin API's default call limit (spec §5.4: 10 s) unless the caller asks for longer. */
@@ -108,7 +129,7 @@ export class WebhookIngress {
       return await this.client.registerRoutine(args.routine, args.key, options);
     } catch (err) {
       if (err instanceof RoutineHeldElsewhere) return { conflict: { device: err.device } };
-      throw err;
+      throw plainRegisterError(err);
     }
   }
 
