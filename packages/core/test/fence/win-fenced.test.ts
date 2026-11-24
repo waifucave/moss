@@ -8,7 +8,7 @@ import type { Caller } from "@waifucave/moss-protocol";
 import { MossFence } from "../../src/fence/fence";
 import { escapedSandbox, windowsShellTools } from "../../src/fence/win-shell-tools";
 import {
-  existingDenies, existingDeniesOf, grantsConflict, parseProfileExclusions, strayRoots, treeWithin, planFromSettings, profileExcludeCandidates, quarantineWin, shellArgv, winChainIsClean, winChildEnv, winExecArgv, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
+  existingDenies, existingDeniesOf, grantsConflict, parsePersistentRoots, parseProfileExclusions, strayRoots, treeWithin, planFromSettings, profileExcludeCandidates, quarantineWin, shellArgv, winChainIsClean, winChildEnv, winExecArgv, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
   type WinFencedDeps,
 } from "../../src/fence/win-fenced";
 import { formatInstallMarker, poolStateFiles, type LeaseStore } from "../../src/fence/win-sandbox";
@@ -452,5 +452,42 @@ describe("the move across drives is capped (the WS3 reviewer's finding 4)", () =
       expect(existsSync(small)).toBe(false);
       expect(readdirSync(join(mossHome, "quarantine")).some((n) => n.startsWith("small.quarantined-"))).toBe(true);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("rule 3c across an engine restart (the WS4 reviewer's item 2)", () => {
+  test("srt-win's own list of this user's persistent roots, long-path prefix off, pending ones too; nothing from bad JSON", () => {
+    const st = JSON.stringify({ persistent_grants: { state: "present", roots: ["\\\\?\\C:\\h\\.moss\\outputs\\a", "C:\\proj"], pending: ["E:\\x"] } });
+    expect(parsePersistentRoots(st)).toEqual(["C:\\h\\.moss\\outputs\\a", "C:\\proj", "E:\\x"]);
+    expect(parsePersistentRoots("nope")).toEqual([]);
+    expect(parsePersistentRoots(JSON.stringify({ persistent_grants: { state: "none" } }))).toEqual([]);
+  });
+  test("a new engine reads that list before its first command draws a plan, once; a read that failed is tried again", async () => {
+    const m = machine();
+    let fails = 1;
+    const exec = m.deps.exec;
+    const deps: WinFencedDeps = { ...m.deps, launcher: "C:\\seed-test\\srt-win.exe", async exec(argv, o) {
+      if (argv[1] === "user" && argv[2] === "status") {
+        m.execs.push(argv);
+        if (fails-- > 0) return { code: 1, stdout: "", stderr: "busy" };
+        return { code: 0, stdout: JSON.stringify({ persistent_grants: { state: "present", roots: [] } }), stderr: "" };
+      }
+      return exec(argv, o);
+    } };
+    const s = winFencedSpawner({ fence: m.fence, deps, grantAhead: false });
+    const statusCalls = () => m.execs.filter((a) => a[1] === "user" && a[2] === "status").length;
+    m.files["moss-sb-aaaaaa-1.used"] = ""; m.files["moss-sb-aaaaaa-2.used"] = "";
+    await s.run(runOf(m.home));
+    expect(statusCalls()).toBe(1);
+    const firstGrant = m.execs.findIndex((a) => a[1] === "acl" && a[2] === "grant");
+    const firstStatus = m.execs.findIndex((a) => a[1] === "user" && a[2] === "status");
+    expect(firstStatus).toBeGreaterThanOrEqual(0);
+    if (firstGrant >= 0) expect(firstStatus).toBeLessThan(firstGrant);
+    m.files["moss-sb-aaaaaa-1.used"] = ""; m.files["moss-sb-aaaaaa-2.used"] = "";
+    await s.run(runOf(m.home));
+    expect(statusCalls()).toBe(2); // the first failed, so it is read again
+    m.files["moss-sb-aaaaaa-1.used"] = ""; m.files["moss-sb-aaaaaa-2.used"] = "";
+    await s.run(runOf(m.home));
+    expect(statusCalls()).toBe(2); // read once it succeeded
   });
 });

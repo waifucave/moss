@@ -1686,6 +1686,8 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
     deleteProfileArgs,
     registerResetTaskArgs,
     unregisterResetTaskArgs,
+    endAccountProcessesArgs,
+    netUserState,
     PROFILE_IN_USE_EXIT,
     remakeProfileArgs,
     poolStateDir,
@@ -1970,20 +1972,34 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
           process.exitCode = 1;
           return;
         }
+        // The install marker next (the WS4 reviewer's item 3): a running daemon reads it at every command, so from here
+        // on it leases no account (it refuses every command, "set up Bash"), and no account is leased after it is
+        // deleted. Its contents stay in memory for the loop below.
+        try { await unlink(markerFile); } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
+            console.error(`sandbox remove: the install marker couldn't be deleted (${(e as Error).message}); nothing removed`);
+            process.exitCode = 1;
+            return;
+          }
+        }
         const poolDir = poolStateDir(programData, ownerSid);
         let locks: ReturnType<typeof createWindowsLockStore> | null = null;
         try { locks = createWindowsLockStore(poolDir, { poolState: true }); } catch { /* no pool state (removed already): no rebuild to wait for */ }
-        /** The member's lock, waited for while the reset (or a command) holds it, up to 3 minutes; null when there is
-         *  no pool state or it never came free (the sweep below still runs). */
-        const memberLock = async (principal: string) => {
-          if (locks === null) return null;
+        /** An account in use (the WS4 reviewer's item 1) is never removed under its holder: every process running as it
+         *  is ended first (`endAccountProcessesArgs`: a command's processes, so its broker returns and the daemon lets
+         *  the lease go), then its lock (`<p>.lock`, which the daemon holds for a command's whole run and the reset for
+         *  a remake) is waited for, up to 3 minutes. Still held then: `held` (the account is left as it is, and remove
+         *  fails, saying to stop MOSS first). No pool state (removed already): `free`, nothing can hold it. */
+        const memberLock = async (principal: string): Promise<{ release(): void } | "free" | "held"> => {
+          const ended = await run([...endAccountProcessesArgs(principal)]);
+          if (ended.code !== 0) console.error(`sandbox remove: ${principal}: its processes couldn't all be ended (${ended.out.trim().slice(0, 300)})`);
+          if (locks === null) return "free";
           for (let i = 0; i < 360; i++) {
             const g = locks.tryLock(poolStateFiles(poolDir, principal).lock);
             if (g !== null) return g;
             await Bun.sleep(500);
           }
-          console.error(`sandbox remove: ${principal} stayed in use for 3 minutes; removing it anyway`);
-          return null;
+          return "held";
         };
         const sids: string[] = [];
         for (const slot of pool) {
@@ -1998,7 +2014,9 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
           }
           if (principalSid !== null) sids.push(principalSid);
           // Held while this member is removed: a reset remaking it finishes first, and none starts on it meanwhile.
-          const guard = await memberLock(principal);
+          const held = await memberLock(principal);
+          if (held === "held") { fail(`${principal} is still in use after 3 minutes (a command of MOSS's, or the profile reset); stop MOSS and run remove again`); break; }
+          const guard = held === "free" ? null : held;
           try {
           // The profile for the reset below, resolved before the uninstall.
           const profileRoot = principalSid !== null ? await memberProfile(principalSid) : null;
@@ -2130,7 +2148,10 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
           try {
             if (isFreshGeneration(await read(files.gen), await read(files.used))) continue;
             // An account that is gone (`sandbox remove` took it, under this same lock) is never given a profile again.
-            if ((await run(["net", "user", m.principal])).code !== 0) { say(`${m.principal}: no such account, left`); continue; }
+            const acct = await run(["net", "user", m.principal]);
+            const state = netUserState(acct.code, acct.out);
+            if (state === "gone") { say(`${m.principal}: no such account, left`); continue; }
+            if (state === "unknown") { say(`${m.principal}: the account couldn't be checked (net user exit ${acct.code}), left for the next pass`); continue; }
             const r = await run([...remakeProfileArgs(m.principalSid, m.principal)]);
             if (r.code === PROFILE_IN_USE_EXIT) { say(`${m.principal}: its profile is still loaded, left for the next pass`); continue; }
             if (r.code !== 0) { failed++; say(`${m.principal}: its profile couldn't be remade (exit ${r.code})${r.out.trim() ? `\n${r.out.trim().slice(0, 1000)}` : ""}`); continue; }

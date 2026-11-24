@@ -2,6 +2,18 @@
 # profile folder and ProfileList key, its WFP filters, the marker, and the persistent grants. Fails on any leftover.
 . "$PSScriptRoot/lib.ps1"
 $pool = Get-Pool
+# A long command of a pool account (lane WS5, the WS4 reviewer's item 1): started the way the daemon starts one, still
+# running when remove begins. Remove must end it (no process of a pool account outlives remove) and not wait it out.
+$holdOut = Join-Path $env:RUNNER_TEMP "moss-hold-result.json"
+Remove-Item -LiteralPath $holdOut -Force -ErrorAction SilentlyContinue
+$bunExe = (Get-Command bun).Source
+$hold = Start-Process -FilePath $bunExe -ArgumentList @("scripts/ci/windows-fence/hold-account.ts", $holdOut) -WorkingDirectory $Root -NoNewWindow -PassThru
+function PoolProcs { @(Get-Process -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like "*\moss-sb-*" }) }
+$sw = [Diagnostics.Stopwatch]::StartNew()
+while ((PoolProcs).Count -eq 0 -and $sw.Elapsed.TotalSeconds -lt 300) { Start-Sleep -Milliseconds 500 }
+$running = PoolProcs
+Write-Output "a pool account's command is running: $($running.Count) process(es) after $([int]$sw.Elapsed.TotalSeconds) s ($(($running | ForEach-Object { $_.UserName } | Sort-Object -Unique) -join ', '))"
+if ($running.Count -eq 0) { throw "the held command never started" }
 # The race remove must win (lane WS4): every account marked used and the reset task started (SYSTEM remakes each
 # profile, ~20 s apiece), then remove at once, while the rebuild runs.
 $poolState = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "MOSS Sandbox\pool\$Sid"
@@ -12,10 +24,38 @@ foreach ($m in $pool) {
 & schtasks.exe /run /tn "MOSS Sandbox Reset $Sid" | Out-Null
 Start-Sleep -Seconds 3
 Write-Output "the reset task is $((Get-ScheduledTask -TaskName "MOSS Sandbox Reset $Sid").State) when remove starts"
-foreach ($round in 1, 2) {
-  $code = Invoke-Limited "remove (round $round)" $Core @("sandbox", "remove") 900
-  if ($code -ne 0) { throw "remove round $round exited $code" }
+# Round 1 watched (lane WS5, the WS4 reviewer's item 3): the install marker must be gone before the first account is,
+# so a running daemon (which reads it at every command) never leases an account remove has already deleted.
+$first = $pool[0].principal
+$rOut = [System.IO.Path]::GetTempFileName(); $rErr = [System.IO.Path]::GetTempFileName()
+$rsw = [Diagnostics.Stopwatch]::StartNew()
+$rp = Start-Process -FilePath $Core -ArgumentList @("sandbox", "remove") -NoNewWindow -PassThru -RedirectStandardOutput $rOut -RedirectStandardError $rErr
+$markerGone = $null; $accountGone = $null
+while (-not $rp.HasExited -and $rsw.Elapsed.TotalSeconds -lt 900) {
+  if ($null -eq $markerGone -and -not (Test-Path -LiteralPath $Marker)) { $markerGone = $rsw.Elapsed.TotalSeconds }
+  if ($null -eq $accountGone -and -not (Get-LocalUser -Name $first -ErrorAction SilentlyContinue)) { $accountGone = $rsw.Elapsed.TotalSeconds }
+  Start-Sleep -Milliseconds 200
 }
+if (-not $rp.HasExited) { & taskkill.exe /T /F /PID $rp.Id | Out-Null; throw "remove round 1 timed out" }
+$rp.WaitForExit()
+if ($null -eq $accountGone -and -not (Get-LocalUser -Name $first -ErrorAction SilentlyContinue)) { $accountGone = $rsw.Elapsed.TotalSeconds }
+Get-Content $rOut, $rErr | Where-Object { $_ -ne "" } | Write-Output
+Write-Output ("remove round 1: exit {0} in {1:N1} s; marker gone at {2} s, {3} gone at {4} s" -f $rp.ExitCode, $rsw.Elapsed.TotalSeconds, $markerGone, $first, $accountGone)
+if ($rp.ExitCode -ne 0) { throw "remove round 1 exited $($rp.ExitCode)" }
+if ($null -eq $markerGone -or $null -eq $accountGone -or $markerGone -gt $accountGone) { throw "the marker was not gone before the first account (marker $markerGone s, account $accountGone s)" }
+if ($rsw.Elapsed.TotalSeconds -ge 180) { throw "remove waited the held command out ($([int]$rsw.Elapsed.TotalSeconds) s) instead of ending it" }
+$after = PoolProcs
+if ($after.Count -gt 0) { throw "a pool account's process outlived remove: $(($after | ForEach-Object { "$($_.ProcessName)#$($_.Id) $($_.UserName)" }) -join '; ')" }
+$hsw = [Diagnostics.Stopwatch]::StartNew()
+while (-not (Test-Path -LiteralPath $holdOut) -and $hsw.Elapsed.TotalSeconds -lt 120) { Start-Sleep -Milliseconds 500 }
+if (-not (Test-Path -LiteralPath $holdOut)) { throw "the held command's caller never heard back" }
+$held = Get-Content -Raw -LiteralPath $holdOut | ConvertFrom-Json
+Write-Output "the held command ended: kind $($held.kind), code $($held.code), after $([int]($held.afterMs / 1000)) s"
+if ("$($held.stdout)" -match "finished") { throw "the held command ran to its end" }
+$code = Invoke-Limited "remove (round 2)" $Core @("sandbox", "remove") 900
+if ($code -ne 0) { throw "remove round 2 exited $code" }
+if (-not $hold.HasExited) { & taskkill.exe /T /F /PID $hold.Id | Out-Null }
+Remove-Item -LiteralPath (Join-Path $env:USERPROFILE ".moss-hold") -Recurse -Force -ErrorAction SilentlyContinue
 # A rebuild still running after remove must not bring anything back: look again after it would have finished.
 Start-Sleep -Seconds 60
 # What the raced reset did (its own log): a member it found gone says "no such account, left".
