@@ -48,6 +48,7 @@ export const EVIDENCE_LINES: readonly EvidenceLine[] = [
   { for: "the OS window list read for a press", re: /^overlap: the OS window list /, example: "overlap: the OS window list read for a press (2 above, 0 of this program's own)" },
   { for: "a plugin's file grants", re: /^files: \S+: /, example: "files: acc-files: the core keeps no grants yet; the page's token works for the media URL only" },
   { for: "a drop's grants", re: /^files: \S+: a drop gave /, example: "files: acceptance-media: a drop gave 1 grant(s)" },
+  { for: "the release notice of an update switching (the upgrade unit)", re: /^release: notice /, example: "release: notice switching" },
   { for: "the app waiting for a daemon", re: /^pair: (?:unavailable|starting-daemon|reconnecting)/, example: "pair: unavailable (the engine isn't running)" },
 ];
 
