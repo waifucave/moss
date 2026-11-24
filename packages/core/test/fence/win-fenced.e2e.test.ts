@@ -446,6 +446,48 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     for (const l of survivors) { const pid = Number(l.split(" ")[0]); if (pid > 0) Bun.spawnSync(["taskkill", "/PID", String(pid), "/T", "/F"]); }
   }, 900_000);
 
+  test("rule 8c (lane WS8): a new conversation's sidecar made while a background command runs is stamped for it, and it runs on; a new protected root ends it", async () => {
+    wakes.length = 0;
+    // The sidecar and, as the control, the transcript beside it (a bot reads transcripts): made after the command started.
+    const sidecar = join(moss, "projects", "e2e-project", "s9.provider-state.jsonl");
+    const transcript = join(moss, "projects", "e2e-project", "s9.jsonl");
+    for (const f of [sidecar, transcript]) rmSync(f, { force: true });
+    const fwd = (p: string) => p.replace(/\\/g, "/");
+    const r = await call(bgTools.Bash!, {
+      command: `for i in $(seq 1 40); do a=shut; b=no; cat '${fwd(sidecar)}' >/dev/null 2>&1 && a=read; cat '${fwd(transcript)}' >/dev/null 2>&1 && b=ok; echo "tick-$i $a $b"; sleep 1; done; echo all-done`,
+      run_in_background: true,
+    });
+    const id = /win_bg_[0-9a-f]{8}/.exec(r.text)![0];
+    const log = /written to (\S+\.log)/.exec(r.text)![1]!;
+    const logText = () => { try { return readFileSync(log, "utf8"); } catch { return ""; } };
+    for (let i = 0; i < 600 && !logText().includes("tick-3 "); i++) await Bun.sleep(100);
+    writeFileSync(sidecar, `${SECRET}\n`);
+    writeFileSync(transcript, "{}\n");
+    for (let i = 0; i < 1200 && !wakes.some((w) => w.task === id); i++) await Bun.sleep(100);
+    const end = wakes.find((w) => w.task === id);
+    const lines = logText().split(/\r?\n/).filter((l) => /^tick-\d+ /.test(l));
+    console.log(`[e2e] rule 8c sidecar: told ${JSON.stringify(end?.status)}; ticks ${lines.length}; the sidecar read on ${lines.filter((l) => l.includes(" read ")).length} tick(s) (before its stamp); the last ten: ${lines.slice(-10).map((l) => l.split(" ").slice(1).join("/")).join(",")}`);
+    // It ran to its end (not ended), and from its stamp on the sidecar is shut to it while the transcript beside it reads.
+    expect(end).toMatchObject({ status: "completed" });
+    expect(lines.length).toBe(40);
+    expect(lines.slice(-10).every((l) => l.endsWith(" shut ok"))).toBe(true);
+    for (const f of [sidecar, transcript]) rmSync(f, { force: true });
+    // A new protected root (a place the profile grant must now exclude): the command is ended, told why.
+    const root = profileExcludeCandidates(fence).find((p) => !existsSync(p));
+    expect(root).toBeDefined();
+    const r2 = await call(bgTools.Bash!, { command: "for i in $(seq 1 120); do echo tick-$i; sleep 1; done; echo all-done", run_in_background: true });
+    const id2 = /win_bg_[0-9a-f]{8}/.exec(r2.text)![0];
+    const log2 = /written to (\S+\.log)/.exec(r2.text)![1]!;
+    for (let i = 0; i < 600 && !(() => { try { return readFileSync(log2, "utf8"); } catch { return ""; } })().includes("tick-2"); i++) await Bun.sleep(100);
+    mkdirSync(root!, { recursive: true });
+    for (let i = 0; i < 1200 && !wakes.some((w) => w.task === id2); i++) await Bun.sleep(100);
+    const end2 = wakes.find((w) => w.task === id2);
+    console.log(`[e2e] rule 8c new root ${root}: told ${JSON.stringify(end2?.status)}: ${(end2?.text ?? "").slice(0, 160)}`);
+    expect(end2).toMatchObject({ status: "stopped" });
+    expect(end2!.text).toContain("something the sandbox protects appeared");
+    rmSync(root!, { recursive: true, force: true });
+  }, 900_000);
+
   test("a background command (rule B): answers at once, logs as it goes, tells its end; TaskStop ends it and its account's processes", async () => {
     const poolProcs = () => Bun.spawnSync(["powershell", "-NoProfile", "-NonInteractive", "-Command",
       "@(Get-Process -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like '*\\moss-sb-*' }).Count"], { stdout: "pipe" }).stdout.toString().trim();

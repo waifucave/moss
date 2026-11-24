@@ -8,7 +8,7 @@ import type { Caller, Level } from "@waifucave/moss-protocol";
 import { MossFence } from "../../src/fence/fence";
 import { endWindowsBackgroundOf, endWindowsBackgroundOn, escapedSandbox, stopWindowsBackground, windowsBackgroundOf, windowsShellTools, WIN_SHELL_BACKGROUND_ENGINE, WIN_SHELL_BACKGROUND_PER_SESSION } from "../../src/fence/win-shell-tools";
 import {
-  existingDenies, existingDeniesOf, grantsConflict, parsePersistentRoots, parseProfileExclusions, strayRoots, treeWithin, planFromSettings, profileExcludeCandidates, quarantineWin, shellArgv, winChainIsClean, winChildEnv, winExecArgv, watchedReadDenies, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
+  existingDenies, existingDeniesOf, grantsConflict, parsePersistentRoots, parseProfileExclusions, strayRoots, treeWithin, planFromSettings, profileExcludeCandidates, quarantineWin, shellArgv, winChainIsClean, winChildEnv, winExecArgv, lateFenceStep, watchedReadDenies, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
   type WinFencedDeps,
 } from "../../src/fence/win-fenced";
 import { formatInstallMarker, poolStateFiles, type LeaseStore } from "../../src/fence/win-sandbox";
@@ -787,6 +787,14 @@ describe("the exclusions follow the fenced set (rule 8b, lane WS7)", () => {
     expect(grants).toBeGreaterThan(1); // the refresh was tried, and failed
     expect(grew).toBe(1);
   }, 30_000);
+  test("rule 8c's decision (lane WS8): a new protected root ends the command; a new match of a protected pattern is stamped for its account, live", () => {
+    const sidecar = "C:\\h\\.moss\\projects\\p\\s9.provider-state.jsonl";
+    expect(lateFenceStep({ freshReads: [], excludesGrew: false, sid: "S-1-5-21-9" })).toEqual({ kind: "none" });
+    expect(lateFenceStep({ freshReads: [sidecar], excludesGrew: false, sid: "S-1-5-21-9" })).toEqual({ kind: "stamp", paths: [sidecar] });
+    expect(lateFenceStep({ freshReads: [sidecar], excludesGrew: true, sid: "S-1-5-21-9" })).toEqual({ kind: "end" });
+    expect(lateFenceStep({ freshReads: [], excludesGrew: true, sid: "S-1-5-21-9" })).toEqual({ kind: "end" });
+    expect(lateFenceStep({ freshReads: [sidecar], excludesGrew: false, sid: null })).toEqual({ kind: "end" }); // no account to stamp for
+  });
   test("rule 8c watches the literal denies and the fixed-depth globs, never a `**` walk", () => {
     const tree = new Map<string, string[]>([["C:\\m", ["projects", "deep"]], ["C:\\m\\projects", ["p1"]], ["C:\\m\\projects\\p1", ["s.provider-state.jsonl"]], ["C:\\m\\deep", ["a"]], ["C:\\m\\deep\\a", ["k.pem"]]]);
     const all = new Set(["C:\\m\\secret.txt", ...[...tree].flatMap(([d, ns]) => [d, ...ns.map((n) => `${d}\\${n}`)])]);

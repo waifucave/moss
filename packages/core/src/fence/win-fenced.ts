@@ -166,6 +166,15 @@ export function existingDenies(paths: readonly string[], o: WalkOptions = {}): s
   return existingDeniesOf(paths, o).paths;
 }
 
+/** Rule 8c's decision at one look (lane WS8): a new protected root ends the command; new paths its read denies match
+ *  are stamped for its account (`sid`), live, or end it when its account's SID isn't known; nothing new, nothing. */
+export function lateFenceStep(o: { freshReads: readonly string[]; excludesGrew: boolean; sid: string | null }): { kind: "end" } | { kind: "stamp"; paths: string[] } | { kind: "none" } {
+  if (o.excludesGrew) return { kind: "end" };
+  if (o.freshReads.length === 0) return { kind: "none" };
+  if (o.sid === null) return { kind: "end" };
+  return { kind: "stamp", paths: [...o.freshReads] };
+}
+
 /** Rule 8c: what a long command's watch looks at, each time: the literal read denies that exist and the matches of
  *  the fixed-depth globs (expanded a segment at a time, listing only the folders the pattern names, never walking a
  *  tree). A `**` glob is not watched: it would walk a whole tree every time (none is among a bot's read denies; a
@@ -862,34 +871,56 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
           // its own lines go to the timing line, never into the command's output.
           const timing = process.env.MOSS_WIN_FENCE_TIMING === "1";
           const argv = timing ? built.argv.filter((a, i) => !(a === "--quiet" && i < built.argv.indexOf("--"))) : built.argv;
-          // Rule 8c (lane WS7, the WS7 reviewer's items 1 and 3): a long command is planned and stamped once, at its start,
-          // so what the fence protects that appears later (a secret file made in a folder its grant opens, a new match
-          // of a pattern, a place the profile grant must now exclude) would stay open to it for its whole life, and the
-          // grant's refresh (rule 8b) can't run while it holds its session grant. So while it runs, its fenced set is
-          // looked at again every `fenceWatchMs`: the paths its read denies match now (`watchedReadDenies`: the literal
-          // ones and the fixed-depth globs, a new conversation's transcript sidecar in the MOSS home included) against
-          // those at its start, and the profile grant's exclusions against what the grant IN FORCE holds (the WS7
-          // reviewer: a place that appeared before it started but after the grant counts too, or the refresh would wait
-          // for it); once either has grown, its caller is told (once) and ends it. Its write denies are not watched: inside its own
-          // write roots the command makes such paths itself (a `git clone` makes `.git\hooks`), and those are dealt
-          // with after it, as any command's are (rule 4's belt). A foreground command has no watch: it lives at most
-          // its 10-minute limit, and the next one is planned anew.
+          // Rule 8c (lane WS7, the WS7 reviewer's items 1 and 3; lane WS8): a long command is planned and stamped once, at
+          // its start, so what the fence protects that appears later would stay open to it for its whole life, and the
+          // profile grant's refresh (rule 8b) can't run while it holds its session grant. So while it runs, its fenced
+          // set is looked at again every `fenceWatchMs` (`lateFenceStep` decides):
+          //  - a new path its read denies match (`watchedReadDenies`: the literal ones and the fixed-depth globs; a new
+          //    conversation's transcript sidecar in the MOSS home, made in a folder the command reads, is the common
+          //    one) is stamped for the command's own account, live (`acl stamp`, held by this process, released when
+          //    the command ends): the command keeps running, and the path is closed to it from that look on. Only when
+          //    the stamp fails is it ended. (Lane WS8: ending it on each new sidecar ended every background command at
+          //    every new conversation.)
+          //  - a new protected ROOT (a place the profile grant must now exclude, compared with what the grant IN FORCE
+          //    holds, the WS7 reviewer's point) ends it: the grant is made again only when no command runs.
+          // Between a path's appearing and the next look it is open to the command: that is the window (`fenceWatchMs`,
+          // 5 s; one look costs a few ms). Write denies are not watched: inside its own write roots the command makes
+          // such paths itself (a `git clone` makes `.git\hooks`), dealt with after it as for any command (rule 4's belt).
+          // A foreground command has no watch: it lives at most its 10-minute limit, and the next one is planned anew.
+          const memberSid = got.marker.members.find((m) => m.principal === lease.principal)?.principalSid ?? null;
+          let stampedLate = false;
           const fenceWatch = r.onFenceGrew === undefined ? null : (() => {
             const had = new Set(watchedReadDenies(plan.denyRead).map(fold));
-            const grew = (): boolean => {
-              if (watchedReadDenies(plan.denyRead).some((p) => !had.has(fold(p)))) return true;
-              const granted = grantedExcludes.get(grantKey);
-              return granted !== undefined && profileExcludes().some((p) => !granted.some((e) => fold(e) === fold(p)));
-            };
+            let busy = false, done = false;
+            const end = () => { done = true; clearInterval(t); try { r.onFenceGrew!(); } catch { /* the caller's own */ } };
             const t = setInterval(() => {
-              if (!grew()) return;
-              clearInterval(t);
-              try { r.onFenceGrew!(); } catch { /* the caller's own */ }
-            }, deps.fenceWatchMs ?? 30_000);
+              if (busy || done) return;
+              busy = true;
+              void (async () => {
+                const granted = grantedExcludes.get(grantKey);
+                const step = lateFenceStep({
+                  freshReads: watchedReadDenies(plan.denyRead).filter((x) => !had.has(fold(x))),
+                  excludesGrew: granted !== undefined && profileExcludes().some((x) => !granted.some((e) => fold(e) === fold(x))),
+                  sid: memberSid,
+                });
+                if (step.kind === "end") return end();
+                if (step.kind === "none") return;
+                const stamped = await deps.exec([deps.launcher, "acl", "stamp", "--holder-pid", String(process.pid), "--sandbox-user-sid", memberSid!],
+                  { stdin: JSON.stringify({ denyRead: step.paths, denyWrite: [] }), timeoutMs: 60_000 });
+                if (stamped.code !== 0) return end();
+                stampedLate = true;
+                for (const x of step.paths) had.add(fold(x));
+                if (process.env.MOSS_WIN_FENCE_TIMING === "1") console.error(`[win-fence] ${lease.principal}: stamped late: ${step.paths.map((x) => win32.basename(x)).join(",")}`);
+              })().catch(() => end()).finally(() => { busy = false; });
+            }, deps.fenceWatchMs ?? 5_000);
             return t;
           })();
           const ran = await runCommand({ ...r, env: minimalChildEnv() }, { shell: runShell, argv })
             .finally(() => { if (fenceWatch !== null) clearInterval(fenceWatch); });
+          // What was stamped late is this process's hold for this account: let go now the command has ended.
+          if (stampedLate && memberSid !== null) {
+            await deps.exec([deps.launcher, "acl", "restore", "--holder-pid", String(process.pid), "--sandbox-user-sid", memberSid], { timeoutMs: 120_000 });
+          }
           mark("exec");
           if (ran.kind === "refused") return ran;
           let result = ran;
