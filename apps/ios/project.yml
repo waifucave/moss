@@ -53,8 +53,32 @@ targets:
         PRODUCT_NAME: MOSS Code
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+  MOSSUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests/Shared, UITests/MOSS]
+    dependencies:
+      - target: MOSS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.waifucave.moss.ios.uitests
+        TEST_TARGET_NAME: MOSS
+        GENERATE_INFOPLIST_FILE: YES
+  MOSSCodeUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests/Shared, UITests/MOSSCode]
+    dependencies:
+      - target: MOSSCode
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.waifucave.moss.code.ios.uitests
+        TEST_TARGET_NAME: MOSSCode
+        GENERATE_INFOPLIST_FILE: YES
 schemes:
   MOSS:
     build: {targets: {MOSS: all}}
+    test: {targets: [MOSSUITests]}
   MOSSCode:
     build: {targets: {MOSSCode: all}}
+    test: {targets: [MOSSCodeUITests]}

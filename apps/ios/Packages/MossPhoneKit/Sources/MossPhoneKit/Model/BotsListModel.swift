@@ -34,6 +34,8 @@ public final class BotsListModel {
     public private(set) var rows: [BotRow] = []
     public private(set) var loaded = false
     public private(set) var errorText: String?
+    public private(set) var connection: ConnectionState = .connected
+    public var loadFailed: Bool { errorText != nil }
     public private(set) var pinnedIDs: [String]
 
     @ObservationIgnored private let client: EngineClient
@@ -56,6 +58,7 @@ public final class BotsListModel {
     public var unreadCount: Int { rows.filter(\.unread).count }
 
     public func load() async {
+        connection = await client.connectionState()
         do {
             bots = try await client.bots()
             summaries = Dictionary(uniqueKeysWithValues: try await client.botSummaries().map { ($0.id, $0) })
@@ -94,6 +97,7 @@ public final class BotsListModel {
             if let b = bots.first(where: { $0.mainSession == subject }), m.role != .note {
                 summaries[b.id] = BotSummary(id: b.id, last: .init(text: m.text, from: m.role == .user ? .user : .bot, at: m.at), unread: m.role != .user)
             }
+        case .connection(let c): connection = c
         default: break
         }
         rebuild()

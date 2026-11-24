@@ -5,11 +5,17 @@ public struct BotsScreen: View {
     @Bindable var model: BotsListModel
     @Environment(\.nowMs) private var nowOverride
     let computer: String?
+    let onSettings: () -> Void
 
-    public init(model: BotsListModel, computer: String?) { self.model = model; self.computer = computer }
+    public init(model: BotsListModel, computer: String?, onSettings: @escaping () -> Void = {}) { self.model = model; self.computer = computer; self.onSettings = onSettings }
+
+    private var since: Int64? { if case .unreachable(let s) = model.connection { return s } else { return nil } }
 
     public var body: some View {
         List {
+            if model.loadFailed || model.connection != .connected {
+                Section { UnreachableNotice(computer: computer, since: since, onRetry: { Task { await model.load() } }) }
+            }
             if !model.pinned.isEmpty {
                 Section {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 100, maximum: 160), spacing: 12)], spacing: 14) {
@@ -37,8 +43,10 @@ public struct BotsScreen: View {
         }
         .listStyle(.insetGrouped)
         .overlay {
-            if model.loaded, model.rows.isEmpty { ContentUnavailableView("No bots yet", systemImage: "face.smiling", description: Text("Make a bot on your computer and it shows here.")) }
+            if !model.loaded { ProgressView("Loading").controlSize(.large) }
+            else if model.rows.isEmpty, !model.loadFailed { ContentUnavailableView("No bots yet", systemImage: "face.smiling", description: Text("Make a bot on your computer and it shows here.")) }
         }
+        .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(action: onSettings) { Image(systemName: "gearshape") }.accessibilityLabel("Settings") } }
         .navigationTitle("MOSS")
         .navigationSubtitle(computer ?? "")
         .task { model.start() }

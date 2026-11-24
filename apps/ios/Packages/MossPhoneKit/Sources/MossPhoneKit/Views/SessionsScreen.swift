@@ -4,12 +4,20 @@ import SwiftUI
 public struct SessionsScreen: View {
     @Bindable var model: SessionsListModel
     let computer: String?
+    let onSettings: () -> Void
+    let onNew: () -> Void
     @Environment(\.nowMs) private var nowOverride
 
-    public init(model: SessionsListModel, computer: String?) { self.model = model; self.computer = computer }
+    public init(model: SessionsListModel, computer: String?, onSettings: @escaping () -> Void = {}, onNew: @escaping () -> Void = {}) {
+        self.model = model; self.computer = computer; self.onSettings = onSettings; self.onNew = onNew
+    }
+    private var since: Int64? { if case .unreachable(let s) = model.connection { return s } else { return nil } }
 
     public var body: some View {
         List {
+            if model.loadFailed || model.connection != .connected {
+                Section { UnreachableNotice(computer: computer, since: since, onRetry: { Task { await model.load() } }) }
+            }
             ForEach(model.groups) { group in
                 Section(group.project) {
                     ForEach(group.sessions) { s in
@@ -20,7 +28,18 @@ public struct SessionsScreen: View {
         }
         .listStyle(.insetGrouped)
         .overlay {
-            if model.loaded, model.groups.isEmpty { ContentUnavailableView("No sessions", systemImage: "terminal", description: Text("Sessions you start on your computer show here.")) }
+            if !model.loaded { ProgressView("Loading").controlSize(.large) }
+            else if model.groups.isEmpty, !model.loadFailed {
+                ContentUnavailableView {
+                    Label("No sessions", systemImage: "terminal")
+                } description: { Text("Start one here, or on your computer.") } actions: {
+                    Button("New session", action: onNew).buttonStyle(.bordered).tint(Theme.accent)
+                }
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) { Button(action: onSettings) { Image(systemName: "gearshape") }.accessibilityLabel("Settings") }
+            ToolbarItem(placement: .topBarTrailing) { Button(action: onNew) { Image(systemName: "plus") }.accessibilityLabel("New session") }
         }
         .navigationTitle("Sessions")
         .navigationSubtitle(computer ?? "")

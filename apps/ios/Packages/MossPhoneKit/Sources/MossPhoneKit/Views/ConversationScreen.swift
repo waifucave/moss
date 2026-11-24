@@ -32,7 +32,9 @@ public struct ConversationScreen: View {
                     }
                     ForEach(model.messages) { m in MessageRow(message: m, botName: speaker).id(m.id) }
                     ForEach(waitingCards) { card in
-                        CardView(card: card, busy: cards.answering.contains(card.id)) { o in Task { await cards.answer(card, with: o) } }
+                        CardView(card: card, busy: cards.answering.contains(card.id), note: cards.note(for: card),
+                                 onAnswer: { o in Task { await cards.answer(card, with: o) } },
+                                 onSettle: { cards.note(for: card) == .failed ? cards.clearFailure(card) : cards.dismiss(card) })
                             .padding(.top, 6)
                             .id(card.id)
                     }
@@ -51,7 +53,16 @@ public struct ConversationScreen: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 6) {
-                if let e = model.errorText { Text(e).font(.footnote).foregroundStyle(.secondary) }
+                if let e = model.errorText {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.circle").accessibilityHidden(true)
+                        Text(e).font(.footnote)
+                        Spacer(minLength: 0)
+                        if model.failedSend != nil { Button("Retry") { Task { await model.retry() } }.font(.footnote.weight(.semibold)) }
+                    }
+                    .foregroundStyle(.secondary)
+                    .accessibilityElement(children: .combine)
+                }
                 ComposerBar(draft: $model.draft, placeholder: model.placeholder, running: model.isRunning,
                             onSend: { Task { await model.send() } }, onStop: { Task { await model.stop() } })
                     .focused($composing)

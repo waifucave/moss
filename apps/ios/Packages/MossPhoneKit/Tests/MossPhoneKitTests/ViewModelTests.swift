@@ -74,27 +74,148 @@ final class ViewModelTests: XCTestCase {
         XCTAssertEqual(s, ["s_alpha"])
     }
 
-    func testCardsFilterAndAnswer() async {
+    func testCardsSplitByAppAndFallBackWhenTheOtherAppIsMissing() async {
         let c = fake()
-        let bots = CardsModel(client: c, filter: CardsModel.forBots)
-        let code = CardsModel(client: c, filter: CardsModel.forSessions)
+        let bots = CardsModel(client: c, app: .moss, now: { SampleData.now })
+        let code = CardsModel(client: c, app: .code, now: { SampleData.now })
         await bots.load(); await code.load()
         XCTAssertEqual(Set(bots.cards.map(\.id)), ["card_0a1b2c3d", "card_55aa66bb"])
         XCTAssertEqual(code.cards.map(\.id), ["card_9f8e7d6c"])
-        let card = bots.cards[0]
+        await c.setOtherAppInstalled(false)
+        await bots.load(); await code.load()
+        XCTAssertEqual(bots.cards.count, 3); XCTAssertEqual(code.cards.count, 3)
+        let card = bots.cards.first { $0.id == "card_0a1b2c3d" }!
         await bots.answer(card, with: card.options[0])
         XCTAssertFalse(bots.cards.contains { $0.id == card.id })
         let a = await c.answered
         XCTAssertEqual(a.first?.card, card.id); XCTAssertEqual(a.first?.option, card.options[0].id)
     }
 
-    func testCardAnswerFailureLeavesCardWaiting() async {
+    func testCardFailureKeepsCardAndOffersRetry() async {
         let c = fake()
-        let m = CardsModel(client: c, filter: CardsModel.forBots)
+        let m = CardsModel(client: c, app: .moss, now: { SampleData.now })
         await m.load()
+        let card = m.cards[0]
         await c.setFail(.init("down"))
-        await m.answer(m.cards[0], with: m.cards[0].options[0])
-        XCTAssertEqual(m.cards.count, 2); XCTAssertNotNil(m.errorText)
+        await m.answer(card, with: card.options[0])
+        XCTAssertEqual(m.cards.count, 2); XCTAssertEqual(m.note(for: card), .failed)
+        m.clearFailure(card)
+        XCTAssertNil(m.note(for: card))
+    }
+
+    func testExpiredAndAnsweredElsewhereCards() async {
+        let c = FakeEngineClient(scenario: .cardStates)
+        let m = CardsModel(client: c, app: .moss, now: { SampleData.now })
+        await m.load()
+        let expired = m.cards.first { $0.id == "card_0a1b2c3d" }!
+        XCTAssertEqual(m.note(for: expired), .expired)
+        await m.answer(expired, with: expired.options[0])          // refused here, never sent
+        let sent = await c.answered
+        XCTAssertTrue(sent.isEmpty)
+        await m.apply(.cardResolved(id: "card_55aa66bb"))           // another device answered it
+        XCTAssertEqual(m.note(for: m.cards.first { $0.id == "card_55aa66bb" }!), .answeredElsewhere)
+        XCTAssertEqual(m.waitingCount, 0)
+        m.dismiss(expired)
+        XCTAssertEqual(m.cards.count, 1)
+    }
+
+    func testAnsweringARaceLostCardSaysAnsweredElsewhere() async {
+        let c = FakeEngineClient(scenario: .cardStates)
+        let m = CardsModel(client: c, app: .moss, now: { SampleData.now })
+        await m.load()
+        let card = m.cards.first { $0.id == "card_55aa66bb" }!
+        await m.answer(card, with: card.options[0])
+        XCTAssertEqual(m.note(for: card), .answeredElsewhere)
+    }
+
+    func testFailedSendKeepsTextAndRetryUsesTheSameId() async {
+        let c = FakeEngineClient(scenario: .sendFails)
+        var n = 0
+        let m = ConversationModel(source: .bot(SampleData.bots[0]), client: c, makeID: { n += 1; return "id-\(n)" })
+        await m.load()
+        m.draft = "hello"
+        await m.send()
+        XCTAssertEqual(m.draft, "hello"); XCTAssertEqual(m.failedSend?.id, "id-1")
+        await m.retry()
+        XCTAssertEqual(m.failedSend?.id, "id-1")        // the same id: never two messages
+        XCTAssertEqual(n, 1)
+    }
+
+    func testUnreachableComputerShowsInEveryList() async {
+        let c = FakeEngineClient(scenario: .unreachable)
+        let b = BotsListModel(client: c, store: MemoryPinStore())
+        await b.load()
+        XCTAssertTrue(b.loadFailed); XCTAssertTrue(b.loaded)
+        XCTAssertEqual(b.connection, .unreachable(since: SampleData.now - 7_200_000))
+        let s = SessionsListModel(client: c)
+        await s.load()
+        XCTAssertTrue(s.loadFailed)
+    }
+
+    func testEmptyListsAreEmptyNotFailed() async {
+        let c = FakeEngineClient(scenario: .empty)
+        let b = BotsListModel(client: c, store: MemoryPinStore())
+        await b.load()
+        XCTAssertTrue(b.loaded); XCTAssertFalse(b.loadFailed); XCTAssertTrue(b.rows.isEmpty)
+        let s = SessionsListModel(client: c)
+        await s.load()
+        XCTAssertTrue(s.groups.isEmpty)
+    }
+
+    func testNewSessionPreselectsLastUsedAndStarts() async throws {
+        let c = fake()
+        let m = NewSessionModel(client: c, computer: "Studio")
+        await m.load()
+        XCTAssertEqual(m.backend, "claude-code")                   // the last used agent
+        XCTAssertEqual(m.model, "claude-sonnet"); XCTAssertEqual(m.effort, "medium")
+        XCTAssertEqual(m.folders.first, "home/Studio/moss")       // folders of existing sessions first
+        XCTAssertEqual(m.folder, "home/Studio/moss")
+        m.typedFolder = "  home/Studio/new-thing "
+        XCTAssertEqual(m.folder, "home/Studio/new-thing")
+        let id = await m.start()
+        XCTAssertNotNil(id)
+        let started = await c.started
+        XCTAssertEqual(started.first, StartRequest(backend: "claude-code", computer: "Studio", root: "home/Studio/new-thing", model: "claude-sonnet", effort: "medium"))
+        let list = try await c.sessions()
+        XCTAssertTrue(list.contains { $0.id == id })
+    }
+
+    func testNewSessionDefaultsFollowTheAgentChosen() async {
+        let c = fake()
+        let m = NewSessionModel(client: c, computer: "Studio")
+        await m.load()
+        m.backend = "moss-code"
+        for _ in 0..<150 where m.options?.backend != "moss-code" { try? await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(m.model, "kimi-k3"); XCTAssertEqual(m.effort, "medium")   // no recent choice: the defaults
+        m.backend = "gemini"
+        for _ in 0..<150 where m.options?.backend != "gemini" { try? await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(m.options?.known, false); XCTAssertNil(m.model)
+    }
+
+    func testNewSessionRefusesTheMossHomeAndEmptyFolders() async {
+        let c = fake()
+        let m = NewSessionModel(client: c, computer: "Studio")
+        await m.load()
+        m.typedFolder = "home/.moss"
+        let id = await m.start()
+        XCTAssertNil(id); XCTAssertNotNil(m.errorText)
+        m.typedFolder = "../x"
+        let id2 = await m.start()
+        XCTAssertNil(id2)
+    }
+
+    func testSettingsLastSeenAndUnpair() async {
+        let c = FakeEngineClient(scenario: .unreachable)
+        let m = SettingsModel(client: c, version: "1.0 (1)")
+        await m.load()
+        XCTAssertEqual(m.computer?.name, "Studio")
+        XCTAssertEqual(m.lastSeenText(now: SampleData.now), "Last seen 2 hours ago")
+        await m.unpair()
+        XCTAssertNil(m.computer)
+        let p = await c.pairedComputer
+        XCTAssertNil(p)
+        let n = await c.unpairCount
+        XCTAssertEqual(n, 1)
     }
 
     func testPairingHappyPath() async {

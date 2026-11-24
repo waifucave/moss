@@ -31,6 +31,8 @@ public final class SessionsListModel {
     public private(set) var sessions: [SessionRow] = []
     public private(set) var loaded = false
     public private(set) var errorText: String?
+    public private(set) var connection: ConnectionState = .connected
+    public var loadFailed: Bool { errorText != nil }
     @ObservationIgnored private let client: EngineClient
     @ObservationIgnored private var listener: Task<Void, Never>?
 
@@ -46,6 +48,7 @@ public final class SessionsListModel {
     public var needsYouCount: Int { sessions.reduce(0) { $0 + ($1.needsYou?.total ?? 0) } }
 
     public func load() async {
+        connection = await client.connectionState()
         do { sessions = try await client.sessions(); errorText = nil }
         catch { errorText = "Can't reach your computer." }
         loaded = true
@@ -62,8 +65,11 @@ public final class SessionsListModel {
     public func stopListening() { listener?.cancel(); listener = nil }
 
     public func apply(_ event: EngineEvent) {
-        if case .sessionChanged(let s) = event {
+        switch event {
+        case .sessionChanged(let s):
             if let i = sessions.firstIndex(where: { $0.id == s.id }) { sessions[i] = s } else { sessions.append(s) }
+        case .connection(let c): connection = c
+        default: break
         }
     }
 }

@@ -14,14 +14,18 @@ public final class ConversationModel {
     public private(set) var statusLine: String?
     public private(set) var hasEarlier = false
     public private(set) var errorText: String?
+    /// A message that did not go: its words stay in the composer, and Retry sends it again under the same id (never twice).
+    public private(set) var failedSend: (text: String, id: String)?
     public var draft = ""
 
     @ObservationIgnored private let client: EngineClient
     @ObservationIgnored private var sessionID: String
     @ObservationIgnored private var listener: Task<Void, Never>?
     @ObservationIgnored private let makeID: () -> String
+    @ObservationIgnored private let autoSend: String?
 
-    public init(source: Source, client: EngineClient, makeID: @escaping () -> String = { UUID().uuidString }) {
+    public init(source: Source, client: EngineClient, makeID: @escaping () -> String = { UUID().uuidString }, autoSend: String? = nil) {
+        self.autoSend = autoSend
         self.source = source; self.client = client; self.makeID = makeID
         switch source {
         case .bot(let b): sessionID = b.mainSession
@@ -80,6 +84,7 @@ public final class ConversationModel {
             guard let self else { return }
             let stream = await client.events()
             await self.load()
+            if let t = self.autoSend { self.draft = t; await self.send() }
             for await event in stream { self.apply(event) }
         }
     }
@@ -98,16 +103,21 @@ public final class ConversationModel {
     public func send() async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        let id = makeID()
+        let id = failedSend?.text == text ? failedSend!.id : makeID()
         do {
             try await client.send(session: sessionID, text: text, clientMessageId: id)
             draft = ""
             errorText = nil
+            failedSend = nil
         } catch {
             // The words stay in the composer so nothing is lost.
+            failedSend = (text, id)
             errorText = "Your message wasn't sent. It is still here."
         }
     }
+
+    /// Sends the message that failed again.
+    public func retry() async { await send() }
 
     public func stop() async {
         do { try await client.stop(session: sessionID) } catch { errorText = "That didn't work." }

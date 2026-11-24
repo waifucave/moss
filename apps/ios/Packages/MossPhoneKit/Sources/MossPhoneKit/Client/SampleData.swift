@@ -129,4 +129,32 @@ public enum SampleData {
                 CardOption(id: "deny", kind: .deny, label: "Don't send"),
              ]),
     ]
+
+    public static let backends: [AgentBackend] = [
+        AgentBackend(id: "moss-code", name: "MOSS Code"), AgentBackend(id: "claude-code", name: "Claude Code"),
+        AgentBackend(id: "codex", name: "Codex"), AgentBackend(id: "gemini", name: "Gemini"), AgentBackend(id: "opencode", name: "OpenCode"),
+    ]
+    public static func options(for backend: String) -> BackendOptions {
+        switch backend {
+        case "claude-code":
+            return BackendOptions(backend: backend, models: [
+                ModelOption(id: "claude-opus", name: "Opus", efforts: ["low", "medium", "high"], defaultEffort: "high"),
+                ModelOption(id: "claude-sonnet", name: "Sonnet", efforts: ["low", "medium", "high"], defaultEffort: "medium"),
+            ], defaultModel: "claude-opus", defaultEffort: "high")
+        case "codex":
+            return BackendOptions(backend: backend, models: [ModelOption(id: "gpt-5-codex", name: "GPT-5 Codex", efforts: ["low", "medium", "high"], defaultEffort: "medium")],
+                                  defaultModel: "gpt-5-codex", defaultEffort: "medium")
+        case "moss-code":
+            return BackendOptions(backend: backend, models: [ModelOption(id: "kimi-k3", name: "Kimi K3", efforts: ["medium", "high"], defaultEffort: "medium"),
+                                                             ModelOption(id: "gpt-5", name: "GPT-5", efforts: ["low", "medium", "high"], defaultEffort: "medium")],
+                                  defaultModel: "kimi-k3", defaultEffort: "medium")
+        default:
+            // An agent whose models are unknown until it starts.
+            return BackendOptions(backend: backend, known: false, models: [])
+        }
+    }
+    public static let recentStart = RecentStart(
+        last: .init(backend: "claude-code", model: "claude-sonnet", effort: "medium"),
+        byBackend: [.init(backend: "claude-code", model: "claude-sonnet", effort: "medium"), .init(backend: "codex", model: "gpt-5-codex", effort: "high")],
+        roots: ["home/Studio/moss", "home/Studio/website", "home/Studio/tools"])
 }

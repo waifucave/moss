@@ -11,6 +11,16 @@ public actor FakeEngineClient: EngineClient {
         case midTurn
         /// Not paired yet.
         case unpaired
+        /// Paired, but the computer cannot be reached: every call fails.
+        case unreachable
+        /// Paired, and nothing exists yet: no bots, sessions or cards.
+        case empty
+        /// Paired, and every call waits (the loading state).
+        case loading
+        /// Paired; one card has expired and another was answered on another device.
+        case cardStates
+        /// Paired; sending a message fails.
+        case sendFails
     }
 
     public struct Failure: Error, Equatable, Sendable { public var message: String; public init(_ m: String) { message = m } }
@@ -24,6 +34,10 @@ public actor FakeEngineClient: EngineClient {
     private var statusLines: [String: String] = [:]               // by session id
     private var continuations: [UUID: AsyncStream<EngineEvent>.Continuation] = [:]
     private let clock: @Sendable () -> Int64
+    private var scenario: Scenario
+    private var connection: ConnectionState = .connected
+    private var otherAppInstalled = true
+    private var answeredElsewhereIDs: Set<String> = []
     private let acceptedCodePrefix = "moss-pair:"
 
     /// Everything the client was asked to do, in order: tests read it.
@@ -37,6 +51,7 @@ public actor FakeEngineClient: EngineClient {
 
     public init(scenario: Scenario = .idle, clock: @escaping @Sendable () -> Int64 = { SampleData.now }) {
         self.clock = clock
+        self.scenario = scenario
         botList = SampleData.bots
         summaryList = SampleData.summaries
         sessionList = SampleData.sessions
@@ -51,12 +66,28 @@ public actor FakeEngineClient: EngineClient {
             statusLines["s_alpha"] = "Alpha is working"
             if let i = botList.firstIndex(where: { $0.id == "alpha" }) { botList[i].state = .thinking }
         case .unpaired: paired = nil
+        case .unreachable:
+            paired = PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName, lastSeen: SampleData.now - 2 * 3600 * 1000)
+            connection = .unreachable(since: SampleData.now - 2 * 3600 * 1000)
+        case .empty:
+            paired = PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName, lastSeen: SampleData.now - 30_000)
+            botList = []; summaryList = []; sessionList = []; cardList = []
+        case .loading: paired = PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName)
+        case .cardStates:
+            paired = PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName)
+            // The first card ran out of time; the third one is answered on another device.
+            if let i = cardList.firstIndex(where: { $0.id == "card_0a1b2c3d" }) { cardList[i].expiresAt = SampleData.now - 60_000 }
+            answeredElsewhereIDs = ["card_55aa66bb"]
+        case .sendFails: paired = PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName)
         }
+        if paired != nil, scenario != .unreachable, scenario != .empty { paired?.lastSeen = SampleData.now - 20_000 }
     }
 
     public var pairedComputer: PairedComputer? { paired }
 
-    private func maybeFail() throws {
+    private func maybeFail() async throws {
+        if scenario == .loading { try await Task.sleep(for: .seconds(3600)) }
+        if case .unreachable = connection { throw Failure("unreachable") }
         if let f = failNext { failNext = nil; throw f }
     }
 
@@ -65,12 +96,12 @@ public actor FakeEngineClient: EngineClient {
     // MARK: Pairing
 
     public func beginPairing(code: String) async throws -> PairingProposal {
-        try maybeFail()
+        try await maybeFail()
         guard code.hasPrefix(acceptedCodePrefix) else { throw PairingError.unreadableCode }
         return PairingProposal(pairingId: "pair_1", computer: SampleData.computerName, words: ["maple", "orbit", "velvet", "canyon"])
     }
     public func confirmPairing(_ proposal: PairingProposal) async throws -> PairedComputer {
-        try maybeFail()
+        try await maybeFail()
         let p = PairedComputer(name: proposal.computer, deviceName: SampleData.phoneName)
         paired = p
         return p
@@ -79,10 +110,10 @@ public actor FakeEngineClient: EngineClient {
 
     // MARK: Bots
 
-    public func bots() async throws -> [Bot] { try maybeFail(); return botList }
-    public func botSummaries() async throws -> [BotSummary] { try maybeFail(); return summaryList }
+    public func bots() async throws -> [Bot] { try await maybeFail(); return botList }
+    public func botSummaries() async throws -> [BotSummary] { try await maybeFail(); return summaryList }
     public func conversation(bot: String, before: Int64?, limit: Int) async throws -> MessagePage {
-        try maybeFail()
+        try await maybeFail()
         guard let b = botList.first(where: { $0.id == bot }) else { throw Failure("no such bot") }
         return page(b.mainSession, before: before, limit: limit)
     }
@@ -96,9 +127,9 @@ public actor FakeEngineClient: EngineClient {
 
     // MARK: Sessions
 
-    public func sessions() async throws -> [SessionRow] { try maybeFail(); return sessionList }
+    public func sessions() async throws -> [SessionRow] { try await maybeFail(); return sessionList }
     public func history(session: String, before: Int64?, limit: Int) async throws -> MessagePage {
-        try maybeFail()
+        try await maybeFail()
         return page(session, before: before, limit: limit)
     }
 
@@ -112,7 +143,8 @@ public actor FakeEngineClient: EngineClient {
     // MARK: Sending
 
     public func send(session: String, text: String, clientMessageId: String) async throws {
-        try maybeFail()
+        try await maybeFail()
+        if scenario == .sendFails { throw Failure("send failed") }
         // A resend with the same client id is not a second message.
         if sent.contains(where: { $0.clientMessageId == clientMessageId }) { return }
         sent.append((session, text, clientMessageId))
@@ -126,7 +158,7 @@ public actor FakeEngineClient: EngineClient {
     }
 
     public func stop(session: String) async throws {
-        try maybeFail()
+        try await maybeFail()
         stopped.append(session)
         statusLines[session] = nil
         let m = ChatMessage(id: "stop-\(stopped.count)", role: .note, text: "Interrupted", at: clock())
@@ -150,10 +182,12 @@ public actor FakeEngineClient: EngineClient {
 
     // MARK: Cards
 
-    public func cards() async throws -> [Card] { try maybeFail(); return cardList }
+    public func cards() async throws -> [Card] { try await maybeFail(); return cardList }
     public func answer(card: Card, option: CardOption) async throws {
-        try maybeFail()
-        guard cardList.contains(where: { $0.id == card.id }) else { throw Failure("that card is no longer waiting") }
+        try await maybeFail()
+        if answeredElsewhereIDs.contains(card.id) { cardList.removeAll { $0.id == card.id }; throw CardAnswerError.answeredElsewhere }
+        if card.expiresAt <= clock() { throw CardAnswerError.expired }
+        guard cardList.contains(where: { $0.id == card.id }) else { throw CardAnswerError.answeredElsewhere }
         answered.append((card.id, option.id))
         cardList.removeAll { $0.id == card.id }
         emit(.cardResolved(id: card.id))
@@ -164,6 +198,52 @@ public actor FakeEngineClient: EngineClient {
         cardList.append(card)
         emit(.cardRequested(card))
     }
+
+    public func shows(_ card: Card, in app: PhoneApp) async -> Bool {
+        guard otherAppInstalled else { return true }
+        return (card.bot != nil) == (app == .moss)
+    }
+    /// Whether the other phone app is on this phone; when it is not, each app shows every pending card.
+    public func setOtherAppInstalled(_ installed: Bool) { otherAppInstalled = installed }
+
+    // MARK: Starting a session
+
+    public func backends() async throws -> [AgentBackend] {
+        try await maybeFail()
+        return SampleData.backends
+    }
+    public func startOptions(backend: String) async throws -> BackendOptions {
+        try await maybeFail()
+        return SampleData.options(for: backend)
+    }
+    public func recentStart() async throws -> RecentStart { try await maybeFail(); return recent }
+    private var recent = SampleData.recentStart
+    public private(set) var started: [StartRequest] = []
+    public func startSession(_ request: StartRequest) async throws -> String {
+        try await maybeFail()
+        let root = request.root.trimmingCharacters(in: .whitespaces)
+        if root.isEmpty || root.contains("..") || root.hasPrefix("home/.moss") || root == ".moss" { throw StartError.folderRefused }
+        started.append(request)
+        let id = "c\(100 + started.count)"
+        let row = SessionRow(id: id, computer: request.computer, title: "New session", status: .starting, startedAt: clock(), updatedAt: clock(),
+                             backend: request.backend, model: request.model, root: root)
+        sessionList.append(row)
+        conversations[id] = []
+        recent.last = .init(backend: request.backend, model: request.model, effort: request.effort)
+        recent.byBackend.removeAll { $0.backend == request.backend }
+        recent.byBackend.insert(recent.last!, at: 0)
+        recent.roots.removeAll { $0 == root }
+        recent.roots.insert(root, at: 0)
+        emit(.sessionChanged(row))
+        return id
+    }
+
+    // MARK: Link
+
+    public func connectionState() async -> ConnectionState { connection }
+    public func setConnection(_ c: ConnectionState) { connection = c; emit(.connection(c)) }
+    public private(set) var unpairCount = 0
+    public func unpair() async { unpairCount += 1; paired = nil }
 
     // MARK: Events
 
@@ -180,6 +260,8 @@ public actor FakeEngineClient: EngineClient {
         continuations[id] = c
         // What is true right now, so a subscriber that joins mid-turn still shows it.
         for (subject, line) in statusLines { c.yield(.statusLine(subject: subject, line: line)) }
+        if case .unreachable = connection { c.yield(.connection(connection)) }
+        for id in answeredElsewhereIDs { c.yield(.cardResolved(id: id)) }
     }
     private func drop(_ id: UUID) { continuations[id] = nil }
 }

@@ -236,7 +236,9 @@ public struct Card: Identifiable, Codable, Hashable, Sendable {
 public struct PairedComputer: Hashable, Sendable {
     public var name: String
     public var deviceName: String
-    public init(name: String, deviceName: String) { self.name = name; self.deviceName = deviceName }
+    /// When the link last carried anything (epoch ms), if it ever has.
+    public var lastSeen: Int64?
+    public init(name: String, deviceName: String, lastSeen: Int64? = nil) { self.name = name; self.deviceName = deviceName; self.lastSeen = lastSeen }
 }
 
 /// What a scanned code starts: the id of the pairing and the four words both screens show.
@@ -259,4 +261,88 @@ public enum EngineEvent: Hashable, Sendable {
     case sessionChanged(SessionRow)
     case cardRequested(Card)
     case cardResolved(id: String)
+    case connection(ConnectionState)
+}
+
+
+// MARK: Link state, apps, starting a session
+
+/// Whether the link to the paired computer is carrying anything now.
+public enum ConnectionState: Hashable, Sendable {
+    case connected
+    /// The computer cannot be reached; `since` is when the link was last up (epoch ms), if known.
+    case unreachable(since: Int64?)
+}
+
+/// Which phone app is asking, for the client's answer to which cards to show it.
+public enum PhoneApp: String, Hashable, Sendable { case moss, code }
+
+/// Why an answer to a card did not count.
+public enum CardAnswerError: Error, Equatable, Sendable {
+    case expired
+    case answeredElsewhere
+}
+
+/// An agent backend a person can start a session with (`agent.backends`, `userStartable` only).
+public struct AgentBackend: Identifiable, Hashable, Sendable {
+    public var id: String
+    public var name: String
+    public init(id: String, name: String) { self.id = id; self.name = name }
+}
+
+/// A model a backend offers before any session exists (`BackendModelOption`).
+public struct ModelOption: Identifiable, Hashable, Sendable {
+    public var id: String
+    public var name: String
+    public var efforts: [String]
+    public var defaultEffort: String?
+    public init(id: String, name: String, efforts: [String] = [], defaultEffort: String? = nil) {
+        self.id = id; self.name = name; self.efforts = efforts; self.defaultEffort = defaultEffort
+    }
+}
+
+/// What a backend offers to start with (`AgentBackendOptions`). `known: false` means unknown until it starts.
+public struct BackendOptions: Hashable, Sendable {
+    public var backend: String
+    public var known: Bool
+    public var models: [ModelOption]
+    public var defaultModel: String?
+    public var defaultEffort: String?
+    public init(backend: String, known: Bool = true, models: [ModelOption], defaultModel: String? = nil, defaultEffort: String? = nil) {
+        self.backend = backend; self.known = known; self.models = models; self.defaultModel = defaultModel; self.defaultEffort = defaultEffort
+    }
+}
+
+/// The person's last start (`RecentStart`): preselects the agent, its model and effort, and lists folders used before.
+public struct RecentStart: Hashable, Sendable {
+    public struct Choice: Hashable, Sendable {
+        public var backend: String
+        public var model: String?
+        public var effort: String?
+        public init(backend: String, model: String? = nil, effort: String? = nil) { self.backend = backend; self.model = model; self.effort = effort }
+    }
+    public var last: Choice?
+    public var byBackend: [Choice]
+    /// Folders started in last, newest first.
+    public var roots: [String]
+    public init(last: Choice? = nil, byBackend: [Choice] = [], roots: [String] = []) { self.last = last; self.byBackend = byBackend; self.roots = roots }
+}
+
+/// What `agent.start` takes (`backend`, `computer`, `root`, `model`, `effort`).
+public struct StartRequest: Hashable, Sendable {
+    public var backend: String
+    public var computer: String
+    public var root: String
+    public var model: String?
+    public var effort: String?
+    public init(backend: String, computer: String, root: String, model: String? = nil, effort: String? = nil) {
+        self.backend = backend; self.computer = computer; self.root = root; self.model = model; self.effort = effort
+    }
+}
+
+public enum StartError: Error, Equatable, Sendable {
+    /// The engine refused the folder (outside the fence, or it holds the MOSS home).
+    case folderRefused
+    /// The agent is not installed on that computer.
+    case notInstalled
 }
