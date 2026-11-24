@@ -5896,12 +5896,21 @@ async function reopenSteps(app: { exe: string; args: string[] }): Promise<void> 
           if (toolCall) {
             if (fake!.requests.slice(asked).some((r) => r.lastUserText.includes(tag) && r.answered === "text")) block("the bot has no Echo tool (the fixture plugin isn't installed: step 4)");
             // The call running: its card (if any) answered as the app would, its tool_call in the log with no result.
+            // The call's tool_call event comes BEFORE its approval card (the call waits in the approval, "in: the approval (a card waits
+            // here for an answer)", until the card is answered): a call counted as running the moment its event shows can be one still
+            // waiting for a card that arrives a moment later, and an engine with a card waiting for the user does not take the app's
+            // quit (runs 45363969824 and 45372871025: "still waiting after 90 s, in: the approval"). The call is running when its event
+            // has stood through two looks, 300 ms apart, with no card of the session left waiting.
+            let looks = 0;
             heldCall = await until("the held Echo call to be running", 60_000, async () => {
-              for (const card of await cards(c).catch(() => [])) if (card.session === undefined || card.session === session) await approve(c, card, { log: appA!.log }).catch(() => undefined);
+              let waiting = 0;
+              for (const card of await cards(c).catch(() => [])) if (card.session === undefined || card.session === session) { waiting++; await approve(c, card, { log: appA!.log }).catch(() => undefined); }
               const evs = (await history(c, session!)).filter((e) => typeof e.seq === "number" && e.seq > sent.seq);
               const call = evs.find((e) => e.type === "tool_call" && /Echo$/.test(String(e.name)));
               const id = call === undefined ? undefined : String(call.callId);
-              return id !== undefined && !evs.some((e) => e.type === "tool_result" && e.callId === id) ? id : undefined;
+              const running = id !== undefined && !evs.some((e) => e.type === "tool_result" && e.callId === id);
+              looks = running && waiting === 0 ? looks + 1 : 0;
+              return running && looks >= 2 ? id : undefined;
             }, 300);
           }
           c.close();
