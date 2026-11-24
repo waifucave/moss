@@ -582,32 +582,33 @@ describe("the title area's drag region", () => {
 });
 
 describe("a document loaded again keeps the user's place", () => {
-  test("useKept: a value set before the document goes is there from the first render of the one loaded again, even when the old document's tree unmounted first (the window's session storage), per plugin and key; only the part's own set(undefined) clears it", async () => {
+  test("useKept: a value set before the document goes is there from the first render of the one loaded again (the window's session storage), per plugin and key; an unmount drops it", async () => {
     const seen: unknown[] = [];
-    let set: ((v: string | undefined) => void) | undefined;
+    let set: ((v: string) => void) | undefined;
     const Keeper = () => {
-      const [v, setV] = ui.useKept<string | undefined>("route", () => "home");
+      const [v, setV] = ui.useKept<string>("route", () => "home");
       set = setV;
       seen.push(v);
-      return h("p", { "data-kept": v ?? "none" });
+      return h("p", { "data-kept": v });
     };
     const first = render(h(Keeper));
     expect(seen[0]).toBe("home");
     await act(async () => set!("plugins/installed"));
-    // The old document's tree unwinds (an unmount: what a document being replaced can do before the new one's first render), then the new document mounts.
+    // The document goes with no unmount (a reload runs no cleanup): the storage as it was, under a fresh tree.
+    const atReload = sessionStorage.getItem("moss.kept:moss:route");
     first.unmount();
-    expect(sessionStorage.getItem("moss.kept:moss:route")).toBe(JSON.stringify("plugins/installed"));
+    expect(sessionStorage.getItem("moss.kept:moss:route")).toBeNull();
+    sessionStorage.setItem("moss.kept:moss:route", atReload!);
     seen.length = 0;
     const second = render(h(Keeper));
     // The very first render already shows the kept place: no flash of the start page.
     expect(seen[0]).toBe("plugins/installed");
     expect(second.container.querySelector("p")?.getAttribute("data-kept")).toBe("plugins/installed");
-    // Another key, or another plugin's, is its own.
+    // Outside a part it is the moss tree's; another key, or another plugin's, is its own.
+    expect(sessionStorage.getItem("moss.kept:moss:route")).toBe(JSON.stringify("plugins/installed"));
     expect(sessionStorage.getItem("moss.kept:moss:other")).toBeNull();
-    // The part clears it on purpose: the next mount starts from its initial value.
-    await act(async () => set!(undefined));
-    expect(sessionStorage.getItem("moss.kept:moss:route")).toBeNull();
     second.unmount();
+    // Left (an unmount, the user going elsewhere): the next mount starts from its initial value.
     seen.length = 0;
     render(h(Keeper));
     expect(seen[0]).toBe("home");

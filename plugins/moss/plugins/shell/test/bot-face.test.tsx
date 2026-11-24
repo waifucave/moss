@@ -37,13 +37,13 @@ describe("BotFace and MOSS's own face", () => {
         const pins = bot.face === null ? undefined : (bot.face as Record<string, string>);
         const mine = render(<FaceCanvas name={bot.name} face={pins as never} mood={state} size={48} surface="page" />);
         const own = mine.container.innerHTML;
-        cleanup(); sessionStorage.clear(); // a kept value outlives an unmount: a test that starts over empties the storage itself
+        cleanup();
         // From the bot's record (`bot.records`, a plugin's read)...
         const core = fakeCore({ "bot.records": () => ({ bots: BOTS.map((b) => ({ id: b.id, name: b.name, face: b.face })) }) });
         const viaRecord = render(<TestLayer runtime={runtimeWith({ core: () => core })}><BotFace bot={bot.id} size={48} state={state} /></TestLayer>);
         await act(() => settle(20));
         const fromRecord = viaRecord.container.querySelector("canvas")!.outerHTML;
-        cleanup(); sessionStorage.clear(); // a kept value outlives an unmount: a test that starts over empties the storage itself
+        cleanup();
         // ...and from pins the part already has (no read at all).
         const quiet = fakeCore({});
         const viaPins = render(<TestLayer runtime={runtimeWith({ core: () => quiet })}><BotFace bot={bot.id} name={bot.name} {...(pins !== undefined ? { face: pins as never } : {})} size={48} state={state} /></TestLayer>);

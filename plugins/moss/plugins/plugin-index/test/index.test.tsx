@@ -541,13 +541,12 @@ describe("the Plugins page: updates and indexes", () => {
     for (const [k, v] of Object.entries(atReload)) sessionStorage.setItem(k, v);
     await mount({}, "found");
     expect(screen.getByRole("tab", { selected: true }).textContent).toContain("Updates");
-    // An unmount clears nothing (a part can unmount because its document is being replaced): opened again, it is on the tab it was on.
+    // Left and opened again (an unmount): the first tab, as before.
     cleanup();
     await mount({}, "found");
-    expect(screen.getByRole("tab", { selected: true }).textContent).toContain("Updates");
-    // A link that names its own tab starts there (its route is its own kept place).
+    expect(screen.getByRole("tab", { selected: true }).textContent).toContain("Installed");
+    // A link that names its own tab starts there.
     cleanup();
-    sessionStorage.clear();
     await mount({ tab: "find" }, "found");
     expect(screen.getByRole("tab", { selected: true }).textContent).toContain("Find");
   });
@@ -561,10 +560,10 @@ describe("the Plugins page: updates and indexes", () => {
     for (const [k, v] of Object.entries(atReload)) sessionStorage.setItem(k, v);
     await mount({ tab: "installed" }, "found");
     expect((screen.getByRole("searchbox", { name: "Search your plugins" }) as HTMLInputElement).value).toBe("tar");
-    // An unmount clears nothing: opened again, the filter is still there.
+    // Left and opened again (an unmount): empty, as before.
     cleanup();
     await mount({ tab: "installed" }, "found");
-    expect((screen.getByRole("searchbox", { name: "Search your plugins" }) as HTMLInputElement).value).toBe("tar");
+    expect((screen.getByRole("searchbox", { name: "Search your plugins" }) as HTMLInputElement).value).toBe("");
   });
 
   test("a folder the user chose outlives a reload of the window's document, and a registry change landing before the press leaves it: the press installs it", async () => {

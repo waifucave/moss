@@ -148,7 +148,7 @@ describe("where the window starts, with no bots in it", () => {
     expect(startRoute([])).toEqual({ route: "start", params: {} });
     await mount();
     expect(stubText("conversation")).toContain('"session":"code-1"');
-    cleanup(); sessionStorage.clear(); // a kept value outlives an unmount: a test that starts over empties the storage itself
+    cleanup();
     await mount(undefined, [], []);
     expect(document.querySelector(".cl-new-session")).not.toBeNull();
   });
@@ -314,7 +314,7 @@ describe("the page that starts a session (spec §9.4)", () => {
     expect(stubText("conversation")).toContain("MOSS's coding agent");
     expect(stubText("conversation")).not.toContain('"name":"moss-code"');
     expect(stubText("composer")).toContain('"name":"MOSS\'s coding agent"');
-    cleanup(); sessionStorage.clear(); // a kept value outlives an unmount: a test that starts over empties the storage itself
+    cleanup();
     await mount({ route: { route: "agent", params: { session: "code-1" } } }, [], SESSIONS, undefined, {}, {
       "agent.backends": () => ({ backends: [{ id: "moss-code", name: "MOSS's coding agent", computers: [] }] }),
     });
@@ -344,7 +344,7 @@ describe("the start page and a session tab's corner (spec revision 20, §9.5)", 
     await mount({ route: { route: "start", params: {} } }, [], SESSIONS, undefined, {}, { "agent.backends": backends, "computer.list": () => ({ computers: [] }) });
     expect(stubText("main:start")).toBeNull();
     expect(document.querySelector(".cl-new-session")).not.toBeNull();
-    cleanup(); sessionStorage.clear(); // a kept value outlives an unmount: a test that starts over empties the storage itself
+    cleanup();
     await mount({ route: { route: "start", params: {} } }, [entry("canvas", "main", "StartPage", { key: "start", source: "installed" })], SESSIONS, undefined, {}, { "agent.backends": backends });
     expect(stubText("main:start")).toContain('"route":"start"');
     expect(stubText("main:start")).toContain("fn:navigate");
@@ -359,13 +359,13 @@ describe("the start page and a session tab's corner (spec revision 20, §9.5)", 
       await waitFor(() => expect(document.querySelector("[data-start-stopped] .cl-new-session")).not.toBeNull());
       expect(document.querySelector("[data-start-stopped]")!.textContent).toContain("The start page stopped.");
       expect(document.querySelector(".moss-part-stopped")).toBeNull();
-      cleanup(); sessionStorage.clear(); // a kept value outlives an unmount: a test that starts over empties the storage itself
+      cleanup();
       await mount({ route: { route: "start", params: {} } }, [entry("canvas", "main", "StartThrowsLater", { key: "start", source: "installed" })], SESSIONS, undefined, {}, { "agent.backends": backends, "computer.list": () => ({ computers: [] }) });
       await waitFor(() => expect(document.querySelector('[data-stub="break-start"]')).not.toBeNull());
       expect(document.querySelector(".cl-new-session")).toBeNull();
       fireEvent.click(document.querySelector('[data-stub="break-start"]')!);
       await waitFor(() => expect(document.querySelector("[data-start-stopped] .cl-new-session")).not.toBeNull());
-      cleanup(); sessionStorage.clear(); // a kept value outlives an unmount: a test that starts over empties the storage itself
+      cleanup();
       // With its own line on the bar (`page.bar`): the shell's own page still takes its place (the stylesheet starts it below
       // the bar again, styles.test.ts), and the line stays the plugin's to draw (the canvas's draws nothing once its page is gone).
       await mount({ route: { route: "start", params: {} } }, [entry("canvas", "main", "StartThrows", { key: "start", source: "installed" }), entry("canvas", "page.bar", "PageBar", { key: "start", source: "installed" })], SESSIONS, undefined, {}, { "agent.backends": backends, "computer.list": () => ({ computers: [] }) });
@@ -383,7 +383,7 @@ describe("the start page and a session tab's corner (spec revision 20, §9.5)", 
     await mount({ route: { route: "start", params: {} } }, [], SESSIONS, undefined, {}, { "agent.backends": backends, "computer.list": () => ({ computers: [] }) });
     expect(title()).toBe("New session");
     expect(document.querySelector("[data-under-bar]")).toBeNull();
-    cleanup(); sessionStorage.clear(); // a kept value outlives an unmount: a test that starts over empties the storage itself
+    cleanup();
     // The canvas fills both: its line takes the title's place, the page and the line get the bar's height.
     await mount({ route: { route: "start", params: {} } }, [entry("canvas", "main", "StartPage", { key: "start", source: "installed" }), entry("canvas", "page.bar", "PageBar", { key: "start", source: "installed", fields: { title: "Sessions" } })], SESSIONS, undefined, {}, { "agent.backends": backends });
     expect(title()).toBeNull();
@@ -395,14 +395,14 @@ describe("the start page and a session tab's corner (spec revision 20, §9.5)", 
     expect(document.querySelector(".cl-window[data-under-bar]")).not.toBeNull();
     // Its title names the main column.
     expect(document.querySelector(".cl-window__main")!.getAttribute("aria-label")).toBe("Sessions");
-    cleanup(); sessionStorage.clear(); // a kept value outlives an unmount: a test that starts over empties the storage itself
+    cleanup();
     // Another plugin's line for the start page, while the canvas's page shows: not taken.
     await mount({ route: { route: "start", params: {} } }, [entry("canvas", "main", "StartPage", { key: "start", source: "installed" }), entry("weather", "page.bar", "PageBar", { key: "start", source: "installed" })], SESSIONS, undefined, {}, { "agent.backends": backends });
     expect(stubText("page.bar:start")).toBeNull();
     expect(title()).toBe("New session");
     expect(stubText("main:start")).not.toContain("barHeight");
     expect(document.querySelector("[data-under-bar]")).toBeNull();
-    cleanup(); sessionStorage.clear(); // a kept value outlives an unmount: a test that starts over empties the storage itself
+    cleanup();
     // A session's tab keeps its own bar: its title, and the conversation under the bar's frost as it always was (the
     // canvas's line is the start page's only).
     await mount({ route: { route: "agent", params: { session: "code-1" } } }, [entry("canvas", "main", "StartPage", { key: "start", source: "installed" }), entry("canvas", "page.bar", "PageBar", { key: "start", source: "installed" })]);
@@ -440,11 +440,11 @@ describe("panels plugins add (§5.5): a `panel` entry whose key isn't a stock pa
     const sheets = added("sheets", "sheets", "Sheets", { when: { session: ["coding"] } });
     await mount({ route: { route: "agent", params: { session: "code-1" } } }, [sheets]);
     expect(toggles()).toEqual(["Session", "Terminal", "Sheets"]);
-    cleanup(); sessionStorage.clear(); // a kept value outlives an unmount: a test that starts over empties the storage itself
+    cleanup();
     // An agent's tab (a bot's coding task): not a coding session's panel.
     await mount({ route: { route: "agent", params: { session: "agent-1" } } }, [sheets]);
     expect(document.querySelector('[data-own-panel="sheets#sheets"]')).toBeNull();
-    cleanup(); sessionStorage.clear(); // a kept value outlives an unmount: a test that starts over empties the storage itself
+    cleanup();
     // No `when.session`: every tab.
     await mount({ route: { route: "agent", params: { session: "agent-1" } } }, [added("docs", "docs", "Documents")]);
     expect(document.querySelector('[data-own-panel="docs#docs"]')).not.toBeNull();
@@ -522,7 +522,7 @@ describe("the shell", () => {
     expect(stubText("sidebar")).toContain('{"route":"agent","params":{"session":"code-1"}}');
     // The document goes with no unmount (a reload runs no cleanup): the window's session storage as it was.
     const atReload = new Map(Array.from({ length: sessionStorage.length }, (_, i) => [sessionStorage.key(i)!, sessionStorage.getItem(sessionStorage.key(i)!)!] as const));
-    cleanup(); sessionStorage.clear(); // a kept value outlives an unmount: a test that starts over empties the storage itself
+    cleanup();
     expect(sessionStorage.length).toBe(0);
     for (const [k, v] of atReload) sessionStorage.setItem(k, v);
     await mount(undefined, []);
@@ -542,7 +542,7 @@ describe("the shell", () => {
     expect(stubText("panel:terminal")).toContain('"app":"terminal","session":"code-1"');
     // The browser was open with no plugin behind it: closed, no placeholder.
     expect(document.querySelector('[data-empty-view="browser"]')).toBeNull();
-    cleanup(); sessionStorage.clear(); // a kept value outlives an unmount: a test that starts over empties the storage itself
+    cleanup();
     // With a plugin behind it the toggle is there, and the panel stays.
     await mount({ route: { route: "agent", params: { session: "code-1" } }, panels: ["session", "browser"] }, [entry("moss/browser-view", "panel", "Browser", { key: "browser" })]);
     expect(toggles()).toEqual(["Session", "Terminal", "Browser"]);
@@ -584,7 +584,7 @@ describe("the shell", () => {
     await mount({ route: { route: "usage", params: {} } });
     expect(screen.getByText("Nothing here yet")).toBeTruthy();
     expect(document.querySelector(".cl-window__status")).toBeNull();
-    cleanup(); sessionStorage.clear(); // a kept value outlives an unmount: a test that starts over empties the storage itself
+    cleanup();
     await mount(undefined, [entry("moss-usage", "status", "Status")]);
     expect(document.querySelector(".cl-window__status [data-stub='status']")).toBeTruthy();
   });
@@ -592,7 +592,7 @@ describe("the shell", () => {
   test("an app's title bar says its name from the route's `title` (the shell does not list the sidebar's apps itself), the key when none", async () => {
     await mount({ route: { route: "reel", params: { title: "Reel" } } });
     expect(document.querySelector(".cl-window__title-text")?.textContent).toBe("Reel");
-    cleanup(); sessionStorage.clear(); // a kept value outlives an unmount: a test that starts over empties the storage itself
+    cleanup();
     await mount({ route: { route: "reel", params: {} } });
     expect(document.querySelector(".cl-window__title-text")?.textContent).toBe("reel");
   });
