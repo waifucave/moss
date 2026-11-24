@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isContractError } from "../contracts/common";
 import { type AlarmProvider, type FiredUsageAlarm, type Subscription, type SyntheticRow, type UsageAlarm, type UsageDb, type UsageRecordInput, type UsageRow, type UsageSource } from "./db";
 import { planWindowKey, staleness, type PlanReading, type PlanStatusWindow } from "./plan";
 import type { UsagePricer } from "./pricing";
@@ -24,6 +25,18 @@ export type UsageTracking = Record<string, boolean>;
 const SOURCE_OWNERS_KEY = "usage-source-owners";
 /** The most passes in a row a source's `more: true` may ask for; then the throttle applies again. */
 export const MORE_PASSES_MAX = 6;
+/**
+ * What a failed source call says in the engine's log: which kind of error (the old `error` field, kept) and, for a
+ * contract failure, its code and message (`timeout`, `plugin_stopped`, `failed: the plugin crashed: …`, `refused: …`):
+ * the core's own words about the call, which never hold a secret's value and which a reader of numbers never fills with
+ * content. One line, cut at 300 characters. Any other error gives its name and, when it has one, its string `code`.
+ */
+export function failureFacts(err: unknown): Record<string, string> {
+  const flat = (t: string): string => t.replace(/\s+/g, " ").trim().slice(0, 300);
+  if (isContractError(err)) return { error: err.name, code: err.code, message: flat(err.message) };
+  const code = (err as { code?: unknown } | null)?.code;
+  return { error: err instanceof Error ? err.name : "error", ...(typeof code === "string" ? { code: flat(code) } : {}) };
+}
 export const trackingKey = (id: string): string => id.replace(/-([a-z0-9])/g, (_, c: string) => c.toUpperCase());
 
 export interface UsageServiceDeps {
@@ -380,7 +393,7 @@ export class UsageService {
         if (await this.ingestSource(entry)) more = this.moreAllowed(entry.id) || more;
         else this.morePasses.delete(entry.id);
       } catch (err) {
-        this.deps.log?.warn?.("[usage] ingest failed", { source: entry.id, error: err instanceof Error ? err.name : "error" });
+        this.deps.log?.warn?.("[usage] ingest failed", { source: entry.id, ...failureFacts(err) });
       }
     }
     this.ingestMore = more;
@@ -550,7 +563,7 @@ export class UsageService {
       this.judgeAlarms(a.reading === undefined ? undefined : this.judged(a.reading), entry);
     } catch (err) {
       this.planCache.set(id, cache);
-      this.deps.log?.info?.(`[usage] ${id}: plan call failed`, { error: err instanceof Error ? err.name : "error" });
+      this.deps.log?.info?.(`[usage] ${id}: plan call failed`, { ...failureFacts(err) });
     }
   }
 
