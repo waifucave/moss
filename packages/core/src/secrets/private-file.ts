@@ -133,6 +133,22 @@ export async function writePrivateFile(path: string, data: Buffer | string, deps
   }
 }
 
+let statImpl: (path: string) => unknown = (p) => statSync(p);
+/** Tests only: what `present` stats with (a stat that throws EACCES or EIO). */
+export function setSecretStatForTests(fn: ((path: string) => unknown) | undefined): void { statImpl = fn ?? ((p) => statSync(p)); }
+
+/** Whether `path` is there. ONLY "no such file" (ENOENT, ENOTDIR) is absent: any other failure to look (a folder
+ *  this process can't search, a disk error, a share gone) is not "absent" but `locked`, said plainly, so a store that
+ *  can't be read now is never taken for one that was never made (and nothing is minted over it). */
+export function present(path: string): boolean {
+  try { statImpl(path); return true; }
+  catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return false;
+    throw new ContractError("locked", `MOSS can't look at ${basename(path)} right now (${code ?? "an error"}): saved logins stay locked until it can`);
+  }
+}
+
 /** A read that survives the moment Windows holds a file being replaced. */
 export async function readFileRetrying(path: string): Promise<Buffer> {
   for (let i = 0; ; i++) {
@@ -141,9 +157,20 @@ export async function readFileRetrying(path: string): Promise<Buffer> {
   }
 }
 
-/** How long a holder may keep the lock before it is judged gone though its pid answers (a write takes milliseconds;
- *  a key fetched from a keyring that asks the person to unlock it takes as long as they do). */
+/** How long a lock may go without its holder renewing it before it is judged gone though its pid answers. A holder
+ *  renews its lock every `LOCK_RENEW_MS` for as long as it holds it (a key fetched from a keyring that asks the person
+ *  to unlock it takes as long as they do), so only a holder that stopped running loses it.
+ *
+ *  Who can write `run/` (and so plant a lock): the user's own processes, the daemon and the CLI; on Windows and Linux
+ *  also a plugin's host half, which runs as the user (spec §5.2: trusted code). NOT bots' or agents' commands (the
+ *  fence write-denies the run folder on every OS: `run-folder` in contracts/fence.ts), NOT the Windows pool accounts
+ *  (a deny ACE on `run\`), NOT a macOS plugin host (its sandbox writes only its own folders). A planted lock blocks
+ *  writes for at most `LOCK_STALE_MS` unless its planter keeps renewing it, which only a process of the user can do. */
 export const LOCK_STALE_MS = 120_000;
+/** How often a holder renews its lock. */
+export const LOCK_RENEW_MS = 20_000;
+/** A lock dated later than now by more than this is judged stale (a clock does not run backwards that far). */
+const LOCK_FUTURE_SLACK_MS = 5_000;
 /** How long a writer waits for the lock before it says the file is busy. */
 export const LOCK_WAIT_MS = 30_000;
 
@@ -157,11 +184,11 @@ function alive(pid: number): boolean {
 function staleText(lockPath: string, now: number): string | null {
   let text: string;
   try { text = readFileSync(lockPath, "utf8"); } catch { return null; } // gone, or being made: not ours to judge
-  const [pidText, atText] = text.split("\n");
+  const [pidText, atText] = text.split("\n"); // a third line, the holder's nonce, is not judged
   const pid = Number(pidText), at = Number(atText);
   const judged = !Number.isInteger(pid) || pid <= 0 || !Number.isFinite(at)
     ? now - lockMtime(lockPath, now) > 5_000 // a lock still being written is young
-    : !alive(pid) || now - at > LOCK_STALE_MS;
+    : !alive(pid) || now - at > LOCK_STALE_MS || at - now > LOCK_FUTURE_SLACK_MS;
   return judged ? text : null;
 }
 
@@ -176,16 +203,29 @@ function lockMtime(lockPath: string, now: number): number {
   try { return statSync(lockPath).mtimeMs; } catch { return now; }
 }
 
-async function takeFileLock(lockPath: string, waitMs: number): Promise<() => Promise<void>> {
+async function takeFileLock(lockPath: string, waitMs: number, renewMs: number): Promise<() => Promise<void>> {
   mkdirSync(dirname(lockPath), { recursive: true, mode: 0o700 });
   const started = Date.now();
   for (;;) {
     try {
       const fd = openSync(lockPath, "wx", 0o600);
-      try { writeFileSync(fd, `${process.pid}\n${Date.now()}\n`); } finally { closeSync(fd); }
+      const nonce = randomBytes(6).toString("hex");
+      let mine = `${process.pid}\n${Date.now()}\n${nonce}\n`;
+      try { writeFileSync(fd, mine); } finally { closeSync(fd); }
+      const stillMine = () => { try { return readFileSync(lockPath, "utf8") === mine; } catch { return false; } };
+      // Renewed while held, and only while it is still this holder's (one taken over is never written over).
+      const renew = setInterval(() => {
+        if (!stillMine()) return;
+        const next = `${process.pid}\n${Date.now()}\n${nonce}\n`;
+        try { writeFileSync(lockPath, next); mine = next; } catch { /* the next tick tries again */ }
+      }, renewMs);
+      renew.unref?.();
       return async () => {
+        clearInterval(renew);
+        // Only a lock whose text is still this holder's is removed: one taken over is the new holder's.
         // Windows may hold the file for a moment (a waiter reading it to judge it): retried, never left behind.
         for (let i = 0; i < RENAME_RETRIES; i++) {
+          if (!stillMine()) return;
           try { rmSync(lockPath, { force: true }); return; } catch (err) { if (!transient(err)) throw err; await sleep(25); }
         }
       };
@@ -201,10 +241,10 @@ async function takeFileLock(lockPath: string, waitMs: number): Promise<() => Pro
 }
 
 /** Runs `fn` with the secrets file's lock held: one at a time in this process, then one at a time across processes. */
-export async function withSecretsLock<T>(lockPath: string, fn: () => Promise<T>, waitMs: number = LOCK_WAIT_MS): Promise<T> {
+export async function withSecretsLock<T>(lockPath: string, fn: () => Promise<T>, waitMs: number = LOCK_WAIT_MS, renewMs: number = LOCK_RENEW_MS): Promise<T> {
   const before = inProcess.get(lockPath) ?? Promise.resolve();
   const run = before.then(async () => {
-    const release = await takeFileLock(lockPath, waitMs);
+    const release = await takeFileLock(lockPath, waitMs, renewMs);
     try { return await fn(); } finally { await release(); }
   });
   const tail = run.catch(() => undefined);

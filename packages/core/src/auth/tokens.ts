@@ -22,11 +22,17 @@ export class TokenAuthority {
     const out: Record<string, string> = {};
     const minted: string[] = [];
     for (const [role, name] of Object.entries(TOKEN_NAMES)) {
-      let v = await this.store.get(name);
-      if (!v) {
-        v = randomBytes(32).toString("hex");
-        await this.store.set(name, v);
-        minted.push(name);
+      // Read, or made and written in one step where the store can (the secrets file on Windows and Linux: two processes
+      // starting on a fresh home make one token, not two, lane SE); else read, then write.
+      let v: string;
+      if (this.store.getOrCreate !== undefined) {
+        const r = await this.store.getOrCreate(name, () => randomBytes(32).toString("hex"));
+        v = r.value;
+        if (r.made) minted.push(name);
+      } else {
+        const held = await this.store.get(name);
+        if (held) v = held;
+        else { v = randomBytes(32).toString("hex"); await this.store.set(name, v); minted.push(name); }
       }
       out[role] = v;
     }

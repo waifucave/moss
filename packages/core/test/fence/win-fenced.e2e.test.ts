@@ -157,16 +157,26 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
       const files = [file, join(moss, "credentials", "secrets.enc.bak"), join(moss, "credentials", "index.json"), join(moss, "credentials", "index.json.bak")];
       // A leak is found by each file's own first bytes (ciphertext and names, not the dummy), as base64.
       const needleOf = (p: string) => readFileSync(p).subarray(0, 30).toString("base64");
+      // The controls (review should-fix 6): the principal's own Bash and PowerShell DO base64 a file it may read, so an
+      // absent needle below is a refusal, not a tool that never worked.
+      const readable = join(moss, "notes", "readme.txt");
+      const readableNeedle = needleOf(readable);
+      const bc = await call(tools.Bash!, { command: `base64 -w0 '${readable.replace(/\\/g, "/")}'; echo; echo done` });
+      expect(bc.text).toContain(readableNeedle);
+      const pc = await call(tools.PowerShell!, { command: `[Convert]::ToBase64String([IO.File]::ReadAllBytes('${readable}'))` });
+      expect(pc.text).toContain(readableNeedle);
       for (const p of files) {
         const needle = needleOf(p);
         // The control: the user reads the bytes the same way the principal's commands try to.
         const own = Bun.spawnSync(["powershell", "-NoProfile", "-Command", `[Convert]::ToBase64String([IO.File]::ReadAllBytes('${p}'))`]).stdout.toString();
         expect([p, own.includes(needle)]).toEqual([p, true]);
-        const b = await call(tools.Bash!, { command: `base64 -w0 '${p.replace(/\\/g, "/")}'; cat '${p.replace(/\\/g, "/")}' | base64 -w0; echo done` });
+        const b = await call(tools.Bash!, { command: `base64 -w0 '${p.replace(/\\/g, "/")}' || echo BASH-NOREAD; cat '${p.replace(/\\/g, "/")}' | base64 -w0; echo done` });
         expect(b.text).toContain("done");
+        expect([p, b.text.includes("BASH-NOREAD")]).toEqual([p, true]); // base64 itself said it could not read the file
         expect([p, b.text.includes(needle)]).toEqual([p, false]);
         const ps = await call(tools.PowerShell!, { command: `try { [Convert]::ToBase64String([IO.File]::ReadAllBytes('${p}')) } catch { 'DENIED' }; 'done'` });
         expect(ps.text).toContain("done");
+        expect([p, ps.text.includes("DENIED")]).toEqual([p, true]); // the read threw: refused, not empty
         expect([p, ps.text.includes(needle)]).toEqual([p, false]);
       }
       // Credential Manager is per user: the principal's own lists nothing of the user's. The control: the user's lists the key.

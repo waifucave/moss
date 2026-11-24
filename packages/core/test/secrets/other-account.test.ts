@@ -12,9 +12,15 @@ import { EncryptedFileValues, MossSecretStore, keyFileKey } from "../../src/secr
 // Windows: the same property is the owner-only ACL read back with icacls (secrets-file-backend.test.ts) and a pool
 // principal, another account, refused every file the store wrote (win-fenced.e2e.test.ts).
 
-const sudoWorks = process.platform === "linux" && process.env.CI !== undefined && Bun.spawnSync(["sudo", "-n", "true"]).exitCode === 0;
+// On Linux under CI this never skips (review should-fix 7): a runner where `sudo -n` doesn't work fails the test, so a
+// green run means the property was tried. It runs in the `core · linux` jobs (packages/core's tests).
+const onLinuxCi = process.platform === "linux" && process.env.CI !== undefined;
 
-describe.skipIf(!sudoWorks)("another account on this computer", () => {
+describe.skipIf(!onLinuxCi)("another account on this computer", () => {
+  test("sudo works on this CI runner, so the proof below runs (a runner without it fails here, never skips)", () => {
+    expect(Bun.spawnSync(["sudo", "-n", "true"]).exitCode).toBe(0);
+  });
+
   test("reads none of the secrets file, its key file, its previous copy or the index, even with every folder opened", async () => {
     const user = `moss-se-${Math.random().toString(36).slice(2, 8)}`;
     // Under /tmp itself, not the preload's per-process root (made 0700): every folder above the home must be one the other
@@ -30,7 +36,11 @@ describe.skipIf(!sudoWorks)("another account on this computer", () => {
       const file = join(h, "secrets.enc");
       await new MossSecretStore({ home: h, values: new EncryptedFileValues(file, keyFileKey(join(h, "secrets.key"), file), "key-file"), status: encryptedFileStatus("key-file") })
         .set({ owner: { kind: "device" }, name: "device:link-key" }, VALUE);
-      const files = [file, join(h, "secrets.key"), join(h, "credentials", "secrets.enc.bak"), join(h, "credentials", "index.json"), join(h, "credentials", "index.json.bak")];
+      const files = [file, join(h, "secrets.key"), join(h, "credentials", "secrets.enc.bak"), join(h, "credentials", "index.json"), join(h, "credentials", "index.json.bak"),
+        join(h, "credentials", "index.made"), join(h, "credentials", "secrets-file.made")];
+      // The run folder (locks and half-made copies) can't be listed or entered by the other account either.
+      const runList = Bun.spawnSync(["sudo", "-n", "-u", user, "ls", join(h, "run")]);
+      expect([runList.exitCode !== 0, runList.stdout.length]).toEqual([true, 0]);
       const as = (path: string) => Bun.spawnSync(["sudo", "-n", "-u", user, "cat", path]);
 
       // As made: refused, whatever the folders' modes.

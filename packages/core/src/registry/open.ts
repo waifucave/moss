@@ -7,7 +7,7 @@ import { registerPluginLoadFolders } from "../runtime-sdk/plugin-load-folders";
 import { catalogPointDecl } from "@waifucave/moss-plugin-sdk";
 import type { Os } from "@waifucave/moss-protocol";
 import { ContractError } from "../contracts/common";
-import type { SecretStore } from "../contracts/secret-store";
+import { getOrCreateSecret, type SecretStore } from "../contracts/secret-store";
 import { codeFieldsFrom } from "./changes";
 import { RegistryCore, thisPlatform } from "./core";
 import { PluginFolders, fillsFrom } from "./folders";
@@ -94,11 +94,9 @@ export async function registrySigning(secrets: SecretStore): Promise<{ macKey: U
 
 /** The key that signs the registry's records: 32 random bytes, kept in the secret store and synced with the list. */
 export async function registryMacKey(secrets: SecretStore): Promise<Uint8Array> {
-  const held = await secrets.get(REGISTRY_MAC_SECRET);
-  if (held) return new Uint8Array(Buffer.from(held.value.reveal(), "base64"));
-  const key = randomBytes(32);
-  await secrets.set(REGISTRY_MAC_SECRET, key.toString("base64"), { synced: true });
-  return new Uint8Array(key);
+  // Read, or made and written, in one step across processes (two starting on a fresh home make one key, not two).
+  const held = await getOrCreateSecret(secrets, REGISTRY_MAC_SECRET, () => randomBytes(32).toString("base64"), { synced: true });
+  return new Uint8Array(Buffer.from(held.value.reveal(), "base64"));
 }
 
 /** Opens the registry, reads every folder once, then watches. */
