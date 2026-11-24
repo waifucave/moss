@@ -204,7 +204,7 @@ export class GroupKeeper {
     if (known) return known;
     const ids = dropped.map((_, i) => `k${i + 1}`);
     const answer = await this.#ask({
-      kind: "change", origin: "user", computers: [], effect: "other", change: "device-revoke", ...(aboutDevice === undefined ? {} : { aboutDevice }),
+      kind: "change", origin: "user", computers: [], effect: "other", change: "device-revoke", computersOnly: {}, ...(aboutDevice === undefined ? {} : { aboutDevice }),
       fields: {
         title: { type: "text", text: "Remove this device from your devices' group?" },
         what: { type: "text", text: "The device named below let the ones listed under it in during the last 7 days. They leave with it, unless you check them to keep them. Check only the ones you recognise." },
@@ -477,7 +477,7 @@ export class GroupKeeper {
       return (d && this.#o.registry.get(d)?.name) ?? "a device this computer doesn't know";
     });
     const { ok } = await this.#ask({
-      kind: "change", origin: "user", computers: [], effect: "other", change: "device-revoke", ...(target === undefined ? {} : { aboutDevice: target }),
+      kind: "change", origin: "user", computers: [], effect: "other", change: "device-revoke", computersOnly: {}, ...(target === undefined ? {} : { aboutDevice: target }),
       fields: {
         title: { type: "text", text: "Remove this device from your devices?" },
         what: { type: "text", text: "Another of your devices asks to revoke the device named below." },

@@ -7,7 +7,8 @@ import { SESSIONS_METHODS, type Caller } from "@waifucave/moss-protocol";
 import { FakeClock } from "../../contracts/fakes/clock";
 import { FakeSessionDriver } from "../../contracts/fakes/session-host";
 import { pairedPhone } from "../../agents/tests/phone";
-import { clip, openQuestionsOf } from "../open-questions";
+import { clip, cutQuestion, openQuestionsOf } from "../open-questions";
+import { botQuestions } from "../questions";
 import { boot, removeTemps, tempDir } from "./fixtures";
 
 afterEach(removeTemps);
@@ -95,5 +96,67 @@ describe("the bounds on what an open question says", () => {
     expect([o[0]!.label.length, o[0]!.description!.length, o[0]!.preview!.length]).toEqual([200, 1000, 4000]);
     // The largest answer fits well under the phone link's 1 MiB frame.
     expect(Buffer.byteLength(JSON.stringify({ open: out }))).toBeLessThan(512 * 1024);
+  });
+});
+
+describe("session.answer by the text session.openQuestions gave", () => {
+  /** A bot-side question broker with a stub host, and one waiting call asking `questions`. */
+  async function waiting(questions: { question: string; header?: string; options?: { label: string }[] }[]) {
+    const recorded: { type: string }[] = [];
+    const q = botQuestions({ host: { get: () => ({}) as never, recordCore: (_id, e) => (recorded.push(e as never), undefined as never), turnOrigin: () => "user" } });
+    const canUseTool = q.canUseTool("s_code", async () => ({ behavior: "allow", updatedInput: {} }));
+    const input = { questions: questions.map((x) => ({ header: "Pick", options: [{ label: "Yes" }, { label: "No" }], ...x })) };
+    const done = canUseTool("AskUserQuestion", input, { signal: new AbortController().signal, toolUseID: "call_1" } as never) as Promise<{ behavior: string; updatedInput?: { answers: Record<string, string> } }>;
+    await new Promise((r) => setTimeout(r, 0));
+    return { q, done };
+  }
+  const long = (c: string, n = 3000) => c.repeat(n);
+
+  test("a 3,000-unit question answered by its cut text lands on that question; the exact text still works; the value goes through unchanged", async () => {
+    const big = long("a"), other = "Which folder?";
+    const cut = cutQuestion(big);
+    expect(cut.length).toBe(2000);
+    expect(cut).toBe(openQuestionsOf([{ callId: "call_1", seq: 1, askedAt: 1, questions: [{ question: big }] }])[0]!.questions[0]!.question);
+    const w = await waiting([{ question: big }, { question: other }]);
+    expect(w.q.answer("s_code", "call_1", { [cut]: "Yes", [other]: "src" }, "user")).toEqual({ ok: true });
+    const r = await w.done;
+    // The model gets its own question text, not the cut one, and the answer as given.
+    expect(r.updatedInput!.answers).toEqual({ [big]: "Yes", [other]: "src" });
+    // The exact text of the long one, on a second call.
+    const w2 = await waiting([{ question: big }]);
+    expect(w2.q.answer("s_code", "call_1", { [big]: "No" }, "user")).toEqual({ ok: true });
+    expect((await w2.done).updatedInput!.answers).toEqual({ [big]: "No" });
+  });
+
+  test("notes by the cut text land on the right question too; a key that is neither is refused and the question stays open", async () => {
+    const big = long("é");
+    const w = await waiting([{ question: big }]);
+    expect(w.q.answer("s_code", "call_1", { [big.slice(0, 1999)]: "Yes" }, "user")).toMatchObject({ ok: false, code: "invalid" });
+    expect(w.q.broker.isPending("s_code", "call_1")).toBe(true);
+    expect(w.q.answer("s_code", "call_1", { [cutQuestion(big)]: "Yes" }, "user", { [cutQuestion(big)]: "because" })).toEqual({ ok: true });
+    const r = await w.done as unknown as { updatedInput: { answers: Record<string, string>; annotations?: unknown } };
+    expect(r.updatedInput.answers).toEqual({ [big]: "Yes" });
+    expect(JSON.stringify(r.updatedInput)).toContain("because");
+  });
+
+  test("two questions of one call with the same cut form: that key is refused as ambiguous, and nothing is guessed; each one's exact text still answers", async () => {
+    const x = long("b") + "1", y = long("b") + "2";
+    expect(cutQuestion(x)).toBe(cutQuestion(y));
+    const w = await waiting([{ question: x }, { question: y }]);
+    const refused = w.q.answer("s_code", "call_1", { [cutQuestion(x)]: "Yes" }, "user");
+    expect(refused).toMatchObject({ ok: false, code: "invalid" });
+    expect((refused as { message: string }).message).toContain("more than one question");
+    expect(w.q.broker.isPending("s_code", "call_1")).toBe(true);
+    expect(w.q.answer("s_code", "call_1", { [x]: "Yes", [y]: "No" }, "user")).toEqual({ ok: true });
+    expect((await w.done).updatedInput!.answers).toEqual({ [x]: "Yes", [y]: "No" });
+  });
+
+  test("an exact key wins over a cut one; both forms of one question in an answer are refused", async () => {
+    const big = long("c");
+    const w = await waiting([{ question: big }]);
+    expect(w.q.answer("s_code", "call_1", { [big]: "Yes", [cutQuestion(big)]: "No" }, "user")).toMatchObject({ ok: false, code: "invalid" });
+    expect(w.q.broker.isPending("s_code", "call_1")).toBe(true);
+    expect(w.q.answer("s_code", "call_1", { [big]: "Yes" }, "user")).toEqual({ ok: true });
+    await w.done;
   });
 });

@@ -12,6 +12,7 @@ import {
 import type { Clock } from "../../contracts/clock";
 import { isContractError } from "../../contracts/common";
 import { FakeApprovalBroker, MemoryAnswerLedger } from "../../contracts/fakes/approval-broker";
+import { makeFakePhone, type FakeDevice } from "../../contracts/fakes/device-registry";
 import { FakeClock } from "../../contracts/fakes/clock";
 import { MemorySecretStore } from "../../contracts/fakes/secret-store";
 import { SystemClock } from "../../clock/system-clock";
@@ -22,6 +23,7 @@ import { MemoryNetwork } from "../../links/memory-wire";
 import { PairingService } from "../../links/pairing";
 import { peerCall } from "../../links/peer-call";
 import { answerKeyStatement, FileDeviceRegistry } from "../registry";
+import { deviceProofVerifier } from "../../contracts/approval-broker";
 import { brokerCardOpener, devicesEvents, devicesMethods, type CardOpener, type MethodError } from "../rpc";
 import { openOnBroker } from "../../ipc/device-links";
 
@@ -48,13 +50,15 @@ async function computer(net: MemoryNetwork, name: string, ttlMs?: number, selfOv
   }
   const pairing = new PairingService({ self: key, registry, wire: net.endpoint(key.publicKey), clock: clk, store, selfTarget: () => ({}), account: () => null, ...(ttlMs !== undefined ? { ttlMs } : {}) });
   stops.push(() => pairing.close());
-  const broker = new FakeApprovalBroker({ clock: new FakeClock() });
+  // Who is a computer comes from this registry's kind recorded at pairing, and a device's own signature from its answer key.
+  const brokerClock = new FakeClock();
+  const broker = new FakeApprovalBroker({ clock: brokerClock, verify: deviceProofVerifier(registry), deviceKind: (id) => registry.get(id)?.kind });
   const transport = { links: () => [], watch: () => () => undefined, connect: () => Promise.reject(new Error("no links in this test")) };
   const methods = devicesMethods({ registry, pairing, transport, clock: clk, openCard: over?.openCard ?? brokerCardOpener(broker), revoke: { store } });
   const events: { type: string; step?: string; reason?: string; peerName?: string }[] = [];
   stops.push(devicesEvents({ registry, transport, pairing, clock: clk }, (e) => events.push(e)));
   const call = (method: string, params: unknown, caller: Caller) => methods[method]!(params, { caller });
-  return { name, key, registry, pairing, broker, call, events };
+  return { name, key, registry, pairing, broker, brokerClock, call, events };
 }
 
 describe("devices methods", () => {
@@ -118,6 +122,77 @@ describe("the card that removes a device is never the removed device's", () => {
     expect(await answer(a, card.id, "approve")).toBe("accepted");
     await waitFor(() => a.registry.get(b.key.id)?.revokedAt !== undefined);
     expect(a.events.some((e) => e.type === "device_removed")).toBe(true);
+  });
+
+  /** One phone with both its apps paired is two devices of kind phone (the owner's design), A (`code`) and B (`moss`); C is another phone. */
+  async function withPhones(a: Awaited<ReturnType<typeof computer>>) {
+    const phones = { A: await makeFakePhone(), B: await makeFakePhone(), C: await makeFakePhone() };
+    const names = { A: "Pocket (MOSS Code)", B: "Pocket (MOSS)", C: "Another phone" };
+    const apps = { A: "code", B: "moss", C: "moss" } as const;
+    for (const k of ["A", "B", "C"] as const) {
+      await a.registry.add({ id: phones[k].id, name: names[k], kind: "phone", runsCore: false, publicKey: phones[k].publicKey, answerKey: phones[k].answerKey, app: apps[k] }, { via: "account", account: "acct_1" });
+    }
+    return phones;
+  }
+  const signedBy = async (a: { brokerClock: FakeClock }, who: FakeDevice, card: Card, option: "approve" | "deny", device = who.id) => {
+    const at = a.brokerClock.now();
+    return { via: "device" as const, device, at, signature: toBase64(await who.sign(new TextEncoder().encode(cardAnswerSigningInput({ id: card.id, hash: card.hash, option, at, children: [] })))) };
+  };
+  const phoneCaller = (device: string): Caller => ({ kind: "user", client: "ios", device }) as Caller;
+
+  test("the person removes app A's device at the computer: neither A nor B is sent the card, both are refused whatever way they answer, the computer's yes cuts A at once", async () => {
+    const net = new MemoryNetwork();
+    const a = await computer(net, "Studio");
+    const { A, B, C } = await withPhones(a);
+    const res = (await a.call("device.revoke", { id: A.id }, app)) as { applied: false; card: string };
+    const card = a.broker.cards().find((c) => c.id === res.card)!;
+    // Hidden from every phone: not sent, not listed (the routing and the card methods ask this one question), refused when they answer.
+    for (const who of [A, B, C]) {
+      expect(a.broker.answerableBy(card.id, who.id)).toBe(false);
+      expect(await a.broker.answer(card.id, { optionId: "deny", hash: card.hash, proof: await signedBy(a, who, card, "deny") }, { role: "remote", device: who.id })).toBe("bad-origin");
+      // Relayed by another computer, with the phone's own good signature: the proof names the phone.
+      expect(await a.broker.answer(card.id, { optionId: "deny", hash: card.hash, proof: await signedBy(a, who, card, "deny") }, { role: "peer", device: "dev_other" })).toBe("bad-origin");
+    }
+    expect(a.broker.cards().map((c) => c.id)).toContain(card.id);
+    expect(a.registry.get(A.id)?.revokedAt).toBeUndefined();
+    // The computer's own app answers: A is cut at once; B and C are untouched.
+    expect(await answer(a, card.id, "approve")).toBe("accepted");
+    await waitFor(() => a.registry.get(A.id)?.revokedAt !== undefined);
+    expect(a.registry.get(B.id)?.revokedAt).toBeUndefined();
+    expect(a.registry.get(C.id)?.revokedAt).toBeUndefined();
+  });
+
+  test("a phone's own request to remove a device: that same phone answers it; a second phone can't, nor the one it names; the computer still can", async () => {
+    const net = new MemoryNetwork();
+    const a = await computer(net, "Studio");
+    const { A, B, C } = await withPhones(a);
+    // B asks, from its own link, to remove C.
+    const res = (await a.call("device.revoke", { id: C.id }, phoneCaller(B.id))) as { applied: false; card: string };
+    const card = a.broker.cards().find((c) => c.id === res.card)!;
+    expect(a.broker.answerableBy(card.id, A.id)).toBe(false);
+    expect(a.broker.answerableBy(card.id, C.id)).toBe(false);
+    expect(a.broker.answerableBy(card.id, B.id)).toBe(true);
+    // A second phone (the other app of the same phone, or another phone) is refused, on its own link and as a relayed proof.
+    expect(await a.broker.answer(card.id, { optionId: "deny", hash: card.hash, proof: await signedBy(a, A, card, "deny") }, { role: "remote", device: A.id })).toBe("bad-origin");
+    expect(await a.broker.answer(card.id, { optionId: "deny", hash: card.hash, proof: await signedBy(a, A, card, "deny") }, { role: "peer", device: "dev_other" })).toBe("bad-origin");
+    expect(a.broker.cards().map((c) => c.id)).toContain(card.id);
+    // The asking phone's own answer counts, the owner's decision (a phone's own request stays its own to answer).
+    expect(await a.broker.answer(card.id, { optionId: "approve", hash: card.hash, proof: await signedBy(a, B, card, "approve") }, { role: "remote", device: B.id })).toBe("accepted");
+    await waitFor(() => a.registry.get(C.id)?.revokedAt !== undefined);
+    expect(a.registry.get(A.id)?.revokedAt).toBeUndefined();
+    // The same request, answered at the computer instead.
+    const again = (await a.call("device.revoke", { id: A.id }, phoneCaller(B.id))) as { applied: false; card: string };
+    expect(await answer(a, again.card, "approve")).toBe("accepted");
+    await waitFor(() => a.registry.get(A.id)?.revokedAt !== undefined);
+  });
+
+  test("a card is raised for a phone-kind caller only with that phone as its asker; a caller no link authenticated (the app) names none", async () => {
+    const net = new MemoryNetwork();
+    const a = await computer(net, "Studio");
+    const { A, B } = await withPhones(a);
+    const fromApp = (await a.call("device.revoke", { id: A.id }, app)) as { card: string };
+    expect(a.broker.answerableBy(fromApp.card, B.id)).toBe(false);
+    expect(a.broker.answerableBy(fromApp.card, undefined)).toBe(true);
   });
 
   test("a revoke from the terminal needs no card at all (the person's own act at that computer)", async () => {

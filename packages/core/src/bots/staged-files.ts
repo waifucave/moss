@@ -422,8 +422,16 @@ export class FileStager {
     const root = receivedRootOf(this.#o.home);
     try {
       if (!lstatSync(root).isDirectory()) return;
-      clear(join(root, DROP_FOLDER));
-      try { rmdirSync(join(root, DROP_FOLDER)); } catch { /* not there, or not empty */ }
+      // The beside-the-folder spool is cleared only when it is a plain folder: a link put there (a session can write the root's
+      // children) is never read nor followed.
+      const drop = join(root, DROP_FOLDER);
+      try {
+        const st = lstatSync(drop);
+        if (st.isDirectory() && !st.isSymbolicLink()) {
+          clear(drop);
+          try { rmdirSync(drop); } catch { /* not empty */ }
+        }
+      } catch { /* not there */ }
       for (const session of readdirSync(root)) {
         if (session.startsWith(".")) continue;
         const dir = join(root, session);

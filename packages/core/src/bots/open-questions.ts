@@ -14,6 +14,11 @@ export function clip(s: string, max: number): string {
   return `${cut}…`;
 }
 
+/** The longest question text `session.openQuestions` gives (the wire's `OpenQuestionItem.question`). A phone answers by the text it was given, so
+ *  `session.answer` takes this cut form of a question as its key too (`bots/questions.ts`): both go through this one function. */
+export const QUESTION_TEXT_MAX = 2000;
+export const cutQuestion = (question: string): string => clip(question, QUESTION_TEXT_MAX);
+
 const text = (v: unknown): string | undefined => (typeof v === "string" && v !== "" ? v : undefined);
 
 /** The held questions in the order asked, as the wire's `OpenQuestion`s; a call whose id `session.answer` can't take, or that holds no
@@ -38,7 +43,7 @@ export function openQuestionsOf(held: readonly HeldQuestion[]): OpenQuestion[] {
         return [{ label: clip(label, 200), ...(description === undefined ? {} : { description: clip(description, 1000) }), ...(preview === undefined ? {} : { preview: clip(preview, 4000) }) }];
       });
       questions.push({
-        question: clip(question, 2000),
+        question: cutQuestion(question),
         ...(header === undefined ? {} : { header: clip(header, 12) }),
         // A menu of one is no choice: the desktop refuses it, so it is a free-text question here.
         options: options.length === 1 ? [] : options,

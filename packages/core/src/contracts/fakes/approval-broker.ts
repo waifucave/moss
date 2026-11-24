@@ -7,7 +7,7 @@ import {
   type TreeTransferParams, DEFAULT_LEVEL, TREE_TRANSFER, UNATTENDED_CARD_TIMEOUT_MS, answerTimeOk, callBindingInput, cardHashInput,
 } from "@waifucave/moss-protocol";
 import {
-  ALWAYS_CARD_KINDS, bindsOutsideRequest, CALL_CARD_METHODS, callBindingOf, cardExpires, cardMetaOf, isBridgeCall, levelDecision, strictestLevel, writesRunLater,
+  ALWAYS_CARD_KINDS, bindsOutsideRequest, CALL_CARD_METHODS, callBindingOf, cardExpires, cardMetaOf, deviceMayHaveCard, isBridgeCall, levelDecision, strictestLevel, writesRunLater,
   type AnswerLedger, type CallCardRenderer, type AnswerOrigin, type AnswerResult, type ApprovalBroker, type ApprovalDecision, type ApprovalEvent,
   type ApprovalRequest, type CardAnswer, type CardRecord, type ProofVerifier, type Reviewer, type SavedRule,
 } from "../approval-broker";
@@ -23,6 +23,8 @@ export interface FakeApprovalBrokerOptions {
   fence?: (computer: string) => Pick<Fence, "touches"> | undefined;
   reviewer?: Reviewer;
   verify?: ProofVerifier;
+  /** The kind a device was paired as (the registry's): who is a computer for a computers-only card. */
+  deviceKind?: (device: string) => string | undefined;
 }
 
 interface Pending {
@@ -56,6 +58,7 @@ export class FakeApprovalBroker implements ApprovalBroker {
   readonly #fence: FakeApprovalBrokerOptions["fence"];
   readonly #reviewer: Reviewer;
   readonly #verify: ProofVerifier;
+  readonly #deviceKind: ((device: string) => string | undefined) | undefined;
   readonly #pending = new Map<string, Pending>();
   readonly #resolved = new Map<string, CardRecord>();
   readonly #rules: SavedRule[] = [];
@@ -67,6 +70,7 @@ export class FakeApprovalBroker implements ApprovalBroker {
     this.#fence = opts.fence;
     this.#reviewer = opts.reviewer ?? (async () => "unavailable");
     this.#verify = opts.verify ?? (() => false);
+    this.#deviceKind = opts.deviceKind;
   }
 
   async request(req: ApprovalRequest, opts: { signal?: AbortSignal; onCard?: (cardId: string) => void } = {}): Promise<ApprovalDecision> {
@@ -91,6 +95,13 @@ export class FakeApprovalBroker implements ApprovalBroker {
     return this.#pending.get(cardId)?.req.aboutDevice ?? this.#resolved.get(cardId)?.aboutDevice;
   }
 
+  answerableBy(cardId: string, device: string | undefined): boolean {
+    const p = this.#pending.get(cardId);
+    if (p) return deviceMayHaveCard(p.req, device, this.#deviceKind);
+    const r = this.#resolved.get(cardId);
+    return r === undefined ? true : deviceMayHaveCard(r, device, this.#deviceKind);
+  }
+
   pending(computer?: string): CardMeta[] {
     return [...this.#pending.values()]
       .filter((p) => computer === undefined || p.card.computer === computer)
@@ -107,8 +118,7 @@ export class FakeApprovalBroker implements ApprovalBroker {
   async answer(cardId: string, a: CardAnswer, from: AnswerOrigin): Promise<AnswerResult> {
     const p = this.#pending.get(cardId);
     if (!p) return this.#resolved.has(cardId) ? "already-answered" : "unknown-card";
-    const about = p.req.aboutDevice;
-    if (about !== undefined && (from.device === about || (a.proof.via === "device" && a.proof.device === about))) return "bad-origin";
+    if (!deviceMayHaveCard(p.req, from.device, this.#deviceKind) || (a.proof.via === "device" && !deviceMayHaveCard(p.req, a.proof.device, this.#deviceKind))) return "bad-origin";
     if (a.hash !== p.card.hash) return "hash-mismatch";
     const option = p.card.options.find((o) => o.id === a.optionId);
     if (!option) return "bad-option";
@@ -252,7 +262,7 @@ export class FakeApprovalBroker implements ApprovalBroker {
       ...(children === undefined || children.length === 0 ? {} : { children }),
     };
     const about = p.req.aboutDevice === undefined ? {} : { aboutDevice: p.req.aboutDevice };
-    this.#resolved.set(p.card.id, { card: p.card, outcome, ...how, ...about, resolvedAt: this.#clock.now() });
+    this.#resolved.set(p.card.id, { card: p.card, outcome, ...how, ...about, ...(p.req.computersOnly === undefined ? {} : { computersOnly: p.req.computersOnly }), resolvedAt: this.#clock.now() });
     this.#listeners.emit({ type: "resolved", cardId: p.card.id, outcome, ...how, ...about });
     p.resolve(decision);
   }

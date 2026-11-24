@@ -159,8 +159,8 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
   const { registry, pairing } = deps;
   /** A device's card (§5.5): the engine's own title and sentence, and what a device calls itself only as the value of a row of its
    *  own, never inside a sentence, so no character in a name can close or continue what the engine says. */
-  const changeCard = (change: "device-add" | "device-revoke", title: string, what: string | undefined, rows: { label: string; value: string; name?: true }[], aboutDevice?: string): ApprovalRequest => ({
-    kind: "change", origin: "user", computers: [], effect: "other", change, ...(aboutDevice === undefined ? {} : { aboutDevice }),
+  const changeCard = (change: "device-add" | "device-revoke", title: string, what: string | undefined, rows: { label: string; value: string; name?: true }[], aboutDevice?: string, computersOnly?: { askedBy?: string }): ApprovalRequest => ({
+    kind: "change", origin: "user", computers: [], effect: "other", change, ...(aboutDevice === undefined ? {} : { aboutDevice }), ...(computersOnly === undefined ? {} : { computersOnly }),
     fields: { title: { type: "text", text: title }, ...(what === undefined ? {} : { what: { type: "text", text: what } }), detail: { type: "rows", rows } },
   });
 
@@ -278,7 +278,9 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
         await run();
         return { applied: true };
       }
-      const opened = await deps.openCard(changeCard("device-revoke", "Revoke this device?", undefined, [{ label: "The device", value: d.name, name: true }, { label: "What it is", value: d.kind }], p.id));
+      const opened = await deps.openCard(changeCard("device-revoke", "Revoke this device?", undefined, [{ label: "The device", value: d.name, name: true }, { label: "What it is", value: d.kind }], p.id,
+        // Answered at a computer, or by the phone whose own request this is (a link's authenticated device, never what it says), never by another phone.
+        { ...(ctx.caller.kind === "user" && ctx.caller.client !== "app" && ctx.caller.client !== "cli" && ctx.caller.device !== undefined ? { askedBy: ctx.caller.device } : {}) }));
       if (!opened.card) {
         if (!(await opened.allowed)) throw new MethodError(ERR.INVALID_REQUEST, "refused");
         await run();

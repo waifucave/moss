@@ -33,7 +33,7 @@ These are open to a paired phone today and were not changed by PH2 or PH3:
   the user's own terminal (`computers/rpc.ts`), so a phone can only make a computer stricter.
 - Change the main computer (`main.set`): a call from outside the terminal raises a card for it, which the same phone can answer.
 - Rename devices (`device.rename`) and revoke them (`device.revoke`), its own and any other paired device's but this computer's own: a revoke
-  from outside the terminal raises a card for it, applied when the card is approved (`devices/rpc.ts`), which the same phone can answer.
+  from outside the terminal raises a card for it, applied when the card is approved (`devices/rpc.ts`), which the same phone (never another phone), or a computer, can answer.
 
 ## What PH2 and PH3 added
 
@@ -56,6 +56,12 @@ These are open to a paired phone today and were not changed by PH2 or PH3:
   hid its question. Text is bounded (a question 2,000 UTF-16 units, an option's label 200, its description 1,000, its preview 4,000; cut
   with an ellipsis), at most the newest 4 open questions are given, and a question whose call id `session.answer` can't take is left out.
   It changes nothing, is the phone's alone (role `remote`), and reads the conversation the phone could already read with `session.history`.
+  `session.answer` keys each answer by the question's text, and a phone only has the text it was given, so for each of the call's questions
+  `session.answer` accepts its exact text or the exact cut form this read gives for it (one function, `cutQuestion`, makes both) and
+  gives the model its own text; if two questions of one call are cut to the same text, that key is refused (`invalid`, "more than one
+  question") and each one's full text still answers; the exact text wins over a cut one, and the two forms of one question in one answer are
+  refused. The answer's VALUE is never matched against a label: it goes to the model as the phone sent it (a cut label, over 200 units, is
+  passed on as sent).
 
 Where a phone's file goes: for a bot, the bot's own scratch folder (`<home>/scratch/<bot>/attachments/`, where a file dropped on the
 desktop is copied; it is the bot's, moves with the bot into the archive and comes back with it). For a coding session, a folder of its own
@@ -122,20 +128,41 @@ a person holding a paired, unlocked phone can:
   (`agent.start`) and send to bots, with no limit on how many messages;
 - start coding sessions in any folder of the home, make up to five bots a day, and send files and pictures within the limits below;
 - remove the person's other devices (`device.revoke`) and move the main computer (`main.set`). Each raises a card, and a phone answers
-  cards with its own answer key, so **the card stops nobody who holds the unlocked phone** (the card of a removal of a device is not shown
-  to that device; a phone removing another device, or moving the main computer, answers its own card): it is a mis-tap check, and a notice
-  on the person's other devices. The owner decided on 2026-11-24 to keep it so (a paired phone is a full remote, its own cards included).
+  cards with its own answer key, so **the card stops nobody who holds the unlocked phone** (a phone moving the main computer, or removing
+  a device it asked to remove, answers its own card): it is a mis-tap check, and a notice on the person's other devices. The owner decided
+  on 2026-11-24 to keep that so (a paired phone is a full remote, its own cards included). What a phone can no longer do is answer the
+  card of a removal the PERSON started at a computer, nor another phone's: see the next section.
 
-What the person does about a lost phone: on any of their computers, open Settings, find the phone in the devices list and remove it
-(Settings' devices list calls `device.revoke`; Settings closes while the card waits). Removing raises the engine's "Revoke this device?"
-card, which the person answers at that computer, in the app's own window. **That card is about the phone it names, and that phone never
-gets it** (PH4, `packages/core/src/approvals/broker.ts`, `ApprovalRequest.aboutDevice`): it is not in the phone's `card.list`, not read by
-its `card.get`, not sent to it as an event (nor when the answer comes: not `card_resolved` either), not replayed when the phone subscribes
-late, and the phone's answer to it is refused by the engine by the answering device's id, whether it comes over the phone's own link or as
-a signed answer another computer relays (the proof names the device). So whoever holds the lost phone cannot deny its removal, and does
-not get a notice that the owner is trying. The cards other computers raise to agree to the same removal (the devices' group's cosign card,
-and its "which keys to keep" card) carry the same mark. Another device, the app at the computer, answers as before, and the first answer
-wins. The mark is on cards about a device's removal only: the other device cards were checked and need none (see below).
+What the person does about a lost phone: **remove the phone, both of its apps, in a computer's Settings, and answer the card at that
+computer. A phone cannot block it.** A phone with MOSS and MOSS Code both paired is TWO devices (one for each app), each in the devices list
+of Settings as its own entry, and both must be removed, one after the other: take out only one and the other still holds the phone's
+doors. The list shows each entry by the name the phone gave it and the word "Phone" (not which app it is; the list has no app column
+today), so the person recognises them as the entries that carry the lost phone's name, with the time each was last seen, and removes every
+one (a removal that doesn't match a phone they still hold is theirs to look at before they press the card). Settings' devices list calls
+`device.revoke`; Settings closes while the card waits. Removing raises the engine's "Revoke this device?" card, which the person answers at
+that computer, in the app's own window.
+
+**The card is answered at a computer, never on a phone** (PH4, `packages/core/src/approvals/broker.ts`, `ApprovalRequest.computersOnly` and
+`aboutDevice`):
+
+- A revoke the person starts at a computer is answered at a computer (any of their computers), and no phone, of any app, sees it or may
+  answer it. That includes the phone's OTHER app: it is a device of its own, but whoever holds the phone holds both, so it could otherwise
+  deny the card that removes the first.
+- A revoke a phone itself asked for (`device.revoke` from the phone's own link) can still be answered by that same phone (the owner's
+  decision, untouched) and at a computer. No OTHER phone may answer it, and the device it names never may.
+- The device the card names never gets it and never answers it, in every case.
+- "A computer" is decided from the engine's own device registry, the kind recorded when the device paired (`desktop`, or `server`), and never
+  from anything the answering device says about itself. A device the registry doesn't know, a phone, a browser and a cloud folder are not
+  computers. The refusal is by the id of the answering device and by the id in a signed proof, so it holds whether the answer comes over
+  the phone's own link or as a signed answer another computer relays (the proof names the device), and before any signature is checked.
+- Phones that may not answer are not sent the card and it is not in their lists: not in `card.list`, not read by `card.get`, not sent as
+  an event (nor when the answer comes: not `card_resolved` either), not replayed when the phone subscribes late. They do not get a notice
+  that the owner is trying, either.
+- The two cards the devices' group raises for the same removal (the cosign card another computer's removal request raises, and the "which
+  keys to keep" card) carry the same rule: a computer's alone. Another computer, the app at the computer, answers as before, and the
+  first answer wins.
+
+The rule is on cards about a device's removal only: the other device cards were checked and need none (see below).
 
 Once the card is answered yes, that computer cuts the phone's links at once (the registry's change reaches the transport in the same
 process, `links/transport.ts` `#revoked`, which shuts the link with `CLOSE_REVOKED`; a later connection from its key is closed as revoked;
@@ -150,8 +177,8 @@ A removal started at the computer's own screen. In the desktop app's Settings it
 app's window. From the user's own terminal (the caller `cli`) the engine revokes with no card at all (`inTerminal`, `devices/rpc.ts`: the
 person's own act at that machine, never a bot's, plugin's or phone's). **The terminal path is a gap in this repository, not a feature:**
 the engine has the call, but `packages/cli` speaks the older protocol to the older server and has no client for the one `device.revoke`
-is on, and no `moss devices` command, so a person cannot type it today. It is noted here and not invented (no new way for a command to
-reach the engine as the user was added).
+is on, and no `moss devices` command, so a person cannot type it today. No terminal command exists yet. It is noted here and not invented
+(no new way for a command to reach the engine as the user was added).
 
 Other cards that name a device's standing, checked: a rename raises no card (it applies at once); a main-computer change names a
 computer, and a phone is never one; a computer's level raise is refused to every caller but the terminal and a lowering does not cut a

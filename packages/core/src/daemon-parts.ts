@@ -433,7 +433,7 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
         clock: input.clock,
         // A computer the registry doesn't know is judged at read-only, failing closed as the agents' manager does.
         levels: (c) => n.registry.get(c)?.level ?? "read-only", fence: (c) => (c === here ? fence : undefined),
-        verify: deviceProofVerifier(links.registry, input.programKeys), rules: fileRuleStore(input.mossHome), localComputer: here,
+        verify: deviceProofVerifier(links.registry, input.programKeys), deviceKind: (id) => links.registry.get(id)?.kind, rules: fileRuleStore(input.mossHome), localComputer: here,
         // §9.1 at ask for risky actions: an edit of the user's ordinary files runs (the owner's ruling), and what is
         // left goes to the daemon's one safety reviewer (the node's), a card when it can't judge.
         // R1: the user's PATH is the login shell's, merged into the daemon's own at start (`login-shell-path.ts`).

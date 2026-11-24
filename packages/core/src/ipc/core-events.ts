@@ -75,8 +75,9 @@ export interface CoreEventOptions {
   /** Of the plugins' connections (a layer, a host half), only those whose plugin this lets through; the app's and the
    *  other roles are untouched. An approval card's events use it: a plugin hears its own bot's cards. */
   forPlugin?(pluginId: string, capabilities: readonly string[]): boolean;
-  /** Never the connection of this paired device (a card about that device, `ApprovalRequest.aboutDevice`): whatever role it comes in. */
-  exceptDevice?: string;
+  /** Never the connection of a paired device this says no to (a card about that device, or one only a computer answers,
+   *  `ApprovalRequest.aboutDevice` / `computersOnly`): whatever role it comes in. */
+  exceptDevice?(device: string): boolean;
 }
 
 /** The paired device a connection speaks for (a device link's), none for one on this computer. */
@@ -135,7 +136,10 @@ export function sendCoreEvent(r: CoreEventRouting, event: CoreEventInput, opts: 
     // frame that still holds a connection hears nothing of them).
     if (RUNNING_ONLY_EVENTS.has(spec.type) && PLUGIN_ROLES.includes(conn.role) && r.pluginRunning?.(pluginOf(conn)!) !== true) continue;
     if (opts.to !== undefined && !opts.to(conn)) continue;
-    if (opts.exceptDevice !== undefined && deviceOfConn(conn) === opts.exceptDevice) continue;
+    if (opts.exceptDevice !== undefined) {
+      const device = deviceOfConn(conn);
+      if (device !== undefined && opts.exceptDevice(device)) continue;
+    }
     if (opts.forPlugin !== undefined && PLUGIN_ROLES.includes(conn.role)) {
       const who = pluginOf(conn);
       if (who === undefined || !opts.forPlugin(who, r.pluginCapabilities?.(who) ?? [])) continue;

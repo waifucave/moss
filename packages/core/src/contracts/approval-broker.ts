@@ -147,6 +147,11 @@ export interface ApprovalRequest {
    *  `card.list`, `card.get`, the events or the replay), and can never ANSWER it, whoever relays the answer. Without this, a lost
    *  phone that is being removed could deny its own removal. */
   aboutDevice?: string;
+  /** The card is for a computer to answer, never a phone (the removal of a device, the owner's ruling 2026-11-24: a phone with both
+   *  apps paired is two devices, and whoever holds it holds both, so one app could deny the card that removes the other). Only a
+   *  device the engine's own registry records as a computer may see or answer it (never what the answering device says it is), or
+   *  `askedBy`, the device whose own request raised it. This computer's own app is always allowed. `aboutDevice` still never may. */
+  computersOnly?: { askedBy?: string };
   /** A plugin's `confirm` or OK: whose. */
   pluginId?: string;
   /** A call to a plugin's tool: the plugin whose server the router binds it to (set by the core's approval check, never
@@ -271,6 +276,8 @@ export interface CardRecord {
   resolvedAt?: number;
   /** `ApprovalRequest.aboutDevice`, kept with the record. */
   aboutDevice?: string;
+  /** `ApprovalRequest.computersOnly`, kept with the record. */
+  computersOnly?: { askedBy?: string };
 }
 
 export interface SavedRule {
@@ -302,6 +309,11 @@ export interface ApprovalBroker {
   get(cardId: string): CardRecord | undefined;
   /** The device a card is about (`ApprovalRequest.aboutDevice`), pending or resolved: what a door that sends cards to a device checks. */
   aboutDevice(cardId: string): string | undefined;
+  /** Whether a paired device may be sent this card, see it in a list, or answer it (pending or resolved): false for the device
+   *  it is about, and, for a computers-only card, for any device the registry doesn't record as a computer unless its own
+   *  request raised the card. An unknown card, and `undefined` (a connection on this computer), are always allowed: the
+   *  broker's own answer says what is wrong with them. */
+  answerableBy(cardId: string, device: string | undefined): boolean;
   /** Pending cards without their text (`cardMetaOf`), for plugins with `approvals`. */
   pending(computer?: string): CardMeta[];
   /** Mints the channel this card's sealed frame answers on (`card.frame`); undefined once it isn't pending. */
@@ -492,4 +504,20 @@ export async function verifySignedAnswer(
   const input = cardAnswerSigningInput({ id: card.id, hash: card.hash, option: s.option, at: s.at, children: s.children ?? [] });
   if (!signature || !(await c.devices.verifyAnswer(s.device, new TextEncoder().encode(input), signature))) return "bad-signature";
   return c.ledger.claim(card.id) ? "ok" : "used";
+}
+
+
+/** The kinds of paired device that are computers (`DeviceKind`): the ones the person works at. A phone, a browser extension and a
+ *  cloud folder are not; a device the registry doesn't know is not either. */
+export const COMPUTER_DEVICE_KINDS: readonly string[] = ["desktop", "server"];
+
+/** Whether `device` may be sent a card, see it or answer it. `kindOf` is the engine's own device registry, never what the device
+ *  says it is. `undefined` is a connection on this computer, always allowed here. */
+export function deviceMayHaveCard(req: Pick<ApprovalRequest, "aboutDevice" | "computersOnly">, device: string | undefined, kindOf: ((device: string) => string | undefined) | undefined): boolean {
+  if (device === undefined) return true;
+  if (req.aboutDevice === device) return false;
+  const rule = req.computersOnly;
+  if (rule === undefined || rule.askedBy === device) return true;
+  const kind = kindOf?.(device);
+  return kind !== undefined && COMPUTER_DEVICE_KINDS.includes(kind);
 }

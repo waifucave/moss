@@ -742,6 +742,21 @@ describe("a folder that can't be moved away is never left behind untracked", () 
     m.stager.close();
   });
 
+  test("a `.drop` swapped for a link to a folder is never read or cleared by the tidy: what it points at is untouched", () => {
+    const m = make();
+    // Another folder holding an entry named like ours; `.drop` is a link onto it (a session can write the root's children).
+    const elsewhere = join(tempDir(), "elsewhere");
+    mkdirSync(join(elsewhere, "drop-victim"), { recursive: true });
+    writeFileSync(join(elsewhere, "drop-victim", "keep.txt"), "mine");
+    symlinkSync(elsewhere, join(m.root, ".drop"));
+    // A cancel ends in the tidy (a coding file's removal does).
+    m.stager.stage(who, target, { upload: m.sent.upload, cancel: true });
+    m.stager.sweep();
+    expect(readFileSync(join(elsewhere, "drop-victim", "keep.txt"), "utf8")).toBe("mine");
+    expect(lstatSync(join(m.root, ".drop")).isSymbolicLink()).toBe(true);
+    m.stager.close();
+  });
+
   test("a move that fails everywhere keeps the record (no message can name the file) and the next sweep retries and finishes it", () => {
     let broken = true;
     const m = make((from, to) => { if (broken) throw Object.assign(new Error("io"), { code: "EIO" }); renameSync(from, to); });
