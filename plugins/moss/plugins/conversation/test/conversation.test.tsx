@@ -206,6 +206,18 @@ describe("user and bot messages", () => {
     expect(onOpenLink).toHaveBeenLastCalledWith("https://example.com/p.png");
   });
 
+  test("a link whose words are not its address shows where it goes, beside the words, before it opens", () => {
+    const onOpenLink = mock((_url: string) => undefined);
+    const { container } = renderView({ items: [bot(at(0, 1, 0), "[your bank](https://evil.example/login) and <https://moss.dev/a> and [moss.dev](https://moss.dev/) and [mail me](mailto:hi@moss.dev)")], onOpenLink });
+    const hosts = [...container.querySelectorAll("[data-link-host]")].map((e) => e.textContent);
+    expect(hosts).toEqual([" (evil.example)", " (hi@moss.dev)"]);
+    // The words are the link; the host beside them is not one, and the target also shows as the title.
+    const bank = [...container.querySelectorAll("a")].find((a) => a.textContent === "your bank")!;
+    expect(bank.getAttribute("title")).toBe("https://evil.example/login");
+    fireEvent.click(bank);
+    expect(onOpenLink).toHaveBeenCalledWith("https://evil.example/login");
+  });
+
   test("one link rule: only absolute http, https and mailto reach the host; footnotes stay inside", () => {
     const onOpenLink = mock((_url: string) => undefined);
     const { container } = renderView({

@@ -33,8 +33,8 @@ function Answered({ item }: { item: QuestionItem }) {
         <span>{`${S.questionAnswered}${on}`}</span>
       </div>
       <dl className="cl-conv-question__answers">
-        {item.questions.map((q) => (
-          <div key={q.question} className="cl-conv-question__answer">
+        {item.questions.map((q, i) => (
+          <div key={i} className="cl-conv-question__answer">
             <dt>{q.question}</dt>
             <dd>{item.answers?.[q.question] ?? ""}</dd>
           </div>
@@ -185,7 +185,7 @@ export function QuestionMessage({
       </div>
       {item.questions.map((question, i) => (
         <QuestionFields
-          key={question.question}
+          key={i}
           question={question}
           draft={drafts[i] ?? emptyDraft()}
           onDraft={(draft) => setDrafts((all) => all.map((d, j) => (j === i ? draft : d)))}

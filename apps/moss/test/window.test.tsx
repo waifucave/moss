@@ -136,6 +136,8 @@ describe("MOSS's window", () => {
     await act(async () => { links[0]!.click(); links[1]!.click(); await new Promise((res) => setTimeout(res, 10)); });
     expect(opened).toEqual(["https://example.com/docs", "mailto:a@example.com"]);
     expect([...bubble.querySelectorAll("[data-blocked]")].map((a) => a.textContent)).toEqual(["a script"]);
+    // The target is never hidden behind other words: the host follows the words, muted, before anything opens.
+    expect([...bubble.querySelectorAll("[data-link-host]")].map((e) => e.textContent)).toEqual([" (example.com)", " (a@example.com)"]);
     expect(r.container.querySelector("script")).toBeNull();
     r.unmount();
   });
@@ -215,6 +217,18 @@ describe("MOSS's window", () => {
     expect(card.querySelector("input[type=text]")).not.toBeNull();
     // Nothing is sent before the person chooses.
     expect(card.querySelector<HTMLButtonElement>(".cl-conv-question__send")!.disabled).toBe(true);
+    r.unmount();
+  });
+
+  test("two questions with the same words are two sets of fields: choosing in one leaves the other alone", async () => {
+    const base = question();
+    const same = { ...base, question: { ...base.question!, questions: [base.question!.questions[0]!, base.question!.questions[0]!] } };
+    const r = await drawKite(view(), [same]);
+    const fields = () => [...r.container.querySelectorAll(".cl-conv-question__field")];
+    expect(fields().length).toBe(2);
+    await press(fields()[0]!.querySelectorAll(".cl-conv-question__option input")[2]!);
+    const checked = fields().map((f) => [...f.querySelectorAll<HTMLInputElement>(".cl-conv-question__option input")].filter((i) => i.checked).length);
+    expect(checked).toEqual([1, 0]);
     r.unmount();
   });
 

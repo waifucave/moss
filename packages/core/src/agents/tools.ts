@@ -173,7 +173,7 @@ export function agentToolDefs(manager: AgentManager, caller: AgentToolCaller, op
     },
     {
       name: "AgentModels",
-      description: "The models a coding agent backend offers (its own ids, its efforts and its default), for the `model` of Agent. It starts nothing and costs nothing; an agent whose models aren't known until it runs says so, and then Agent takes no model (leave it out) or a model you are told.",
+      description: "The models a coding agent backend offers (its own ids, its efforts and its default), for the `model` of Agent. It starts no session and calls no model provider, but the first look at an agent may run that agent's own list command as a local child process; an agent whose models aren't known until it runs says so, and then Agent takes no model (leave it out) or a model you are told.",
       inputSchema: {
         type: "object",
         properties: { backend: backends.length > 0 ? { type: "string", enum: backends, description: "Which agent." } : { type: "string", description: "Which agent (an agent backend's id)." } },

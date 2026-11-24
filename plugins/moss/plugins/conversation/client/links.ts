@@ -26,6 +26,26 @@ export function safeLink(raw: string | undefined | null): string | undefined {
   return url.href;
 }
 
+/** Where a safe link goes, for the reader: an http(s) link's host (with a port if it has one), a mailto link's address. */
+export function targetOf(url: string): string | undefined {
+  try {
+    const u = new URL(url);
+    if (u.protocol === "mailto:") return decodeURIComponent(u.pathname);
+    return u.host.length > 0 ? u.host : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** True when the link's visible words already say its target (the URL itself, or just its host), so no host is added beside it. */
+export function wordsShowTarget(words: string, url: string): boolean {
+  const target = targetOf(url);
+  const plain = words.trim().toLowerCase().replace(/^(https?:\/\/|mailto:)/, "").replace(/\/+$/, "");
+  if (plain === "") return false;
+  const href = url.toLowerCase().replace(/^(https?:\/\/|mailto:)/, "").replace(/\/+$/, "");
+  return plain === href || (target !== undefined && plain === target.toLowerCase());
+}
+
 /** `#fragment` targets: footnotes and their back-references. */
 export function fragmentOf(raw: string | undefined | null): string | undefined {
   if (typeof raw !== "string" || !raw.startsWith("#") || raw.length < 2) return undefined;
