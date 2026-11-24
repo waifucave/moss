@@ -1,6 +1,7 @@
-import { mkdirSync, readFileSync, readdirSync, writeFileSync, appendFileSync, unlinkSync, existsSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, writeFileSync, unlinkSync, existsSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { TrustStore } from "./trust";
+import { appendRotating } from "../append-log";
 import { projectScopeTrusted } from "../runtime-sdk/run-home-input";
 
 export type MemoryScope = "user" | "project";
@@ -195,7 +196,7 @@ export class MemoryStore {
     const obj: MemoryAuditLine = { ts: line.ts, source: line.source, scope: line.scope, action: line.action, name: line.name };
     if (line.sessionId !== undefined) obj.sessionId = line.sessionId;
     if (line.description !== undefined) obj.description = line.description;
-    appendFileSync(auditPath, JSON.stringify(obj) + "\n", "utf8");
+    appendRotating(auditPath, JSON.stringify(obj) + "\n");
   }
 
   private doWrite(scope: MemoryScope, fact: MemoryFact, meta: { sessionId?: string; source: "tool" | "rpc" }, cwd?: string): MemoryResult {

@@ -1,4 +1,5 @@
-import { appendFileSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
+import { appendRotating } from "../append-log";
 import { dirname } from "node:path";
 
 /** Append-only JSONL audit trail for the peripheral lease machinery (spec §A1: "every
@@ -25,7 +26,7 @@ export class AuditLog {
         mkdirSync(dirname(this.path), { recursive: true });
         this.dirEnsured = true;
       }
-      appendFileSync(this.path, JSON.stringify({ ...entry, ts: Date.now() }) + "\n");
+      appendRotating(this.path, JSON.stringify({ ...entry, ts: Date.now() }) + "\n");
     } catch (e) {
       console.error(`[audit] write failed: ${e instanceof Error ? e.message : String(e)}`);
     }

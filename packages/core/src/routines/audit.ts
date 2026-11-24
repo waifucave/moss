@@ -1,4 +1,5 @@
-import { appendFileSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
+import { appendRotating } from "../append-log";
 import { dirname, join } from "node:path";
 import { resolveMossHome } from "../moss-dir";
 
@@ -24,7 +25,7 @@ export class RoutineAuditLog {
         mkdirSync(dirname(this.path), { recursive: true });
         this.dirEnsured = true;
       }
-      appendFileSync(this.path, JSON.stringify({ ...entry, ts: Date.now() }) + "\n");
+      appendRotating(this.path, JSON.stringify({ ...entry, ts: Date.now() }) + "\n");
     } catch (e) {
       console.error(`[routines-audit] write failed: ${e instanceof Error ? e.message : String(e)}`);
     }

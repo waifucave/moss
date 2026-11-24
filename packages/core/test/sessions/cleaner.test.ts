@@ -587,7 +587,7 @@ describe("SessionCleaner — what is NOT railed (each rail's negative)", () => {
     expect(provider.requests).toHaveLength(1); // it reached the judge...
     expect(store.list().some((r) => r.sessionId === id)).toBe(false); // ...and the verdict landed
     expect(cleanerLines(home)[0]).toEqual({
-      sessionId: id, title: "Casual greeting exchange", reason: "trivial exchange",
+      sessionId: id, reason: "trivial exchange",
       date: new Date(agedNow()).toISOString(),
     });
     store.close();
@@ -1121,7 +1121,8 @@ describe("SessionCleaner — resilience (never throws; one bad candidate never a
     store.close();
   });
 
-  test("the audit line carries the session's title when it had one", async () => {
+  // The deletion lane, item 6: the record of a deleted session keeps no title (it is made from what the person wrote).
+  test("the audit line never carries the session's title, even when it had one", async () => {
     const { home, store } = freshStore();
     const id = hungSession(store);
     store.append(id, { type: "session_titled", sessionId: id, threadId: "main", title: "Unanswered question" });
@@ -1129,7 +1130,7 @@ describe("SessionCleaner — resilience (never throws; one bad candidate never a
     await makeCleaner(store, home, deleteVotingJudge(), { now: agedNow }).runPass();
 
     expect(cleanerLines(home)[0]).toEqual({
-      sessionId: id, title: "Unanswered question", reason: "hung: no reply", date: new Date(agedNow()).toISOString(),
+      sessionId: id, reason: "hung: no reply", date: new Date(agedNow()).toISOString(),
     });
     store.close();
   });

@@ -66,9 +66,7 @@ export function reapEmptySessions(deps: ReaperDeps): string[] {
   }
 
   for (const sessionId of candidates) {
-    let title: string | undefined;
     try {
-      title = deps.store.getTitle(sessionId) ?? undefined; // read BEFORE delete — the row won't exist after
       deps.store.deleteSession(sessionId);
     } catch (err) {
       console.error(`[reaper] failed to reap ${sessionId}:`, err);
@@ -83,7 +81,7 @@ export function reapEmptySessions(deps: ReaperDeps): string[] {
       console.error(`[reaper] runtime-state delete hook failed for ${sessionId}:`, err);
     }
     try {
-      appendCleanerLog(deps.home, { sessionId, title, reason: "reaped: empty", date: new Date(now()).toISOString() });
+      appendCleanerLog(deps.home, { sessionId, reason: "reaped: empty", date: new Date(now()).toISOString() });
     } catch (err) {
       console.error(`[reaper] audit log append failed for ${sessionId}:`, err);
     }

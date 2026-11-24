@@ -467,9 +467,7 @@ export class SessionCleaner {
    *  failed log write is a warning and never a reason to undo or retry it. Returns whether the
    *  delete itself succeeded. */
   private deleteAndAudit(sessionId: string, reason: string, nowMs: number): boolean {
-    let title: string | undefined;
     try {
-      title = this.deps.store.getTitle(sessionId) ?? undefined; // read BEFORE delete — the row is gone after
       this.deps.store.deleteSession(sessionId);
     } catch (err) {
       console.error(`[cleaner] failed to delete ${sessionId}:`, err);
@@ -482,7 +480,7 @@ export class SessionCleaner {
       console.error(`[cleaner] runtime-state delete hook failed for ${sessionId}:`, err);
     }
     try {
-      appendCleanerLog(this.deps.home, { sessionId, title, reason, date: new Date(nowMs).toISOString() });
+      appendCleanerLog(this.deps.home, { sessionId, reason, date: new Date(nowMs).toISOString() });
     } catch (err) {
       console.error(`[cleaner] audit log append failed for ${sessionId}:`, err);
     }

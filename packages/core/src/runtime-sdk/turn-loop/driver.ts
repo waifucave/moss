@@ -33,6 +33,7 @@
 //   main-loop request's whole prompt, cache included (lane D's ask).
 // * **Records** are the inherited session events, projected from the runtime's frames by the core's projector: tool
 //   calls and results, the reply, thinking and the streaming deltas (which the host never logs).
+import { runtimeStderrSink } from "./runtime-stderr";
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { reservedMcpServerNames } from "../../capabilities/names";
@@ -925,7 +926,9 @@ export class BotSessionDriver implements SessionDriver {
       permissionMode: "default",
       abortController: abort,
       includePartialMessages: true,
-      stderr: (chunk) => this.#log(`bot driver ${ctx.sessionId}: runtime: ${chunk.trimEnd()}`),
+      // The runtime's stderr is the session's content (an error echoing a request, a tool's output): kept with the session's
+      // runtime state and deleted with it, never copied into the engine log (the deletion lane, item 6).
+      stderr: runtimeStderrSink({ home: this.#d.home, sessionId: ctx.sessionId, log: this.#log }),
       additionalDirectories: [ctx.paths.root],
       // The host's sandbox, or the runtime's default floor, with the bot's own floor over it (`botSandbox`: `BOT_SANDBOX`
       // last, the file tools held to the write roots): nothing a host asks for turns it off. A command of a bot's own

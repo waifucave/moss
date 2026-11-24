@@ -1,16 +1,13 @@
-import { appendFileSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { appendRotating } from "../append-log";
 
 /** session-activity-hygiene T6 (spec §2): one audit line per session the empty-session reaper (and,
- *  T7, the session cleaner) deletes — the ONLY record that a session ever existed once it's gone.
- *  `title` is the store's OWN `getTitle` result at the moment of deletion (may be absent — most
- *  reaped sessions never got far enough to be titled); omitted from the line entirely rather than
- *  written as `null` (a plain `JSON.stringify` on an `undefined` property already does this, so
- *  there's nothing extra to do here — pinned by reaper.test.ts so a future refactor can't
- *  regress it). */
+ *  T7, the session cleaner) deletes: how many were deleted, when and why. No title (the deletion lane, item 6): a
+ *  session's title is made from what the person wrote, and a record of a deleted session must not keep it. The line is
+ *  built field by field, so nothing else a caller passes reaches it. */
 export interface CleanerLogEntry {
   sessionId: string;
-  title?: string;
   reason: string;
   date: string;
 }
@@ -28,5 +25,6 @@ export interface CleanerLogEntry {
  *  tested on its own terms, and gives T7's cleaner the identical seam to wrap the same way. */
 export function appendCleanerLog(home: string, entry: CleanerLogEntry): void {
   mkdirSync(home, { recursive: true });
-  appendFileSync(join(home, "cleaner.jsonl"), JSON.stringify(entry) + "\n");
+  const line = { sessionId: entry.sessionId, reason: entry.reason, date: entry.date };
+  appendRotating(join(home, "cleaner.jsonl"), JSON.stringify(line) + "\n");
 }

@@ -329,12 +329,12 @@ describe("appendCleanerLog (session-activity-hygiene T6)", () => {
     const home = mkdtempSync(join(tmpdir(), "moss-reaper-test-"));
     const logPath = join(home, "cleaner.jsonl");
     expect(existsSync(logPath)).toBe(false);
-    appendCleanerLog(home, { sessionId: "s_abc123", title: "Abandoned chat", reason: "reaped: empty", date: "2026-08-02T00:00:00.000Z" });
+    appendCleanerLog(home, { sessionId: "s_abc123", reason: "reaped: empty", date: "2026-08-02T00:00:00.000Z" });
     expect(existsSync(logPath)).toBe(true);
     const lines = readFileSync(logPath, "utf8").trim().split("\n");
     expect(lines).toHaveLength(1);
     expect(JSON.parse(lines[0]!)).toEqual({
-      sessionId: "s_abc123", title: "Abandoned chat", reason: "reaped: empty", date: "2026-08-02T00:00:00.000Z",
+      sessionId: "s_abc123", reason: "reaped: empty", date: "2026-08-02T00:00:00.000Z",
     });
   });
 
@@ -376,7 +376,7 @@ describe("reapEmptySessions (session-activity-hygiene T6)", () => {
     expect(store.list().some((r) => r.sessionId === id)).toBe(false);
     const lines = cleanerLines(home);
     expect(lines).toEqual([
-      { sessionId: id, title: "Untitled experiment", reason: "reaped: empty", date: new Date(nowMs).toISOString() },
+      { sessionId: id, reason: "reaped: empty", date: new Date(nowMs).toISOString() },
     ]);
     store.close();
   });
