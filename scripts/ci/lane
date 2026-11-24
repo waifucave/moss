@@ -33,6 +33,9 @@ sha="$(git rev-parse HEAD)"
 [ "$branch" != HEAD ] || die "a detached HEAD: check out your lane's branch"
 case "$branch" in main) die "this is main: CI for main runs through the merge queue" ;; esac
 base_ref="${LANE_BASE_REF:-origin/lane-int/moss}"
+# What a lane's changes are counted from can only be an integration branch or main: `LANE_BASE_REF=HEAD` (or a branch of your own) counts nothing and
+# would start a run that checks nothing.
+case "$base_ref" in origin/lane-int/?*|origin/main) ;; *) die "LANE_BASE_REF is $base_ref: it can only be origin/lane-int/<name> or origin/main (a base that is your own branch counts no change)" ;; esac
 
 # The newest run of CI for this branch at this commit (any event: a push to lane-int/* or a manual run).
 find_run() {
@@ -73,6 +76,7 @@ print_scope() {
   lines="$(scope_lines "$id")"
   if [ -n "$lines" ]; then
     printf '%s\n' "$lines"
+    case "$lines" in *"(0 file(s) changed"*) echo "lane: WARNING: this run counted ZERO changed files, so it checked almost nothing; its green means nothing. Start it again from a branch that has your commits (scripts/ci/lane start)." ;; esac
     case "$lines" in *"SCOPED RUN"*) echo "lane: this is a SCOPED run: an area listed as skipped did not run because your changes do not touch it; the integration branch's own run covers everything. scripts/ci/lane start --all runs every job." ;; esac
   else
     echo "scope: not reported by this run (it ran before scoped starts, or the annotation is not readable): read it as a full run only if it was started with --all"
@@ -109,6 +113,11 @@ case "$cmd" in
           fi
           top="$(git rev-parse --show-toplevel)"
           plan=("$top/scripts/pinned-bun" "$top/scripts/ci/plan.ts")
+          # A merge-base equal to HEAD (nothing of yours since it) counts no file: a scoped run over nothing runs nothing, so it is every job instead.
+          if [ -n "$mb" ] && [ "$scope" = scoped ] && [ -z "$(git diff --name-only --no-renames "$mb" HEAD 2>/dev/null | head -1)" ]; then
+            say "NO CHANGED FILE since the merge-base with $base_ref (${mb:0:9}): a scoped run over nothing would check nothing, so this run starts EVERY job"
+            mb=""
+          fi
           if [ -n "$mb" ]; then
             # The base goes with --all too: the PARKED areas (swift, cowork) take only their own sources from the diff, whatever the scope.
             args+=(-f "scope=$scope" -f "base=$mb")
@@ -127,6 +136,12 @@ case "$cmd" in
             plan+=(--all --parked)
           fi
           [ "$parked" = true ] && args+=(-f parked=true)
+          # Said on EVERY start, so --all is never read as "every job": the parked areas run for their own sources only.
+          if [ "$parked" = true ]; then
+            say "parked areas (swift: the old Chrome extension's native host; cowork: Cowork's launcher and libkrun queue): INCLUDED (--parked, or a base that could not be used)"
+          else
+            say "parked areas (swift: the old Chrome extension's native host; cowork: Cowork's launcher and libkrun queue): run ONLY when their own sources changed since the merge-base, --all or not; --parked runs them"
+          fi
           # What it will start, from ci.yml's own conditions (best effort: the run's own scope line is the record).
           if [ -x "$top/scripts/pinned-bun" ] && [ -f "$top/scripts/ci/plan.ts" ]; then "${plan[@]}" 2>/dev/null | sed 's/^/lane: this run: /' >&2 || true; fi
         else

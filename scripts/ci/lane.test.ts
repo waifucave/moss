@@ -115,7 +115,8 @@ describe("lane start", () => {
 
     writeFileSync(join(dir, "gh.log"), "");
     writeFileSync(join(fixDir, "runlist.json"), "[]");
-    lane(["start", "--all"]);
+    // every start says what --all leaves out
+    expect(lane(["start", "--all"]).err).toContain("parked areas (swift: the old Chrome extension's native host; cowork: Cowork's launcher and libkrun queue): run ONLY when their own sources changed");
     // --all runs every area but the parked ones; the base goes too, so those take their own sources from the lane's diff.
     expect(readFileSync(join(dir, "gh.log"), "utf8")).toContain(`-f only=all -f scope=all -f base=${mergeBase}`);
     expect(readFileSync(join(dir, "gh.log"), "utf8")).not.toContain("parked=true");
@@ -134,9 +135,42 @@ describe("lane start", () => {
   test("with no integration branch to count from, it starts everything (fail closed)", () => {
     writeFileSync(join(dir, "gh.log"), "");
     writeFileSync(join(fixDir, "runlist.json"), "[]");
-    const r = lane(["start"], { LANE_BASE_REF: "origin/no-such-branch" });
-    expect(r.err).toContain("no usable merge-base with origin/no-such-branch: running every job");
+    const r = lane(["start"], { LANE_BASE_REF: "origin/lane-int/no-such-branch" });
+    expect(r.err).toContain("no usable merge-base with origin/lane-int/no-such-branch: running every job");
     expect(readFileSync(join(dir, "gh.log"), "utf8")).toContain("-f scope=all -f parked=true");
+  });
+
+  test("what the changes are counted from can only be an integration branch or main: HEAD, your own branch and any other ref are refused", () => {
+    for (const ref of ["HEAD", "origin/lane/x", "lane/x", "origin/lane-int/", "origin/other", "origin/main-not"]) {
+      writeFileSync(join(dir, "gh.log"), "");
+      const r = lane(["start"], { LANE_BASE_REF: ref });
+      expect([ref, r.code]).toEqual([ref, 2]);
+      expect(r.err).toContain("it can only be origin/lane-int/<name> or origin/main");
+      expect(readFileSync(join(dir, "gh.log"), "utf8")).not.toContain("workflow run");
+    }
+    writeFileSync(join(fixDir, "runlist.json"), "[]");
+    expect(lane(["start"], { LANE_BASE_REF: "origin/main" }).err).not.toContain("it can only be");
+  });
+
+  test("a branch with no change of its own since the merge-base starts EVERY job and says so (a scoped run over nothing checks nothing)", () => {
+    sh(["git", "checkout", "-b", "lane/same", "origin/lane-int/moss"], repo);
+    try {
+      const same = sh(["git", "rev-parse", "HEAD"], repo);
+      writeFileSync(join(dir, "gh.log"), "");
+      writeFileSync(join(fixDir, "runlist.json"), "[]");
+      const r = lane(["start"], { FAKE_SHA: same });
+      expect(r.err).toContain("NO CHANGED FILE since the merge-base");
+      expect(r.err).toContain("starts EVERY job");
+      const log = readFileSync(join(dir, "gh.log"), "utf8");
+      expect(log).toContain("-f scope=all");
+      expect(log).not.toContain("base=");
+    } finally { sh(["git", "checkout", "lane/x"], repo); }
+  });
+
+  test("lane wait warns loudly over a run that counted zero changed files", () => {
+    fixtures({ scope: "SCOPED RUN: 1 of 22 areas ran, 21 skipped as untouched; 0 of 25 acceptance units (0 file(s) changed since abc; a manual scoped run)" });
+    const r = lane(["wait", "100"]);
+    expect(r.out).toContain("WARNING: this run counted ZERO changed files");
   });
 
   test("a shallow checkout starts everything and says why: its merge-base cannot be trusted", () => {

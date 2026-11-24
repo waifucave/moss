@@ -8,6 +8,8 @@
 //                                            integration branch); a revision that cannot be read runs every area
 //   bun scripts/ci-changes.ts --all          every area (a push to an integration branch, a manual run of everything)
 //   bun scripts/ci-changes.ts --only-acceptance   no area but the acceptance run, every unit of it (a manual `only: acceptance`)
+//   --refuse-empty                           a diff of no file is every area, not none (a lane's scoped run)
+//   --queue                                  a pull request or a merge-queue group: the new map UNIONED with the frozen old one (ci/queue-map.ts)
 //   --why <text>                             what the scope line says about why (the event that chose it)
 //
 // Prints `<area>=true|false` per area, `acceptance_units=<json list>` (the acceptance units the run starts) and the scope
@@ -15,6 +17,7 @@
 // the same lines to $GITHUB_OUTPUT when it is set.
 import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
+import { legacyAreasFor } from "./ci/queue-map";
 import { acceptanceUnitsFor, ACCEPTANCE_ALL } from "./ci/acceptance-scope";
 import { ON_GITHUB } from "./ci/acceptance-units";
 
@@ -31,11 +34,38 @@ type Pattern = string;
 export const CI_GLOBAL: readonly Pattern[] = [
   ".github/workflows/ci.yml", "scripts/ci-changes.ts", ".bun-version", ".bun-sha256", "package.json", "bun.lock", "pnpm-lock.yaml",
   "pnpm-workspace.yaml", "tsconfig.base.json", "bunfig.toml", ".npmrc", ".gitattributes",
+  // the scoping itself: what ci-changes.ts imports (the acceptance units' list and the step-to-unit map) and the lane tool that starts and
+  // previews a scoped run. A change to how a run is sized is checked by the largest run.
+  "scripts/ci/acceptance-units.ts", "scripts/ci/acceptance-scope.ts", "scripts/ci/queue-map.ts", "scripts/ci/test-reads.ts", "scripts/ci/plan.ts", "scripts/ci/lane",
 ];
+
+/** The Windows jobs' own definition: the called workflow and its PowerShell. It starts `windows-fence` (core, cli) and `machine-windows` (workspaces, daemon, app). */
+const WINDOWS_CI: readonly Pattern[] = [".github/workflows/windows-fence.yml", "scripts/ci/windows-fence/"];
 
 /** Paths no job reads: documents and the repository's own housekeeping. A change to only these runs no area (the names-and-layout
  *  checks and the gate run always). Everything else must be in an area, or it runs every area. */
-export const CI_INERT: readonly Pattern[] = ["docs/", "*.md", "LICENSE", ".gitignore"];
+// docs/ is inert but for what a test reads: the live gates' page (the app's test asserts it equals its generator's output), the guides the core's
+// tests pin (usage, release, settings), the Cowork specs and notes its tests read. A `!` takes those back out.
+export const CI_INERT: readonly Pattern[] = ["docs/", "*.md", "LICENSE", ".gitignore", "!docs/live-gates/", "!docs/claude/", "!docs/RELEASE-NOTES-cowork-schema.md", "!docs/cowork-*.md"];
+
+/** What the tests READ outside their own folder (scripts/ci/test-reads.ts finds them; scripts/ci/test-reads.test.ts holds this to it): each
+ *  list is added to the area whose job runs those tests, so a change to a file a test reads starts the test. */
+const READ_BY_CORE: readonly Pattern[] = [
+  // the plugins, the scripts and the examples are walked by the core's own scans (the plugin reach, the daemon-spawn pin over scripts/, the SDK examples)
+  "plugins/", "scripts/", "examples/", "packages/", "assets/brand/moss-code/", "apple/", "docs/claude/", "docs/RELEASE-NOTES-cowork-schema.md", "docs/cowork-*.md",
+  "apps/desktop/package.json", "apps/desktop/src/main/browser/network.ts", "apps/desktop/src/main/ui/", "packaging/macos/entitlements.mac.plist", "VERSION", "VERSIONS.json", ".github/workflows/",
+];
+const READ_BY_SCRIPTS: readonly Pattern[] = [
+  // brand-icons.test.ts reads the theme and the sidebar's, the conversation's and the plugin index's marks; packaging.test.ts checks every bundled plugin's moss.json;
+  // the release tests read the bundled plugins; the preview tests read the canvas and the theme
+  "plugins/",
+];
+const READ_BY_SCRIPTSMAC: readonly Pattern[] = [
+  // the helper embed test reads the helper's own version, the Cowork bundle tests its pins and sources, the runtimes test the pins file and the core's runtime-sdk
+  "VERSIONS.json", "apple/ComputerUse/VERSION", "apple/Cowork/", "apple/Winter/project.yml", "packages/cli/src/", "packages/core/src/", "packages/core/test/cowork/",
+];
+const READ_BY_MACHINE: readonly Pattern[] = ["docs/live-gates/", "native/input/macos/screen.mm"];
+const READ_BY_EXTENSION: readonly Pattern[] = ["packages/core/src/computer-use/browser/"];
 
 // The update feed's check is in the daemon's binary (packages/cli's `__verify-feed`) and, after E-M1, the app's updater.
 const CORE: readonly Pattern[] = ["packages/core/", "packages/protocol/", "packages/plugin-sdk/", "packages/update-feed/"];
@@ -44,10 +74,10 @@ const CORE: readonly Pattern[] = ["packages/core/", "packages/protocol/", "packa
 export const CI_AREAS: Readonly<Record<CiArea, readonly Pattern[]>> = {
   // every workspace package's own tests, on all four machines
   // (the iPhone apps and the phone core are no workspace packages: they have their own workflows, so they take no machine here)
-  workspaces: ["packages/", "apps/desktop/", "apps/moss/", "apps/*/package.json", "plugins/", "services/", "native/*/package.json", "examples/", "spikes/", "scripts/workspaces.ts", "scripts/with-private-secret-service.sh"],
-  daemon: [...CORE, "packages/cli/", "scripts/build-daemon.ts", "scripts/seal-bun-doors.ts", "scripts/verify-sealed-core.ts", "scripts/moss-core.entitlements"],
+  workspaces: ["packages/", "apps/desktop/", "apps/moss/", "apps/*/package.json", "plugins/", "services/", "native/*/package.json", "examples/", "spikes/", "scripts/workspaces.ts", "scripts/with-private-secret-service.sh", ...READ_BY_MACHINE, ...WINDOWS_CI],
+  daemon: [...CORE, "packages/cli/", "scripts/build-daemon.ts", "scripts/seal-bun-doors.ts", "scripts/verify-sealed-core.ts", "scripts/moss-core.entitlements", ...READ_BY_MACHINE, ...WINDOWS_CI],
   // the app, and what it loads: MOSS's own plugins and the plugin SDK's UI API (E-M1)
-  app: ["apps/desktop/", "apps/moss/", "plugins/moss/", "packages/plugin-sdk/", "packages/app-release/"],
+  app: ["apps/desktop/", "apps/moss/", "plugins/moss/", "packages/plugin-sdk/", "packages/app-release/", ...READ_BY_MACHINE, ...WINDOWS_CI],
   // the Linux packages: the app, its builder config, packaging/, the scripts that build them, and the daemon and the
   // link sidecar they carry (the job installs the deb and runs its `moss`)
   // (MOSS's packages are built beside MOSS Code's: its builder config, its host layout script and its icons)
@@ -60,11 +90,11 @@ export const CI_AREAS: Readonly<Record<CiArea, readonly Pattern[]>> = {
   gallery: ["plugins/", "packages/plugin-sdk/", "packages/protocol/"],
   typecheck: ["packages/", "apps/desktop/", "apps/moss/", "plugins/", "services/", "examples/", "scripts/", "**/tsconfig*.json"],
   lockfiles: ["**/package.json"],
-  extension: ["extensions/"],
+  extension: ["extensions/", ...READ_BY_EXTENSION],
   // lane A's model plugins: the core's catalog and generator check reads them; the core's account tests import the
   // services' shared account-token check and the harness's sign-in stub
-  core: [...CORE, "plugins/moss/plugins/model-*/**/*", "services/shared/", "packages/test-harness/src/signin-stub.ts"],
-  cli: [...CORE, "packages/cli/"],
+  core: [...CORE, "plugins/moss/plugins/model-*/**/*", "services/shared/", "packages/test-harness/src/signin-stub.ts", ...READ_BY_CORE, ...WINDOWS_CI],
+  cli: [...CORE, "packages/cli/", ...WINDOWS_CI],
   // the repo scripts' tests read the core, the CLI, the app, the release inputs and the workflows; its job also runs the
   // repo-wide source scans (the native channel's anti-wiring test reads every package's src/ and scripts/), so any
   // package's source runs it: a CLI-only change that imports from the core once got past the core's skipped shards
@@ -72,11 +102,11 @@ export const CI_AREAS: Readonly<Record<CiArea, readonly Pattern[]>> = {
   // workflows build them), the brand assets, the relay's infrastructure files, the release notes and feed, and the vendored patches: the
   // scripts' tests (the brand icons, the release and packaging checks, the rename scan) read them, so a change to one runs that one Linux job.
   scripts: ["scripts/", "packages/core/", "packages/cli/", "packages/*/src/**/*", "apps/desktop/", "apps/moss/", "apps/ios/", "apple/", "packaging/", "VERSION", "VERSIONS.json", ".github/",
-    "native/sandbox/", "native/input/", "native/link-sidecar/", "native/phone-core/", "native/README.md", "assets/", "infra/", "releases/", "vendor/"],
+    "native/sandbox/", "native/input/", "native/link-sidecar/", "native/phone-core/", "native/README.md", "assets/", "infra/", "releases/", "vendor/", ...READ_BY_SCRIPTS],
   // the scripts' few macOS-only tests (scripts/**/*.darwin.test.ts, on a macOS runner): the scripts themselves only, so
   // a change under apple/ alone takes no macOS runner for them (a push to main still runs every area)
   // (not the acceptance harness and CI's own scripts: no `*.darwin.test.ts` reads them, and a macOS job per leg is the dear part of a lane's run)
-  scriptsmac: ["scripts/", "!scripts/acceptance/", "!scripts/ci/"],
+  scriptsmac: ["scripts/", "!scripts/acceptance/", "!scripts/ci/", ...READ_BY_SCRIPTSMAC],
   codegen: ["packages/protocol/"],
   // PARKED (see PARKED): the browser host's Swift tests (apple/ComputerUse/WinterBrowserHost), on a macOS runner: that folder and nothing
   // else. The old Mac app's kits left this repository.
@@ -178,6 +208,14 @@ export function areasFor(changed: readonly string[] | undefined, parked?: readon
   })) as Record<CiArea, boolean>;
 }
 
+/** What a pull request and the merge queue take: the UNION of the new map and the frozen old one (scripts/ci/queue-map.ts). A lane's own run is
+ *  scoped by the new map alone; main's gate never selects less than it did before lanes were scoped. */
+export function queueAreasFor(changed: readonly string[] | undefined, parked?: readonly string[] | "all"): Record<CiArea, boolean> {
+  const now = areasFor(changed, parked);
+  const old = legacyAreasFor(changed) as Partial<Record<CiArea, boolean>>;
+  return Object.fromEntries(CI_AREA_NAMES.map((a) => [a, now[a] || old[a] === true])) as Record<CiArea, boolean>;
+}
+
 /** The acceptance units (of ON_GITHUB) `changed` starts: every one for no diff, a path no list knows, or CI's own definition, the
  *  toolchain, the root manifest or a lockfile; else what scripts/ci/acceptance-scope.ts selects. */
 export function acceptanceUnits(changed: readonly string[] | undefined): string[] {
@@ -218,16 +256,23 @@ if (import.meta.main) {
   const onlyAcceptance = argv.includes("--only-acceptance");
   const base = flag("--base");
   const parkedBase = flag("--parked-base");
-  const changed = onlyAcceptance ? [] : argv.includes("--all") || base === undefined ? undefined : changedSince(base);
+  let changed = onlyAcceptance ? [] : argv.includes("--all") || base === undefined ? undefined : changedSince(base);
+  // `--refuse-empty` (a lane's scoped run): a base that counts NO changed file is not a scope, it is a mistake (the base is HEAD, or the lane has
+  // nothing of its own): the run starts every job (the parked ones too: not knowing is not a reason to skip) rather than a green over nothing.
+  const emptyDiff = changed !== undefined && !onlyAcceptance && changed.length === 0 && argv.includes("--refuse-empty");
+  if (emptyDiff) changed = undefined;
   // The parked areas (PARKED): their own sources in the diff, else nothing. A forced run (`--parked`), or a diff that could not be read
   // (a base this runner cannot fetch), runs them: not knowing is not a reason to skip.
   const parkedDiff = parkedBase === undefined ? undefined : changedSince(parkedBase);
-  const unreadable = (base !== undefined && !argv.includes("--all") && changed === undefined) || (parkedBase !== undefined && parkedDiff === undefined);
+  const unreadable = emptyDiff || (base !== undefined && !argv.includes("--all") && changed === undefined) || (parkedBase !== undefined && parkedDiff === undefined);
   const parked = argv.includes("--parked") || unreadable ? "all" : parkedDiff;
-  const areas: Record<CiArea, boolean> = onlyAcceptance ? { ...(Object.fromEntries(CI_AREA_NAMES.map((a) => [a, false])) as Record<CiArea, boolean>), acceptance: true } : areasFor(changed, parked);
+  // `--queue`: a pull request or a merge-queue group takes the old map too (queueAreasFor)
+  const areaMap = argv.includes("--queue") ? queueAreasFor : areasFor;
+  const areas: Record<CiArea, boolean> = onlyAcceptance ? { ...(Object.fromEntries(CI_AREA_NAMES.map((a) => [a, false])) as Record<CiArea, boolean>), acceptance: true } : areaMap(changed, parked);
   const units = onlyAcceptance ? [...ON_GITHUB] : areas.acceptance ? acceptanceUnits(changed) : [];
   let why = flag("--why") ?? (changed === undefined ? "no diff to go on" : "the diff decides");
-  if (base !== undefined && !argv.includes("--all") && !onlyAcceptance && changed === undefined) why = `the base ${base.slice(0, 12)} could not be read here: fail closed. ${why}`;
+  if (emptyDiff) why = `the base ${base!.slice(0, 12)} counts NO changed file: a scoped run over nothing would check nothing, so every job runs. ${why}`;
+  else if (base !== undefined && !argv.includes("--all") && !onlyAcceptance && changed === undefined) why = `the base ${base.slice(0, 12)} could not be read here: fail closed. ${why}`;
   const { scope, ran, skipped } = scopeOf({ changed, areas, units, why, ...(base !== undefined && changed !== undefined ? { base: base.slice(0, 9) } : {}), onlyAcceptance });
   const lines = [
     ...CI_AREA_NAMES.map((a) => `${a}=${areas[a]}`),

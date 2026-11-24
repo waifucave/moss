@@ -1,6 +1,7 @@
 name: S2 S8 focused experiments
-# Parked to the spikes' own sources (2026-11-24): no step of this workflow builds or runs native/sandbox (windows-fence.yml guards that, and
-# still runs), so a change there no longer starts a macOS and a Windows job here. The jobs and the spikes stay; workflow_dispatch runs them.
+# Parked to the spikes' own sources (2026-11-24): no step of this workflow builds or runs native/sandbox (the spikes drive their own probes), so a change
+# there no longer starts a macOS and a Windows job here. Nothing is deleted; workflow_dispatch runs them. native/sandbox itself is checked where its
+# own tests run (the scripts' job reads it); if a job here is ever meant to guard it, add its path back.
 on:
   pull_request:
     paths:

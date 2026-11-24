@@ -143,10 +143,10 @@ jobs:
           # The parked areas take only their own sources from the diff (the lane's base, or the pull request's or group's); `parked: true` runs them.
           parked=""; [ "$PARKED_IN" = true ] && parked="--parked"
           case "$EVENT" in
-            pull_request) bun scripts/ci-changes.ts --base HEAD^1 --why "a pull request" ;;
+            pull_request) bun scripts/ci-changes.ts --queue --base HEAD^1 --why "a pull request" ;;
             merge_group)
               git fetch --no-tags --depth=1 origin "$GROUP_BASE" || true
-              bun scripts/ci-changes.ts --base "$GROUP_BASE" --why "a merge-queue group" ;;
+              bun scripts/ci-changes.ts --queue --base "$GROUP_BASE" --why "a merge-queue group" ;;
             # A push to an integration branch is the tip: every area.
             push) bun scripts/ci-changes.ts --all --why "a push to an integration branch runs everything" ;;
             # A manual run of the acceptance alone: no change, so no area but the acceptance run (every unit of it).
@@ -155,7 +155,7 @@ jobs:
                elif [ "$SCOPE" = scoped ] && [ -n "$BASE" ]; then
                  # The lane's own changes since its merge-base with the integration branch; a base this runner cannot fetch runs everything.
                  git fetch --no-tags --depth=1 origin "$BASE" || true
-                 bun scripts/ci-changes.ts --base "$BASE" $parked --why "a manual scoped run"
+                 bun scripts/ci-changes.ts --refuse-empty --base "$BASE" $parked --why "a manual scoped run"
                elif [ "$SCOPE" = scoped ]; then
                  bun scripts/ci-changes.ts --all --parked --why "a scoped run with no base commit: fail closed"
                elif [ -n "$BASE" ]; then
