@@ -105,12 +105,19 @@ const answerHere = async (card: string, option: "approve" | "deny"): Promise<voi
   const r = await broker().answer(c.id, { optionId: option, hash: c.hash, proof: { via: "sealed-frame", frame: broker().frameChannel(c.id)!, input: "click", at: Date.now() } }, { role: "app" });
   if (r !== "accepted") throw new Error(`the card answer was ${r}`);
 };
-/** The words the engine shows for a pairing (its `pairing_changed` events). */
-const wordsOf = (pairingId: string): string[] | undefined => {
-  for (const m of heard) {
-    const p = (m.params ?? m) as Record<string, unknown>;
-    const ev = (p.event ?? p) as Record<string, unknown>;
-    if (ev.type === "pairing_changed" && ev.step === "words" && (ev.pairingId === undefined || ev.pairingId === pairingId)) return ev.words as string[];
+/** The words the engine shows its person: an app is never given them, so they are read where the person reads them, on
+ *  the add card the engine raises at the words step ("Check that these four words are the same ...: w1 w2 w3 w4"). One
+ *  pairing at a time here, so the pending add card is this pairing's. */
+const ADD_WORDS = /four words are the same[^:]*: ([a-z-]+) ([a-z-]+) ([a-z-]+) ([a-z-]+)/;
+/** Add cards already read for an earlier pairing: never this pairing's. */
+const readAddCards = new Set<string>();
+const pendingAddCards = () => (broker()?.cards() ?? []).filter((c: { fields: unknown }) => ADD_WORDS.test(JSON.stringify(c.fields)));
+const wordsOf = (_pairingId: string): string[] | undefined => {
+  for (const c of pendingAddCards()) {
+    if (readAddCards.has(c.id)) continue;
+    const m = ADD_WORDS.exec(JSON.stringify(c.fields))!;
+    readAddCards.add(c.id);
+    return [m[1]!, m[2]!, m[3]!, m[4]!];
   }
   return undefined;
 };
@@ -133,9 +140,13 @@ async function run(cmd: Record<string, unknown>): Promise<unknown> {
       const v = await ok<{ pairingId: string; qr: string }>("device.pair.begin", {});
       return { pairingId: v.pairingId, qr: typeof cmd.advertise === "string" ? advertise(v.qr, cmd.advertise) : v.qr };
     }
+    case "addCards":
+      // How many add cards are still pending (a pairing that ended should leave none).
+      return pendingAddCards().length;
     case "words": {
-      await until("the engine showing the words", () => wordsOf(cmd.pairingId as string) !== undefined);
-      return wordsOf(cmd.pairingId as string);
+      let words: string[] | undefined;
+      await until("the engine showing the words", () => (words = wordsOf(cmd.pairingId as string)) !== undefined);
+      return words;
     }
     case "confirm": {
       // The person confirms the words they read (`words`, possibly wrong); an app caller's add is a sealed card.
@@ -210,9 +221,10 @@ if (flag("--auto")) {
   // The emulator reads it from this socket (10.0.2.2 from inside it): loopback only, one QR per connection.
   if (opt("--qr-port")) Bun.listen({ hostname: "127.0.0.1", port: Number(opt("--qr-port")), socket: { open(s) { s.write(qr); s.end(); }, data() {} } });
   log("pairing shown; QR ready");
-  await until("the phone's words", () => wordsOf(v.pairingId) !== undefined, 30 * 60_000);
+  let words: string[] | undefined;
+  await until("the phone's words", () => (words = wordsOf(v.pairingId)) !== undefined, 30 * 60_000);
   log("words shown; confirming");
-  await run({ cmd: "confirm", pairingId: v.pairingId, words: wordsOf(v.pairingId) });
+  await run({ cmd: "confirm", pairingId: v.pairingId, words });
   log("confirmed and approved");
   for (;;) {
     const devices = await ok<{ devices: { kind?: string; isThis: boolean }[] }>("device.list", {});

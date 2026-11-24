@@ -282,6 +282,9 @@ async fn refusals_at_pairing() {
     assert!(matches!(r, Err(CoreError::Refused { .. })), "wrong words: {r:?}");
     assert!(core.paired_computers().unwrap().is_empty());
     assert!(!storage.0.lock().unwrap().keys().any(|k| k.starts_with("pair-")));
+    // Whether the engine withdrew that pairing's add card (an engine finding when it didn't; not the phone's to judge).
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    eprintln!("[phone-core test] add cards pending after a wrong-words pairing: {}", engine.ok(json!({ "cmd": "addCards" })).await);
 
     // The computer's person denies the sealed card.
     let core = phone(Arc::new(MemStorage::default()));

@@ -244,8 +244,8 @@ impl Inner {
         };
         if let Some(s) = s {
             let mut g = self.state.lock().unwrap();
-            // Revoked and Closed are final.
-            if !matches!(*g, LinkState::Revoked | LinkState::Closed) || s == LinkState::Closed {
+            // Revoked and Closed are final: a revoked link stays Revoked when it closes after it.
+            if !matches!(*g, LinkState::Revoked | LinkState::Closed) {
                 *g = s;
             }
         }
