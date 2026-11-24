@@ -65,6 +65,7 @@ val PICTURES = listOf(
     moss("23-file-chip", AppLaunch(Screen.conversation, scenario = Scenario.quiet, composer = ComposerPreset(file = true))),
     moss("24-files-row", AppLaunch(Screen.conversation, scenario = Scenario.quiet, composer = ComposerPreset(picker = true))),
     moss("26-new-bot-refused", AppLaunch(Screen.newBot, scenario = Scenario.botLimit, newBotName = "Hazel"), press = "Create"),
+    moss("27-question-tall", AppLaunch(Screen.conversation, scenario = Scenario.tallQuestion, openID = "luna")),
     moss("25-file-too-big", AppLaunch(Screen.conversation, scenario = Scenario.quiet, composer = ComposerPreset(bigFile = true))),
     code("01-sessions", AppLaunch(scenario = Scenario.quiet)),
     code("02-sessions-waiting", AppLaunch()),

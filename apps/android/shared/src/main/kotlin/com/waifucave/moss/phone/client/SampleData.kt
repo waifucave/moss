@@ -79,6 +79,11 @@ object SampleData {
     )
 
     /** Questions waiting in a conversation, by session id. */
+    /** A question as tall as a computer may send: ten lines, with tabs, and an option whose preview runs long. */
+    val tallQuestion = AskQuestion("ask_tall", header = "Release", text = (1..10).joinToString("\n") { "Line $it of the question:\tthe computer's own words, kept as sent." },
+        options = listOf(
+            AskQuestion.Option("Ship it", "Build, sign and upload\nthe release now", preview = (1..30).joinToString("\n") { "step $it:\trun the release task number $it" }),
+            AskQuestion.Option("Wait", "Keep it for tomorrow")))
     val questions: Map<String, AskQuestion> = mapOf(
         "c4" to AskQuestion("ask_1", header = "Tag colour", text = "Which colour should the new tag have?", options = listOf(
             AskQuestion.Option("Green", "Matches the success states"), AskQuestion.Option("Amber", "Stands out on the white page"),

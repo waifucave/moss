@@ -246,7 +246,8 @@ data class AskQuestion(
     val options: List<Option>,
     val multiSelect: Boolean = false,
 ) {
-    data class Option(val label: String, val detail: String? = null)
+    /** `detail` is the option's description and `preview` its preview (a snippet drawn beside it): the computer's text, plain. */
+    data class Option(val label: String, val detail: String? = null, val preview: String? = null)
     val id: String get() = callId
 }
 

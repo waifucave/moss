@@ -1,5 +1,7 @@
 package com.waifucave.moss.phone.ui
 
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -369,7 +371,9 @@ fun QuestionComposer(question: AskQuestion, onSubmit: suspend (Map<String, Strin
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         question.header?.let { Text(it, style = MossType.footnote, fontWeight = FontWeight.SemiBold, color = c.secondary) }
-        Text(question.text, style = MossType.body, color = c.text)
+        // The computer's text, plain (no markup), each part in its own container and capped with its own scroll, so a tall
+        // question or preview can never push the options or Submit off the screen, nor read as one of the options.
+        ScrollCapped(160.dp) { Text(question.text, style = MossType.body, color = c.text) }
         Column {
             question.options.forEachIndexed { i, o ->
                 if (i > 0) HorizontalDivider(color = c.stroke)
@@ -383,8 +387,13 @@ fun QuestionComposer(question: AskQuestion, onSubmit: suspend (Map<String, Strin
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text(o.label, style = MossType.body, color = c.text)
-                        o.detail?.let { Text(it, style = MossType.footnote, color = c.secondary) }
+                        Text(o.label, style = MossType.body, color = c.text, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                        o.detail?.let { ScrollCapped(64.dp) { Text(it, style = MossType.footnote, color = c.secondary) } }
+                        o.preview?.let {
+                            ScrollCapped(96.dp, Modifier.padding(top = 4.dp).fillMaxWidth().background(c.background, RoundedCornerShape(8.dp)).padding(8.dp)) {
+                                Text(it, style = MossType.footnote.copy(fontFamily = FontFamily.Monospace), color = c.text)
+                            }
+                        }
                     }
                     Icon(Icons.Filled.Check, null, tint = c.text, modifier = Modifier.size(20.dp).alpha(if (on) 1f else 0f))
                 }
@@ -411,3 +420,9 @@ fun QuestionComposer(question: AskQuestion, onSubmit: suspend (Map<String, Strin
     }
 }
 
+
+/** A part of the computer's text in its own box, no taller than `max`: past that it scrolls inside the box. */
+@Composable
+private fun ScrollCapped(max: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    Box(modifier.heightIn(max = max).verticalScroll(rememberScrollState())) { content() }
+}

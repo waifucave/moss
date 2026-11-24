@@ -37,6 +37,8 @@ class FakeEngineClient(
         cardStates,
         /** Paired; sending a message fails. */
         sendFails,
+        /** Paired; the conversation's waiting question is ten lines long and an option has a long preview. */
+        tallQuestion,
         /** Paired; this phone already made its 5 bots today. */
         botLimit,
     }
@@ -245,7 +247,7 @@ class FakeEngineClient(
     override suspend fun runCommand(session: String, command: String) { maybeFail(); commandsRun.add(command) }
     override suspend fun pendingQuestion(session: String): AskQuestion? {
         maybeFail()
-        val q = SampleData.questions[session] ?: return null
+        val q = (if (scenario == Scenario.tallQuestion) SampleData.tallQuestion else SampleData.questions[session]) ?: return null
         return if (q.callId in answeredQuestions) null else q
     }
     override suspend fun answerQuestion(session: String, question: AskQuestion, answers: Map<String, String>) {
