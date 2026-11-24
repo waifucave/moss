@@ -215,7 +215,13 @@ async function restart(): Promise<void> {
   // The coding session's driver was this process's: open it again under its id, so it answers after the restart too.
   if (testCoding) {
     const side = daemon.mossParts.bots()!;
-    if (!side.host.get(testCoding)) side.host.open({ id: testCoding, kind: "coding", computer: "Studio", title: "Phone test session", backend: "moss-code", root: "home/Studio/project1" }, new EchoDriver());
+    // The host reloads it from its log with no driver; opening it under its id gives it this one (it refuses when it
+    // already has one or has ended, which the log says).
+    try {
+      side.host.open({ id: testCoding, kind: "coding", computer: "Studio", title: "Phone test session", backend: "moss-code", root: "home/Studio/project1" }, new EchoDriver());
+    } catch (e) {
+      log(`the coding session wasn't opened again: ${(e as Error).message}`);
+    }
   }
   log("restarted");
 }
