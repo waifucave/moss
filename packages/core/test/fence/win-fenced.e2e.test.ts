@@ -696,6 +696,33 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
         console.log(`[e2e] MEASURE why (${what}) unfenced bash: ${ub}`);
         console.log(`[e2e] MEASURE why (${what}) fenced powershell: ${fp.text.replace(/\s+/g, " ").slice(0, 300)}`);
         console.log(`[e2e] MEASURE why (${what}) unfenced powershell: ${up}`);
+        // The GUARD (lane WS11): the fenced shells' open of a share is refused locally, by name and by address.
+        expect([what, "bash", fb.text]).toEqual([what, "bash", expect.stringContaining("Permission denied")]);
+        expect([what, "powershell", fp.text]).toEqual([what, "powershell", expect.stringMatching(/UnauthorizedAccess|Access is denied/)]);
+      }
+      // The GUARD (lane WS11): with a control that sees its packets, a fenced command's share by address sends none. A
+      // later change to the launcher's token or the pool accounts that opened shares to a fenced command fails here.
+      if (blind) console.log("[e2e] MEASURE guard: BLIND, so the packet count is not judged on this run");
+      else expect(fencedIp).toBe(0);
+      // The layer, for the docs and the next reviewer (lane WS11; recorded, no assertion): the pool account's token under
+      // the launcher, as the fenced PowerShell itself reads it (its groups and their attributes, whether the token is a
+      // restricted one, whether the process is in a job), and the local logon rights that name that account.
+      const facts = await call(tools.PowerShell!, { command: [
+        "$sig = 'using System; using System.Runtime.InteropServices; public static class WsTok { [DllImport(\"kernel32.dll\")] public static extern IntPtr GetCurrentProcess(); [DllImport(\"kernel32.dll\")] public static extern bool IsProcessInJob(IntPtr p, IntPtr j, out bool r); [DllImport(\"advapi32.dll\")] public static extern bool OpenProcessToken(IntPtr p, uint a, out IntPtr t); [DllImport(\"advapi32.dll\")] public static extern bool IsTokenRestricted(IntPtr t); }'",
+        "try { Add-Type -TypeDefinition $sig -ErrorAction Stop; $inJob = $false; [void][WsTok]::IsProcessInJob([WsTok]::GetCurrentProcess(), [IntPtr]::Zero, [ref]$inJob); $t = [IntPtr]::Zero; [void][WsTok]::OpenProcessToken([WsTok]::GetCurrentProcess(), 8, [ref]$t); \"in a job: $inJob; a restricted token: $([WsTok]::IsTokenRestricted($t))\" } catch { \"token facts: $($_.Exception.Message)\" }",
+        "$me = [Security.Principal.WindowsIdentity]::GetCurrent(); \"user: $($me.Name) $($me.User.Value); impersonation: $($me.ImpersonationLevel)\"",
+        "whoami /groups /fo csv /nh | ForEach-Object { $f = $_ -split '\",\"'; ($f[0] -replace '\"','') + ' [' + (($f[3] -replace '\"','') -replace ',\\s*', '|') + ']' }",
+        "whoami /priv /fo csv /nh | ForEach-Object { ($_ -split '\",\"')[0] -replace '\"','' }",
+      ].join("; "), timeout: 120_000 });
+      console.log(`[e2e] TOKEN (the pool account under the launcher): ${facts.text.replace(/\r?\n/g, " ; ").slice(0, 3000)}`);
+      const sid = /S-1-5-21-[\d-]+/.exec(facts.text)?.[0];
+      if (sid !== undefined) {
+        const inf = join(tmpdir(), `ws11-rights-${process.pid}.inf`);
+        Bun.spawnSync(["secedit", "/export", "/cfg", inf, "/areas", "USER_RIGHTS", "/quiet"], { stdin: "ignore", timeout: 120_000 });
+        let rights: string[] = [];
+        try { rights = readFileSync(inf, "utf16le").split(/\r?\n/).filter((l) => l.includes(sid)).map((l) => l.split("=")[0]!.trim()); } catch { rights = ["(the local policy couldn't be read)"]; }
+        rmSync(inf, { force: true });
+        console.log(`[e2e] TOKEN logon rights naming the pool account ${sid}: ${rights.length === 0 ? "none by its own SID (it holds what its groups hold)" : rights.join(", ")}`);
       }
     } finally {
       pk("stop"); pk("filter", "remove");
