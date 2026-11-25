@@ -246,7 +246,11 @@ export function canonicalCallHash(method: string, params: unknown): string {
 export interface MossServer {
   /** The listener's `open`: on Windows, finds the connection's peer among the daemon's handles. True when the
    *  connection was made before the pipe's DACL was locked down, so the listener closes it (review M3). */
-  opened(socket: object): boolean;
+  opened(socket: object, scan?: boolean): boolean;
+  /** A one-shot pipe's connection, named by its single end (`ipc/one-shot-pipes.ts`). */
+  adopt(socket: object, pid: number): void;
+  /** Whether this connection's client is named (always on other OSes: they have the OS's own answer). */
+  isNamed(socket: object): boolean;
   /** Right after the listener locked the pipe's DACL down (Windows). */
   lockedDown(): void;
   /** `protocol.prove {nonce}` before the hello (review S3): an HMAC under this run's app token over the app's
@@ -693,8 +697,12 @@ export function createMossServer(deps: MossServerDeps): MossServer {
   const server: MossServer = {
     // The connection's process is held as the connection opens, on every OS (#205's S2): no pid read later can be
     // another process's.
-    opened(socket) {
+    opened(socket, scan = true) {
       if (!pipePeers) { if (!deps.probe) handleOf(socket); return false; }
+      // A one-shot pipe's connection was named when it opened (`adopt`): nothing to scan. A connection on the well-known pipe, with the one-shots
+      // on, is not named at all and answers only `protocol.rendezvous` (the listener marks it).
+      if (pipePeers.pidOf(socket) !== null) { if (!deps.probe) handleOf(socket); return false; }
+      if (!scan) return false;
       const pid = pipePeers.opened(socket);
       if (pid === null) deps.log?.(`[moss] a connection's client was not named, so it is closed: ${pipePeers.why}`);
       if (pid !== null && !deps.probe) handleOf(socket);
@@ -705,6 +713,9 @@ export function createMossServer(deps: MossServerDeps): MossServer {
     },
 
     lockedDown() { pipePeers?.lockedDown(); },
+
+    adopt(socket, pid) { pipePeers?.adopt(socket, pid); },
+    isNamed(socket) { return pipePeers === null || pipePeers.pidOf(socket) !== null; },
 
     prove(socket, params) {
       const nonce = (params as { nonce?: unknown } | null)?.nonce;

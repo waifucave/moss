@@ -327,6 +327,15 @@ function connectedServerEnds(handles: readonly OwnHandle[], name: string | null)
   return out;
 }
 
+/** The client pids of the connected server ends of the one pipe `endpoint` (a pipe name only one listener serves, so its instances are the only ends
+ *  there are), or null when the daemon's handles cannot be read. One-shot pipes (`ipc/one-shot-pipes.ts`) are named by this: exactly one end is that
+ *  connection's own, with nothing to choose among. */
+export function connectedEndsOfPipe(endpoint: string): number[] | null {
+  const handles = ownHandles();
+  if (handles === null) return null;
+  return [...connectedServerEnds(handles.filter((h) => (h.access & WRITE_DAC) !== 0), pipeEndName(endpoint)).values()].map((e) => e.pid);
+}
+
 /** WRITE_DAC: libuv creates its named pipe server ends with it (measured: 0x1e019f for the first
  *  instance, 0x16019f after), and the daemon's files and anonymous pipes don't ask for it. */
 const WRITE_DAC = 0x40000;
@@ -357,6 +366,9 @@ export class WindowsPipePeers {
 
   /** Why the last `opened` named no pid (for the daemon's log: a connection closed unnamed is refused, and this says what the scan saw). */
   why = "";
+
+  /** A connection the one-shot pipe proved (its single end's client pid): named without a scan. */
+  adopt(socket: object, pid: number): void { this.bySocket.set(socket, { handle: -1n, pid }); }
 
   /** Whether this socket's connection was made before the DACL was locked down. */
   isEarly(socket: object): boolean {

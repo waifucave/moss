@@ -5,6 +5,8 @@ import { CoworkError } from "../cowork/types";
 import type { CoworkSessionDoor, CoworkSessionDrivers } from "../cowork/session-ports";
 import { chmodSync, realpathSync, statSync } from "node:fs";
 import { isPipe } from "../platform/transport";
+import type { SocketHandler } from "bun";
+import { OneShotPipes, OneShotRefused } from "./one-shot-pipes";
 
 /** Closes a connection the engine is done with and owes nothing to: on a Windows pipe `terminate()`, never the graceful `end()`, which leaves the server end of the
  *  pipe connected until the client lets go: an end no socket owns is one more candidate for the next connection's client, and while it lingers the scan
@@ -209,6 +211,8 @@ interface ConnState {
   seenCommands: Map<string, unknown>;
   /** C-M1: set by a MOSS hello (`opts.mossConnections`); every request on the connection then goes there. */
   moss: MossConn | null;
+  /** Windows, the well-known pipe: its client is not named, so the connection answers `protocol.rendezvous` and nothing else. */
+  rendezvousOnly?: boolean;
 }
 
 /** The engine's public surface the IPC layer still reads after the retirement (Task 17). */
@@ -2048,9 +2052,10 @@ export function startIpcServer(opts: IpcServerOptions): IpcServer {
     opts.supervisor?.stop(spec);
   }
 
-  const server = Bun.listen<ConnState>({
-    unix: opts.socketPath,
-    socket: {
+  // Windows: one pipe per client (`one-shot-pipes.ts`): the well-known pipe only answers `protocol.rendezvous`.
+  const oneShotsOn = process.platform === "win32" && isPipe(opts.socketPath) && opts.mossConnections !== undefined;
+  let oneShots: OneShotPipes<ConnState> | undefined;
+  const socketHandlers: SocketHandler<ConnState> = {
       open(socket) {
         if (connections >= maxConnections) {
           // Bun requires socket.data to be assigned before close() fires.
@@ -2076,7 +2081,8 @@ export function startIpcServer(opts: IpcServerOptions): IpcServer {
         // Windows: a connection made before the pipe's DACL was locked down came in under the default
         // DACL (Everyone may read); nothing is sent before a hello, but it is closed all the same (review M3). A connection whose
         // client the scan could not name is closed here too.
-        if (opts.mossConnections?.opened(socket)) closeAtOnce(socket);
+        if (opts.mossConnections?.opened(socket, !oneShotsOn)) closeAtOnce(socket);
+        if (oneShotsOn && !opts.mossConnections!.isNamed(socket)) socket.data.rendezvousOnly = true;
       },
       drain(socket) {
         socket.data?.writer?.onDrain();
@@ -2177,8 +2183,8 @@ export function startIpcServer(opts: IpcServerOptions): IpcServer {
           }
         }
       },
-    },
-  });
+  };
+  const server = Bun.listen<ConnState>({ unix: opts.socketPath, socket: socketHandlers as never });
   // A Unix socket file is tightened to the owner (its run directory is the owner's too). A Windows
   // named pipe has no file: its DACL becomes the user's and SYSTEM's alone (libuv already made the
   // first instance with FILE_FLAG_FIRST_PIPE_INSTANCE, so the name was free). A pipe that can't be
@@ -2193,9 +2199,21 @@ export function startIpcServer(opts: IpcServerOptions): IpcServer {
       throw new Error("the daemon's pipe could not be made owner-only");
     }
     opts.mossConnections?.lockedDown();
+    if (oneShotsOn) {
+      oneShots = new OneShotPipes<ConnState>({
+        endpoint: opts.socketPath, handlers: socketHandlers as never, userSid: currentUserSid, closeAtOnce,
+        adopt: (socket, pid) => { opts.mossConnections!.adopt(socket, pid); },
+      });
+    }
   }
 
   async function handle(socket: { data: ConnState }, method: string, params: unknown): Promise<unknown> {
+    // Windows' well-known pipe names no client: it hands out a pipe made for the one that asks, and answers nothing else.
+    if (socket.data.rendezvousOnly) {
+      if (method !== "protocol.rendezvous") throw new RpcFailure(ERR.INVALID_REQUEST, "this engine takes a connection through its rendezvous: this program is older than the engine, update it");
+      try { return oneShots!.issue(); } catch (err) { throw new RpcFailure(ERR.INTERNAL, err instanceof OneShotRefused ? err.message : "the connection's pipe could not be made"); }
+    }
+    if (method === "protocol.rendezvous") throw new RpcFailure(ERR.METHOD_NOT_FOUND, "method not found: protocol.rendezvous");
     // C-M1: a MOSS connection speaks only MOSS's methods, through its role's gate.
     if (socket.data.moss) return opts.mossConnections!.handle(socket.data.moss, method, params);
     // Before the hello: the app checks the daemon holds this run's app token (review S3), on this connection.
