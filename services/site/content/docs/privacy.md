@@ -9,7 +9,7 @@ MOSS runs on your computer. It has no analytics, no telemetry and no crash repor
 
 ## What stays on your computer
 
-Your bots, their conversations, memory and routines, your coding sessions, your settings and MOSS's logs are files in one folder, `~/.moss`. They stay until you delete them, apart from the empty coding sessions MOSS clears away (below). Archiving a bot moves it aside and deletes nothing. The engine's log, `~/.moss/logs/daemon.log`, is rotated at 8 MB with one older copy kept.
+Your bots, their conversations, memory and routines, your coding sessions, your settings and MOSS's logs are files in one folder, `~/.moss`. They stay until you delete them, apart from the empty coding sessions MOSS clears away (below). Archiving a bot moves it aside and deletes nothing. Deleting a conversation or a bot removes it from this computer only, not from your other computers. <!-- pending: deletion --> The engine's log, `~/.moss/logs/daemon.log`, is rotated at 8 MB with one older copy kept.
 
 Your keys and sign-ins are kept apart from that folder: in the Keychain on macOS, and on Windows and Linux in an encrypted file whose key your system's secret store keeps. On a Linux computer with no secret store, that key is a file only you can read, and MOSS says it is one.
 

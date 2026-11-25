@@ -25,7 +25,7 @@ The phone and the computer then talk over one encrypted link. When they can't co
 A paired phone is a remote control for your computer. From it you can:
 
 - read your bots, their conversations and your coding sessions, and send them messages;
-- answer cards, the same cards the desktop shows (your answer is signed with a key that only that phone holds);
+- answer cards, the same cards the desktop shows (your answer is signed with a key that only that phone holds). A card is answered on the phone only when the phone can show all of it;
 - interrupt or stop what a bot or a session is doing, and pause your bots;
 - start a coding session in any folder on the computer: starting one raises the same cards as on the desktop, and you answer them on the phone;
 - make a bot, with a name and a model;

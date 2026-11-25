@@ -17,6 +17,7 @@ The guide lists the model providers that MOSS's model plugins offer, with a **Se
 
 - **An API key.** Most providers take a key you make on their own website. Paste it in the **Paste a key** field and press **Save** (or Return). MOSS's engine keeps it in your system's secret store, and it is never shown again.
 - **A sign-in.** A few take a sign-in instead, such as **Codex (OAuth)** and **Grok (xAI OAuth)**. Press **Sign in…** and finish in your browser.
+- **A model on your computer.** A model server running on your own computer, such as Ollama or LM Studio, takes no key: it counts as added once it is running. <!-- pending: local-provider -->
 - **Terms.** Where a provider has terms MOSS shows them first, or a link to them, with a box to tick before you can add it.
 
 {{picture moss-setup "Step 1 of 3 of MOSS's setup guide: Welcome to MOSS. MOSS needs a model to talk to. Add a provider: sign in to a subscription you have, or paste an API key. A search field and a list of providers: Codex, Grok, OpenAI, Anthropic, Google Gemini API, OpenRouter, xAI." "Step 1: add a provider."}}

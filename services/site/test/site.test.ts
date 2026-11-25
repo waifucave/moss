@@ -8,7 +8,7 @@ import { checkSite } from "../src/check";
 import { configProblem, readConfig, REPO_ROOT, SITE_DIR, withSwitches } from "../src/config";
 import { docFile, readOutline, sourcePath } from "../src/docs";
 import { allInstallerNames, releaseUrl } from "../src/downloads";
-import { renderDoc } from "../src/markdown";
+import { pendingMarks, PENDING_KINDS, renderDoc } from "../src/markdown";
 import { templateFiles } from "../../../packages/plugin-sdk/src/templates/index";
 import { runCodeCommand } from "../../../packages/cli/src/code-cli";
 import { MOSS_PLUGIN_VERBS, runPluginCommand, runPluginDev, runPluginList } from "../../../packages/cli/src/moss-plugin-cli";
@@ -150,6 +150,21 @@ describe("the docs' sources", () => {
     const files = readdirSync(join(SITE_DIR, "content", "docs")).filter((f) => f.endsWith(".md")).map((f) => f.slice(0, -3));
     expect(files.filter((f) => !slugs.has(f))).toEqual([]);
   });
+
+  test("sentences waiting on unmerged work carry a known pending mark, which never reaches a page", async () => {
+    const r = await build("unreleased", { state: "unreleased" });
+    const marked: string[] = [];
+    for (const f of readdirSync(join(SITE_DIR, "content", "docs")).filter((x) => x.endsWith(".md"))) {
+      for (const kind of pendingMarks(readFileSync(join(SITE_DIR, "content", "docs", f), "utf8"))) {
+        expect([f, (PENDING_KINDS as readonly string[]).includes(kind)]).toEqual([f, true]);
+        marked.push(`${f}:${kind}`);
+      }
+    }
+    // Tonight's rules: deleting is this computer only (first-bot, privacy); a local model server counts once running (setup).
+    expect(marked).toEqual(expect.arrayContaining(["first-bot.md:deletion", "privacy.md:deletion", "setup.md:local-provider"]));
+    expect(allText(r.out)).not.toContain("pending:");
+    expect(() => renderDoc("---\ntitle: T\ndescription: D\n---\n\nA sentence. <!-- pending: nonsense -->\n", "z.md")).toThrow();
+  }, 60_000);
 
   test("the Markdown renderer gives headings ids and refuses a page without front matter", () => {
     const r = renderDoc("---\ntitle: T\ndescription: D\n---\n\n## One thing\n\n## One thing\n", "x.md");

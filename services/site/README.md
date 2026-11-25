@@ -35,6 +35,13 @@ Run from this folder with the repository's Bun (`../../scripts/pinned-bun`):
 * `public/pictures/`: pictures of the apps with sample data, light and dark ([SOURCES.md](public/pictures/SOURCES.md)).
 * The faces are the app's own: `packages/plugin-sdk/src/ui/faces/living-bots.js`, bundled in.
 
+## Sentences that wait on other work
+
+A docs sentence that describes work not merged yet ends with a mark in its Markdown, `<!-- pending: <what> -->`, where
+`<what>` is one of `PENDING_KINDS` in `src/markdown.ts` (today `deletion` and `local-provider`). The build drops the
+mark, so it never reaches a page; `grep -rn "pending:" content/docs` finds every such sentence, to check or remove the
+mark once the work lands.
+
 ## Deploying (the owner's steps; nothing here has been deployed)
 
 1. Pick the state in `site.json`, then `../../scripts/pinned-bun run check` in this folder: it must end with `ok`.

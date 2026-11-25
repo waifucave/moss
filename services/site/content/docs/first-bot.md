@@ -68,6 +68,8 @@ Open a bot's settings from the side panel's settings button, or from your accoun
 
 When you're done with a bot, **Archive** puts it away. Nothing is deleted: its conversation, memory and routines come back with it when you bring it back from Settings.
 
+Deleting a conversation or a bot removes it from this computer only, not from your other computers. <!-- pending: deletion -->
+
 ## Talking out loud
 
 The microphone button in the message box works once a voice is set up with your own key for its provider; MOSS comes with a voice plugin for Fish Audio. Hold the button while you talk, or hold Ctrl+Shift+Space. With a voice set up, the bot's replies are spoken too, unless you turn **Speak replies** off in the voice plugin's settings.
