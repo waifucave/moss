@@ -121,6 +121,8 @@ export interface AskContext {
   as: Caller;
   origin?: TurnOrigin;
   signal?: AbortSignal;
+  /** Run after the user's answer, before the call goes again with it; it throws to stop the call (lane XC). */
+  afterAnswer?: () => Promise<void>;
 }
 
 /** The origin a card shows with when the call didn't say: the user's own surfaces' calls are the user's; anything
@@ -137,8 +139,8 @@ export function askOrigin(ctx: AskContext): TurnOrigin {
 }
 
 /** The ask context for an in-process call. */
-export function askContextOf(call: { as: Caller; origin?: TurnOrigin; signal?: AbortSignal }): AskContext {
-  return { as: call.as, ...(call.origin === undefined ? {} : { origin: call.origin }), ...(call.signal === undefined ? {} : { signal: call.signal }) };
+export function askContextOf(call: { as: Caller; origin?: TurnOrigin; signal?: AbortSignal; afterAnswer?: () => Promise<void> }): AskContext {
+  return { as: call.as, ...(call.origin === undefined ? {} : { origin: call.origin }), ...(call.signal === undefined ? {} : { signal: call.signal }), ...(call.afterAnswer === undefined ? {} : { afterAnswer: call.afterAnswer }) };
 }
 
 /** Runs a call; when the holder says an answer would lift its refusal, asks the user with the holder's card (for
@@ -151,6 +153,7 @@ export async function withAnswer<T>(ask: AnswerAsker | undefined, ctx: AskContex
     if (!need || !ask) throw e;
     const answer = await ask(need, ctx);
     if (!answer) throw e;
+    await ctx.afterAnswer?.();
     return run(answer);
   }
 }

@@ -5002,7 +5002,21 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
           computers: () => node.registry.list().map((c) => ({ name: c.name, os: c.os, online: c.state === "online", main: c.isMain })),
           // Lane XC: a bot's own calls on tree paths (`home/<this computer>/…`, `home/memory/…`) run on the real paths.
           // A call on another computer's path runs there through the node's tree tools, judged and fenced by that computer.
-          tree: { directory: node.peers.directory(), resolve: (path: string, as: Caller) => node.tree.resolve(path, as), names: () => node.registry.list().map((c) => c.name), tools: node.tools },
+          tree: {
+            directory: node.peers.directory(), resolve: (path: string, as: Caller) => node.tree.resolve(path, as), names: () => node.registry.list().map((c) => c.name), tools: node.tools,
+            // This computer's floor before a call goes to another (lane XC): a file tool's write to a place that runs
+            // later is refused by its name, as bot-check refuses one whose path it can't resolve here; the holder
+            // refuses it on its own disk too (fence/peer-floor.ts).
+            remoteFloor: (tool: string, input: unknown) => {
+              const path = (input as { file_path?: unknown } | null)?.file_path;
+              if ((tool !== "Write" && tool !== "Edit") || typeof path !== "string") return undefined;
+              const rest = path.split("/").slice(2).join("/");
+              // `home/<Other>/.moss/…` is that computer's MOSS home: its own fence decides there.
+              return runLaterByName(`/tree/${rest}`, { os: hostOs(), userHome: "/tree", mossHome: "/tree/.moss" })
+                ? `${tool} was refused: ${path} is a place that runs later (a .git, a shell's start file, an editor's or agent's settings, a credential file); a bot's file tools never write one`
+                : undefined;
+            },
+          },
         } : {}),
         log: (line) => console.error(`[bots] ${line}`),
         });

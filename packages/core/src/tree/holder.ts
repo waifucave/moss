@@ -70,6 +70,8 @@ export interface HolderCall {
   origin?: TurnOrigin;
   /** In-process only, never sent: the call's signal; aborted, the card askUser raised for it is withdrawn. */
   signal?: AbortSignal;
+  /** In-process only, never sent: run after the user's answer to such a card, before the call goes again (`withAnswer`). */
+  afterAnswer?: () => Promise<void>;
 }
 
 /** The most one read returns, and the most one write carries: bigger files move in parts (`offset`, `length`). */

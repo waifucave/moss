@@ -276,7 +276,8 @@ export class CoreTree implements Tree {
     const remote = computers.some((c) => c !== self);
     // A call for another computer says its level (the stricter of those it touches); the holder judges at the stricter
     // of that and its own. A peer's own call, relayed, keeps the level it came with.
-    const level = opts.level ?? (remote && opts.as.kind !== "peer" ? strictestLevel(levels) : undefined);
+    // A level the caller passes (a session's own, its bot's here) only ever tightens it (lane XC).
+    const level = opts.as.kind === "peer" ? opts.level : remote ? strictestLevel([...levels, ...(opts.level === undefined ? [] : [opts.level])]) : opts.level;
     const call: HolderCall = {
       as: opts.as,
       ...(level === undefined ? {} : { level }),
@@ -284,6 +285,7 @@ export class CoreTree implements Tree {
       // In-process only (askUser's card for this call): never on the wire (`viaPeer` sends neither).
       ...(opts.origin === undefined ? {} : { origin: opts.origin }),
       ...(opts.signal === undefined ? {} : { signal: opts.signal }),
+      ...(opts.afterAnswer === undefined ? {} : { afterAnswer: opts.afterAnswer }),
     };
     return { holder: this.#o.holder(computers[0]!), call };
   }

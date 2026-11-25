@@ -12,6 +12,8 @@ import { botPaths } from "../../../src/bots/paths";
 import { BotSessionDriver, type BotDriverDeps } from "../../../src/runtime-sdk/turn-loop/driver";
 import { Cluster, type TestComputer, until } from "../../tree/cluster-support";
 import { answersFor, makePhone, type Phone } from "../../tree/answer-support";
+import type { Level } from "@waifucave/moss-protocol";
+import { NO_HOOKS, type TurnHooks } from "../../../src/runtime-sdk/turn-loop/hooks";
 import { describeWithEmbeddedRuntime } from "../../helpers/embedded-runtime";
 import { darwinTest } from "../../helpers/darwin-only";
 
@@ -40,13 +42,14 @@ async function twoComputers(): Promise<{ alpha: TestComputer; beta: TestComputer
 }
 
 describeWithEmbeddedRuntime("a bot's tools on another computer's files (lane XC, the hand-off)", (spawn) => {
-  function driverOn(c: TestComputer) {
+  function driverOn(c: TestComputer, o: { hooks?: TurnHooks; level?: Level; may?: { act: boolean } } = {}) {
     const bot: EffectiveBot = { id: "luna", name: "Luna", instructions: "You are Luna.", model: "winter-test/calls", modelFrom: "user", userLayer: [] };
     const ctx: BotSessionContext & { bot: EffectiveBot } = {
       bot, botId: "luna", sessionId: "b_luna", kind: "bot", computer: c.name, paths: botPaths(c.mossHome, "luna"),
       caller: { kind: "session", sessionId: "b_luna", sessionKind: "bot", bot: "luna" },
       current: () => bot, memoryBlock: () => "<memory>\nnothing yet\n</memory>",
-      mayAct: () => true, whenMayAct: async () => {}, cacheCold: () => false,
+      mayAct: () => o.may?.act ?? true, whenMayAct: async () => { if (!(o.may?.act ?? true)) throw new Error("paused"); }, cacheCold: () => false,
+      ...(o.level === undefined ? {} : { level: o.level }),
     };
     mkdirSync(ctx.paths.scratch, { recursive: true });
     const allow: BotDriverDeps["canUseTool"] = () => async (_n, input) => ({ behavior: "allow", updatedInput: input as Record<string, unknown> });
@@ -54,7 +57,8 @@ describeWithEmbeddedRuntime("a bot's tools on another computer's files (lane XC,
     return {
       ctx,
       driver: new BotSessionDriver(ctx, {
-        home: c.mossHome, spawn, canUseTool: allow, sandbox: () => ({}), stopGraceMs: 5_000, log: () => {},
+        home: c.mossHome, spawn, canUseTool: allow, sandbox: () => ({}), stopGraceMs: 5_000, log: () => {}, toolHoldMs: 200,
+        ...(o.hooks === undefined ? {} : { hooks: o.hooks }),
         tree: { directory: n.peers.directory(), resolve: (p, as) => n.tree.resolve(p, as), names: () => n.registry.list().map((x) => x.name), tools: n.tools },
       }),
     };
@@ -158,6 +162,100 @@ describeWithEmbeddedRuntime("a bot's tools on another computer's files (lane XC,
       expect(phone.shown).toHaveLength(1);
       expect(phone.shown[0]?.method).toBe("tree.transfer");
       expect(readFileSync(join(beta.home, "site", "index.html"), "utf8")).toBe("<h1>hi</h1>");
+    } finally {
+      await driver.stop();
+    }
+  }, 90_000);
+
+  // The review of 1b (blockers 1 and 2, should-fixes 3 and 4).
+  darwinTest("a plugin's rewrite is what runs on Beta; a plugin's ask makes Beta ask with its own card, even where Beta's level wouldn't", async () => {
+    const phone = await makePhone();
+    const { alpha, beta } = await judgedComputers(phone);
+    await beta.node.registry.setLevel("Beta", "automatic", { via: "terminal" });
+    await until(() => alpha.node.registry.get("Beta")?.level === "automatic", 5000, "Beta's level on Alpha");
+    await alpha.node.registry.setLevel("Alpha", "automatic", { via: "terminal" });
+    const hooks: TurnHooks = {
+      ...NO_HOOKS,
+      toolBefore: async (_s, tool, input) => {
+        const i = input as Record<string, unknown>;
+        if (tool.name === "Write" && String(i.file_path).endsWith("scrubbed.md")) return { input: { ...i, content: "SCRUBBED" } };
+        if (tool.name === "Write" && String(i.file_path).endsWith("asked.md")) return { ask: "the plugin wants the user to see this", input };
+        return { input };
+      },
+    };
+    const { driver } = driverOn(alpha, { hooks });
+    try {
+      const r = results(await driver.turn(user([
+        call("Write", { file_path: "home/Beta/scrubbed.md", content: "SECRET-TOKEN-123" }),
+        call("Write", { file_path: "home/Beta/asked.md", content: "asked" }),
+      ].join("\n")), control()));
+      expect(r[0]?.isError).toBe(false);
+      expect(readFileSync(join(beta.home, "scrubbed.md"), "utf8")).toBe("SCRUBBED");
+      expect(phone.shown.map((s) => s.computer)).toEqual(["Beta"]);
+      expect(r[1]?.isError).toBe(false);
+      expect(readFileSync(join(beta.home, "asked.md"), "utf8")).toBe("asked");
+    } finally {
+      await driver.stop();
+    }
+  }, 90_000);
+
+  darwinTest("a read-only session (a routine's level) writes nothing on Beta, whatever Beta's level", async () => {
+    const { alpha, beta } = await twoComputers();
+    const { driver } = driverOn(alpha, { level: "read-only" });
+    try {
+      const r = results(await driver.turn(user([
+        call("Write", { file_path: "home/Beta/x.md", content: "no" }),
+        call("Bash", { command: "cd home/Beta && touch made-by-bash" }),
+        call("Read", { file_path: "home/Beta/x.md" }),
+      ].join("\n")), control()));
+      expect(r[0]?.isError).toBe(true);
+      expect(r[1]?.isError).toBe(true);
+      expect(existsSync(join(beta.home, "x.md"))).toBe(false);
+      expect(existsSync(join(beta.home, "made-by-bash"))).toBe(false);
+    } finally {
+      await driver.stop();
+    }
+  }, 90_000);
+
+  darwinTest("a bot whose level on Alpha is read-only writes nothing on Beta", async () => {
+    const { alpha, beta } = await twoComputers();
+    await alpha.node.registry.setLevel("Alpha", "read-only", { via: "terminal" });
+    const { driver } = driverOn(alpha);
+    try {
+      const r = results(await driver.turn(user(call("Write", { file_path: "home/Beta/y.md", content: "no" })), control()));
+      expect(r[0]?.isError).toBe(true);
+      expect(existsSync(join(beta.home, "y.md"))).toBe(false);
+    } finally {
+      await driver.stop();
+    }
+  }, 90_000);
+
+  darwinTest("paused while Beta's card is open: the call doesn't run after the yes", async () => {
+    const phone = await makePhone();
+    const { alpha, beta } = await judgedComputers(phone);
+    const may = { act: true };
+    // The person pauses the bots while the card is open (the phone records the card as it shows it), then answers yes.
+    phone.shown.push = (...cards) => { may.act = false; return Array.prototype.push.apply(phone.shown, cards); };
+    const { driver } = driverOn(alpha, { may });
+    try {
+      const r = results(await driver.turn(user(call("Write", { file_path: "home/Beta/paused.md", content: "no" })), control()));
+      expect(phone.shown).toHaveLength(1);
+      // The pause's own word for the call (the driver's, as for a local call held by the pause), and nothing written.
+      expect(r[0]?.content).toContain("Stopped");
+      expect(existsSync(join(beta.home, "paused.md"))).toBe(false);
+    } finally {
+      await driver.stop();
+    }
+  }, 90_000);
+
+  darwinTest("a file tool's write on Beta to a place that runs later is refused before it goes", async () => {
+    const { alpha, beta } = await twoComputers();
+    mkdirSync(join(beta.home, "repo", ".git"), { recursive: true });
+    const { driver } = driverOn(alpha);
+    try {
+      const r = results(await driver.turn(user(call("Write", { file_path: "home/Beta/repo/.git/config", content: "[core]\n" })), control()));
+      expect(r[0]?.content).toContain("runs later");
+      expect(existsSync(join(beta.home, "repo", ".git", "config"))).toBe(false);
     } finally {
       await driver.stop();
     }

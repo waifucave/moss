@@ -75,6 +75,9 @@ export interface TreeCallOptions {
    *  on this computer when another computer's holder needs the user's answer. An aborted signal withdraws that card. */
   origin?: TurnOrigin;
   signal?: AbortSignal;
+  /** In-process only, never sent: run after the user answered such a card and before the call goes again with the
+   *  answer; it throws to stop the call (lane XC: the session's pause and lease, asked again after a card). */
+  afterAnswer?: () => Promise<void>;
 }
 
 /** A change a peer's card binds: the wire method and its params without `session`, `level` and `answer`. */

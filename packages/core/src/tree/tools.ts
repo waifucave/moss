@@ -41,6 +41,8 @@ export interface TreeToolContext {
   level?: Level;
   /** The user's signed answer bound to this call, where the holder's level asks (review N2). */
   answer?: SignedCardAnswer;
+  /** Run after the user answered a holder's card, before the call goes again with the answer; it throws to stop it. */
+  afterAnswer?: () => Promise<void>;
   /** The lease epoch the call was made under (§6.4). */
   epoch?: number;
   /** What started the session's turn, for a card shown here when another computer needs the user's answer; left
@@ -165,7 +167,12 @@ export class TreeTools {
   async run(tool: string, input: unknown, ctx: TreeToolContext): Promise<TreeToolResult> {
     const i = (input ?? {}) as Record<string, unknown>;
     const as: Caller = { kind: "session", sessionId: ctx.session, sessionKind: ctx.sessionKind, ...(ctx.bot === undefined ? {} : { bot: ctx.bot }) };
-    const opts = { as, ...(ctx.level === undefined ? {} : { level: ctx.level }), ...(ctx.answer === undefined ? {} : { answer: ctx.answer }) };
+    const opts = {
+      as, ...(ctx.level === undefined ? {} : { level: ctx.level }), ...(ctx.answer === undefined ? {} : { answer: ctx.answer }),
+      // In-process only (the card askUser raises on this computer for a holder's ask, and what runs after its answer).
+      ...(ctx.origin === undefined ? {} : { origin: ctx.origin }), ...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
+      ...(ctx.afterAnswer === undefined ? {} : { afterAnswer: ctx.afterAnswer }),
+    };
     const tree = this.#o.tree;
     const where = (p: string) => tree.computersFor([p])[0]!;
     try {
@@ -190,6 +197,12 @@ export class TreeTools {
           if (count === 0) throw new ContractError("invalid", `old_string isn't in ${path}`);
           if (count > 1 && i.replace_all !== true) throw new ContractError("invalid", `old_string is in ${path} ${count} times; give more of it, or replace_all`);
           const after = i.replace_all === true ? before.split(oldS).join(newS) : before.replace(oldS, () => newS);
+          // A read, then a separate write (lane XC's review): the file is read once more right before the write, and a
+          // change made meanwhile refuses the edit rather than being lost. A change in the instant between that read
+          // and the write is still possible (the holder has no conditional write yet): said here, not hidden.
+          if (text(await tree.readPart(path, { ...opts, encoding: "utf8" })) !== before) {
+            throw new ContractError("conflict", `${path} changed since it was read; read it again and redo the edit`);
+          }
           await tree.write(path, { encoding: "utf8", text: after }, opts);
           return { output: `Edited ${path} (${i.replace_all === true ? count : 1} replacement${count > 1 && i.replace_all === true ? "s" : ""})`, isError: false, computer: where(path) };
         }
@@ -258,7 +271,8 @@ export class TreeTools {
     // Another computer: `tool.run` over the link, at the calling computer's level for it.
     const device = this.#o.deviceOf(loc.computer);
     if (!device) throw new ContractError("computer_offline", `${loc.computer} can't be reached`, { computer: loc.computer });
-    const level = ctx.level ?? strictestLevel([c.level])!;
+    // A level the caller passes only ever tightens it (lane XC).
+    const level = strictestLevel([c.level, ...(ctx.level === undefined ? [] : [ctx.level])])!;
     const key = runKey(device, ctx.session, ctx.callId);
     this.#outputs.set(key, output);
     let link: Awaited<ReturnType<LinkTransport["connect"]>>;
@@ -270,7 +284,7 @@ export class TreeTools {
     }
     const off = ctx.signal ? onAbort(ctx.signal, () => { void link.request("tool.cancel", { session: ctx.session, callId: ctx.callId, ...fenceParam(this.#o.fence) }).catch(() => {}); }) : () => {};
     try {
-      const askCtx = { as, ...(ctx.origin === undefined ? {} : { origin: ctx.origin }), ...(ctx.signal === undefined ? {} : { signal: ctx.signal }) };
+      const askCtx = { as, ...(ctx.origin === undefined ? {} : { origin: ctx.origin }), ...(ctx.signal === undefined ? {} : { signal: ctx.signal }), ...(ctx.afterAnswer === undefined ? {} : { afterAnswer: ctx.afterAnswer }) };
       const r = await withAnswer(ctx.answer === undefined ? this.#o.ask : undefined, askCtx, (answer) => link.request<{ output: unknown; isError: boolean }>("tool.run", {
         session: ctx.session, callId: ctx.callId, epoch: ctx.epoch ?? 0, tool: "Bash", input, level, ...fenceParam(this.#o.fence),
         ...((answer ?? ctx.answer) === undefined ? {} : { answer: answer ?? ctx.answer }),
@@ -286,7 +300,12 @@ export class TreeTools {
   /** `mv` or `cp` between computers by the direct path, answering the way the shell would. */
   async #transfer(d: { move: boolean; recursive: boolean; from: string; to: string }, ctx: TreeToolContext, as: Caller, computer: string, cwd: string): Promise<TreeToolResult> {
     const tree = this.#o.tree;
-    const opts = { as, ...(ctx.level === undefined ? {} : { level: ctx.level }), ...(ctx.answer === undefined ? {} : { answer: ctx.answer }) };
+    const opts = {
+      as, ...(ctx.level === undefined ? {} : { level: ctx.level }), ...(ctx.answer === undefined ? {} : { answer: ctx.answer }),
+      // In-process only (the card askUser raises on this computer for a holder's ask, and what runs after its answer).
+      ...(ctx.origin === undefined ? {} : { origin: ctx.origin }), ...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
+      ...(ctx.afterAnswer === undefined ? {} : { afterAnswer: ctx.afterAnswer }),
+    };
     const verb = d.move ? "mv" : "cp";
     const src = await tree.stat(d.from, opts);
     if (!src) return { output: `${verb}: ${d.from}: No such file or directory`, isError: true, computer, cwd };
