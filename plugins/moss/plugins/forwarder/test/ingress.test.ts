@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 
-import { RoutineHeldElsewhere, type ClientState, type Delivery } from "../src/client";
+import { ForwarderError, RoutineHeldElsewhere, type ClientState, type Delivery } from "../src/client";
 import { DEFAULT_WAIT_MS, WebhookIngress } from "../src/ingress";
 import { b64u, utf8 } from "../src/wire/bytes";
 import { hookKeyHash } from "../src/wire/protocol";
@@ -178,5 +178,33 @@ describe("webhook.ingress", () => {
     );
     expect(await held.register({ routine: "x", key: "k".repeat(43) })).toEqual({ conflict: { device: "desktop" } });
     expect(await ingress.list()).toEqual({ routines: [{ id: "deploy", device: "pc", held: 0, allowGet: false }] });
+  });
+});
+
+describe("why a routine gets no URL, in plain words", () => {
+  const failing = (err: unknown) => {
+    const { client } = fakeClient();
+    return new WebhookIngress({ ...client, registerRoutineHash: async () => { throw err; } } as never);
+  };
+  const hash = b64u(new Uint8Array(32));
+
+  test("no account: says what is missing, keeps the code, and never the service's own text", async () => {
+    const noAccount = Object.assign(new Error("raw keyed fetch text"), { code: "no_account" });
+    const err = (await failing(noAccount).register({ routine: "deploy", keyHash: hash }).catch((e: unknown) => e)) as Error & { code?: string };
+    expect(err.message).toBe("no waifucave account is signed in on this computer, and webhooks come in through hooks.waifucave.com with one (a tunnel or a cloud computer can take them instead)");
+    expect(err.code).toBe("no_account");
+  });
+
+  test("the service away, refusing, or failing", async () => {
+    const said = async (e: unknown) => ((await failing(e).register({ routine: "deploy", keyHash: hash }).catch((x: unknown) => x)) as Error).message;
+    expect(await said(new TypeError("fetch failed: getaddrinfo ENOTFOUND hooks.waifucave.com"))).toBe("hooks.waifucave.com can't be reached from this computer right now");
+    expect(await said(Object.assign(new Error("x"), { code: "network" }))).toBe("hooks.waifucave.com can't be reached from this computer right now");
+    expect(await said(new ForwarderError(401, "unauthorized"))).toBe("hooks.waifucave.com didn't accept this computer's account sign-in");
+    expect(await said(new ForwarderError(400, "bad_request"))).toBe("hooks.waifucave.com refused the routine (400)");
+    expect(await said(new ForwarderError(503, "unavailable"))).toBe("hooks.waifucave.com isn't working right now (503)");
+  });
+
+  test("an argument error is the caller's, as it was", async () => {
+    await expect(failing(new Error("x")).register({ routine: "deploy", keyHash: "not base64!" })).rejects.toThrow("register: keyHash must be base64url");
   });
 });

@@ -16,9 +16,9 @@
 // can't (Linux, and Windows without a TPM), the owner accepted the risk: "any desktop may answer; a
 // compromised plugin on a Windows or Linux computer could approve actions on other computers". A server, a cloud
 // computer and a browser never sign: their only key is the core's, or they may answer no card (`mayAnswerCards`).
-import type { AnswerKeyAlg, AnswerKeyHolder, DeviceKind, DeviceOs } from "@waifucave/moss-protocol";
+import { PhoneApp, type AnswerKeyAlg, type AnswerKeyHolder, type DeviceKind, type DeviceOs } from "@waifucave/moss-protocol";
 import { isStrictEd25519Point, isStrictEd25519Signature } from "../identity/ed25519-strict";
-import type { Unsubscribe } from "./common";
+import { ContractError, type Unsubscribe } from "./common";
 
 export interface DeviceRecord {
   id: string;
@@ -31,6 +31,12 @@ export interface DeviceRecord {
   /** Its folder-tree name, for a device that runs moss-core. */
   computer?: string;
   hasDisplay?: boolean;
+  /** A phone's app, `moss` or `code` (spec §8, the owner's decision of 2026-11-24: two phone apps, each paired on its own).
+   *  Taken from the pairing exchange only (the record in its transcript, which the pair secret and the four words cover) and
+   *  never changed after: not by `device.rename`, a peer's update, the account or the phone's later hello. A phone that
+   *  paired without one has none. It decides only where a push goes (`phonesToWake`), never what the phone may list or
+   *  answer. */
+  app?: PhoneApp;
   /** Its Ed25519 public key, raw 32 bytes, base64: the core's link key on a computer. */
   publicKey: string;
   /** A desktop's answer key: its app's key, apart from the core's, how the OS holds it, and its algorithm (`alg`,
@@ -96,6 +102,22 @@ export function answerKeyOf(d: Pick<DeviceRecord, "kind" | "publicKey" | "answer
   return undefined;
 }
 
+/** A device's `app` is one of the two phone apps, and only a phone has one: the check every registry's `add` makes (`invalid`
+ *  otherwise), so a fake and the real registry agree. */
+export function assertPhoneApp(kind: DeviceKind, app: unknown): asserts app is PhoneApp {
+  if (kind !== "phone") throw new ContractError("invalid", "only a phone has an app");
+  if (!PhoneApp.safeParse(app).success) throw new ContractError("invalid", `unknown phone app ${String(app)}`);
+}
+
+/** The phone app a device is, as the registry recorded it at pairing: `moss` or `code` for a phone that paired as one,
+ *  and nothing for any other device, a phone that recorded none, or a revoked one. A connection's app is this of its
+ *  device's record (`registry.get(caller.device)`), never anything the connection said: the hello has no such field, and
+ *  its `surface` is refused on a phone's link. */
+export function phoneAppOf(d: Pick<DeviceRecord, "kind" | "app" | "revokedAt"> | undefined): PhoneApp | undefined {
+  if (d === undefined || d.kind !== "phone" || d.revokedAt !== undefined) return undefined;
+  return d.app === "moss" || d.app === "code" ? d.app : undefined;
+}
+
 /** The one algorithm a holder's keys can have, where it has only one: the Secure Enclave makes only P-256 keys, so a
  *  record saying `secure-enclave` with an Ed25519 key is a mislabel and is refused (`invalid`, lane H's reviewer). */
 export const HOLDER_ALGS: Readonly<Partial<Record<AnswerKeyHolder, AnswerKeyAlg>>> = { "secure-enclave": "p256" };
@@ -134,6 +156,14 @@ export async function verifyKeySignature(alg: AnswerKeyAlg, publicKey: Uint8Arra
 /** Whether a device may answer another computer's card with a signature (the owner's decision on N1). */
 export function mayAnswerCards(d: Pick<DeviceRecord, "kind" | "publicKey" | "answerKey" | "revokedAt">): boolean {
   return answerKeyOf(d) !== undefined;
+}
+
+/** Whether a paired phone may start a coding session on this computer (`agent.start` over its link): it is a phone, it is
+ *  not revoked, and it holds an answer key, so the cards the session raises are ones it can answer. A phone with no answer
+ *  key could start a session it could never approve a step of; a revoked one is no phone of this person's at all. Read from
+ *  the registry's record of the device at each call, never from the connection, so a revocation that races the call ends it. */
+export function mayStartSessions(d: Pick<DeviceRecord, "kind" | "publicKey" | "answerKey" | "revokedAt"> | undefined): boolean {
+  return d !== undefined && d.kind === "phone" && answerKeyOf(d) !== undefined;
 }
 
 /** A device id: lowercase base32 of the first 20 bytes of SHA-256 over its public key; lane H may choose another

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The window behind Compose: the system's own day/night, no action bar. Compose draws everything else. -->
+    <style name="Theme.Moss" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>

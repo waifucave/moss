@@ -11,6 +11,11 @@
 //   host → joiner  ["welcome", {device, pairKey, groupKey, group, fresh, t, account, answerKeyProof?, nonce, proof}] or ["refused", {reason}]
 //   `device.answerKey` ({publicKey, held, alg?}) is the device's answer key (a phone's own, item 91), and `answerKeyProof` that
 //   key's signature over `answerKeyStatement` (base64); both are in the transcript, the record canonically.
+//   A phone's `device.app` (`moss` or `code`, `PhoneApp`) is the phone app it is (two apps, each paired on its own). It is part of the
+//   record the transcript holds, as the record's tenth item and only when present (`canonicalRecord`, so a record with none
+//   encodes as it always did), which the pair secret's proof and the four words both cover: an app changed on the way, or added
+//   to or taken from a hello that was signed without it, fails the proof. A value that isn't one of the two, or any app on a
+//   device that is not a phone, refuses the pairing. It is taken here and nowhere else, and never changes after.
 //   joiner → host  ["reveal", {nonce}], the nonce `commit` committed to; both show the words only after it
 //   both, when their user confirms the words (and their card is approved): ["confirm", {pairSig, admit?}]
 // Each device adds the other once both confirms have crossed. The words and the pair secret cover both nonces
@@ -25,10 +30,11 @@
 // Devices without an account also form one group per user for the lease: the host's group if it has one, else the
 // joiner's, else a new one the host founds; the device not yet in it joins, admitted by the other.
 import { hkdfSync } from "node:crypto";
-import { AnswerKeyHolder, type PairingView as PairingViewSchema } from "@waifucave/moss-protocol";
+import { AnswerKeyHolder, DeviceKind, DeviceOs, PhoneApp, type PairingView as PairingViewSchema } from "@waifucave/moss-protocol";
 import type { z } from "zod";
-import type { Clock } from "../contracts/clock";
+import type { Clock, TimerHandle } from "../contracts/clock";
 import { ContractError, isContractError, Listeners, type Unsubscribe } from "../contracts/common";
+import { nameProblem } from "../devices/names";
 import { deviceIdFor, type DeviceRecord, type PairingProof } from "../contracts/device-registry";
 import type { SecretStore } from "../contracts/secret-store";
 import { type Bytes, constantTimeEqual, fromBase64, fromBase64Url, own, randomBytes, toBase64, toBase64Url, utf8 } from "../identity/bytes";
@@ -54,6 +60,8 @@ export const PAIRING_TTL_MS = 10 * 60_000;
 // Keeps its old spelling on purpose: clients that keep the old name speak this value on the wire.
 const QR_PREFIX = "clover-pair:1:";
 const STEP_TIMEOUT_MS = 30_000;
+/** The longest a single timer is set for (a timer counts in 32 bits); a longer wait re-arms. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
 /** How long an incoming pairing connection has to send its hello. */
 const FIRST_FRAME_MS = 10_000;
 /** How many incoming pairing connections may be under way at once. */
@@ -93,9 +101,36 @@ export interface PairingState {
   status: PairingStatus;
   peer?: DeviceRecord;
   error?: string;
+  /** While it waits: a device was turned away, in plain words. */
+  note?: string;
 }
 
 export type PairingChange = { type: "changed"; pairing: PairingState } | { type: "removed"; pairingId: string };
+
+/** Why a device's record was turned away at a pairing: a closed set the two sides send each other by code, so each says it in its own
+ *  words and nothing a stranger's device wrote is ever shown as the reason. */
+export type PairRefusal = "name" | "kind" | "os" | "app" | "record";
+const PAIR_REFUSALS: readonly PairRefusal[] = ["name", "kind", "os", "app", "record"];
+const REFUSAL_CORE: Record<PairRefusal, string> = {
+  name: "its name isn't one MOSS takes (a name is 1 to 63 characters with something that shows, and no hidden or direction-changing characters)",
+  kind: "it says it is a kind of device MOSS doesn't know",
+  os: "it says it runs on a system MOSS doesn't know",
+  app: "it says it is a phone app MOSS doesn't know",
+  record: "what it sent about itself doesn't match its key",
+};
+/** What the host's person reads when a device was turned away at its pairing (the pairing goes on waiting for the right device). */
+const HOST_NOTE: Record<PairRefusal, string> = Object.fromEntries(PAIR_REFUSALS.map((c) => [c, `A device tried to join and was turned away: ${REFUSAL_CORE[c]}. This code still works.`])) as Record<PairRefusal, string>;
+/** What the joining device's person reads when the host turned this device away. */
+const JOINER_REFUSED: Record<PairRefusal, string> = {
+  name: "the other device turned this one away: this device's name isn't one MOSS takes (1 to 63 characters with something that shows, no hidden or direction-changing characters). Rename this device and try again",
+  kind: "the other device turned this one away: this device says it is a kind of device MOSS doesn't know",
+  os: "the other device turned this one away: this device says it runs on a system MOSS doesn't know",
+  app: "the other device turned this one away: this device says it is a phone app MOSS doesn't know",
+  record: "the other device turned this one away: what this device sent about itself doesn't match its key",
+};
+/** What the joining device's person reads when the host's own record is one it turns away. */
+const HOST_REFUSED: Record<PairRefusal, string> = Object.fromEntries(PAIR_REFUSALS.map((c) => [c, `this device turned the other one away: ${REFUSAL_CORE[c]}`])) as Record<PairRefusal, string>;
+const isRefusal = (v: unknown): v is PairRefusal => typeof v === "string" && (PAIR_REFUSALS as readonly string[]).includes(v);
 
 interface Side {
   key: Bytes;
@@ -123,6 +158,10 @@ interface Pending {
   peerCommit?: Bytes;
   // Known once hello and welcome crossed.
   peer?: Side;
+  /** A line for the host's person while the pairing waits: a device was turned away (never any of its own text). */
+  note?: string;
+  /** A host's expiry: fires at `expiresAt`, and ends the pairing as expired whatever step it has reached. */
+  timer?: TimerHandle;
   transcript?: Bytes;
   words?: string[];
   t?: number;
@@ -142,7 +181,7 @@ export interface PairingServiceOptions {
   self: DeviceKey;
   registry: FileDeviceRegistry;
   wire: WireEndpoint;
-  clock: Pick<Clock, "now">;
+  clock: Pick<Clock, "now" | "setTimeout" | "clearTimeout">;
   store: Pick<SecretStore, "get" | "set" | "delete">;
   /** Where this device is reached, for the QR and the code's slot. */
   selfTarget(): Omit<DialTarget, "key">;
@@ -242,13 +281,20 @@ export class PairingService {
     }]).catch(turnedAway);
     const reply = await this.#next(p).catch(turnedAway);
     if (reply[0] === "refused") {
-      this.#fail(p, String((reply[1] as { reason?: string })?.reason ?? "refused"));
+      const said = reply[1] as { reason?: string; code?: unknown } | undefined;
+      // A code from the closed set is said in this device's own words; free text from an older host is shown as it always was.
+      this.#fail(p, isRefusal(said?.code) ? JOINER_REFUSED[said.code] : String(said?.reason ?? "refused"));
       throw new ContractError("refused", p.error ?? "the other device refused");
     }
     if (reply[0] !== "welcome") return this.#protocol(p);
     const w = reply[1] as Record<string, unknown>;
     const host = this.#readSide(w, conn.peerKey);
-    if (!host || toBase64(conn.peerKey) !== toBase64(offer.hostKey) || (await deviceIdFor(conn.peerKey)) !== host.record.id) return this.#protocol(p);
+    if (typeof host === "string") {
+      this.#fail(p, HOST_REFUSED[host]);
+      conn.close(CLOSE_PROTOCOL, "refused");
+      throw new ContractError("refused", p.error!);
+    }
+    if (toBase64(conn.peerKey) !== toBase64(offer.hostKey) || (await deviceIdFor(conn.peerKey)) !== host.record.id) return this.#protocol(p);
     if (typeof w.t !== "number" || typeof w.group !== "string" || typeof w.fresh !== "boolean") return this.#protocol(p);
     // The host's `t` dates the statements both sign, its admit of this device among them: an old one is refused, so a
     // host holding another device's old admit can't replay it here (I's review).
@@ -330,6 +376,15 @@ export class PairingService {
     this.#remove(p);
   }
 
+  /** Ends a pairing that is under way as failed, with a reason the person can read: a wrong guess at the words, a card that could
+   *  not be shown. The other device is told by the closed connection. Does nothing to one that has ended already. */
+  abort(pairingId: string, reason: string): void {
+    const p = this.#pending.get(pairingId);
+    if (!p || p.status === "paired" || p.status === "failed" || p.status === "cancelled") return;
+    this.#fail(p, reason);
+    p.conn?.close(CLOSE_PROTOCOL, reason.slice(0, 100));
+  }
+
   async close(): Promise<void> {
     this.#off();
     for (const p of [...this.#pending.values()]) await this.cancel(p.id);
@@ -391,8 +446,8 @@ export class PairingService {
     });
     clearTimeout(deadline);
     offData?.();
-    const refuse = (reason: string) => {
-      void stream.write(frame(encode(["refused", { reason }]))).catch(() => undefined);
+    const refuse = (reason: string, code?: PairRefusal) => {
+      void stream.write(frame(encode(["refused", { reason, ...(code ? { code } : {}) }]))).catch(() => undefined);
       stream.finish();
       setTimeout(() => conn.close(CLOSE_NORMAL, reason), 50);
     };
@@ -405,17 +460,35 @@ export class PairingService {
       this.#fail(p, "expired");
       return refuse("the pairing has expired");
     }
-    const joiner = this.#readSide(h, conn.peerKey);
-    if (!joiner || (await deviceIdFor(conn.peerKey)) !== joiner.record.id) return refuse("the device record doesn't match its key");
-    if (this.#o.registry.get(joiner.record.id)?.revokedAt !== undefined) return refuse("this device was revoked: pair it with a new key");
-    if (this.#o.registry.get(joiner.record.id)) return refuse("already paired");
-    if (!(h.commit instanceof Uint8Array) || h.commit.length !== 32) return refuse("not a pairing");
-    const joinerPart = joinerTranscript(p.id, this.#o.self.publicKey, sideForTranscript(joiner), h.commit);
-    if (!(h.proof instanceof Uint8Array) || !verifyPairProof(p.secret, PAIR_PROOF_JOINER, joinerPart, h.proof)) {
+    // A device turned away over its record is told why by code, and the host's person in plain words (a note on the pairing, which
+    // goes on waiting for the right device; never any of the other device's own text). The note is set only for a device that holds the
+    // pair secret: whoever can address the pairing (its id is in every client's view of it, not only in the code) could otherwise set
+    // or flip it with a hello of any record. So the record is read first without its content rules (`unvetted` takes the first rule it
+    // breaks), the proof is checked over it as the device sent it, and only then is the device turned away or the pairing taken on.
+    const turnAway = (code: PairRefusal) => {
+      p.note = HOST_NOTE[code];
+      this.#emit(p);
+      refuse(REFUSAL_CORE[code], code);
+    };
+    const badProof = () => {
       // One wrong proof ends the pairing, so a short code can't be guessed at online.
       this.#fail(p, "a device tried the pairing without its secret");
       return refuse("bad proof");
-    }
+    };
+    const unvetted: { code?: PairRefusal } = {};
+    const joiner = this.#readSide(h, conn.peerKey, unvetted);
+    const commitOk = h.commit instanceof Uint8Array && h.commit.length === 32;
+    const joinerPart = typeof joiner !== "string" && commitOk ? joinerTranscript(p.id, this.#o.self.publicKey, sideForTranscript(joiner), h.commit as Uint8Array) : undefined;
+    const proven = joinerPart !== undefined && h.proof instanceof Uint8Array && verifyPairProof(p.secret, PAIR_PROOF_JOINER, joinerPart, h.proof);
+    // A record whose make-up is broken (its shape, its keys) can't be checked against the proof, so the device is told why by code and the
+    // host's person is told nothing: no note, and the pairing goes on waiting.
+    if (typeof joiner === "string") return refuse(REFUSAL_CORE[joiner], joiner);
+    if (unvetted.code !== undefined) return proven ? turnAway(unvetted.code) : badProof();
+    if ((await deviceIdFor(conn.peerKey)) !== joiner.record.id) return proven ? turnAway("record") : badProof();
+    if (this.#o.registry.get(joiner.record.id)?.revokedAt !== undefined) return refuse("this device was revoked: pair it with a new key");
+    if (this.#o.registry.get(joiner.record.id)) return refuse("already paired");
+    if (joinerPart === undefined) return refuse("not a pairing");
+    if (!proven) return badProof();
     p.conn = conn;
     this.#bind(p, stream, reader, early);
     p.peer = joiner;
@@ -426,7 +499,7 @@ export class PairingService {
     p.fresh = hostGroup === null && joiner.group === null;
     p.t = Math.floor(this.#o.clock.now());
     const transcript = fullTranscript(joinerPart, sideForTranscript(mine, false), { t: p.t, group: p.group, nonce: p.nonce });
-    p.peerCommit = own(h.commit);
+    p.peerCommit = own(h.commit as Uint8Array); // 32 bytes: `joinerPart` exists only then
     await this.#send(p, ["welcome", {
       v: 1, device: mine.record, ...this.#answerKeyProof(), pairKey: mine.pairKey, groupKey: mine.groupKey, group: p.group, fresh: p.fresh, t: p.t, account: mine.account,
       nonce: p.nonce, proof: pairProof(p.secret, PAIR_PROOF_HOST, transcript),
@@ -518,6 +591,8 @@ export class PairingService {
   async #finish(p: Pending): Promise<void> {
     if (p.done) return p.done;
     p.done = (async () => {
+      // Both sides confirmed in time: from here the pairing is being written down, and its expiry no longer ends it halfway.
+      this.#stopExpiry(p);
       const peer = p.peer!;
       await this.#o.registry.add(peer.record, p.proof!);
       if (this.#needsPair(p)) {
@@ -690,30 +765,60 @@ export class PairingService {
     };
   }
 
-  #readSide(m: Record<string, unknown>, key: Bytes): Side | undefined {
+  /** The other device's record as its hello sent it. `soft` takes the content rules (name, kind, os, app) as notes instead of refusals: the
+   *  first one the record breaks is left in `soft.code` and the side is built as sent, so the caller can check the pair-secret proof over it
+   *  before saying anything about what is wrong with it. What the record is made of (its shape, its keys) is refused at once either way. */
+  #readSide(m: Record<string, unknown>, key: Bytes, soft?: { code?: PairRefusal }): Side | PairRefusal {
+    const content = (code: PairRefusal): PairRefusal | undefined => {
+      if (soft === undefined) return code;
+      soft.code ??= code;
+      return undefined;
+    };
     const d = m.device as Record<string, unknown> | undefined;
-    if (!d || typeof d !== "object") return undefined;
-    if (typeof d.id !== "string" || typeof d.name !== "string" || typeof d.kind !== "string" || typeof d.runsCore !== "boolean" || typeof d.publicKey !== "string") return undefined;
-    if (d.publicKey !== toBase64(key)) return undefined;
-    if (!helloKeysStrict(m)) return undefined;
-    if (m.group !== null && typeof m.group !== "string") return undefined;
-    if (m.account !== null && typeof m.account !== "string") return undefined;
+    if (!d || typeof d !== "object") return "record";
+    if (typeof d.id !== "string" || typeof d.name !== "string" || typeof d.kind !== "string" || typeof d.runsCore !== "boolean" || typeof d.publicKey !== "string") return "record";
+    // What the other device calls itself is its own word, from a stranger's machine until the person has checked the four words:
+    // the one rule for a name (`devices/names.ts`), a kind and an os from the enums, and the same rule for the tree name it may bring.
+    // This is the one place a peer's record is validated, and the reason is one of a closed set (`PairRefusal`), never the peer's text.
+    let refused: PairRefusal | undefined;
+    if (nameProblem(d.name) !== null && (refused = content("name"))) return refused;
+    if (!DeviceKind.safeParse(d.kind).success && (refused = content("kind"))) return refused;
+    if (d.os !== undefined && !DeviceOs.safeParse(d.os).success && (refused = content("os"))) return refused;
+    if (d.computer !== undefined && (typeof d.computer !== "string" || nameProblem(d.computer) !== null) && (refused = content("name"))) return refused;
+    if (d.publicKey !== toBase64(key)) return "record";
+    if (!helloKeysStrict(m)) return "record";
+    if (m.group !== null && typeof m.group !== "string") return "record";
+    if (m.account !== null && typeof m.account !== "string") return "record";
     // A device's answer key travels in its record (a phone's own, item 91; the link key never answers a card), with the
     // registration statement signed by that key: the record is in the transcript the user checks.
     let answerKey: DeviceRecord["answerKey"];
     if (d.answerKey !== undefined) {
       const ak = d.answerKey as { publicKey?: unknown; held?: unknown; alg?: unknown };
-      if (ak?.alg !== undefined && ak.alg !== "ed25519" && ak.alg !== "p256") return undefined;
+      if (ak?.alg !== undefined && ak.alg !== "ed25519" && ak.alg !== "p256") return "record";
       const alg: AnswerKeyAlg = (ak?.alg as AnswerKeyAlg | undefined) ?? "ed25519";
       const proof = typeof m.answerKeyProof === "string" ? fromBase64(m.answerKeyProof) : null;
       const raw = typeof ak?.publicKey === "string" ? answerKeyBytes(alg, ak.publicKey) : null;
-      if (!raw || typeof ak.held !== "string" || !AnswerKeyHolder.safeParse(ak.held).success || !proof) return undefined;
+      if (!raw || typeof ak.held !== "string" || !AnswerKeyHolder.safeParse(ak.held).success || !proof) return "record";
       // With the key's own algorithm: a phone's Secure Enclave key is P-256 (B's #187).
-      if (!verifyKeySignature(alg, raw, answerKeyStatement(d.id, ak.publicKey as string, ak.held, alg), proof)) return undefined;
+      if (!verifyKeySignature(alg, raw, answerKeyStatement(d.id, ak.publicKey as string, ak.held, alg), proof)) return "record";
       answerKey = { publicKey: ak.publicKey as string, held: ak.held as NonNullable<DeviceRecord["answerKey"]>["held"], ...(alg === "p256" ? { alg } : {}) } as AnswerKeyRecord;
+    }
+    // A phone's app (`moss` or `code`) travels in its record, so it is in the transcript the pair secret and the four words
+    // cover: the one place it is taken from, and the app a phone has to say it is at the pairing. One that isn't one of the
+    // two, or sits on a device that isn't a phone, refuses the pairing (a value dropped here would leave the two sides'
+    // transcripts apart anyway).
+    let app: DeviceRecord["app"];
+    if (d.app !== undefined) {
+      const parsed = PhoneApp.safeParse(d.app);
+      if (!parsed.success || d.kind !== "phone") {
+        const code = content("app");
+        if (code) return code;
+        app = d.app as DeviceRecord["app"];
+      } else app = parsed.data;
     }
     const record: Side["record"] = {
       id: d.id, name: d.name, kind: d.kind as DeviceRecord["kind"], runsCore: d.runsCore, publicKey: d.publicKey,
+      ...(app ? { app } : {}),
       ...(typeof d.os === "string" ? { os: d.os as DeviceRecord["os"] } : {}),
       ...(typeof d.computer === "string" ? { computer: d.computer } : {}),
       ...(typeof d.hasDisplay === "boolean" ? { hasDisplay: d.hasDisplay } : {}),
@@ -729,7 +834,21 @@ export class PairingService {
       waiters: [], ...(slot ? { slot } : {}),
     };
     this.#pending.set(id, p);
+    if (role === "host") this.#armExpiry(p);
     return p;
+  }
+
+  /** A host's pairing ends at the expiry its code shows the person: failed as "expired" (the step the pages draw as such), its connection
+   *  closed; the pairing's watchers then withdraw its card. One timer per pairing, re-armed while a long wait (a cloud computer's) is
+   *  longer than a timer can count, and cleared when the pairing ends or goes. */
+  #armExpiry(p: Pending): void {
+    const left = p.expiresAt - this.#o.clock.now();
+    const capped = left > MAX_TIMER_MS;
+    p.timer = this.#o.clock.setTimeout(() => {
+      p.timer = undefined;
+      if (capped) return this.#armExpiry(p);
+      this.abort(p.id, "expired");
+    }, Math.min(Math.max(0, left), MAX_TIMER_MS));
   }
 
   #bind(p: Pending, stream: WireStream, reader = new FrameReader(64 * 1024), early: readonly Uint8Array[] = []): void {
@@ -788,13 +907,20 @@ export class PairingService {
 
   #fail(p: Pending, reason: string): void {
     if (p.status === "paired" || p.status === "failed" || p.status === "cancelled") return;
+    this.#stopExpiry(p);
     p.status = "failed";
     p.error = reason;
     if (p.slot) void this.#o.rendezvous?.remove(p.slot).catch(() => undefined);
     this.#emit(p);
   }
 
+  #stopExpiry(p: Pending): void {
+    if (p.timer) this.#o.clock.clearTimeout(p.timer);
+    p.timer = undefined;
+  }
+
   #remove(p: Pending): void {
+    this.#stopExpiry(p);
     if (this.#pending.get(p.id) !== p) return;
     this.#pending.delete(p.id);
     this.#listeners.emit({ type: "removed", pairingId: p.id });
@@ -805,6 +931,7 @@ export class PairingService {
       view: { ...p.view }, role: p.role, status: p.status,
       ...(p.peer && p.status !== "waiting" ? { peer: { ...p.peer.record, addedAt: 0, addedBy: p.proof?.via ?? "code" } } : {}),
       ...(p.error ? { error: p.error } : {}),
+      ...(p.note && p.status === "waiting" ? { note: p.note } : {}),
     };
   }
 

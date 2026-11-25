@@ -32,6 +32,7 @@ export const MOSS_TOOLS_STEP = "MOSS's Plugins page: a plugin's tool set off the
 export const MOSS_INSTRUCTIONS_STEP = "MOSS's Settings: MOSS's instructions shown as they are now, edited in place and saved by the person with no card (instructionsEditRule: the person's own edit is free); her next turn is given them";
 export const MOSS_MAKE_STEP = "MOSS: a bot made from the list's + (the person's bot.create, on a model chosen there from the ones the person has set up) opens on its own conversation and answers; that bot's MakeBot raises the person's OK card in MOSS naming the maker, and once pressed the new bot is listed, made by it";
 export const MOSS_EDITOR_STEP = "MOSS's Settings, a bot's own page (the bot editor, MOSS Code's old rows 14 and 15): its name, model and instructions edited there are kept: the engine's record has them, the list shows the new name, and the page opened again shows all three";
+export const MOSS_QUESTION_STEP = "MOSS: a bot's question (AskUserQuestion) is drawn in her conversation in MOSS's window with its header, text and options, and the bot's \"Needs you\" shows in the list and the header; it is still shown when the window's page is opened again; a press on an option and Send answer answers it (session.answer, the person's own press), the model's next request carries the answer, and the card reads answered with what was chosen and \"Needs you\" goes; a second question stopped with the composer's Stop is withdrawn, and a Write asked for next in the same conversation raises its card, is approved by a press and writes its file";
 export const MOSS_TRY_AGAIN_STEP = "MOSS: a turn that fails in MOSS's conversation shows Try again; one press sends the same words once more (session.resend), the next turn completes, and the button goes";
 export const MOSS_ARCHIVE_STEP = "MOSS's Settings: a bot archived leaves the list and is listed under Archived bots; brought back, it is in the list again with its conversation whole";
 export const MOSS_LONG_STEP = "MOSS: a long conversation the home already holds (a bot whose one conversation has 20,000 events, as the upgrade's copy brings the owner's): it opens on its latest page, scrolling up with the wheel reads the pages before it from the engine with the message under the eye kept in place, and the oldest message is reached by scrolling; its first paint and its page loads are timed";
@@ -46,7 +47,7 @@ export const MOSS_GLASS_STEP = "MOSS's glass: where the window has a material, a
 export const MOSS_BOTH_KEYS_STEP = "MOSS beside MOSS Code on one computer: with MOSS Code's own answer key registered too, MOSS still answers its card with its own key (program moss), and MOSS Code's connection can't answer a card MOSS draws, even signed with MOSS Code's own key";
 
 /** The unit's rows, in the order it runs them. */
-export const MOSS_STEPS: readonly string[] = [MOSS_LIST_STEP, MOSS_MESSAGE_STEP, MOSS_STATUS_STEP, MOSS_CARD_STEP, MOSS_AWAY_STEP, MOSS_PANEL_STEP, MOSS_TOOLS_STEP, MOSS_INSTRUCTIONS_STEP, MOSS_MAKE_STEP, MOSS_EDITOR_STEP, MOSS_TRY_AGAIN_STEP, MOSS_ARCHIVE_STEP, MOSS_LONG_STEP, MOSS_ROUTINE_RUN_STEP, MOSS_ROUTINE_PAUSE_STEP, MOSS_ROUTINE_EDIT_STEP, MOSS_MEMORY_STEP, MOSS_ROUTINE_FAIL_STEP, MOSS_DROP_STEP, MOSS_GLASS_STEP, MOSS_BOTH_KEYS_STEP];
+export const MOSS_STEPS: readonly string[] = [MOSS_LIST_STEP, MOSS_MESSAGE_STEP, MOSS_STATUS_STEP, MOSS_QUESTION_STEP, MOSS_CARD_STEP, MOSS_AWAY_STEP, MOSS_PANEL_STEP, MOSS_TOOLS_STEP, MOSS_INSTRUCTIONS_STEP, MOSS_MAKE_STEP, MOSS_EDITOR_STEP, MOSS_TRY_AGAIN_STEP, MOSS_ARCHIVE_STEP, MOSS_LONG_STEP, MOSS_ROUTINE_RUN_STEP, MOSS_ROUTINE_PAUSE_STEP, MOSS_ROUTINE_EDIT_STEP, MOSS_MEMORY_STEP, MOSS_ROUTINE_FAIL_STEP, MOSS_DROP_STEP, MOSS_GLASS_STEP, MOSS_BOTH_KEYS_STEP];
 
 /** The unit's daemon: the bots as engine data (lane MC1 makes it the default; until then the unit sets it). */
 export const MOSS_ENV: Readonly<Record<string, string>> = { MOSS_BOT_SOURCE: "records" };
@@ -142,6 +143,7 @@ export async function mossUnit(x: MossUnitCtx): Promise<void> {
     await row(MOSS_MESSAGE_STEP, () => messageRow(s));
     // Before any row that fails a session: the engine's feed keeps a bot "stuck" while any of its sessions has failed.
     await row(MOSS_STATUS_STEP, () => statusRow(s));
+    await row(MOSS_QUESTION_STEP, () => questionRow(s));
     await row(MOSS_CARD_STEP, () => cardRow(s));
     await row(MOSS_AWAY_STEP, () => awayRow(s));
     await row(MOSS_PANEL_STEP, () => panelRow(s));
@@ -1340,6 +1342,94 @@ async function editorRow(s: UnitState): Promise<string> {
 }
 
 /** Try again: a turn that fails (the fake provider's 400, until it is healed), its note in MOSS with Try again, one press. */
+/** A bot's question in MOSS (spec §5.5): the card in her conversation, answered right after the person's own press, and stopped from the composer. */
+async function questionRow(s: UnitState): Promise<string> {
+  const a = await alpha(s.c);
+  await openBot(s, "alpha", "MOSS");
+  const ask = (t: string) => callText("AskUserQuestion", { questions: [{
+    question: `Which model should the Codex agent use ${t}?`, header: "Model", multiSelect: false,
+    options: [{ label: "Codex's default (Recommended)", description: "Whatever Codex picks for itself." }, { label: "Use opus", description: "A Claude model." }, { label: "Hold off", description: "Do nothing yet." }],
+  }] });
+  const pendingSel = ".messages [data-kind=question][data-state=pending]";
+  const mood = (where: string) => s.w.eval<string>(`document.querySelector(${JSON.stringify(where)})?.textContent ?? ''`);
+  const events = async () => (await s.c.request<{ session: string; events: Record<string, unknown>[] }>("bot.conversation", { id: "alpha", limit: 400 })).events;
+
+  // The row before may leave a slow turn running: a message sent now would fold into it, so the turn ends first.
+  await s.w.waitFor("her earlier turn ended (no Stop on the composer)", `!document.querySelector('[data-composer] [data-stop]') ? 'quiet' : null`, 150_000);
+
+  // 1. The bot asks: the question is drawn where it was asked, whole, and she needs the person.
+  const t = tag("ASK");
+  await sendInMoss(s, "MOSS", `${t} ${ask(t)}`);
+  await s.w.waitFor("the question drawn in her conversation, pending", `[...document.querySelectorAll(${JSON.stringify(pendingSel)})].some((q) => q.textContent.includes(${JSON.stringify(t)}))`, 120_000);
+  // The Agent tool the bot is offered is MOSS's own (packages/core/src/agents/tools.ts, shadowing the runtime's built-in one). The
+  // runtime puts one family's aliases (fable, opus, sonnet, haiku) into the `model` property of any tool named Agent, so MOSS's takes
+  // `model_id` (a plain string pointing at AgentModels) and has no `model` at all.
+  const offeredAgent = s.x.fake.requests.map((r) => r.agentModel).find((m) => m !== undefined) as { model?: unknown; model_id?: { type?: string; enum?: unknown; description?: string } } | undefined;
+  if (offeredAgent === undefined) s.x.fail("the bot's request offered no Agent tool");
+  else if (offeredAgent.model !== undefined || offeredAgent.model_id?.type !== "string" || offeredAgent.model_id.enum !== undefined || !/AgentModels/.test(offeredAgent.model_id.description ?? "")) s.x.fail(`the bot's Agent tool tells the model its model fields are ${JSON.stringify(offeredAgent).slice(0, 400)}, not a plain model_id string that points at AgentModels and no model enum`);
+
+  const card = await s.w.eval<{ chip: string; options: string[]; described: string[]; send: boolean; box: boolean; stop: boolean }>(`(() => { const q = document.querySelector(${JSON.stringify(pendingSel)}); const o = [...q.querySelectorAll('.cl-conv-question__option')]; return { chip: q.querySelector('.cl-conv-question__chip')?.textContent ?? '', options: o.map((x) => x.querySelector('.cl-conv-question__option-label')?.textContent ?? ''), described: o.map((x) => x.querySelector('.cl-conv-question__option-description')?.textContent ?? ''), send: !q.querySelector('.cl-conv-question__send').disabled, box: !!q.querySelector('input[type=text]'), stop: !!document.querySelector('[data-composer] [data-stop]') }; })()`);
+  if (card.chip !== "Model") s.x.fail(`the question's header is "${card.chip}", not "Model"`);
+  if (JSON.stringify(card.options) !== JSON.stringify(["Codex's default (Recommended)", "Use opus", "Hold off"])) s.x.fail(`the options drawn are ${JSON.stringify(card.options)}`);
+  if (card.described.some((d) => d === "")) s.x.fail(`an option is drawn without its description (${JSON.stringify(card.described)})`);
+  if (card.send) s.x.fail("Send answer is enabled before anything is chosen");
+  if (!card.box) s.x.fail("the question has no box for the person's own words");
+  if (!card.stop) s.x.fail("the composer offers no Stop while the turn waits on the question");
+  await s.w.waitFor("her \"Needs you\" in the list and the header", `document.querySelector('[data-bot-row="alpha"] [data-mood-words]')?.textContent === 'Needs you' && document.querySelector('.conversation__who [data-mood-words]')?.textContent === 'Needs you' ? 'shown' : null`, 30_000)
+    .catch(async () => s.x.fail(`the list says "${await mood('[data-bot-row="alpha"] [data-mood-words]')}" and the header "${await mood(".conversation__who [data-mood-words]")}", not "Needs you"`));
+  const asked = (await events()).filter((e) => e.type === "question_asked" && JSON.stringify(e.questions).includes(t));
+  if (asked.length !== 1) s.x.fail(`the log holds ${asked.length} question_asked for it, not 1`);
+  const callId = String(asked[0]!.callId);
+
+  // 2. The window's page is opened afresh (what closing and opening the window does: the engine, not the page, holds the question): it is still shown.
+  await s.w.cdp.send("Page.reload", {}, await s.w.main());
+  await s.w.waitFor("the page drawn again on her conversation with the question still pending", `[...document.querySelectorAll(${JSON.stringify(pendingSel)})].some((q) => q.textContent.includes(${JSON.stringify(t)})) ? 'shown' : null`, 60_000)
+    .catch(async (err) => {
+      await openBot(s, "alpha", "MOSS").catch(() => undefined);
+      return s.x.fail(`${s.x.why(err)}: after the page was opened again the waiting question isn't drawn`);
+    });
+
+  // 3. A press on an option, then on Send answer, answers it; the model's next request carries the answer.
+  const asked0 = s.x.fake.requests.length;
+  await s.w.click(".messages [data-kind=question][data-state=pending] .cl-conv-question__option", "Use opus");
+  await s.w.waitFor("Send answer enabled once an option is chosen", `(() => { const b = document.querySelector(${JSON.stringify(`${pendingSel} .cl-conv-question__send`)}); return b && !b.disabled ? 'ready' : null; })()`, 10_000);
+  await s.w.click(`${pendingSel} .cl-conv-question__send`);
+  const said = await botSaid(s, "ACCEPTANCE-DONE", 120_000).catch(async (err) => s.x.fail(`${s.x.why(err)} [the card shows: ${await mood(".messages [data-kind=question]")}; the model's requests since: ${s.x.fake.requests.slice(asked0).map((r) => `${r.answered}:${(r.toolResult?.text ?? "").slice(0, 60)}`).join(" | ")}]`));
+  const carried = s.x.fake.requests.slice(asked0).find((r) => r.toolResult?.text.includes("Use opus"));
+  if (carried === undefined) s.x.fail(`the model's next request doesn't carry the answer (its tool results: ${s.x.fake.requests.slice(asked0).map((r) => JSON.stringify(r.toolResult?.text.slice(0, 100))).join(" | ")})`);
+  const answered = await s.w.eval<{ state: string; text: string; controls: number; n: number }>(`(() => { const all = [...document.querySelectorAll('.messages [data-kind=question]')].filter((q) => q.textContent.includes(${JSON.stringify(t)})); const q = all[0]; return { n: all.length, state: q?.getAttribute('data-state') ?? '', text: q?.querySelector('dd')?.textContent ?? '', controls: q ? q.querySelectorAll('button, input').length : -1 }; })()`);
+  if (answered.n !== 1 || answered.state !== "answered" || answered.text !== "Use opus" || answered.controls !== 0) s.x.fail(`the question reads ${JSON.stringify(answered)}, not answered once with "Use opus" and nothing left to press`);
+  const resolved = (await events()).filter((e) => e.type === "question_resolved" && e.callId === callId);
+  if (resolved.length !== 1 || resolved[0]!.by !== "user" || JSON.stringify(resolved[0]!.answers).includes("Use opus") === false) s.x.fail(`the log's resolution is ${JSON.stringify(resolved)}, not one answer by the user`);
+  await s.w.waitFor("her \"Needs you\" gone from the list and the header", `document.querySelector('[data-bot-row="alpha"] [data-mood-words]')?.textContent !== 'Needs you' && document.querySelector('.conversation__who [data-mood-words]')?.textContent !== 'Needs you' ? 'gone' : null`, 60_000)
+    .catch(async () => s.x.fail(`after the answer the list says "${await mood('[data-bot-row="alpha"] [data-mood-words]')}" and the header "${await mood(".conversation__who [data-mood-words]")}"`));
+
+  // 4. A second question, and the person stops the turn from the composer: it is withdrawn, and nothing waits.
+  const u = tag("STOP");
+  await sendInMoss(s, "MOSS", `${u} ${ask(u)}`);
+  await s.w.waitFor("the second question, pending", `[...document.querySelectorAll(${JSON.stringify(pendingSel)})].some((q) => q.textContent.includes(${JSON.stringify(u)}))`, 120_000);
+  await s.w.click("[data-composer] [data-stop]");
+  await s.w.waitFor("the second question withdrawn", `[...document.querySelectorAll('.messages [data-kind=question]')].some((q) => q.textContent.includes(${JSON.stringify(u)}) && q.getAttribute('data-state') === 'withdrawn') ? 'withdrawn' : null`, 60_000)
+    .catch(async (err) => s.x.fail(`${s.x.why(err)} [the card shows: ${await mood(".messages [data-kind=question]")}]`));
+  const second = (await events()).filter((e) => e.type === "question_asked" && JSON.stringify(e.questions).includes(u)).map((e) => String(e.callId));
+  const gone = (await events()).filter((e) => e.type === "question_resolved" && second.includes(String(e.callId)));
+  if (second.length !== 1 || gone.length !== 1 || gone[0]!.by !== "aborted") s.x.fail(`the second question's resolution is ${JSON.stringify(gone)}, not one withdrawal (by aborted)`);
+  const view = await s.c.request<{ session: { needsYou?: { questions: number } } }>("session.get", { id: a.mainSession });
+  if ((view.session.needsYou?.questions ?? 0) !== 0) s.x.fail(`the engine still counts ${view.session.needsYou?.questions} question(s) as waiting after the stop`);
+  await s.w.waitFor("no Stop and no pending question in the window", `!document.querySelector('[data-composer] [data-stop]') && !document.querySelector(${JSON.stringify(pendingSel)}) ? 'quiet' : null`, 60_000);
+  await s.x.until("the engine idle after the stop (no turn running, no question waiting)", 60_000, async () => {
+    const v = await s.c.request<{ session: { state?: string; needsYou?: { questions: number } } }>("session.get", { id: a.mainSession }).catch(() => undefined);
+    return v !== undefined && (v.session.needsYou?.questions ?? 0) === 0 && /^(idle|done|ready)$/i.test(String(v.session.state ?? "idle")) ? true : undefined;
+  }, 500);
+  // 5. After the Stop, a new message that makes the bot Write: the Write's approval card is raised and drawn in her conversation, the person's press approves it, the file is written.
+  const wrote = join(s.x.userHome, ".acceptance", `moss-after-stop-${randomBytes(3).toString("hex")}.txt`);
+  const afterStop = await turnInMoss(s, "MOSS", a.mainSession, callText("Write", { file_path: wrote, content: "after the stop\n" }), basename(wrote), 150_000)
+    .catch(async (err) => s.x.fail(`${s.x.why(err)}: after the stopped question, a new message that Writes got no approval card or no reply [the engine's log for her session ends: ${(await events()).slice(-6).map((e) => `${String(e.type)}${typeof e.text === "string" ? ` ${JSON.stringify(e.text.slice(0, 160))}` : ""}`).join(", ")}; the model's last requests offered Write: ${s.x.fake.requests.slice(-3).map((r) => `${r.tools.some((n) => n === "Write" || n.endsWith("__Write"))}/${r.answered}`).join(" ")}]`));
+  if (afterStop.cards.length === 0) s.x.fail("the Write after the stop raised no approval card");
+  if (!existsSync(wrote) || readFileSync(wrote, "utf8") !== "after the stop\n") s.x.fail(`the file the Write after the stop was to make isn't written (${wrote})`);
+  return `the bot's question (header Model, three options with their descriptions, a box of the person's own) was drawn in her conversation, with "Needs you" in the list and the header and Stop on the composer; it was still there after the page was opened again; a press on "Use opus" and on Send answer was answered by the person (the log's resolution by user), the model's next request carried "Use opus", the card read answered and "Needs you" went ("${said.slice(0, 40)}"); a second question stopped from the composer was withdrawn (resolved by aborted) with nothing waiting, and the next message, a Write, raised its approval card in the same conversation, was approved by a press and wrote its file`;
+}
+
 async function tryAgainRow(s: UnitState): Promise<string> {
   const a = await alpha(s.c);
   await openBot(s, "alpha", "MOSS");

@@ -456,7 +456,7 @@ async function f5Clause(ctx: ExampleCtx, session: string, fixture: BrowserFixtur
       await toSessionTab(ctx);
       await until("a session's composer drawn", 20_000, composerShown);
     }
-    const viewSession = await until("acc-view's part drawn in the session's composer", 60_000, viewDoc, async () => `documents: ${(await ctx.cdp.documents()).map((d) => d.url.slice(0, 50)).join(" | ")}`);
+    const viewSession = await until("acc-view's part drawn in the session's composer", 60_000, viewDoc, async () => `documents: ${(await ctx.cdp.documents()).map((d) => d.url.slice(0, 50)).join(" | ")}; the app's layer lines: ${ctx.appLog().split("\n").filter((l) => /layers: /.test(l)).slice(-6).map((l) => l.slice(0, 140)).join(" | ")}`);
     const inView = async (expr: string) => String(await ctx.cdp.evaluate(viewSession, expr).catch((e: unknown) => `refused ${(e as Error).message}`));
     const list = await inView(`window.__accView.list(${JSON.stringify(tabOwner)})`);
     const tabId = /"id":"(tab_[^"]+)"/.exec(list)?.[1] ?? fail(`F5: acc-view listed no tab of the session's (${list.slice(0, 200)})`);

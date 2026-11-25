@@ -51,6 +51,7 @@ import { pluginBun } from "../registry/plugin-run";
 import { BackendModelLists, reportedModels } from "./model-list";
 import { ADMISSIONS } from "./sandbox/admission";
 import type { PluginRegistry } from "../contracts/plugin-registry";
+import { isBundledMoss } from "../runtime-sdk/model-plugins/load";
 import { MossCodeBackend, type MossCodeDeps } from "./moss-code/backend";
 import { codeAgentDoor, CodeAgentService } from "./code-agent/service";
 import type { CodeAgentDoor } from "../ipc/moss";
@@ -205,6 +206,8 @@ export function createAgents(o: AgentsOptions): { manager: AgentManager; moss: B
     bridge: { ...bridgeCommand(), socketPath },
     watchdog: new StallWatchdog({ clock: o.clock }),
     oks: new FileAgentOks(o.home),
+    // Only an agent of the bundled tree has its name in a card's title; by its install record (`approvals/title-name.ts`).
+    bundledPlugin: (pluginId) => { const r = o.registry?.get(pluginId); return r !== undefined && isBundledMoss(r); },
     ...(o.pluginTools ? { pluginTools: o.pluginTools } : {}),
     ...(o.pluginParts ? { pluginParts: o.pluginParts } : {}),
     ...(o.glossary ? { glossary: o.glossary } : {}),

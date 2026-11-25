@@ -87,6 +87,28 @@ Write-Output ("timing: acl revoke {0} ms" -f $sw.ElapsedMilliseconds)
 Remove-Item -Recurse -Force $probeDir -ErrorAction SilentlyContinue
 
 
+# 6b. Lane WS7: where a read deny's cost comes from. srt-win stamps a deny on the target and a FILE_DELETE_CHILD deny on
+#     its parent, each written with SetSecurityInfo, which carries inheritable entries down the whole tree below: a
+#     target in the home's top level puts that write on the home itself. Measured on new folders, without the profile
+#     grant here and with it below, at the home's top, one level down, deep under a small folder, and outside the home.
+function Measure-Deny([string]$Label, [string]$Path, [string]$Flag = "--deny-read") {
+  New-Item -ItemType Directory -Force -Path $Path | Out-Null
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  $out = & $Srt exec --user $m3 --write-restricted-token $Flag $Path -- $cmd /d /c "exit 0" 2>&1
+  $sw.Stop()
+  Write-Output ("timing: {0} {1} ms (exit {2}); {3}" -f $Label, $sw.ElapsedMilliseconds, $LASTEXITCODE, (($out | Where-Object { "$_" -like "srt-win:*" }) -join " | "))
+}
+$homeCount = (Get-ChildItem -LiteralPath $env:USERPROFILE -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object).Count
+Write-Output "timing-note: the home holds $homeCount entries"
+$where = @(
+  @("a new folder at the home's top", (Join-Path $env:USERPROFILE "ws7-new-top")),
+  @("a new folder one level down (Documents)", (Join-Path $env:USERPROFILE "Documents\ws7-new-doc")),
+  @("a new folder deep under a small folder", (Join-Path $env:USERPROFILE "ws7-small\a\b\c")),
+  @("a new folder outside the home", "C:\ws7-outside\x")
+)
+foreach ($w in $where) { Measure-Deny "exec, one read deny on $($w[0]), no profile grant" $w[1] }
+Measure-Deny "exec, one write deny on a new folder at the home's top, no profile grant" (Join-Path $env:USERPROFILE "ws7-new-top-w") "--deny-write"
+
 # 7. The profile read grant (the daemon's first command pays it once), then once more.
 Measure-Step "profile grant (first)" { & $Srt profile grant --quiet --json }
 Measure-Step "profile grant (again)" { & $Srt profile grant --quiet --json }
@@ -99,7 +121,53 @@ foreach ($d in @("AppData", ".ssh")) {
   $sw.Stop()
   Write-Output ("timing: exec, one read deny on ~\{0} with the profile grant {1} ms (exit {2}); {3}" -f $d, $sw.ElapsedMilliseconds, $LASTEXITCODE, (($out | Where-Object { "$_" -like "srt-win:*" }) -join " | "))
 }
+foreach ($w in $where) { Measure-Deny "exec, one read deny on $($w[0]), with the profile grant" "$($w[1])-g" }
+Measure-Deny "exec, one write deny on a new folder at the home's top, with the profile grant" (Join-Path $env:USERPROFILE "ws7-new-top-wg") "--deny-write"
+foreach ($w in $where) { Remove-Item -Recurse -Force -LiteralPath $w[1], "$($w[1])-g" -ErrorAction SilentlyContinue }
+Remove-Item -Recurse -Force -LiteralPath (Join-Path $env:USERPROFILE "ws7-new-top-w"), (Join-Path $env:USERPROFILE "ws7-new-top-wg"), (Join-Path $env:USERPROFILE "ws7-small"), "C:\ws7-outside" -ErrorAction SilentlyContinue
 Measure-Step "profile forget" { & $Srt profile forget }
+
+# 6c. Lane WS7, an assertion, not a timing: patch 0004 writes the parent's FILE_DELETE_CHILD deny on the parent alone,
+#     and a write-denied target carries its own inheritable one. A delete is granted by the parent's FILE_DELETE_CHILD
+#     whatever the child's own DELETE says, so here every object grants that right (Everyone, full control, inherited)
+#     and a fenced command, with a write deny (and then a read deny) on `t`, tries to rename or move away and to delete a
+#     file in `t`, a file in `t\sub`, `t\sub` and `t`: each must still be there. The open sibling's file is the
+#     control: the same command deletes it, or the probe proves nothing. Run with the daemon's write-restricted token as
+#     well (its control shown).
+$fdcRoot = "C:\ws7-fdc"; $fdcRun = "C:\ws7-fdc-run"; $guardBroken = $false
+New-Item -ItemType Directory -Force -Path $fdcRun | Out-Null
+Set-Content -LiteralPath (Join-Path $fdcRun "probe.cmd") -Value @(
+  "@echo off",
+  "del /q $fdcRoot\open\f.txt 2>nul",
+  "move /y $fdcRoot\t\f.txt $fdcRoot\open\moved-f.txt >nul 2>nul",
+  "move /y $fdcRoot\t\sub $fdcRoot\open\moved-sub >nul 2>nul",
+  "ren $fdcRoot\t\sub\g.txt g2.txt 2>nul",
+  "ren $fdcRoot\t t2 2>nul",
+  "del /q $fdcRoot\t\f.txt 2>nul",
+  "del /q $fdcRoot\t\sub\g.txt 2>nul",
+  "rd /s /q $fdcRoot\t\sub 2>nul",
+  "rd /s /q $fdcRoot\t 2>nul",
+  "exit 0"
+)
+& icacls.exe $fdcRun /grant "*S-1-1-0:(OI)(CI)RX" | Out-Null
+foreach ($case in @(@("--deny-write", @()), @("--deny-read", @()), @("--deny-write", @("--write-restricted-token")))) {
+  Remove-Item -Recurse -Force -LiteralPath $fdcRoot -ErrorAction SilentlyContinue
+  New-Item -ItemType Directory -Force -Path (Join-Path $fdcRoot "t\sub"), (Join-Path $fdcRoot "open") | Out-Null
+  & icacls.exe $fdcRoot /grant "*S-1-1-0:(OI)(CI)F" | Out-Null
+  foreach ($f in "t\f.txt", "t\sub\g.txt", "open\f.txt") { Set-Content -LiteralPath (Join-Path $fdcRoot $f) -Value x }
+  $flag = $case[0]; $extra = @($case[1])
+  $out = & $Srt exec --user $m3 @extra $flag (Join-Path $fdcRoot "t") -- $cmd /d /c (Join-Path $fdcRun "probe.cmd") 2>&1
+  $code = $LASTEXITCODE
+  $kept = @("t\f.txt", "t\sub\g.txt", "t\sub", "t" | Where-Object { Test-Path -LiteralPath (Join-Path $fdcRoot $_) })
+  $control = -not (Test-Path -LiteralPath (Join-Path $fdcRoot "open\f.txt"))
+  $label = "$flag$(if ($extra.Count) { ' ' + ($extra -join ' ') })"
+  $moved = @("open\moved-f.txt", "open\moved-sub", "t\sub\g2.txt", "t2" | Where-Object { Test-Path -LiteralPath (Join-Path $fdcRoot $_) })
+  Write-Output ("delete-guard: {0}: exit {1}; still there: {2} of 4 ({3}); moved or renamed: {4}; the open sibling's file deleted: {5}" -f $label, $code, $kept.Count, ($kept -join ", "), $(if ($moved.Count) { $moved -join ", " } else { "none" }), $control)
+  if ($code -ne 0) { $out | Select-Object -First 5 | ForEach-Object { Write-Output "  $_" } }
+  if ($kept.Count -ne 4 -or $moved.Count -ne 0) { $guardBroken = $true; Write-Output "delete-guard: FAILED: a fenced command deleted, moved or renamed under $label" }
+  if (-not $extra.Count -and -not $control) { $guardBroken = $true; Write-Output "delete-guard: FAILED: the control was not deleted, so the probe proves nothing ($label)" }
+}
+Remove-Item -Recurse -Force -LiteralPath $fdcRoot, $fdcRun -ErrorAction SilentlyContinue
 
 # The probe used every principal: all marked used, then the reset (elevated here; the task runs it as SYSTEM) remakes
 # them all, so the end-to-end suite starts on a pool as the daemon finds it.
@@ -107,3 +175,5 @@ $poolState = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "
 foreach ($m in $pool) { Set-Content -NoNewline -LiteralPath (Join-Path $poolState "$($m.principal).used") -Value (Get-Content -Raw -LiteralPath (Join-Path $poolState "$($m.principal).gen")).Trim() }
 Measure-Step "reset: remake all four used principals (one process)" { & $Core sandbox reset }
 foreach ($m in $pool) { Write-Output "timing-note: $($m.principal) profile after the reset: $(Has-Profile $m.principal)" }
+# 6c above failed: after the reset, so the end-to-end suite still finds the pool as the daemon does.
+if ($guardBroken) { Write-Output "delete-guard: FAILED (see above)"; exit 1 }

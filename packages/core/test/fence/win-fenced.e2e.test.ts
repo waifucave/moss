@@ -16,12 +16,16 @@ import { MossFence } from "../../src/fence/fence";
 import { fencedSpawner } from "../../src/fence/fenced-process";
 import { botSandboxSettings } from "../../src/fence/sandbox-settings";
 import { botSandbox, withBotKeyReads, withSecretReads } from "../../src/runtime-sdk/turn-loop/driver";
-import { windowsShellTools } from "../../src/fence/win-shell-tools";
-import { profileExcludeCandidates, QUARANTINE_COPY_LIMITS, quarantineWin } from "../../src/fence/win-fenced";
+import { stopWindowsBackground, windowsShellTools } from "../../src/fence/win-shell-tools";
+import { planFromSettings, profileExcludeCandidates, QUARANTINE_COPY_LIMITS, quarantineWin, watchedReadDenies } from "../../src/fence/win-fenced";
 import { fencedExecutor } from "../../src/computers/fenced-executor";
 import { resolveEndpoint } from "../../src/platform/transport";
 import { currentUserSid, lockPipeDacl } from "../../src/platform/win-pipe";
 import type { CoreToolDef } from "../../src/runtime-sdk/turn-loop/servers";
+import { createThrowawaySecretStore } from "@waifucave/moss-test-harness";
+import { encryptedFileStatus } from "../../src/contracts/secret-store";
+import { fileSecretsBackend } from "../../src/secrets/file-backend";
+import { EncryptedFileValues, MossSecretStore, vaultKey } from "../../src/secrets/moss-secret-store";
 
 const run = process.platform === "win32" && process.env.MOSS_WIN_FENCE_E2E === "1";
 const home = process.env.USERPROFILE ?? "C:\\Users\\nobody";
@@ -35,6 +39,8 @@ const CALLER: Extract<Caller, { kind: "session" }> = { kind: "session", sessionI
 let fence: MossFence;
 let tools: Record<string, CoreToolDef>;
 let sideTools: Record<string, CoreToolDef>;
+let bgTools: Record<string, CoreToolDef>;
+const wakes: { task: string; status: string; text: string }[] = [];
 const sandboxFor = () => {
   const settings = botSandboxSettings(fence.forCaller(CALLER).policy(), {
     mossHome: moss, userHome: home, level: undefined, windows: true, ownFolders: [scratch, botRoot], pathFolders: [],
@@ -46,7 +52,10 @@ const sandboxFor = () => {
 const call = async (t: CoreToolDef, input: Record<string, unknown>, o: { refusal?: boolean; signal?: AbortSignal } = {}) => {
   const started = Date.now();
   const r = await t.run(input, o.signal === undefined ? undefined : { signal: o.signal });
-  console.log(`[e2e] ${t.name} ${JSON.stringify(input.command).slice(0, 120)} -> ${r.isError ? "error" : "ok"} in ${Date.now() - started} ms: ${r.text.slice(0, 300).replace(/\s+/g, " ")}`);
+  // A background start says "started", never "ok": it answers before its launch is known (the standard-user job's
+  // fail-closed check counts every "-> ok" as a command that ran).
+  const how = r.isError ? "error" : input.run_in_background === true ? "started" : "ok";
+  console.log(`[e2e] ${t.name} ${JSON.stringify(input.command).slice(0, 120)} -> ${how} in ${Date.now() - started} ms: ${r.text.slice(0, 300).replace(/\s+/g, " ")}`);
   if (o.refusal !== true) expect(r.text).not.toContain("was refused:");
   return r;
 };
@@ -78,6 +87,10 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     }).map((t) => [t.name, t]));
     tools = mk("bot");
     sideTools = mk("side-thread");
+    bgTools = Object.fromEntries(windowsShellTools({
+      spawner, caller: CALLER, kind: "bot", cwd: () => scratch, sandbox: sandboxFor, userHome: home, temp: fence.temp, mossHome: moss,
+      wake: async (w) => { wakes.push(w); },
+    }).map((t) => [t.name, t]));
   });
   afterAll(() => { for (const d of [moss, join(home, "ws-e2e-plain"), join(home, "ws-escape-dir")]) rmSync(d, { recursive: true, force: true }); });
 
@@ -134,6 +147,64 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     const note = await call(tools.Bash!, { command: `cat '${join(moss, "notes", "readme.txt").replace(/\\/g, "/")}' '${join(home, "ws-e2e-plain", "plain.txt").replace(/\\/g, "/")}'` });
     expect(note.text).toContain("a note any bot may read");
     expect(note.text).toContain("an ordinary file in the home");
+  }, 900_000);
+
+  test("the files the real store wrote (the secrets file, its previous copy, the index) and the key in Credential Manager: the principal reads none of them (lane SE)", async () => {
+    // The store itself writes them, as the daemon does on Windows (owner-only ACL, the key in the user's Credential Manager
+    // under a throwaway service); the test's earlier hand-written stand-in goes first.
+    const store = createThrowawaySecretStore({ id: `wfe-${process.pid}` });
+    const vault = { get: (n: string) => store.get(n), set: (n: string, v: string) => store.set(n, v), delete: (n: string) => store.delete(n) };
+    const file = join(moss, "secrets.enc");
+    rmSync(file, { force: true });
+    try {
+      const flat = fileSecretsBackend({ home: moss, service: store.service, os: "windows", vault: () => vault, interactive: false, moveFrom: null, log: () => {} });
+      await flat.set({ service: store.service, name: "anthropic:default", value: SECRET });
+      await flat.set({ service: store.service, name: "anthropic:default", value: `${SECRET}-2` }); // the previous copy exists
+      const contract = new MossSecretStore({ home: moss, values: new EncryptedFileValues(file, vaultKey(vault, file), "credential-manager"), status: encryptedFileStatus("credential-manager") });
+      await contract.set({ owner: { kind: "device" }, name: "device:link-key" }, SECRET);
+      expect(await store.get("secrets-file-key")).not.toBeNull(); // the key is in the user's Credential Manager
+      const files = [file, join(moss, "credentials", "secrets.enc.bak"), join(moss, "credentials", "index.json"), join(moss, "credentials", "index.json.bak")];
+      // A leak is found by each file's own first bytes (ciphertext and names, not the dummy), as base64.
+      const needleOf = (p: string) => readFileSync(p).subarray(0, 30).toString("base64");
+      // The controls (review should-fix 6): the principal's own Bash and PowerShell DO base64 a file it may read, so an
+      // absent needle below is a refusal, not a tool that never worked.
+      const readable = join(moss, "notes", "readme.txt");
+      const readableNeedle = needleOf(readable);
+      const bc = await call(tools.Bash!, { command: `base64 -w0 '${readable.replace(/\\/g, "/")}'; echo; echo done` });
+      expect(bc.text).toContain(readableNeedle);
+      const pc = await call(tools.PowerShell!, { command: `[Convert]::ToBase64String([IO.File]::ReadAllBytes('${readable}'))` });
+      expect(pc.text).toContain(readableNeedle);
+      for (const p of files) {
+        const needle = needleOf(p);
+        // The control: the user reads the bytes the same way the principal's commands try to.
+        const own = Bun.spawnSync(["powershell", "-NoProfile", "-Command", `[Convert]::ToBase64String([IO.File]::ReadAllBytes('${p}'))`]).stdout.toString();
+        expect([p, own.includes(needle)]).toEqual([p, true]);
+        const b = await call(tools.Bash!, { command: `base64 -w0 '${p.replace(/\\/g, "/")}' || echo BASH-NOREAD; cat '${p.replace(/\\/g, "/")}' | base64 -w0; echo done` });
+        expect(b.text).toContain("done");
+        expect([p, b.text.includes("BASH-NOREAD")]).toEqual([p, true]); // base64 itself said it could not read the file
+        expect([p, b.text.includes(needle)]).toEqual([p, false]);
+        const ps = await call(tools.PowerShell!, { command: `try { [Convert]::ToBase64String([IO.File]::ReadAllBytes('${p}')) } catch { 'DENIED' }; 'done'` });
+        expect(ps.text).toContain("done");
+        expect([p, ps.text.includes("DENIED")]).toEqual([p, true]); // the read threw: refused, not empty
+        expect([p, ps.text.includes(needle)]).toEqual([p, false]);
+      }
+      // Credential Manager is per user: the principal's own lists nothing of the user's. The control: the user's lists the key.
+      const target = store.service.toLowerCase();
+      const mine = Bun.spawnSync(["cmdkey", "/list"]).stdout.toString().toLowerCase();
+      expect(mine.includes(target)).toBe(true);
+      const theirs = await call(tools.PowerShell!, { command: "cmdkey /list; 'done'" });
+      expect(theirs.text).toContain("done");
+      expect(theirs.text.toLowerCase().includes(target)).toBe(false);
+      const theirsBash = await call(tools.Bash!, { command: "cmdkey.exe /list; echo done" });
+      expect(theirsBash.text).toContain("done");
+      expect(theirsBash.text.toLowerCase().includes(target)).toBe(false);
+    } finally {
+      await store.dispose();
+      // The tests after this one read the hand-written stand-in: put it back, and take away what the store wrote.
+      for (const p of [file, join(moss, "credentials"), join(moss, "run", "secrets-file.lock"), join(moss, "run", "secrets-index.lock")]) rmSync(p, { recursive: true, force: true });
+      for (const n of readdirSync(join(moss, "run"))) if (n.endsWith(".tmp")) rmSync(join(moss, "run", n), { force: true });
+      writeFileSync(file, `${SECRET}\n`);
+    }
   }, 900_000);
 
   test("no network: a public address, a loopback listener outside the proxy range and the metadata address are refused", async () => {
@@ -349,6 +420,89 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     expect(bb.text).toContain("finished");
     expect(bb.text).not.toContain("dummy123");
     expect(readFileSync(join(scratch, "b.txt"), "utf8").trim()).toBe("b-done"); // B's write root held to its end
+  }, 900_000);
+
+  test("can a pool account start a process that outlives its command (outside the launcher's kill-on-close job)? recorded", async () => {
+    // Lane WS6 (the WS5 reviewer's question): a fenced PowerShell command tries three ways to start a process that
+    // outlives it, each tagged with its own marker in the command line: WMI's Win32_Process.Create (made by the WMI
+    // provider host), the Shell.Application object (an out-of-process COM server when one is there), and plain
+    // Start-Process (the control: inside the job). After the command has ended, the test's own process (an
+    // administrator) lists every process whose command line carries a marker, and ends what it finds (processes
+    // this test made). Recorded, not asserted: what it finds is the answer to the question.
+    const tag = `moss-outlive-${process.pid}`;
+    const ping = (how: string) => `cmd.exe /c title ${tag}-${how} & ping -n 90 127.0.0.1`;
+    const r = await call(tools.PowerShell!, { command: [
+      `try { $w = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '${ping("wmi")}' } -ErrorAction Stop; 'wmi=' + $w.ReturnValue } catch { 'wmi=REFUSED ' + $_.Exception.Message }`,
+      `try { (New-Object -ComObject Shell.Application).ShellExecute('cmd.exe', '/c title ${tag}-shell & ping -n 90 127.0.0.1', '', 'open', 0); 'shell=started' } catch { 'shell=REFUSED ' + $_.Exception.Message }`,
+      `try { Start-Process -FilePath cmd.exe -ArgumentList '/c title ${tag}-start & ping -n 90 127.0.0.1' -WindowStyle Hidden -ErrorAction Stop; 'start=started' } catch { 'start=REFUSED ' + $_.Exception.Message }`,
+    ].join("; ") });
+    console.log(`[e2e] outlive probe, inside the command: ${r.text.replace(/\s+/g, " ").slice(0, 600)}`);
+    await Bun.sleep(5_000);
+    const list = Bun.spawnSync(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+      `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${tag}*' } | ForEach-Object { $o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner; "$($_.ProcessId) $($o.Domain)\\$($o.User) $($_.CommandLine)" }`],
+      { stdout: "pipe", stderr: "pipe" }).stdout.toString().trim();
+    const survivors = list.split(/\r?\n/).filter((l) => l.trim() !== "" && !l.includes("Get-CimInstance"));
+    console.log(`[e2e] outlive probe, after the command ended: ${survivors.length === 0 ? "nothing outlived it" : survivors.join(" | ")}`);
+    for (const l of survivors) { const pid = Number(l.split(" ")[0]); if (pid > 0) Bun.spawnSync(["taskkill", "/PID", String(pid), "/T", "/F"]); }
+  }, 900_000);
+
+  test("a background command (rule B): answers at once, logs as it goes, tells its end; TaskStop ends it and its account's processes", async () => {
+    const poolProcs = () => Bun.spawnSync(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+      "@(Get-Process -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like '*\\moss-sb-*' }).Count"], { stdout: "pipe" }).stdout.toString().trim();
+    wakes.length = 0;
+    const started = Date.now();
+    // The command goes for its own log first (the daemon writes it, outside the sandbox): append to every log there,
+    // and plant a name in the logs' folder (where a link or junction would go). Neither may land.
+    const logs = join(moss, "logs", "background").replace(/\\/g, "/");
+    const planted = join(moss, "logs", "background", "planted");
+    rmSync(planted, { force: true });
+    const r = await call(bgTools.Bash!, {
+      command: `sleep 1; for f in '${logs}'/*/*.log; do echo INJECTED >> "$f"; done 2>/dev/null; touch '${logs}/planted' 2>/dev/null && echo PLANTED; for i in 1 2 3; do echo tick-$i; sleep 2; done; echo all-done`,
+      run_in_background: true,
+    });
+    const answered = Date.now() - started;
+    expect(r.isError).toBe(false);
+    const id = /win_bg_[0-9a-f]{8}/.exec(r.text)![0];
+    const log = /written to (\S+\.log)/.exec(r.text)![1]!;
+    expect(log).toBe(join(moss, "logs", "background", CALLER.sessionId, `${id}.log`));
+    let midway = "";
+    for (let i = 0; i < 600 && !midway.includes("tick-1"); i++) { await Bun.sleep(100); try { midway = readFileSync(log, "utf8"); } catch { /* not yet */ } }
+    const sawEnd = () => wakes.some((w) => w.task === id);
+    console.log(`[e2e] background: answered in ${answered} ms; log while running: ${JSON.stringify(midway.slice(0, 60))}; ended already: ${sawEnd()}`);
+    expect(midway).toContain("tick-1");
+    for (let i = 0; i < 1200 && !sawEnd(); i++) await Bun.sleep(100);
+    const end = wakes.find((w) => w.task === id);
+    expect(end).toMatchObject({ status: "completed" });
+    const whole = readFileSync(log, "utf8");
+    console.log(`[e2e] background: the command's own log written by it: ${whole.includes("INJECTED")}; a name planted beside the logs: ${existsSync(planted) || whole.includes("PLANTED")}`);
+    expect(whole).toContain("all-done");
+    // Rule 8c's cost: one look at what a bot's background command's watch covers (it looks every 30 s while it runs).
+    const denyRead = planFromSettings(sandboxFor()).denyRead;
+    const t0 = performance.now();
+    const watched = watchedReadDenies(denyRead);
+    console.log(`[e2e] rule 8c watch: ${denyRead.length} read denies, ${watched.length} there now, one look ${(performance.now() - t0).toFixed(1)} ms`);
+    expect(whole).not.toContain("INJECTED");
+    expect(whole).not.toContain("PLANTED");
+    expect(existsSync(planted)).toBe(false);
+    // A long one: its account runs it (the lease is held) until TaskStop's stop ends it, with what it started: a child
+    // that would write `late-bg.txt` 10 s on never does. (The pool's processes are counted too, but only an
+    // administrator sees their owners: the standard user's run reads 0 there, so the marker is the proof.)
+    const began = join(scratch, "began-bg.txt"), late = join(scratch, "late-bg.txt");
+    for (const f of [began, late]) rmSync(f, { force: true });
+    const long = await call(bgTools.Bash!, { command: "echo began > began-bg.txt; (sleep 10; echo late > late-bg.txt) & sleep 600; echo never", run_in_background: true });
+    const lid = /win_bg_[0-9a-f]{8}/.exec(long.text)![0];
+    for (let i = 0; i < 240 && !existsSync(began); i++) await Bun.sleep(500);
+    const running = poolProcs();
+    const stopped = await stopWindowsBackground(CALLER.sessionId, lid);
+    await Bun.sleep(15_000);
+    const after = poolProcs();
+    console.log(`[e2e] background stop: it began: ${existsSync(began)}; the child's late write after the stop: ${existsSync(late)}; pool processes seen while it ran ${running}, after the stop ${after}; told: ${JSON.stringify(wakes.find((w) => w.task === lid)?.status)}`);
+    expect(existsSync(began)).toBe(true);
+    expect(stopped?.isError).toBe(false);
+    expect(wakes.find((w) => w.task === lid)).toMatchObject({ status: "stopped" });
+    expect(existsSync(late)).toBe(false);
+    expect(after).toBe("0");
+    expect(readFileSync(/written to (\S+\.log)/.exec(long.text)![1]!, "utf8")).not.toContain("never");
   }, 900_000);
 
   test("a stop reaches the command: it ends at once, with what it started, never waiting for its time limit", async () => {

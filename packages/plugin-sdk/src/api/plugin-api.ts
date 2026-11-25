@@ -129,6 +129,17 @@ export interface NotifierUpdate {
   unseen: number;
   bot?: string;
   session?: string;
+  /** The kind of session this update is about, for the core's own updates: `bot` for a bot's conversation, `coding` for a
+   *  coding session, `agent` for a background agent. A coding session's or an agent's update names no bot (its `unseen` is
+   *  the session's own count), and the desktop notifier shows none of them: the app's own marks do. */
+  sessionKind?: "bot" | "side-thread" | "agent" | "coding";
+  /** The paired phones, by device id, this update is meant for: the core's choice from which phone app each is (the bot's
+   *  phones for a bot's update, MOSS Code's for a coding or agent session's; a phone that recorded no app counts for either,
+   *  and every phone is named when none is of that app). Absent: every phone (a plugin's notice), and always absent for a
+   *  notifier that doesn't hold `devices.read`: the ids are the user's devices. A notifier that wakes phones asks its
+   *  service to prefer these, never to wake only these: the service may know phones this computer doesn't. Device ids
+   *  only, no content. */
+  phones?: string[];
   /** When it happened, on the shared clock. */
   at: number;
   notification?: { title: string; body?: string };
@@ -245,7 +256,7 @@ export interface CompanionHandler {
   pairing?(args: { code: string; expiresAt: number }, ctx: HandlerContext): Promise<{ url?: string; qr?: string }>;
 }
 
-// Keeps its old spelling on purpose: the owner's deployed services verify against this value, so it stays until they move.
+// Keeps its old spelling on purpose: data already on disk (paired devices, sealed boxes, signed records) was made under this value, so it stays. No service is deployed.
 /** What `register` takes in place of a routine's key: base64url (no padding) of SHA-256 over
  *  `clover hook key v1|<key>`, as the waifucave forwarder's service stores it. */
 export async function webhookKeyHash(key: string): Promise<string> {
@@ -313,8 +324,9 @@ export interface PluginSelf {
   readonly version: string;
   /** The computer this half runs on. */
   readonly computer: string;
-  /** This device's id (`DeviceRecord.id`), which phones and browsers have too (lane I's ask). Optional until B-M2's
-   *  host fills it, so the stand-ins already on main still type-check. */
+  /** This device's id (`DeviceRecord.id`), which phones and browsers have too (lane I's ask). Only for a plugin the user
+   *  granted `devices.read`, which shows every paired device's id already (`devices.list`, with `isThis`); absent for any
+   *  other plugin, and for a host half started before this device's links were up. */
   readonly device?: string;
 }
 
@@ -647,6 +659,10 @@ export interface ComputersApi {
 export interface DevicesApi {
   list(): Promise<DeviceView[]>;
   watch(listener: (device: DeviceView) => void): Unsubscribe;
+  /** The devices this computer's registry holds as revoked, with when: a device gone from `list` was revoked only if it
+   *  is here (a list read before the registry is up, or that briefly misses one, says nothing). Ids and times only.
+   *  Optional in the type so a page's or a test's own stand-in for `devices` needn't carry it; the engine serves it. */
+  revoked?(): Promise<{ id: string; revokedAt: number }[]>;
 }
 
 /** `approvals`: which cards are pending and where, never their text, and only the cards of the plugin's own bot (the

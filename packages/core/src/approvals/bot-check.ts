@@ -72,6 +72,8 @@ const TITLES: Record<ActionEffect, string> = {
  *  a tool. */
 export const CORE_TOOL_RULES: ReadonlyMap<string, "read" | "contained"> = new Map([
   ["ListAgents", "read"], ["SendMessage", "contained"], ["TaskStop", "contained"], ["Agent", "contained"],
+  // What an agent backend offers (its model list): nothing is started.
+  ["AgentModels", "read"],
   // Asking itself costs nothing: the tool raises its own card for what it asks (`request-access.ts`).
   ["RequestAccess", "read"],
   // Lane B's plugin workshop (registry/workshop.ts): checking a folder and reading the bot's own plugin's state are
@@ -536,6 +538,7 @@ export function botApprovalCheck(
     });
     if (known.ruleKey !== undefined) req.ruleKey = known.ruleKey;
     if (known.what !== undefined) req.fields.what = { type: "code", code: plainOf(known.what) };
+    if (known.source !== undefined && req.fields.source === undefined) req.fields.source = { type: "rows", rows: known.source.map((r) => ({ label: r.label, value: plainOf(r.value.toWellFormed()).slice(0, 4000), ...(r.name === true ? { name: true as const } : {}) })) };
     if (known.command !== undefined) req.fields.command = { type: "code", code: plainOf(known.command) };
     if (known.host !== undefined) req.fields.host = { type: "code", code: plainOf(known.host) };
     if (known.cardAlways === true) req.cardAlways = true;
@@ -553,7 +556,7 @@ export function botApprovalCheck(
     const asking = (ctx as { agentAsking?: { backend: string; bot?: string; folder: string } }).agentAsking;
     if (asking !== undefined) {
       const said = (s: string) => plainOf(s.toWellFormed()).slice(0, 4000);
-      if (asking.bot !== undefined) req.fields.reason = { type: "text", text: said(`${asking.bot}'s agent (${asking.backend}) is asking, not ${asking.bot} itself.`) };
+      if (asking.bot !== undefined) req.fields.reason = { type: "text", text: "This agent was started by a bot (named below); the agent is asking, not the bot itself." };
       req.fields.source = { type: "rows", rows: [
         { label: "Agent", value: said(asking.backend) },
         { label: "Started by", value: asking.bot === undefined ? "You" : said(asking.bot) },
@@ -768,6 +771,8 @@ interface Known {
   ruleKey?: string;
   /** The card's `what` and `host` lines, as code. */
   what?: string;
+  /** Rows for the card's `source`, when the line says who or what it is about (values are their own text, never part of `what`). */
+  source?: { label: string; value: string; name?: true }[];
   host?: string;
   /** A card every time, with no "always" (`MossApprovalRequest.cardAlways`). */
   cardAlways?: boolean;
@@ -875,7 +880,12 @@ function messageKnown(
   const mine = ctx.level ?? opts.levelOf?.(ctx.computer);
   const theirs = opts.levelOf?.(target.computer);
   if (mine !== undefined && theirs !== undefined && LEVELS.indexOf(theirs) <= LEVELS.indexOf(mine)) return { contained: true };
-  return { what: `SendMessage to ${target.label} (${target.session}, at ${theirs ?? "an unknown level"} on ${target.computer})`, cardAlways: true };
+  // The session's title is a bot's or a model's own text: a row (a name), never a word of the engine's line. The level is the engine's.
+  return {
+    what: "SendMessage to another session",
+    source: [{ label: "Its title", value: target.label, name: true }, { label: "Its id", value: target.session }, { label: "Its level", value: theirs ?? "an unknown level" }, { label: "Its computer", value: target.computer }],
+    cardAlways: true,
+  };
 }
 
 /** Whether `path` is `folder` or inside it (both absolute, as `botToolRequest` resolves them). */

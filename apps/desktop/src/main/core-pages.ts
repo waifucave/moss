@@ -221,7 +221,14 @@ export async function pageCall(name: string, params: unknown, deps: PageDeps): P
     return { ...state, signedOutAs: { model: row === undefined ? state.signedOut : textIn(row.name, lang) || state.signedOut, provider: row === undefined ? (state.signedOut.split("/")[0] ?? state.signedOut) : textIn(row.providerName, lang) || row.provider } };
   }
   if (name === "welcome.models") return { models: await signedInModels(client, deps.lang()) };
-  if (name === "welcome.relay") return client.request("device.relay.get", {});
+  if (name === "welcome.relay") {
+    const relay = await client.request<Record<string, unknown>>("device.relay.get", {});
+    // The relay plugins installed, by what they bring (a `Relay` label), never by id: shown, not offered.
+    const listed = await client.request<{ plugins: { id: string; name: unknown; labels?: string[]; reason?: string }[] }>("plugin.list", {}).then((r) => (Array.isArray(r?.plugins) ? r.plugins : []), () => []);
+    const lang = deps.lang();
+    const plugins = listed.filter((x) => x.labels?.includes("Relay")).map((x) => ({ id: x.id, name: textIn(x.name as never, lang) || x.id, ...(x.reason !== undefined ? { why: x.reason.slice(0, 200) } : {}) }));
+    return { ...relay, plugins };
+  }
   if (name === "welcome.setRelay") {
     const mode = p.mode === "n0" || p.mode === "off" || p.mode === "custom" ? p.mode : undefined;
     const url = typeof p.url === "string" && p.url.length > 0 && p.url.length <= 2048 ? p.url : undefined;

@@ -5,7 +5,7 @@
 // session host, as it reaches any session, and `ListAgents` lists the agents from `AgentManager.sessionHooks().agents`.
 import { RESERVED_BACKEND_IDS } from "./plugin-backends";
 import { ContractError, isContractError } from "../contracts/common";
-import type { Level, TurnOrigin } from "@waifucave/moss-protocol";
+import type { AgentBackendOptions, BackendModelOption, Level, TurnOrigin } from "@waifucave/moss-protocol";
 import type { AgentManager } from "./manager";
 
 export interface CoreToolDef {
@@ -49,6 +49,33 @@ export interface AgentToolOptions {
   /** The bot's own model now: MOSS's own agents (`moss`, `moss-code`) run on it when the bot names none, rather
    *  than on the user's default, which may be a provider the bot doesn't use. */
   botModel?: () => string | undefined;
+  /** What a backend offers to start with, before any session exists (`agent.options`: the plugin's declared list, or what a
+   *  session of it once reported). Reading it starts nothing. Without it `Agent` passes the model on as given. */
+  modelsOf?: (backend: string) => Promise<AgentBackendOptions | undefined>;
+}
+
+/** The most models a refusal or a listing names. */
+const MODELS_SHOWN = 24;
+
+/** The model `asked` names among `models`: its id, else an id by case, else a display name (never a prefix or a guess). */
+export function modelOffered(models: readonly BackendModelOption[], asked: string): BackendModelOption | undefined {
+  const want = asked.trim().toLowerCase();
+  return models.find((m) => m.id === asked) ?? models.find((m) => m.id.toLowerCase() === want) ?? models.find((m) => nameText(m).toLowerCase() === want);
+}
+
+function nameText(m: BackendModelOption): string {
+  return typeof m.name === "string" ? m.name : m.name.en;
+}
+
+/** A backend's models in words: each id with its name where that differs, its efforts, and the default. */
+export function modelsWords(o: AgentBackendOptions): string {
+  const shown = o.models.slice(0, MODELS_SHOWN).map((m) => {
+    const name = nameText(m);
+    return `${m.id}${name !== "" && name !== m.id ? ` (${name})` : ""}${m.efforts.length > 0 ? ` [efforts: ${m.efforts.join(", ")}]` : ""}`;
+  });
+  const more = o.models.length > MODELS_SHOWN ? `; and ${o.models.length - MODELS_SHOWN} more` : "";
+  const def = o.default?.model !== undefined ? ` Its default is ${o.default.model}.` : "";
+  return `${shown.join("; ")}${more}.${def}`;
 }
 
 /** What the Agent tool takes of a plugin's agent definition (glossary.ts `AgentDefinition`). */
@@ -79,7 +106,9 @@ export function agentToolDefs(manager: AgentManager, caller: AgentToolCaller, op
         "you with SendMessage while it works, and when it finishes you get a task notification with its final report",
         "and the path to its full transcript. Use ListAgents to see it and TaskStop to stop it; a message you send it",
         "with SendMessage becomes its next prompt. Write the prompt as a complete brief: the agent sees nothing of this",
-        "conversation.",
+        "conversation. `model_id` is the chosen agent's OWN model id, never another agent's (Codex takes Codex's models, not",
+        "fable or opus); leave it out for the agent's default, and AgentModels shows what an agent offers (it starts",
+        "nothing). A model the agent doesn't offer is refused with the ones it does.",
       ].join(" "),
       inputSchema: {
         type: "object",
@@ -88,7 +117,9 @@ export function agentToolDefs(manager: AgentManager, caller: AgentToolCaller, op
           prompt: { type: "string", description: "The task, as a complete brief." },
           backend: backends.length > 0 ? { type: "string", enum: backends, description: "Which agent runs it." } : { type: "string", description: "Which agent runs it (an agent backend's id)." },
           root: { type: "string", description: "The folder it works in, as a folder-tree path: home/<Computer>/…" },
-          model: { type: "string", description: "The agent's model, where it offers a choice." },
+          // Not named `model`: the runtime puts one family's aliases (fable, opus, sonnet, haiku) into the `model` property of any tool
+          // named Agent, this one included, so the model would be told those are the only choices.
+          model_id: { type: "string", description: "The model id the chosen backend itself offers (AgentModels lists them), or leave out for its default. Not a model of another family." },
           effort: { type: "string", description: "The agent's effort level, where it offers one." },
           computer: { type: "string", description: "The computer to run on; the one holding the root by default." },
           ...(opts.definition === undefined ? {} : { agent: { type: "string", description: "A plugin's agent definition to start from, by the name Glossary lists (<plugin>:<id>): its instructions go before your brief. It brings words only: the backend, the folder and the rest stay yours to give." } }),
@@ -107,7 +138,17 @@ export function agentToolDefs(manager: AgentManager, caller: AgentToolCaller, op
         if (!prompt || !backend || !root) return fail(new ContractError("invalid", "Agent needs a prompt, a backend and a root folder"));
         if (backends.length > 0 && !backends.includes(backend)) return fail(new ContractError("invalid", `no agent backend ${backend.slice(0, 64)} (${backends.join(", ")})`));
         try {
-          const model = str(input, "model") ?? (RESERVED_BACKEND_IDS.has(backend) ? opts.botModel?.() : undefined);
+          let model = str(input, "model_id") ?? str(input, "model");
+          if (model !== undefined && opts.modelsOf !== undefined && !RESERVED_BACKEND_IDS.has(backend)) {
+            // An agent's own list, where it is known: the model is one of its own, by its id; any other is refused with the ones it has.
+            const offered = await opts.modelsOf(backend).catch(() => undefined);
+            if (offered !== undefined && offered.known && offered.models.length > 0) {
+              const hit = modelOffered(offered.models, model);
+              if (hit === undefined) return fail(new ContractError("invalid", `${backend} doesn't offer a model "${model.slice(0, 80)}". It offers: ${modelsWords(offered)} Start it again with one of these ids, or leave the model out for its default.`));
+              model = hit.id;
+            }
+          }
+          model ??= RESERVED_BACKEND_IDS.has(backend) ? opts.botModel?.() : undefined;
           if (model !== undefined && opts.checkModel !== undefined) {
             const verdict = await opts.checkModel(model);
             if (!verdict.ok) return { text: verdict.reason, isError: true };
@@ -125,6 +166,29 @@ export function agentToolDefs(manager: AgentManager, caller: AgentToolCaller, op
             text: `Started agent ${r.sessionId} (${backend})${from} in ${root}. It runs in the background: you'll get a task notification when it finishes, with its report and its transcript (${r.transcript}). ListAgents shows it; TaskStop stops it.`,
             isError: false,
           };
+        } catch (err) {
+          return fail(err);
+        }
+      },
+    },
+    {
+      name: "AgentModels",
+      description: "The models a coding agent backend offers (its own ids, its efforts and its default), for the `model` of Agent. It starts no session and calls no model provider, but the first look at an agent may run that agent's own list command as a local child process; an agent whose models aren't known until it runs says so, and then Agent takes no model (leave it out) or a model you are told.",
+      inputSchema: {
+        type: "object",
+        properties: { backend: backends.length > 0 ? { type: "string", enum: backends, description: "Which agent." } : { type: "string", description: "Which agent (an agent backend's id)." } },
+        required: ["backend"],
+        additionalProperties: false,
+      },
+      run: async (input) => {
+        const backend = str(input, "backend");
+        if (!backend) return fail(new ContractError("invalid", "AgentModels needs a backend"));
+        if (backends.length > 0 && !backends.includes(backend)) return fail(new ContractError("invalid", `no agent backend ${backend.slice(0, 64)} (${backends.join(", ")})`));
+        if (opts.modelsOf === undefined) return { text: `The models ${backend} offers aren't known here; leave the model out of Agent for its default.`, isError: false };
+        try {
+          const o = await opts.modelsOf(backend);
+          if (o === undefined || !o.known || o.models.length === 0) return { text: `${backend}'s models aren't known until it runs; leave the model out of Agent for its default.${o?.default?.model !== undefined ? ` Its default is ${o.default.model}.` : ""}`, isError: false };
+          return { text: `${backend} offers: ${modelsWords(o)}`, isError: false };
         } catch (err) {
           return fail(err);
         }

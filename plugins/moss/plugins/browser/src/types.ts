@@ -98,7 +98,7 @@ export function isBrowserUrlAllowed(url: string): boolean {
 // ---- packages/protocol/src/common.ts -----------------------------------------------------------------------------
 
 export type SessionKind = "bot" | "side-thread" | "agent" | "coding";
-export type ClientKind = "app" | "cli" | "ios" | "web";
+export type ClientKind = "app" | "cli" | "ios" | "android" | "web";
 
 /** Who called (§5.4 "The caller"). */
 export type Caller =

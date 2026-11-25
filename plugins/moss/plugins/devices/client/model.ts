@@ -5,6 +5,7 @@
 import { t } from "./strings";
 
 export type DeviceKind = "desktop" | "server" | "cloud" | "phone" | "browser";
+export type PhoneApp = "moss" | "code";
 export type LinkPath = "lan" | "direct" | "relay";
 
 export interface LinkView {
@@ -26,6 +27,8 @@ export interface DeviceView {
   runsCore: boolean;
   computer?: string;
   hasDisplay?: boolean;
+  /** For a phone: the app it paired as; none for any other device and for a phone that recorded none. */
+  app?: PhoneApp;
   online: boolean;
   link?: LinkView;
   isThis: boolean;
@@ -77,8 +80,11 @@ export function seenAgo(at: number | undefined, now: number): string {
   return t("moss.devices.seenOn", { date: new Date(at).toISOString().slice(0, 10) });
 }
 
+/** What it is: the kind, and for a phone the app it paired as ("Phone · MOSS Code"): a phone with both apps is two devices. A device
+ *  that recorded no app (paired before the field existed, or not a phone) shows the kind alone. */
 function kindWords(d: DeviceView): string {
-  return t(`moss.devices.kind.${d.kind}`);
+  const kind = t(`moss.devices.kind.${d.kind}`);
+  return d.kind === "phone" && (d.app === "moss" || d.app === "code") ? `${kind} · ${t(`moss.devices.app.${d.app}`)}` : kind;
 }
 
 function linkWords(link: LinkView | undefined): string {

@@ -22,7 +22,7 @@ import {
   DEFAULT_LEVEL, UNATTENDED_CARD_TIMEOUT_MS, answerTimeOk, cardHashInput,
 } from "@waifucave/moss-protocol";
 import {
-  ALWAYS_CARD_KINDS, bindsOutsideRequest, callBindingOf, cardExpires, cardMetaOf, isBridgeCall, levelDecision, strictestLevel, writesRunLater,
+  ALWAYS_CARD_KINDS, bindsOutsideRequest, callBindingOf, cardExpires, cardMetaOf, deviceMayHaveCard, isBridgeCall, levelDecision, strictestLevel, writesRunLater,
   type AnswerOrigin, type AnswerResult, type ApprovalBroker, type ApprovalDecision, type ApprovalEvent,
   type ApprovalRequest, type CardAnswer, type CardRecord, type ProofVerifier, type Reviewer, type SavedRule,
 } from "../contracts/approval-broker";
@@ -111,6 +111,9 @@ export interface MossApprovalBrokerOptions {
    *  folder on the user's PATH) is a card at ask for risky actions and at accept edits, with no reviewer. Without it,
    *  every edit is judged as before. */
   pathClass?: (paths: readonly string[]) => PathClass;
+  /** The kind a paired device was recorded with at pairing (`registry.get(id)?.kind`): what decides who is a computer for a
+   *  computers-only card. Without it no paired device is one. */
+  deviceKind?: (device: string) => string | undefined;
   log?: (line: string) => void;
 }
 
@@ -139,6 +142,7 @@ export class MossApprovalBroker implements ApprovalBroker {
   readonly #fence: MossApprovalBrokerOptions["fence"];
   readonly #reviewer: Reviewer;
   readonly #verify: ProofVerifier;
+  readonly #deviceKind: ((device: string) => string | undefined) | undefined;
   readonly #store: RuleStore | undefined;
   readonly #log: (line: string) => void;
   /** The bot side's names (`setBotNames`), for a headline that names the bot. */
@@ -156,6 +160,7 @@ export class MossApprovalBroker implements ApprovalBroker {
     this.#fence = opts.fence;
     this.#reviewer = opts.reviewer ?? (async () => "unavailable");
     this.#verify = opts.verify ?? (() => false);
+    this.#deviceKind = opts.deviceKind;
     this.#store = opts.rules;
     this.#log = opts.log ?? (() => {});
     this.#localComputer = opts.localComputer;
@@ -190,6 +195,17 @@ export class MossApprovalBroker implements ApprovalBroker {
     return r === undefined ? undefined : structuredClone(r);
   }
 
+  aboutDevice(cardId: string): string | undefined {
+    return this.#pending.get(cardId)?.req.aboutDevice ?? this.#resolved.get(cardId)?.aboutDevice;
+  }
+
+  answerableBy(cardId: string, device: string | undefined): boolean {
+    const p = this.#pending.get(cardId);
+    if (p) return deviceMayHaveCard(p.req, device, this.#deviceKind);
+    const r = this.#resolved.get(cardId);
+    return r === undefined ? true : deviceMayHaveCard(r, device, this.#deviceKind);
+  }
+
   pending(computer?: string): CardMeta[] {
     this.#sweepExpired();
     return [...this.#pending.values()]
@@ -209,6 +225,10 @@ export class MossApprovalBroker implements ApprovalBroker {
     this.#sweepExpired();
     const p = this.#pending.get(cardId);
     if (!p) return this.#resolved.has(cardId) ? "already-answered" : "unknown-card";
+    // A card about a device is never that device's to answer: not by its own link, and not as a signed answer another computer relays.
+    // Refused here, at the engine, by the answering device's id, before any proof is looked at.
+    // A computers-only card is a computer's alone (or its requester's), by the registry's kind of the device, not by anything it says.
+    if (!deviceMayHaveCard(p.req, from.device, this.#deviceKind) || (a.proof.via === "device" && !deviceMayHaveCard(p.req, a.proof.device, this.#deviceKind))) return "bad-origin";
     if (a.hash !== p.card.hash) return "hash-mismatch";
     const option = p.card.options.find((o) => o.id === a.optionId);
     if (!option) return "bad-option";
@@ -394,7 +414,7 @@ export class MossApprovalBroker implements ApprovalBroker {
       }
       signal?.addEventListener("abort", () => this.#settle(p, "cancelled", { allowed: false, by: "cancelled", cardId: card.id }), { once: true });
       try { onCard?.(card.id); } catch { /* the requester's own */ }
-      this.#listeners.emit({ type: "requested", card: structuredClone(card) });
+      this.#listeners.emit({ type: "requested", card: structuredClone(card), ...(req.aboutDevice === undefined ? {} : { aboutDevice: req.aboutDevice }) });
       if (signal?.aborted) this.#settle(p, "cancelled", { allowed: false, by: "cancelled", cardId: card.id });
     });
   }
@@ -466,9 +486,10 @@ export class MossApprovalBroker implements ApprovalBroker {
       ...(optionId === undefined ? {} : { optionId }), ...(device === undefined ? {} : { device }),
       ...(children === undefined || children.length === 0 ? {} : { children }),
     };
-    this.#resolved.set(p.card.id, { card: p.card, outcome, ...how, resolvedAt: this.#clock.now() });
+    const about = p.req.aboutDevice === undefined ? {} : { aboutDevice: p.req.aboutDevice };
+    this.#resolved.set(p.card.id, { card: p.card, outcome, ...how, ...about, ...(p.req.computersOnly === undefined ? {} : { computersOnly: p.req.computersOnly }), resolvedAt: this.#clock.now() });
     this.#pruneResolved();
-    this.#listeners.emit({ type: "resolved", cardId: p.card.id, outcome, ...how });
+    this.#listeners.emit({ type: "resolved", cardId: p.card.id, outcome, ...how, ...about });
     p.resolve(decision);
   }
 

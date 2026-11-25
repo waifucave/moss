@@ -9,10 +9,13 @@
 //     writers lose an update. The lock is a file made with `wx` holding the holder's pid and the time; one whose pid is
 //     gone, or that is far older than any write takes, is taken over.
 // No value passes through here but the bytes the caller hands `writePrivateFile`; nothing is logged.
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { ContractError } from "../contracts/common";
+import { ffiLib, ffiPtr } from "../platform/ffi";
+import { ownerOnlyProblem } from "../platform/win-acl";
 import { bunRunner, windowsUserSid, type Runner } from "../platform/login/live";
 
 /** The durable steps of a write, in the order they happen. */
@@ -34,12 +37,28 @@ export interface PrivateFileDeps {
 
 /** Windows' own tools by full path: a bare `whoami` or `icacls` on PATH may be Git's (Git Bash's coreutils `whoami` takes no
  *  `/user`), and a program a user's PATH names first is not to be trusted with an ACL. */
-function system32(run: Runner): Runner {
-  const root = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
+export function system32(run: Runner): Runner {
+  const dir = systemDirectory();
   return (argv) => {
     const [first, ...rest] = argv;
-    return run(first === "whoami" || first === "icacls" ? [`${root}\\System32\\${first}.exe`, ...rest] : argv);
+    return run(first === "whoami" || first === "icacls" ? [`${dir}\\${first}.exe`, ...rest] : argv);
   };
+}
+
+let sysDir: string | undefined;
+/** Windows' System32 folder as the OS gives it (`GetSystemDirectoryW`), not as an environment variable says: a process that starts this one
+ *  sets its environment. The variable is the fallback only when the call can't be made. */
+export function systemDirectory(): string {
+  if (sysDir !== undefined) return sysDir;
+  try {
+    const lib = ffiLib("private-file-k32", "kernel32.dll", { GetSystemDirectoryW: { args: ["ptr", "u32"], returns: "u32" } });
+    if (lib !== null) {
+      const buf = Buffer.alloc(2 * 520);
+      const n = lib.GetSystemDirectoryW!(ffiPtr(buf), 520) as number;
+      if (n > 0 && n < 520) return (sysDir = buf.subarray(0, n * 2).toString("utf16le"));
+    }
+  } catch { /* the variable below */ }
+  return (sysDir = `${process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows"}\\System32`);
 }
 
 let sidMemo: Promise<string | undefined> | undefined;
@@ -51,15 +70,43 @@ async function userSidOf(deps: PrivateFileDeps): Promise<string | undefined> {
 
 /** Locks `path` (a file or a folder that exists) to the user alone. Throws when the OS will not: a secret is never
  *  written under an ACL that anyone else's inherited entry could widen. */
+let windowsAclForTests: ((path: string) => Promise<void>) | undefined;
+/** Tests only: what locks a file to the user on Windows instead of `icacls` (one process per write), for the generated-
+ *  sequence tests, whose hundreds of writes are about order and crashes, not the ACL. The ACL itself is proven by its
+ *  own test (`icacls` read back, secrets-file-backend.test.ts) and the Windows fence e2e. */
+export function setWindowsAclForTests(fn: ((path: string) => Promise<void>) | undefined): void { if (testHooksAllowed()) windowsAclForTests = fn; }
+
 export async function lockToOwner(path: string, deps: PrivateFileDeps = {}): Promise<void> {
   if ((deps.platform ?? process.platform) !== "win32") { chmodSync(path, 0o600); return; }
+  if (windowsAclForTests !== undefined && deps.run === undefined) { await windowsAclForTests(path); return; }
   const sid = await userSidOf(deps);
   if (sid === undefined) throw new Error("no user SID for the file's ACL");
   const r = await system32(deps.run ?? bunRunner)(["icacls", path, "/inheritance:r", "/grant:r", `*${sid}:F`]);
   if (!r.ok) throw new Error("icacls refused the ACL");
+  const problem = ownerOnlyProblem(path, sid);
+  if (problem !== null) throw new Error(`the file's ACL is not owner-only (${problem})`);
 }
 
 const RENAME_RETRIES = 12;
+
+declare const __MOSS_TEST_BUILD__: string | false | undefined;
+/** Whether this module's test hooks (`setWindowsAclForTests`, `setSecretStatForTests`) do anything. Decided when the
+ *  binary was built, never by the environment (a plugin can set a variable): every real build, dev and release
+ *  (`scripts/build-daemon.ts`), defines `__MOSS_TEST_BUILD__=false`, and there the hooks are inert; a test-marked build
+ *  (a label) and the core run from source under `bun test` (undefined) keep them. The same test `win-fenced.ts` uses
+ *  for its `MOSS_SRT_WIN` override. */
+export function testHooksAllowed(marker: string | false | undefined = typeof __MOSS_TEST_BUILD__ === "undefined" ? undefined : __MOSS_TEST_BUILD__): boolean {
+  return marker !== false;
+}
+
+/** How long to wait before each retry of a rename (or of a read or removal of a file being replaced) that Windows refused
+ *  with a sharing error. Elsewhere 12 tries 25 ms apart (300 ms: a lock reader's moment). On Windows an antivirus scan of
+ *  a file just written (Defender's real-time scan of a new file, commonly up to a second or two on a loaded disk) holds
+ *  it longer, and a rename that gives up while the value has already landed makes the write report a failure it did not
+ *  have: there the wait doubles from 25 ms to at most 1 s, 10 retries, 5.575 s in all, bounded. */
+export function renameRetryDelays(platform: NodeJS.Platform = process.platform): readonly number[] {
+  return platform === "win32" ? [25, 50, 100, 200, 400, 800, 1000, 1000, 1000, 1000] : Array.from({ length: RENAME_RETRIES }, () => 25);
+}
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const transient = (e: unknown) => ["EPERM", "EACCES", "EBUSY"].includes((e as NodeJS.ErrnoException).code ?? "");
 
@@ -93,8 +140,8 @@ export function flushFolder(dir: string, platform: NodeJS.Platform = process.pla
 export async function renameDurably(from: string, to: string, deps: PrivateFileDeps = {}): Promise<void> {
   const platform = deps.platform ?? process.platform;
   for (let i = 0; ; i++) {
-    try { renameSync(from, to); break; }
-    catch (e) { if (!transient(e) || i >= RENAME_RETRIES) throw e; await sleep(25); }
+    try { assertLocksHeld(); renameSync(from, to); break; }
+    catch (e) { const delays = renameRetryDelays(platform); if (!transient(e) || i >= delays.length) throw e; await sleep(delays[i]!); }
   }
   deps.step?.("renamed");
   if (platform === "win32") flushFile(to);
@@ -133,17 +180,44 @@ export async function writePrivateFile(path: string, data: Buffer | string, deps
   }
 }
 
+let statImpl: (path: string) => unknown = (p) => statSync(p);
+/** Tests only: what `present` stats with (a stat that throws EACCES or EIO). */
+export function setSecretStatForTests(fn: ((path: string) => unknown) | undefined): void { if (testHooksAllowed()) statImpl = fn ?? ((p) => statSync(p)); }
+
+/** Whether `path` is there. ONLY "no such file" (ENOENT, ENOTDIR) is absent: any other failure to look (a folder
+ *  this process can't search, a disk error, a share gone) is not "absent" but `locked`, said plainly, so a store that
+ *  can't be read now is never taken for one that was never made (and nothing is minted over it). */
+export function present(path: string): boolean {
+  try { statImpl(path); return true; }
+  catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return false;
+    throw new ContractError("locked", `MOSS can't look at ${basename(path)} right now (${code ?? "an error"}): saved logins stay locked until it can`);
+  }
+}
+
 /** A read that survives the moment Windows holds a file being replaced. */
 export async function readFileRetrying(path: string): Promise<Buffer> {
   for (let i = 0; ; i++) {
     try { return readFileSync(path); }
-    catch (e) { if (!transient(e) || i >= RENAME_RETRIES) throw e; await sleep(25); }
+    catch (e) { const delays = renameRetryDelays(); if (!transient(e) || i >= delays.length) throw e; await sleep(delays[i]!); }
   }
 }
 
-/** How long a holder may keep the lock before it is judged gone though its pid answers (a write takes milliseconds;
- *  a key fetched from a keyring that asks the person to unlock it takes as long as they do). */
+/** How long a lock may go without its holder renewing it before it is judged gone though its pid answers. A holder
+ *  renews its lock every `LOCK_RENEW_MS` for as long as it holds it (a key fetched from a keyring that asks the person
+ *  to unlock it takes as long as they do), so only a holder that stopped running loses it.
+ *
+ *  Who can write `run/` (and so plant a lock): the user's own processes, the daemon and the CLI; on Windows and Linux
+ *  also a plugin's host half, which runs as the user (spec §5.2: trusted code). NOT bots' or agents' commands (the
+ *  fence write-denies the run folder on every OS: `run-folder` in contracts/fence.ts), NOT the Windows pool accounts
+ *  (a deny ACE on `run\`), NOT a macOS plugin host (its sandbox writes only its own folders). A planted lock blocks
+ *  writes for at most `LOCK_STALE_MS` unless its planter keeps renewing it, which only a process of the user can do. */
 export const LOCK_STALE_MS = 120_000;
+/** How often a holder renews its lock. */
+export const LOCK_RENEW_MS = 20_000;
+/** A lock dated later than now by more than this is judged stale (a clock does not run backwards that far). */
+const LOCK_FUTURE_SLACK_MS = 5_000;
 /** How long a writer waits for the lock before it says the file is busy. */
 export const LOCK_WAIT_MS = 30_000;
 
@@ -157,11 +231,11 @@ function alive(pid: number): boolean {
 function staleText(lockPath: string, now: number): string | null {
   let text: string;
   try { text = readFileSync(lockPath, "utf8"); } catch { return null; } // gone, or being made: not ours to judge
-  const [pidText, atText] = text.split("\n");
+  const [pidText, atText] = text.split("\n"); // a third line, the holder's nonce, is not judged
   const pid = Number(pidText), at = Number(atText);
   const judged = !Number.isInteger(pid) || pid <= 0 || !Number.isFinite(at)
     ? now - lockMtime(lockPath, now) > 5_000 // a lock still being written is young
-    : !alive(pid) || now - at > LOCK_STALE_MS;
+    : !alive(pid) || now - at > LOCK_STALE_MS || at - now > LOCK_FUTURE_SLACK_MS;
   return judged ? text : null;
 }
 
@@ -176,19 +250,56 @@ function lockMtime(lockPath: string, now: number): number {
   try { return statSync(lockPath).mtimeMs; } catch { return now; }
 }
 
-async function takeFileLock(lockPath: string, waitMs: number): Promise<() => Promise<void>> {
+/** The locks the work under way holds (outermost first), so a write inside it can check before each rename that every
+ *  one is still its own (lane SE review: a holder paused past `LOCK_STALE_MS`, a lid closed during a keyring prompt or a
+ *  suspended VM, is taken over; when it resumes, its read-change-write must not land over the new holder's). */
+// A lease is checked only while its hold lasts: work started inside the hold that runs on after it ends (a change
+// listener, a note written without waiting) inherits the store, and is not refused once the lock is let go.
+const heldLocks = new AsyncLocalStorage<readonly { path: string; stillMine: () => boolean; released: boolean }[]>();
+
+/** Throws `locked` when the work under way lost any lock it holds: the write is dropped, never put over a newer one. */
+export function assertLocksHeld(): void {
+  for (const l of heldLocks.getStore() ?? []) {
+    if (!l.released && !l.stillMine()) throw new ContractError("locked", `this process lost the lock ${basename(l.path)} while it was paused: its write was dropped, so a newer one is never overwritten`);
+  }
+}
+
+async function takeFileLock(lockPath: string, waitMs: number, renewMs: number): Promise<{ release: () => Promise<void>; stillMine: () => boolean }> {
   mkdirSync(dirname(lockPath), { recursive: true, mode: 0o700 });
   const started = Date.now();
   for (;;) {
     try {
       const fd = openSync(lockPath, "wx", 0o600);
-      try { writeFileSync(fd, `${process.pid}\n${Date.now()}\n`); } finally { closeSync(fd); }
-      return async () => {
-        // Windows may hold the file for a moment (a waiter reading it to judge it): retried, never left behind.
-        for (let i = 0; i < RENAME_RETRIES; i++) {
-          try { rmSync(lockPath, { force: true }); return; } catch (err) { if (!transient(err)) throw err; await sleep(25); }
+      const nonce = randomBytes(6).toString("hex");
+      let mine = `${process.pid}\n${Date.now()}\n${nonce}\n`;
+      try { writeFileSync(fd, mine); } finally { closeSync(fd); }
+      // Whether the lock still holds this holder's text. A sharing error Windows gives for a moment (a waiter reading the
+      // lock to judge it) is read again, never taken for "lost"; a lock that is gone or another's is lost.
+      const stillMine = () => {
+        for (let i = 0; ; i++) {
+          try { return readFileSync(lockPath, "utf8") === mine; }
+          catch (e) { if (!transient(e) || i >= RENAME_RETRIES) return false; Bun.sleepSync(5); }
         }
       };
+      // Renewed while held, and only while it is still this holder's (one taken over is never written over).
+      const renew = setInterval(() => {
+        if (!stillMine()) return;
+        const next = `${process.pid}\n${Date.now()}\n${nonce}\n`;
+        // Written whole under another name and renamed over the lock, never in place (a half-written lock is no one's).
+        const tmp = `${lockPath}.${nonce}.renew`;
+        try { writeFileSync(tmp, next, { mode: 0o600 }); if (!stillMine()) { rmSync(tmp, { force: true }); return; } renameSync(tmp, lockPath); mine = next; }
+        catch { rmSync(tmp, { force: true }); /* the next tick tries again */ }
+      }, renewMs);
+      renew.unref?.();
+      return { stillMine, release: async () => {
+        clearInterval(renew);
+        // Only a lock whose text is still this holder's is removed: one taken over is the new holder's.
+        // Windows may hold the file for a moment (a waiter reading it to judge it): retried, never left behind.
+        for (let i = 0; i < RENAME_RETRIES; i++) {
+          if (!stillMine()) return;
+          try { rmSync(lockPath, { force: true }); return; } catch (err) { if (!transient(err)) throw err; await sleep(25); }
+        }
+      } };
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
       if (code !== "EEXIST" && !(code === "EPERM" || code === "EACCES")) throw e;
@@ -201,11 +312,13 @@ async function takeFileLock(lockPath: string, waitMs: number): Promise<() => Pro
 }
 
 /** Runs `fn` with the secrets file's lock held: one at a time in this process, then one at a time across processes. */
-export async function withSecretsLock<T>(lockPath: string, fn: () => Promise<T>, waitMs: number = LOCK_WAIT_MS): Promise<T> {
+export async function withSecretsLock<T>(lockPath: string, fn: () => Promise<T>, waitMs: number = LOCK_WAIT_MS, renewMs: number = LOCK_RENEW_MS): Promise<T> {
   const before = inProcess.get(lockPath) ?? Promise.resolve();
   const run = before.then(async () => {
-    const release = await takeFileLock(lockPath, waitMs);
-    try { return await fn(); } finally { await release(); }
+    const lock = await takeFileLock(lockPath, waitMs, renewMs);
+    const lease = { path: lockPath, stillMine: lock.stillMine, released: false };
+    try { return await heldLocks.run([...(heldLocks.getStore() ?? []), lease], fn); }
+    finally { lease.released = true; await lock.release(); }
   });
   const tail = run.catch(() => undefined);
   inProcess.set(lockPath, tail);

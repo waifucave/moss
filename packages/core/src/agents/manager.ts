@@ -36,7 +36,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync, realpathSync, rmSync } from "node:fs";
 import { extname, isAbsolute, join, relative } from "node:path";
 import { BRIDGE_TOOLS_CHANGED_NOTIFICATION, type Level, type Os, type SealedValue, type SessionView, type TurnOrigin } from "@waifucave/moss-protocol";
-import type { AgentBackend, AgentPermissionAnswer, AgentPermissionAsk, AgentSession } from "../contracts/agent-backend";
+import type { AgentBackend, AgentDetection, AgentPermissionAnswer, AgentPermissionAsk, AgentSession } from "../contracts/agent-backend";
 import { type ActionEffect, type ApprovalBroker, type ApprovalRequest, acpOutcomeFor } from "../contracts/approval-broker";
 import type { Clock } from "../contracts/clock";
 import { ContractError } from "../contracts/common";
@@ -66,10 +66,12 @@ import { type DaemonAgentRecord, readAgentRecord, removeAgentRecord, writeAgentR
 import { AgentTranscript, type AgentRecordFile } from "./transcript";
 import { peerLevel, peerPromptOf, type AgentPeers, type PeerOpen } from "./remote";
 import type { StallWatchdog } from "./watchdog";
+import { StepTimer } from "./start-timing";
 import { RESERVED_BACKEND_IDS } from "./plugin-backends";
 import { secretPlaceOf } from "../fence/secret-reads";
 import { runLaterByName } from "../fence/sandbox-settings";
 import { UNCLASSIFIED_TOOL_KIND } from "../contracts/agent-backend";
+import { titleWithName } from "../approvals/title-name";
 
 const hostOsOf = (): "macos" | "windows" | "linux" => (process.platform === "darwin" ? "macos" : process.platform === "win32" ? "windows" : "linux");
 
@@ -117,10 +119,15 @@ export interface AgentManagerOptions {
   /** Tells the manager the levels changed (the computer registry's `watch`), so running sessions follow straight away
    *  (`levelsChanged`); without it they follow at their next turn. */
   watchLevels?: (fn: () => void) => () => void;
+  /** Whether a plugin is of the bundled `moss` tree, by its install record (never by what its manifest says): only an agent of ours has its
+   *  name in a card's title (`approvals/title-name.ts`); without it every title is the fixed one. */
+  bundledPlugin?: (pluginId: string) => boolean;
   /** The pause switch (lane D's gate, `mayAct()`): while it says no, a delegated agent is held (`#hold`). */
   pause?: AgentPauseGate;
   /** Tests only: start an agent that isn't sandboxed, or is outside its tested versions, without the user's OK. */
   startUnsandboxedForTests?: boolean;
+  /** Start a coding session's agent when the person opens it, before their first message (`AgentDriver.warm`). Default on. */
+  warmStart?: boolean;
   /** Whether the bot holds its child's root (a RequestAccess grant covering it, the conversation's or a kept one, or
    *  inside the bot's own shell write roots as drawn now at the child's level; agents/bot-child.ts): then the child's
    *  commands run in its bot-built sandbox with no card, as the bot's own.
@@ -295,6 +302,10 @@ const PARTS_SETTLE_MS = 250;
 /** How long a turn waits at its start for a plugin server just installed or enabled to list its tools (the bots' wait, `MCP_FIRST_LISTING_WAIT_MS`). */
 const MCP_SETTLE_WAIT_MS = 5_000;
 
+/** A start made before the first message (`AgentDriver.warm`) that would have to ask the person something ends here: the
+ *  card is raised only when they write (`conflict`, so a turn that joined this start tries again on its own). */
+const warmNeedsCard = (e: { backend: { id: string } }): ContractError => new ContractError("conflict", `${e.backend.id} isn't started before the first message: its start needs the person's OK`);
+
 /** The bridge's server name starts with this; a random suffix follows, new for each session. */
 export const BRIDGE_SERVER_PREFIX = "moss_";
 const MAX_CARD_CODE = 60_000;
@@ -466,6 +477,19 @@ export class AgentManager {
     return loc.path;
   }
 
+  /** A file the user named in a message, as the agent can open it: the real path of a folder-tree path (`home/<Computer>/…`) on this
+   *  computer, which an agent that runs on the host's own files can't use as written. Anything else (an absolute path, another
+   *  computer's, one the tree doesn't name) is left as it was. */
+  #hostPathOf(path: string): string {
+    if (!/^home(\/|$)/.test(path)) return path;
+    try {
+      const loc = this.#o.tree.resolve(path);
+      return loc.area === "home" && loc.computer === this.#o.computer ? loc.path : path;
+    } catch {
+      return path;
+    }
+  }
+
   /** The hooks an ACP backend takes for a session: its transcript, and the token's binding to the agent's pid. */
   wire(sessionId: string): AgentWire {
     const e = this.#entries.get(sessionId);
@@ -530,6 +554,11 @@ export class AgentManager {
       // A coding session the user opens with no prompt waits for their first message; the agent starts with it.
       if (req.caller.kind === "bot") await this.#o.host.deliver(id, { from: "bot", bot: req.caller.bot, session: req.caller.session, text: req.prompt, depth: this.#spawnDepth(req.caller.session) });
       else if (req.prompt.length > 0) await this.#o.host.sendUser(id, { text: req.prompt, device: req.caller.device, clientMessageId: req.caller.clientMessageId, sentAt: req.caller.sentAt ?? this.#o.clock.now() });
+      // The person opened a coding session and has typed nothing: the agent starts now, while they write, so the first
+      // message doesn't pay for it. Only where no card is needed (a start that would ask waits for the message, as ever),
+      // and it costs no request to the provider: the agent is up and has made a session, nothing more. Never for a bot's
+      // agent, a restored session (`reattach`) or one on another computer.
+      else if (this.#o.warmStart !== false) void entry.driver.warm();
     } catch (err) {
       await this.#o.host.stop(id, "failed to start").catch(() => {});
       throw err;
@@ -783,17 +812,21 @@ export class AgentManager {
     } as Entry;
     let started = false;
     entry.driver = new AgentDriver({
-      start: async () => {
+      after: (ms, fn) => {
+        const h = this.#o.clock.setTimeout(fn, ms);
+        return () => this.#o.clock.clearTimeout(h);
+      },
+      start: async (o) => {
         if (started) {
           // Started again after a turn failed: the old process's token went with it, so a fresh one; and the agent takes up its
           // session by its history if it has said anything, afresh if not (`#reattachOf`).
           entry.token = this.#o.tokens.mint(id);
           entry.transcript.redact(entry.token);
           const before = entry.daemon.agentSessionId;
-          return this.#startAgent(entry, before === undefined ? undefined : this.#reattachOf(entry, before));
+          return this.#startAgent(entry, before === undefined ? undefined : this.#reattachOf(entry, before), o?.warm === true);
         }
         started = true;
-        return this.#startAgent(entry, reattach);
+        return this.#startAgent(entry, reattach, o?.warm === true);
       },
       // A turn failed and its agent's process was stopped; the session stays open and its next turn starts the agent again.
       released: () => {
@@ -814,7 +847,7 @@ export class AgentManager {
       toolShows: entry.shows,
       started: (s) => this.#o.modelsReported?.(backend, s),
       // A turn another computer sent carries the prompt it built there (its images read there).
-      promptOf: async (input) => peerPromptOf(input) ?? promptOf(input, (id) => this.#o.host.get(id)?.title),
+      promptOf: async (input) => peerPromptOf(input) ?? promptOf(input, (id) => this.#o.host.get(id)?.title, (path) => this.#hostPathOf(path)),
       redact: (v) => transcript.redacted(v),
       // A paused agent is sent no new prompt until the switch is back.
       beforeTurn: async (session) => {
@@ -970,11 +1003,12 @@ export class AgentManager {
    *  Nothing is fetched without the yes. A fetch's failure never throws: what came of it is noted on the backend, and
    *  `detect` then says plainly why the agent isn't there (or the person's own adapter, where there is one, is what
    *  starts). The one thing that throws is the NO of a combined card (`#askAdapter`): nothing is then started. */
-  async #provideAdapter(e: Entry): Promise<void> {
+  async #provideAdapter(e: Entry, warm = false): Promise<boolean> {
     const b = e.backend;
-    if (!isAdapterBackend(b)) return;
+    if (!isAdapterBackend(b)) return false;
     const offer = await b.adapterOffer().catch(() => undefined);
-    if (offer === undefined) return;
+    if (offer === undefined) return false;
+    if (warm) throw warmNeedsCard(e);
     // The start's own facts, where the start will need the person's OK too: then ONE card asks for both.
     const facts = await this.#startNeedsOk(e, b);
     const key = `${offer.package}@${offer.version}`;
@@ -985,6 +1019,7 @@ export class AgentManager {
     }
     const asked = await flight;
     if (asked.stop !== undefined) throw new ContractError("refused", asked.stop);
+    return true;
   }
 
   /** The facts of the start that follows this download, when that start asks the person's OK too (no admitted sandbox, or a
@@ -1069,10 +1104,12 @@ export class AgentManager {
       computers: [e.computer],
       effect: "other",
       fields: {
-        title: { type: "text", text: `Download ${sealedText(name, 200)}'s adapter?` },
-        what: { type: "text", text: `${sealedText(name, 200)} doesn't speak ACP itself, so MOSS runs an adapter for it: ${sealedText(offer.package, 300)} ${sealedText(offer.version, 64)} from npm. It is code from npm that MOSS will run on this computer to talk to ${sealedText(name, 200)}, not MOSS's own. MOSS checks each download against a fingerprint its plugin names before anything is unpacked or run. Nothing is downloaded unless you say yes.` },
+        // The agent's name comes from a plugin or a registry entry, so it is a row of its own (a name), never a word of the engine's sentence.
+        title: { type: "text", text: titleWithName({ kind: "bundled", bundled: this.#o.bundledPlugin?.(e.backend.pluginId) === true }, name, (n) => `Download ${n}'s adapter?`, "Download an adapter for an agent?") },
+        what: { type: "text", text: "The agent below doesn't speak ACP itself, so MOSS runs an adapter for it: the package named below, from npm. It is code from npm that MOSS will run on this computer to talk to the agent, not MOSS's own. MOSS checks each download against a fingerprint its plugin names before anything is unpacked or run. Nothing is downloaded unless you say yes." },
         computer: { type: "text", text: e.computer },
         source: { type: "rows", rows: [
+          { label: "Agent's name", value: sealedText(name, 200), name: true },
           { label: "Agent", value: sealedText(e.backend.id, 4000) },
           ...this.#packageRows(offer),
           { label: "Kept in", value: sealedText(offer.folder, 4000) },
@@ -1103,7 +1140,7 @@ export class AgentManager {
    *  (`agent-unsandboxed`: always shown, never an "always"), which is the stronger of the two. */
   #oneCard(e: Entry, name: string, offer: AdapterOffer, facts: AdapterStartFacts): ApprovalRequest {
     const label = sealedText(name, 200);
-    const outside = `Its version ${sealedText(facts.version, 64)} is outside the versions MOSS was tested with`;
+    const outside = "Its version (below) is outside the versions MOSS was tested with";
     // The no-sandbox fact is said once (in "without a sandbox"); the version is said only where it is outside the tested ones.
     const risk = facts.sandboxed ? `${outside}, so its sandbox may not hold. ` : facts.versionOk ? "" : `${outside}. `;
     return {
@@ -1115,11 +1152,13 @@ export class AgentManager {
       computers: [e.computer],
       effect: "other",
       fields: {
-        title: { type: "text", text: `Start ${label}?` },
-        what: { type: "text", text: `${label} needs an adapter that MOSS doesn't have yet. If you say yes, MOSS downloads ${sealedText(offer.package, 300)} ${sealedText(offer.version, 64)} from npm (code from npm that MOSS will run, not MOSS's own) and starts ${label}${facts.sandboxed ? "" : " without a sandbox"}. ${risk}While it runs, it could read MOSS's logins and approve its own cards. Nothing is downloaded unless you say yes, and nothing is started.` },
+        title: { type: "text", text: titleWithName({ kind: "bundled", bundled: this.#o.bundledPlugin?.(e.backend.pluginId) === true }, name, (n) => `Start ${n}?`, "Start an agent?") },
+        what: { type: "text", text: `The agent below needs an adapter that MOSS doesn't have yet. If you say yes, MOSS downloads the package named below from npm (code from npm that MOSS will run, not MOSS's own) and starts the agent${facts.sandboxed ? "" : " without a sandbox"}. ${risk}While it runs, it could read MOSS's logins and approve its own cards. Nothing is downloaded unless you say yes, and nothing is started.` },
         computer: { type: "text", text: e.computer },
         source: { type: "rows", rows: [
+          { label: "Agent's name", value: label, name: true },
           { label: "Agent", value: sealedText(e.backend.id, 4000) },
+          { label: "Its version", value: sealedText(facts.version, 64) },
           ...this.#packageRows(offer),
           { label: "Plugin", value: sealedText(e.backend.pluginId ?? "", 4000) },
           { label: "Started by", value: e.bot === undefined ? "You" : sealedText(e.bot, 4000) },
@@ -1137,9 +1176,11 @@ export class AgentManager {
   }
 
   /** Before an agent launches: an agent that isn't sandboxed, or is outside its tested versions, needs the user's OK. */
-  async #admit(e: Entry): Promise<NonNullable<AcpStartSpec["admitted"]>> {
-    await this.#provideAdapter(e);
+  async #admit(e: Entry, t: StepTimer, warm = false): Promise<{ admitted: NonNullable<AcpStartSpec["admitted"]>; detected?: AgentDetection }> {
+    const asked = await this.#provideAdapter(e, warm);
+    t.mark("provide-adapter");
     const d = await e.backend.detect();
+    t.mark("detect");
     if (!d.installed) throw new ContractError("not_installed", d.reason ?? `${e.backend.id} isn't installed on this computer`);
     if (!d.identityOk) throw new ContractError("refused", d.reason ?? `${e.backend.id}'s program isn't its publisher's`);
     const why: string[] = [];
@@ -1150,16 +1191,31 @@ export class AgentManager {
     if (!d.versionOk) why.push(`its version ${d.version ?? "(unknown)"} is outside the versions MOSS was tested with`);
     const admitted = { path: d.path ?? "", ...(d.version === undefined ? {} : { version: d.version }) };
     e.sandboxHeld = why.length === 0;
-    if (why.length === 0) return admitted;
+    // Nothing was asked and nothing waited on the person: `start` takes this detection as its own (it would run the same
+    // checks, a program probe and its signature, on the same file a moment later). After a card, it looks again.
+    if (why.length === 0) return { admitted, ...(asked ? {} : { detected: d }) };
     // The OK is for this program: its real path and its file's hash (K-M2 review 5).
     const sha256 = d.sha256 ?? (await programHash(admitted.path)) ?? "";
-    await this.#requireOk(e, { version: d.version ?? "unknown", path: admitted.path, sha256 }, why.join("; "), d.sandboxed);
-    return { ...admitted, ...(sha256 ? { sha256 } : {}) };
+    t.mark("program-hash");
+    await this.#requireOk(e, { version: d.version ?? "unknown", path: admitted.path, sha256 }, why.join("; "), d.sandboxed, warm);
+    t.mark("ok-card");
+    return { admitted: { ...admitted, ...(sha256 ? { sha256 } : {}) } };
   }
 
-  async #startAgent(e: Entry, reattach?: { agentSessionId: string }): Promise<AgentSession> {
-    const admitted = await this.#admit(e);
+  async #startAgent(e: Entry, reattach?: { agentSessionId: string }, warm = false): Promise<AgentSession> {
+    const t = new StepTimer();
+    try {
+      return await this.#startAgentTimed(e, reattach, t, warm);
+    } finally {
+      // One line a start, whether it ended well or not: where the time went before the agent's first answer.
+      this.#o.log?.(`[agents] ${e.id}: ${e.backend.id} ${warm ? "warm " : ""}${reattach === undefined ? "" : "reattached "}${t.line()}`);
+    }
+  }
+
+  async #startAgentTimed(e: Entry, reattach: { agentSessionId: string } | undefined, t: StepTimer, warm: boolean): Promise<AgentSession> {
+    const { admitted, detected } = await this.#admit(e, t, warm);
     const parts = (await this.#o.pluginParts?.parts(e.id, this.#facts(e)).catch(() => NO_PARTS)) ?? NO_PARTS;
+    t.mark("plugin-parts");
     // A plugin's command hook runs only under its own plugin's fence (#415, `pluginHookSpawner`, through the daemon's
     // door). Placed in a backend (Claude Code's settings, through the shim) it would run inside the agent's sandbox, with
     // the agent's reach and none of its plugin's limits, so none is placed until the shim runs it through that door.
@@ -1168,6 +1224,7 @@ export class AgentManager {
     e.parts = parts.hooks.length > 0 ? { ...parts, hooks: [] } : parts;
     // The same list `bridge.tools` answers, so a session started now holds what a running one is told of (`refreshBridgeTools`).
     const view = await this.#bridgeView(e);
+    t.mark("bridge-view");
     e.bridgeTools = view.tools.map((t) => t.name);
     e.toolsSig = toolsSignature(view);
     e.toolNames = e.bridgeTools;
@@ -1205,7 +1262,8 @@ export class AgentManager {
         ? { inProcessBridge: await inProcessBridgeServer(this.bridgeHandlers(), { name: e.serverName, sessionId: e.id, live: () => this.#o.tokens.has(e.id) }) }
         : {}),
     };
-    const session = await e.backend.start(spec);
+    t.mark("spec");
+    const session = await e.backend.start({ ...spec, ...(detected === undefined ? {} : { detected }), mark: (step) => t.mark(step) } as AcpStartSpec);
     e.session = session;
     const pid = (session as { pid?: number }).pid;
     if (pid) this.#o.tokens.bind(e.id, pid);
@@ -1243,11 +1301,12 @@ export class AgentManager {
 
   /** The OK for an agent `#admit` doesn't let through (no admitted sandbox, or a version outside the tested ones):
    *  asked once per backend, version and computer, as a change card. Tests may skip it. */
-  async #requireOk(e: Entry, program: { version: string; path: string; sha256: string }, reason: string, sandboxed: boolean): Promise<void> {
+  async #requireOk(e: Entry, program: { version: string; path: string; sha256: string }, reason: string, sandboxed: boolean, warm = false): Promise<void> {
     if (this.#o.startUnsandboxedForTests === true) return;
     const { version } = program;
     const key = { backend: e.backend.id, computer: e.computer, ...program };
     if (this.#oks.has(key)) return;
+    if (warm) throw warmNeedsCard(e);
     const signal = e.driver.currentSignal();
     const decision = await this.#o.approvals.request({
       kind: "change",
@@ -1817,9 +1876,11 @@ function cardFields(e: Entry, ask: AgentPermissionAsk): ApprovalRequest["fields"
       { label: "Started by", value: e.bot === undefined ? "You" : sealedText(e.bot, 4000) },
       { label: "Folder", value: sealedText(e.root, 4000) },
       { label: "The agent's title", value: sealedText(ask.title, 4000) },
+      ...(e.bot === undefined ? [] : [{ label: "Its session's title", value: sealedText(e.title ?? e.backend.id, 4000), name: true as const }]),
     ] },
     // A bot's agent asks as itself, never as its bot: "<bot>'s agent <title> is asking, not <bot> itself".
-    ...(e.bot === undefined ? {} : { reason: { type: "text", text: sealedText(`${e.bot}'s agent "${e.title ?? e.backend.id}" (${e.backend.id}) is asking, not ${e.bot} itself.`, 4000) } }),
+    // The bot's and the agent's own words are rows (the "Started by" row and the agent's title), never words of the engine's sentence.
+    ...(e.bot === undefined ? {} : { reason: { type: "text", text: "This agent was started by a bot (named below); the agent is asking, not the bot itself." } }),
   };
   if (ask.paths.length > 0) {
     const shown = ask.paths.slice(0, 200).map((p) => sealedText(p, 4000));
@@ -1833,7 +1894,7 @@ const IMAGE_TYPES: Record<string, string> = { ".png": "image/png", ".jpg": "imag
 
 /** What a session input says to the agent: a message from its bot is its next prompt as written (§9.3); another session's is
  *  framed as that session's (`titleOf` gives its title), never as the user's words (§9.5). */
-export async function promptOf(input: TurnInput, titleOf?: (session: string) => string | undefined): Promise<{ text: string; images?: { mimeType: string; data: string }[] }> {
+export async function promptOf(input: TurnInput, titleOf?: (session: string) => string | undefined, filePath: (path: string) => string = (p) => p): Promise<{ text: string; images?: { mimeType: string; data: string }[] }> {
   switch (input.from) {
     case "user": {
       const images = (input.images ?? []).flatMap((img) => {
@@ -1845,7 +1906,8 @@ export async function promptOf(input: TurnInput, titleOf?: (session: string) => 
           return [];
         }
       });
-      const files = (input.files ?? []).map((f) => `[File #${f.n}: ${f.path}]`).join("\n");
+      // The agent is told where each file really is (a message names it by its folder-tree path).
+      const files = (input.files ?? []).map((f) => `[File #${f.n}: ${filePath(f.path)}]`).join("\n");
       return { text: files ? `${input.text}\n\n${files}` : input.text, ...(images.length ? { images } : {}) };
     }
     case "bot":

@@ -25,7 +25,10 @@
 // neither does with them). The static check (`loaderReach`) stays as `moss plugin validate`'s early error.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, statSync, symlinkSync, unlinkSync, type Stats } from "node:fs";
+import { ownerOnlyProblem } from "../platform/win-acl";
+import { currentUserSid } from "../platform/win-pipe";
+import { systemDirectory } from "../secrets/private-file";
+import { copyFileSync, linkSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, type Stats } from "node:fs";
 import { RESERVED_ENV } from "@waifucave/moss-plugin-sdk";
 import { fencedCommand, fencedSpawn, pluginFenceAvailable, SPAWN_TRAMPOLINE_FILE, SPAWN_TRAMPOLINE_SOURCE, toolFence, type ProjectAccess } from "./plugin-fence";
 import { PLUGIN_BUN_FILE, pluginBunRequirement } from "../bundled-identities";
@@ -46,7 +49,14 @@ import { fileURLToPath } from "node:url";
 // Through require, never an ESM import: the plugin's own ESM imports of it then see the wrapped Worker below (measured
 // on Bun 1.4.4; an ESM import here would fix its named exports before the wrap).
 const workerThreads = createRequire(import.meta.url)("node:worker_threads");
-const real = (p) => { try { return realpathSync(p); } catch { return p; } };
+// On Windows the native realpath, which also expands an 8.3 short name (RUNNER~1, a long user name's TEMP), as the long form Bun gives
+// its main file and its modules is compared with: the plain one leaves it short and refuses the host's own entry (measured on a runner).
+const rp = process.platform === "win32" ? realpathSync.native : realpathSync;
+const real = (p) => { try { return rp(p); } catch { return p; } };
+// Bun hands a loaded file's path to the filter in the form the importer spelled it (the short one on Windows), so every
+// root is held in both forms, which are one where there is no short name.
+const plain = (p) => { try { return realpathSync(p); } catch { return p; } };
+const forms = (p) => [...new Set([plain(p), real(p)])];
 const fail = (why) => { throw new Error("moss: " + why); };
 // What this thread was started with, pinned before any plugin code runs: a worker gets these, never process.env's.
 // Never Bun's "be Bun" switch in a plugin's process, whatever started it (#234's check 5, K2).
@@ -84,8 +94,9 @@ if (noNatives && !hostThread) {
   Object.freeze(ffi);
 }
 const root = hostThread ? undefined : realpathSync(rootEnv);
+const rootNative = hostThread ? undefined : rp(rootEnv);
 // The guard's own folder (its run files) loads too: a worker preloads the guard from there.
-const shared = [...JSON.parse(sharedEnv), dirname(guardFile)].map(real);
+const shared = [...JSON.parse(sharedEnv), dirname(guardFile)].flatMap(forms);
 const inside = (p, r) => p === r || p.startsWith(r.endsWith(sep) ? r : r + sep);
 // No Bun macros, in every thread (#289): a macro runs its module's code while the file importing it is transpiled. The
 // process's --no-macros (and a bunfig's) holds its main thread only: a Worker runs a macro whatever the process was
@@ -113,14 +124,18 @@ for (let d = dirname(root); ; d = dirname(d)) {
   if (found && !shared.some((s) => inside(s, real(nm)))) fail("a node_modules folder at " + nm + " is above the plugin's folder; remove or move it (or move the plugin)");
   if (dirname(d) === d) break;
 }
-const allowed = (p) => { const r = real(p); return inside(r, root) || shared.some((s) => inside(r, s)); };
+// What a file may be is judged on its fully resolved form (the native realpath: links, junctions and 8.3 names followed) against the roots'
+// resolved forms: the weaker of two spellings never decides. Both spellings of a root stay in the onLoad filter below, which only has to
+// match the path as Bun hands it, and refuses what is outside; whatever it lets through is then judged here.
+const sharedReal = shared.map(real);
+const allowed = (p) => { const r = real(p); return (rootNative !== undefined && inside(r, rootNative)) || sharedReal.some((s) => inside(r, s)); };
 const refuse = (p) => fail("refused to load " + p + ": it is outside the plugin's own folder");
 // The filter matches every file outside the plugin's root and the shared roots, whatever its name or the loader asked
 // for (Bun hands it the resolved real path), so onLoad runs only to refuse, and the plugin's own files load as Bun
 // loads them (contents onLoad returns lose CommonJS interop, as measured on Bun 1.4.4). Case-sensitive: a case-folded
 // prefix would let a sibling folder through on Linux.
 const esc = (s) => Array.from(s, (c) => ("\\^$.*+?()[]{}|/".includes(c) ? "\\" + c : c)).join("");
-const roots = [root, ...shared].map((r) => esc(r.endsWith(sep) ? r : r + sep)).join("|");
+const roots = [...new Set([root, rootNative, ...shared])].filter((r) => r !== undefined).map((r) => esc(r.endsWith(sep) ? r : r + sep)).join("|");
 // "bun -e" and "--print": the command's own code (its arguments, which the plugin's OK card named), loaded as
 // "<working folder>/[eval]", never a file. Bun sends it through onLoad when a folder on the way has a dot in its name
 // (measured on Bun 1.4.4: the data folder under ~/.moss, so every pasted "bun -e" server was refused at start);
@@ -387,6 +402,61 @@ export interface PluginRunGuard {
   picked?: (pluginId: string) => { read: readonly string[]; write: readonly string[] };
 }
 
+const lockedFolders = new Set<string>();
+/** Windows: the folder is the user's alone (inheritance removed, the user's SID granted full control, as `lockRunDir` does the run folder),
+ *  through System32's `icacls`. The guard and the `bin\\bun.exe` link inside are only as private as this folder is. Throws when it can't:
+ *  no plugin process starts in a folder anyone else may write. */
+function lockFolderToUser(folder: string): void {
+  if (lockedFolders.has(folder)) return;
+  const sid = currentUserSid();
+  if (sid === null) throw new Error(`plugin processes can't start: no user SID to lock ${folder} to`);
+  const r = spawnSync(`${systemDirectory()}\\icacls.exe`, [folder, "/inheritance:r", "/grant:r", `*${sid}:(OI)(CI)F`], { stdio: "ignore", windowsHide: true });
+  if (r.status !== 0) throw new Error(`plugin processes can't start: icacls refused to lock ${folder} to this user`);
+  // And look: the guard's whole Windows case is this ACL, so what icacls said is not taken for what is there. The owner must be the
+  // user, Administrators or SYSTEM and nobody else allowed (the Windows sandbox's own check, fence/win-sandbox.ts).
+  const problem = ownerOnlyProblem(folder, sid);
+  if (problem !== null) throw new Error(`plugin processes can't start: ${folder} is not owner-only (${problem})`);
+  lockedFolders.add(folder);
+}
+
+/** Windows: `bin\\bun.exe` is the plugin Bun by a symlink where the user may make one, and otherwise (a standard user without Developer
+ *  Mode: EPERM) by a hard link, which needs no privilege, and where that can't be made either (another volume) by a copy checked against the
+ *  original's SHA-256 when it is made and again at every start (never by size and time). Each is judged again at every start, so a swapped file is replaced. The folder is the user's alone (`lockFolderToUser`). */
+export function placeBunOnWindows(bunLink: string, bun: string, ops: { symlink: typeof symlinkSync; link: typeof linkSync } = { symlink: symlinkSync, link: linkSync }): void {
+  const current = (): boolean => {
+    try {
+      const l = lstatSync(bunLink);
+      if (l.isSymbolicLink()) return readlinkSync(bunLink) === bun;
+      const b = statSync(bun);
+      if (!l.isFile() || l.size !== b.size) return false;
+      if (l.ino !== 0 && l.ino === b.ino && l.dev === b.dev) return true; // a hard link: the one file, whose bytes `checkPluginBun` judges
+      // A copy is the same bytes or it is replaced: its size and time can be set by anyone who can write it, so they prove nothing.
+      return sha256Hex(readFileSync(bunLink)) === sha256Hex(readFileSync(bun));
+    } catch {
+      return false;
+    }
+  };
+  if (current()) return;
+  try { unlinkSync(bunLink); } catch { /* none yet */ }
+  try {
+    ops.symlink(bun, bunLink);
+    return;
+  } catch (err) {
+    if ((err as { code?: string }).code !== "EPERM" && (err as { code?: string }).code !== "EACCES") throw err;
+  }
+  try {
+    ops.link(bun, bunLink);
+    return;
+  } catch { /* another volume, or a file system with no hard links: a copy */ }
+  copyFileSync(bun, bunLink);
+  const t = statSync(bun);
+  utimesSync(bunLink, t.atime, t.mtime);
+  if (sha256Hex(readFileSync(bunLink)) !== sha256Hex(readFileSync(bun))) {
+    rmSync(bunLink, { force: true });
+    throw new Error("plugin processes can't start: the copy of the plugin Bun differs from the original");
+  }
+}
+
 /** Writes MOSS's bunfig and guard for plugin processes into `dir` (the daemon's run folder), and returns their paths.
  *  `BUN_OPTIONS` splits on spaces and takes no quotes (measured on Bun 1.4.4), so the run folder's path may have none:
  *  a MOSS home whose path has a space starts no plugin process, and says why. Never a folder in the shared temp
@@ -398,7 +468,14 @@ export function ensurePluginRunFiles(dir: string, o: { mossHome: string }): Plug
   // The guard is only as good as its file: the folder must be a real one of this user's that no one else can write.
   const st = lstatSync(folder);
   const uid = process.getuid?.();
-  if (!st.isDirectory() || (uid !== undefined && st.uid !== uid) || (st.mode & 0o022) !== 0) {
+  // Windows reports every folder as 0o777 and has no owner uid, so the mode test refused every Windows home ("not a private folder")
+  // and no plugin process ever started there. What keeps this folder private there is the ACL on its parent, the run folder
+  // (`lockRunDir`, platform/pair/run-files.ts: the user's SID alone, inheritance removed), which a folder made inside it inherits. That
+  // runs after this does, and not at all for a daemon with no pair, and a home on another drive inherits Authenticated Users:Modify,
+  // so the folder is locked here too, and a start that can't lock it fails closed (`lockFolderToUser`).
+  const windows = process.platform === "win32";
+  if (windows && st.isDirectory()) lockFolderToUser(folder);
+  if (!st.isDirectory() || (!windows && ((uid !== undefined && st.uid !== uid) || (st.mode & 0o022) !== 0))) {
     throw new Error(`${folder} is not a private folder of this user's; plugin processes can't start`);
   }
   // Always named by the caller, never `~/.moss` by default: a fenced process's temp and data folders are made under
@@ -410,20 +487,23 @@ export function ensurePluginRunFiles(dir: string, o: { mossHome: string }): Plug
   const files: PluginRunFiles = { bunfig: join(real, "bunfig.toml"), guard: join(real, "guard.mjs"), hostGuard: join(real, "host-guard.mjs"), bin: join(real, "bin"), mossHome };
   mkdirSync(files.bin, { recursive: true, mode: 0o700 });
   const bunLink = join(files.bin, process.platform === "win32" ? "bun.exe" : "bun");
-  let linked: string | undefined;
-  try {
-    linked = readlinkSync(bunLink);
-  } catch {
-    linked = undefined;
-  }
   const bun = pluginBun(mossHome);
-  if (linked !== bun) {
+  if (process.platform === "win32") placeBunOnWindows(bunLink, bun);
+  else {
+    let linked: string | undefined;
     try {
-      unlinkSync(bunLink);
+      linked = readlinkSync(bunLink);
     } catch {
-      /* none yet */
+      linked = undefined;
     }
-    symlinkSync(bun, bunLink);
+    if (linked !== bun) {
+      try {
+        unlinkSync(bunLink);
+      } catch {
+        /* none yet */
+      }
+      symlinkSync(bun, bunLink);
+    }
   }
   // Written whole, never through a planted link (plugin-host/run-file.ts); `pluginRunFileChecks` names what each
   // start then checks.

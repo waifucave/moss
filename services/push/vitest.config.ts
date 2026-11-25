@@ -13,7 +13,7 @@ const es256 = generateKeyPairSync("ec", { namedCurve: "P-256" });
 const jwks = JSON.stringify({ keys: [{ ...es256.publicKey.export({ format: "jwk" }), kid: "test-es256", alg: "ES256", use: "sig" }] });
 const signingKeys = JSON.stringify({ es256: { ...es256.privateKey.export({ format: "jwk" }), kid: "test-es256" } });
 
-const apns = { apnsKeyId: "TESTKEY001", apnsTeamId: "TESTTEAM01", apnsTopic: "com.waifucave.clover.ios.test" };
+const apns = { apnsKeyId: "TESTKEY001", apnsTeamId: "TESTTEAM01", apnsTopics: { moss: "test.moss.ios", code: "test.code.ios" } };
 const fakes = createPushFakes(apns);
 
 export default defineConfig({
@@ -26,7 +26,8 @@ export default defineConfig({
           ACCOUNT_JWKS: jwks,
           APNS_KEY_ID: apns.apnsKeyId,
           APNS_TEAM_ID: apns.apnsTeamId,
-          APNS_TOPIC: apns.apnsTopic,
+          APNS_TOPIC_MOSS: apns.apnsTopics.moss,
+          APNS_TOPIC_CODE: apns.apnsTopics.code,
           VAPID_SUBJECT: "mailto:push@waifucave.test",
           MAX_TARGETS: "5",
           PUSH_TIMEOUT_MS: "500",

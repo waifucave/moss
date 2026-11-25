@@ -37,6 +37,19 @@ const PLUGIN_WITHHELD: Readonly<Record<string, readonly string[]>> = {
   plugin_changed: ["reason", "waitingFor"],
 };
 
+/** Fields only the user's own terminal gets (a `cli` connection whose caller is the user, `{ kind: "user", client: "cli" }`: never a CLI
+ *  a bot's or an agent's session runs, which has role `cli` too but calls as that session), by event type: the pairing's four words. Everyone else, the apps and
+ *  the plugins' pages with them, learn the step; the words are drawn by the engine in the add card's sealed frame (§5.5), so a
+ *  page can neither show them (they would prove nothing) nor hand them back. */
+const TERMINAL_ONLY_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  pairing_changed: ["words"],
+};
+
+/** The person's own terminal: role `cli` and a caller that is the user's (a CLI started inside a session's process is `cli` too, but its caller is that session). */
+function isUsersTerminal(conn: MossConn): boolean {
+  return conn.role === "cli" && conn.caller.kind === "user" && conn.caller.client === "cli";
+}
+
 /** A `core` event as a lane hands it over: its `type`, and `ts` (the shared clock's) unless the sender stamps it. */
 export interface CoreEventInput {
   type: string;
@@ -62,6 +75,15 @@ export interface CoreEventOptions {
   /** Of the plugins' connections (a layer, a host half), only those whose plugin this lets through; the app's and the
    *  other roles are untouched. An approval card's events use it: a plugin hears its own bot's cards. */
   forPlugin?(pluginId: string, capabilities: readonly string[]): boolean;
+  /** Never the connection of a paired device this says no to (a card about that device, or one only a computer answers,
+   *  `ApprovalRequest.aboutDevice` / `computersOnly`): whatever role it comes in. */
+  exceptDevice?(device: string): boolean;
+}
+
+/** The paired device a connection speaks for (a device link's), none for one on this computer. */
+export function deviceOfConn(conn: Pick<MossConn, "caller">): string | undefined {
+  const c = conn.caller as { kind: string; device?: string };
+  return c.kind === "user" || c.kind === "peer" ? c.device : undefined;
 }
 
 /** The plugin a plugin connection speaks for: a layer's own, an own host's, `moss` for the bundled tree's host; a
@@ -89,13 +111,15 @@ export function sendCoreEvent(r: CoreEventRouting, event: CoreEventInput, opts: 
     r.log?.(`[core.event] a ${spec.type} event didn't parse; not sent`);
     return 0;
   }
-  const withheld = PLUGIN_WITHHELD[spec.type];
-  let forPlugins: unknown = parsed.data;
-  if (withheld !== undefined) {
-    const copy = { ...(parsed.data as Record<string, unknown>) };
-    for (const k of withheld) delete copy[k];
-    forPlugins = copy;
-  }
+  const without = (data: unknown, keys: readonly string[] | undefined): unknown => {
+    if (keys === undefined) return data;
+    const copy = { ...(data as Record<string, unknown>) };
+    for (const k of keys) delete copy[k];
+    return copy;
+  };
+  const forTerminal: unknown = parsed.data;
+  const forApps = without(forTerminal, TERMINAL_ONLY_FIELDS[spec.type]);
+  const forPlugins = without(forApps, PLUGIN_WITHHELD[spec.type]);
   let sent = 0;
   for (const conn of r.connections()) {
     if (!spec.roles.includes(conn.role) || !conn.areas.has(spec.area)) continue;
@@ -112,12 +136,16 @@ export function sendCoreEvent(r: CoreEventRouting, event: CoreEventInput, opts: 
     // frame that still holds a connection hears nothing of them).
     if (RUNNING_ONLY_EVENTS.has(spec.type) && PLUGIN_ROLES.includes(conn.role) && r.pluginRunning?.(pluginOf(conn)!) !== true) continue;
     if (opts.to !== undefined && !opts.to(conn)) continue;
+    if (opts.exceptDevice !== undefined) {
+      const device = deviceOfConn(conn);
+      if (device !== undefined && opts.exceptDevice(device)) continue;
+    }
     if (opts.forPlugin !== undefined && PLUGIN_ROLES.includes(conn.role)) {
       const who = pluginOf(conn);
       if (who === undefined || !opts.forPlugin(who, r.pluginCapabilities?.(who) ?? [])) continue;
     }
     try {
-      conn.notify(CORE_EVENT_NOTIFICATION, PLUGIN_ROLES.includes(conn.role) ? forPlugins : parsed.data);
+      conn.notify(CORE_EVENT_NOTIFICATION, PLUGIN_ROLES.includes(conn.role) ? forPlugins : isUsersTerminal(conn) ? forTerminal : forApps);
       sent++;
     } catch {
       // closing: its close handler removes it

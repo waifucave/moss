@@ -62,15 +62,15 @@ describe("a write is on the disk before it counts as saved", () => {
     expect(readFileSync(target, "utf8")).toBe("data");
   });
 
-  test("a store's write keeps the previous whole file first, then the new one, then the note that a file was made", async () => {
+  test("a store's write makes its second copy the new file first, then the file, then the note that a file was made", async () => {
     const h = home(), keys = memoryVault();
     await valuesOn(h, keys).set("a", "1");
     const steps: string[] = [];
     await valuesOn(h, keys, (n) => steps.push(n)).set("a", "2");
-    // Two files this time (the previous copy, then the new file); the note already exists.
+    // Two files this time (the second copy, then the file); the note already exists. Both are the new file.
     const one = ["created", "locked", "written", "file-flushed", "renamed", "rename-flushed"];
     expect(steps).toEqual([...one, ...one]);
-    expect(existsSync(bakOf(h))).toBe(true);
+    expect(readFileSync(bakOf(h)).equals(readFileSync(fileOf(h)))).toBe(true);
     expect(existsSync(madeOf(h))).toBe(true);
     expect(readdirSync(join(h, "run")).filter((f) => f.endsWith(".tmp"))).toEqual([]);
     expect(readdirSync(h).filter((f) => f.includes(".tmp"))).toEqual([]);
@@ -106,7 +106,7 @@ describe("a file a power cut left short, empty or changed is not the end of the 
     const h = home(), keys = memoryVault();
     const v = valuesOn(h, keys);
     await v.set(itemKey(SVC, "harness-token"), "tok-1");
-    await v.set(itemKey(SVC, "harness-token"), "tok-2"); // now secrets.enc holds tok-2 and the previous copy tok-1
+    await v.set(itemKey(SVC, "harness-token"), "tok-2"); // secrets.enc and its second copy both hold tok-2 (lane SE: the copy is the NEW file, so a replaced value never comes back)
     return { h, keys };
   };
 
@@ -120,7 +120,7 @@ describe("a file a power cut left short, empty or changed is not the end of the 
       writeFileSync(fileOf(h), bytes);
       const lines: string[] = [];
       const got = await valuesOn(h, keys, undefined, (l) => lines.push(l)).get(itemKey(SVC, "harness-token"));
-      expect([name, got]).toEqual([name, "tok-1"]); // the previous whole file's value: older, but there
+      expect([name, got]).toEqual([name, "tok-2"]); // the second copy's value: the latest, never the one it replaced
       expect(lines.length).toBe(1);
       expect(lines[0]).not.toContain("tok-");
     }
@@ -135,7 +135,7 @@ describe("a file a power cut left short, empty or changed is not the end of the 
     expect(whole[1]).toBe(2); // secret-service
     const unknown = Buffer.from(whole); unknown[1] = 0x7f;
     writeFileSync(fileOf(h), unknown);
-    expect(await valuesOn(h, keys).get(itemKey(SVC, "harness-token"))).toBe("tok-1");
+    expect(await valuesOn(h, keys).get(itemKey(SVC, "harness-token"))).toBe("tok-2");
     const other = Buffer.from(whole); other[1] = 4; // key-file: a file claiming another (weaker) source is not "damaged"
     writeFileSync(fileOf(h), other);
     await expect(valuesOn(h, keys).get(itemKey(SVC, "harness-token"))).rejects.toMatchObject({ code: "locked" });
@@ -143,8 +143,8 @@ describe("a file a power cut left short, empty or changed is not the end of the 
 
   test("damaged with no previous copy is an error, never an empty store", async () => {
     const h = home(), keys = memoryVault();
-    await valuesOn(h, keys).set("a", "1"); // one write: no previous copy yet
-    expect(existsSync(bakOf(h))).toBe(false);
+    await valuesOn(h, keys).set("a", "1");
+    rmSync(bakOf(h)); // the second copy lost too (every write makes one since lane SE)
     const whole = readFileSync(fileOf(h));
     for (const bytes of [Buffer.alloc(0), whole.subarray(0, whole.length - 3), Buffer.concat([whole.subarray(0, 40), Buffer.from([whole[40]! ^ 1]), whole.subarray(41)])]) {
       writeFileSync(fileOf(h), bytes);
@@ -159,7 +159,7 @@ describe("a file a power cut left short, empty or changed is not the end of the 
     const open = () => fileSecretsBackend({ home: h, service: SVC, os: "linux", vault: () => keys, moveFrom: null, log: quiet });
     for (const bytes of [Buffer.alloc(0), Buffer.from([2]), readFileSync(fileOf(h)).subarray(0, 20)]) {
       writeFileSync(fileOf(h), bytes);
-      expect(await open().get({ service: SVC, name: "harness-token" })).toBe("tok-1");
+      expect(await open().get({ service: SVC, name: "harness-token" })).toBe("tok-2");
     }
     // With no previous copy the same file is locked, not empty.
     rmSync(bakOf(h));
@@ -175,7 +175,7 @@ describe("a secrets file deleted while its key is still there is never a quiet n
     await open().set({ service: SVC, name: "harness-token", value: "t1" });
     await open().set({ service: SVC, name: "harness-token", value: "t2" });
     rmSync(fileOf(h));
-    expect(await open().get({ service: SVC, name: "harness-token" })).toBe("t1"); // the previous whole file
+    expect(await open().get({ service: SVC, name: "harness-token" })).toBe("t2"); // the second copy: the latest
     await open().set({ service: SVC, name: "harness-token", value: "t3" });
     expect(existsSync(fileOf(h))).toBe(true);
 
@@ -229,7 +229,7 @@ describe("the one-time move: order, crashes, and the pairing tokens", () => {
     expect(events.slice(0, firstDelete).filter((e) => e === "file:file-flushed").length).toBeGreaterThanOrEqual(1);
     // One write of the file for both items (one hold), then the two deletes, then the note's own write.
     expect(events.filter((e) => e.startsWith("os-delete:")).length).toBe(2);
-    expect(events.slice(0, firstDelete).filter((e) => e === "file:created").length).toBe(2); // the new file, and the note that one was made
+    expect(events.slice(0, firstDelete).filter((e) => e === "file:created").length).toBe(3); // the second copy, the new file, and the note that one was made
   });
 
   test("a crash between any two steps of the move leaves every secret readable from the file or the OS store, and the next start finishes", async () => {

@@ -755,6 +755,12 @@ describe("the release workflow (.github/workflows/release.yml)", () => {
     expect(steps.some((r) => r.includes("bun scripts/build-packages.ts --arch"))).toBe(true);
   });
 
+  test("the installers job's two proofs run in the release's desktop job too: the daemon's --version as a self-update runs it, and both apps installed and removed", () => {
+    const steps = (wf.jobs.desktop.steps as Array<{ run?: string }>).map((s) => s.run ?? "");
+    expect(steps.some((r) => r.includes('test "$said" = "moss $version"'))).toBe(true);
+    expect(steps.some((r) => r.includes("bun scripts/release/install-check.ts ${{ matrix.os }}"))).toBe(true);
+  });
+
   test("refuses any ref but main in every job, before anything else, and keeps each build's commit", () => {
     for (const job of Object.values(wf.jobs) as Array<{ steps: Array<{ name?: string; run?: string; env?: Record<string, string> }> }>) {
       expect(job.steps[0]!.name).toBe("Only from main");

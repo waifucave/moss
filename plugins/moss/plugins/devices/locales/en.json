@@ -17,6 +17,8 @@
     "moss.devices.kind.cloud": "Cloud computer",
     "moss.devices.kind.phone": "Phone",
     "moss.devices.kind.browser": "Browser",
+    "moss.devices.app.moss": "MOSS",
+    "moss.devices.app.code": "MOSS Code",
     "moss.devices.notLinked": "Not linked",
     "moss.devices.direct": "Direct",
     "moss.devices.sameNetwork": "Same network",

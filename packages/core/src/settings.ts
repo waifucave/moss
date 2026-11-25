@@ -5,7 +5,8 @@ import { advanceAuthorityRevision } from "./authority-revision";
 import { legacyImportOn } from "./migration/legacy-imports";
 import { z } from "zod";
 import { activeCatalog, activeCatalogGeneration } from "./runtime-sdk/model-plugins/catalog-source";
-import { familyOfModel, lightModelOn, type LightChoice } from "./runtime-sdk/model-plugins/light-model";
+import { familyOfModel, lightModelForJob, type LightChoice } from "./runtime-sdk/model-plugins/light-model";
+import { choicesOf, FAMILY_LIGHT_MODELS } from "./runtime-sdk/model-plugins/family-defaults";
 import { ensureGlobalGitignore, MOSS_PERSONAL_IGNORES } from "./global-gitignore";
 import { consoleProfileCredentialFile } from "./runtime-sdk/anthropic-paths";
 import { canonicalModelTag, facingNameToTag, isModelTag, splitTag, UNSTATED_TAG, MOSS_TEST_PREFIX, type ModelTag } from "./runtime-sdk/model-tag";
@@ -2413,20 +2414,24 @@ export function internalRoleDefaultTagFor(
  * every one of MOSS's own jobs: titles, memory tidying (the dreamer), the session cleaner and the bash safety reviewer (which
  * is also the plugin Review). THE RULE (2026-11-22, backlog 498 and 521): an internal job runs on a model the person chose
  * for that kind of work (a pin in Settings, or the default model's own provider) and never on a costlier one than the
- * light model of the default model's family. When no light model can be had it does not run; it says so once in the log.
- * A job never falls to the default model, and never to another provider than the default's. THE ONE EXCEPTION is the
- * reviewer, a safety gate (the controller's ruling): with no light model of the default's family it runs on the default
- * model itself on its own provider (`internalRoleOwnDefault`), and with that unusable it asks, never allows.
+ * light model of the default model's family. WHICH light model (2026-11-24, `lightModelForJob`): the default's family's
+ * light model on the default's own provider; else another family's light model that provider serves, cheapest input first
+ * (ties by family id); else titles, the dreamer and the cleaner do not run (a cost-only job never falls to a default model),
+ * and it says so once in the log. Never another provider than the default's. THE ONE EXCEPTION is the reviewer, a safety
+ * gate: where its provider serves no family's light model it runs on the family's default there, then on the default model
+ * itself on its own provider (`internalRoleOwnDefault`), and with that unusable it asks, never allows.
  */
 export const LIGHT_MODEL_ROLES: readonly InternalJobRole[] = ["titles.model", "pins.dream", "pins.cleaner", "reviewer.model"];
 
 /**
  * The light model a job with no pin of its own runs on (the explicit pin is the caller's, before this): the default model's
- * family's light model as the default's OWN provider serves it, when that provider is eligible and credentialed.
- * `undefined` is "no light model can be had" and the job does not run: the default's provider is not signed in, removed or
- * not one MOSS's jobs can drive, there is no default, the default is in no family, or the provider's catalog doesn't carry
- * the family's light model (an OAuth sign-in's or a plan's). Never another provider (a coding-plan or an aggregator the
- * person did not choose for this work) and never the default model itself. A provider that carries the model in the catalog
+ * family's light model as the default's OWN provider serves it, else another family's light model that provider serves
+ * (cheapest input first), when that provider is eligible and credentialed (`lightModelForJob`). For the reviewer alone, a
+ * provider with no family's light model gives the family's default there. `undefined` is "no light model can be had" and a
+ * cost-only job does not run: the default's provider is not signed in, removed or not one MOSS's jobs can drive, there is no
+ * default, the default is in no family, or the provider serves no family's light model (a deprecated or blocked row counts
+ * as not served). Never another provider (a coding-plan or an aggregator the person did not choose for this work), and for
+ * titles, the dreamer and the cleaner never a family default. A provider that carries the model in the catalog
  * but whose endpoint then says it doesn't serve it is the router's to say once in the log.
  * `undefined` with no snapshot (a caller that threads none is unchanged).
  */
@@ -2441,7 +2446,7 @@ export function internalRoleLight(
   const model = settings?.provider?.model;
   if (own === undefined || model === undefined || !internalEligibleProviderIds().has(own) || !snapshot.credentialed.has(own)) return undefined;
   const family = familyOfModel(catalog, own, model);
-  const choice = family === undefined ? undefined : lightModelOn(catalog, own, family);
+  const choice = family === undefined ? undefined : lightModelForJob(catalog, own, family, role === "reviewer.model" ? "reviewer" : "light");
   return choice === undefined ? undefined : { choice };
 }
 
@@ -2463,8 +2468,14 @@ export function describeInternalJobModels(settings: Settings | null | undefined,
     let why: string;
     if (explicitInternalRolePin(settings, role) !== undefined) why = "set in settings";
     else if (tag === null) why = role === "reviewer.model" ? "no review can run: the chosen model's provider can't be used for it; pin a model in Settings › Roles" : "not running: no light model of the chosen model's family can be had on its provider; pin a model in Settings › Roles";
-    else if (internalRoleLight(settings, role, snapshot) === undefined) why = "the default model itself: its family has no light model on its provider";
-    else why = `the light model of the default's ${internalRoleLight(settings, role, snapshot)?.choice.family ?? "own"} family`;
+    else if (internalRoleLight(settings, role, snapshot) === undefined) why = "the default model itself: its provider serves no family's light model";
+    else {
+      const fam = internalRoleLight(settings, role, snapshot)!.choice.family;
+      const defaultsFamily = familyOfModel(activeCatalog(), ownProviderFor(settings) ?? "", settings?.provider?.model ?? "");
+      why = fam === defaultsFamily ? `the light model of the default's ${fam} family` : `the ${fam} family's light model: the default's own family has none on its provider`;
+      const row = activeCatalog().models.find((m) => m.key === internalRoleLight(settings, role, snapshot)!.choice.tag);
+      if (row !== undefined && !choicesOf(FAMILY_LIGHT_MODELS[fam]).some((c) => c.model === row.canonicalModelId)) why = `the ${fam} family's default: its provider serves no family's light model`;
+    }
     parts.push(`${label[role]} on ${tag ?? "nothing"} (${why})`);
   }
   return parts.join("; ");
@@ -2495,7 +2506,8 @@ export function internalRoleEffectiveTag(
 ): ModelTag | null {
   const explicit = opts?.ignoreExplicitPin === true ? undefined : explicitInternalRolePin(settings, role);
   if (explicit !== undefined) return explicit;
-  // The light model of the default's family, else nothing (`LIGHT_MODEL_ROLES`: never the default model itself).
+  // The light model for the job (`lightModelForJob`: the family's, else another family's on the same provider; the reviewer
+  // alone may take the family's default there), else nothing for a cost-only job (`LIGHT_MODEL_ROLES`).
   const light = internalRoleLight(settings, role, snapshot);
   if (light !== undefined) return light.choice.tag as ModelTag;
   // The reviewer is a safety gate, not a chore (the controller's ruling, 2026-11-22): where the default's family has no light

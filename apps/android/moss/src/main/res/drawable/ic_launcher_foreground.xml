@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The two ink eyes of the iPhone icon. The 1024 tile of the iPhone icon is the 72 dp the launcher shows, so the 108 dp layer
+     is 1536 units with the tile in its middle (eyes 0.17 by 0.22 of the tile, centred 0.355 and 0.645 across, 0.49 down). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="1536" android:viewportHeight="1536">
+    <path android:fillColor="#1B1D2B"
+        android:pathData="M532.5,757.8 a87,112.6 0 1,0 174,0 a87,112.6 0 1,0 -174,0 Z" />
+    <path android:fillColor="#1B1D2B"
+        android:pathData="M829.5,757.8 a87,112.6 0 1,0 174,0 a87,112.6 0 1,0 -174,0 Z" />
+</vector>

@@ -41,9 +41,11 @@ import { handler, requireUser, type MethodHandler } from "../rpc/handler";
 import { credentialValueRefusal, removeCredential } from "./credentials";
 import { bundledModelProviderOf, modelPluginSlotFor } from "./model-plugins/keychain-tokens";
 import { installedModelPlugins } from "./model-plugins";
+import { activeCatalog } from "./model-plugins/catalog-source";
 import { MOSS_CREDENTIAL_INVENTORY } from "./keychain";
 import { onCardYes, type CardYesOutput } from "../plugin-host/card-yes";
 import type { OAuthRenewal } from "./model-plugins/oauth-renewal";
+import { titleWithName } from "../approvals/title-name";
 
 /** One `auth` entry as a manifest has it (the plugin SDK's `AuthSchema`), and the provider of the `models` entry it
  *  belongs to. */
@@ -174,6 +176,9 @@ export interface PluginAuth {
   /** The bundled model plugins' providers that take no key at all (a local model server: no sign-in of its own and no
    *  credential slot). Usable with nothing stored, so a default model on one is had; never an "added" provider. */
   keylessProviders(): Set<string>;
+  /** Bundled REMOTE providers nobody can add: no key entry, no credential slot, and not a local server (uncloseai, whose
+   *  keyless beta closed). A default named on one is no default (`default-model.ts`). */
+  unsignableProviders(): Set<string>;
   /** Whether the model plugins have started, so `signedInProviders` and `keylessProviders` answer for all of them. */
   modelPluginsReady(): boolean;
   signIn(id: string, index: number, key?: string): Promise<{ state: PluginAuthView["state"]; authorizeUrl?: string }>;
@@ -294,6 +299,24 @@ export function createPluginAuth(deps: PluginAuthDeps): PluginAuth {
         if (r === undefined || bundledModelProviderOf(r) === undefined) continue;
         if (MOSS_CREDENTIAL_INVENTORY.some((s) => s.provider === provider)) continue;
         if (authEntriesOf(r).some((n) => !n.computer && (n.provider === provider || n.provider === undefined))) continue;
+        // 2026-11-24: only a LOCAL server is had with no key (the catalog's `local-none`: Ollama, LM Studio, llama.cpp, ...).
+        // A remote service that declares no key entry (uncloseai, whose keyless beta closed: "This endpoint needs an API
+        // key, and key registration is closed") is not a provider the person has; it counts only once a key is set for it.
+        const kinds = activeCatalog().providers.find((p) => p.id === provider)?.authKinds ?? [];
+        if (!kinds.includes("local-none")) continue;
+        out.add(provider);
+      }
+      return out;
+    },
+
+    unsignableProviders() {
+      const out = new Set<string>();
+      for (const { provider, pluginId } of servedProviders()) {
+        const r = deps.registry.get(pluginId);
+        if (r === undefined || bundledModelProviderOf(r) === undefined) continue;
+        if (MOSS_CREDENTIAL_INVENTORY.some((s) => s.provider === provider)) continue;
+        if (authEntriesOf(r).some((n) => !n.computer && (n.provider === provider || n.provider === undefined))) continue;
+        if ((activeCatalog().providers.find((p) => p.id === provider)?.authKinds ?? []).includes("local-none")) continue;
         out.add(provider);
       }
       return out;
@@ -392,7 +415,7 @@ export function createPluginAuth(deps: PluginAuthDeps): PluginAuth {
 }
 
 /** The handlers lane C's server mounts. Signing in and out is the user's alone. */
-export function pluginAuthMethods(auth: PluginAuth, o: { openCard?: CardOpener; nameOf?: (id: string) => string | undefined } & CardYesOutput = {}): Record<string, MethodHandler> {
+export function pluginAuthMethods(auth: PluginAuth, o: { openCard?: CardOpener; nameOf?: (id: string) => string | undefined; /** Whether the plugin is of the bundled tree, by its install record: only then does its name stand in the title. */ bundled?: (id: string) => boolean } & CardYesOutput = {}): Record<string, MethodHandler> {
   const M = PLUGINS_METHODS;
   return {
     [M.pluginAuthList.name]: handler(M.pluginAuthList, async (p) => ({ auth: await auth.list(p.id) })),
@@ -411,7 +434,8 @@ export function pluginAuthMethods(auth: PluginAuth, o: { openCard?: CardOpener; 
       const name = o.nameOf?.(p.id) ?? p.id;
       const opened = await o.openCard({
         kind: "change", origin: "user", computers: [], effect: "other", change: "plugin-sign-out",
-        fields: { title: { type: "text", text: `Sign ${name} out?` }, detail: { type: "list", items: ["Its saved sign-in on this computer is deleted."] } },
+        // The plugin's name is its own text: a row of its own, never a word of the engine's title.
+        fields: { title: { type: "text", text: titleWithName({ kind: "bundled", bundled: o.bundled?.(p.id) === true }, name, (n) => `Sign ${n} out?`, "Sign out of this plugin?") }, source: { type: "rows", rows: [{ label: "Plugin", value: name, name: true }] }, detail: { type: "list", items: ["Its saved sign-in on this computer is deleted."] } },
       });
       onCardYes(o, opened.card, "plugin-sign-out", opened.allowed, async () => {
         await auth.signOut(p.id, p.index);

@@ -46,7 +46,7 @@ export interface UpdateResult {
 /** Asks the user about one update: yes, no, `"asked"` (a card is up and the update is applied on its yes, by a check
  *  of its own, so this check, and the updater's one-at-a-time turn, never waits on the user), or `"pending"` (its card
  *  is up already). */
-export type UpdateConfirm = (change: UpdateChange & { source: string; treeHash: string; root: string; changed: string }) => Promise<boolean | "asked" | "pending">;
+export type UpdateConfirm = (change: UpdateChange & { source: string; via: "npm" | "index"; treeHash: string; root: string; changed: string }) => Promise<boolean | "asked" | "pending">;
 
 /** What an update changes in the files, in a line for its card: how many changed, were added and were removed (the
  *  owner's ruling, 2026-11-13: the click on Update is an informed one). `sameAsks`: it runs on the OK given before, and
@@ -260,7 +260,7 @@ export class PluginUpdater {
       // Asked for from a page (`confirm`): an update that runs on the OK given before asks first on its update card;
       // one that asks for its OK again shows that card instead.
       if (confirm !== undefined && trigger === undefined) {
-        const answer = await confirm({ ...change, treeHash: v.treeHash, root, changed: filesChanged(join(this.#o.pluginsDir, r.id), root), source: r.provenance.npm !== undefined ? `npm (${r.provenance.npm.name})` : (this.#o.client.index(provenance.index!.url)?.name ?? provenance.index!.url) });
+        const answer = await confirm({ ...change, treeHash: v.treeHash, root, changed: filesChanged(join(this.#o.pluginsDir, r.id), root), via: r.provenance.npm !== undefined ? "npm" : "index", source: r.provenance.npm !== undefined ? `npm (${r.provenance.npm.name})` : (this.#o.client.index(provenance.index!.url)?.name ?? provenance.index!.url) });
         if (answer !== true) {
           out.offered.push({ ...change, why: answer === "asked" ? "waiting for your yes on its card" : answer === "pending" ? "already waiting for your yes on its card" : "you didn't apply it" });
           return;

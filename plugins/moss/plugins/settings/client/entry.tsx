@@ -16,7 +16,7 @@ import { APPEARANCE_KEYS, NOTIFICATION_KEYS, OWN_SETTING_KEYS, settingKey } from
 import { LanguageChooser } from "./LanguageChooser";
 import { SettingsModal } from "./SettingsModal";
 import { S } from "./strings";
-import type { ExtraSection, Language, OneAtATimeView, SettingsPairing, SettingsSection, SettingsValues, ToolAvailability, ToolPermission } from "./types";
+import type { ExtraSection, Language, OneAtATimeView, RelayChoice, SettingsPairing, SettingsSection, SettingsValues, ToolAvailability, ToolPermission } from "./types";
 
 /** `tool.permissions`' answer. */
 /** A bot's id as a name when nothing better is known: `alpha` -> `Alpha`, `crew/luna` -> `Luna`. */
@@ -59,6 +59,7 @@ const OK_WORDS: Record<string, string> = {
   audio: "Can hear your microphone",
   "devices.read": "Sees your devices",
   "devices.manage": "Pairs and removes your devices when you press its controls (each still asks on MOSS's own card)",
+  "devices.relay": "Chooses the relay your devices connect through when you press its controls (a relay sees which devices are online, which talk and how much)",
 };
 
 export function okWords(detail: Pick<PluginDetail, "capabilities" | "networkHosts">): string[] {
@@ -201,12 +202,13 @@ export function SettingsEntry({ props }: { props: SettingsEntryProps }) {
   // The controls pressed since the last read of the settings began: that read was asked before the press, so its answer holds the
   // value as it was and must not put it back on the screen (the stored value is the press's already; window row 13).
   const pressedSince = useRef(new Set<string>());
-  // Pairing and removing a device (spec §8.1): the user's own press in this page's frame (`devices.manage`). Adding a device and
-  // removing one are the engine's sealed card, raised and placed by the engine (a call here answers `applied: false` and the
-  // card's id, and the window closes Settings while the card waits); nothing on this page adds or removes one. The pairing's
-  // steps (the four words, the card, the end) come as `pairing_changed`, which only a part holding `devices.manage` hears.
+  // Pairing and removing a device (spec §8.1): the user's own press in this page's frame (`devices.manage`). Adding a device is the
+  // engine's sealed card, raised by the engine itself once the other device is in: it draws the four words, this page never has them
+  // (the door cuts them from every result, the engine from every event) and has no call that confirms. What the page is told is the
+  // step and the other device's name (`pairing_changed`); removing a device is a card too (`device.revoke` answers `applied: false`
+  // and its id, and the window closes Settings while the card waits).
   const [pairing, setPairing] = useState<SettingsPairing | undefined>(undefined);
-  const pairingRef = useRef<{ id: string; words?: string[] } | undefined>(undefined);
+  const pairingRef = useRef<{ id: string } | undefined>(undefined);
   const refreshDevices = (): void => void api.devices?.list().then((d) => setDevices(d), () => undefined);
   useEffect(() => {
     if (core === undefined) return;
@@ -214,13 +216,18 @@ export function SettingsEntry({ props }: { props: SettingsEntryProps }) {
       core.on("pairing_changed", (e) => {
         const now = pairingRef.current;
         if (now === undefined || e.pairingId !== now.id) return;
-        const words = Array.isArray(e.words) ? (e.words as string[]) : undefined;
+        const peerName = typeof e.peerName === "string" && e.peerName !== "" ? e.peerName : undefined;
         switch (e.step) {
-          case "words":
-            if (words) { now.words = words; setPairing((p) => ({ ...p, words })); }
+          case "waiting":
+            // A device was turned away at this code's door: the engine says so in its own words, and the code goes on working.
+            if (typeof e.reason === "string" && e.reason !== "") {
+              const note = e.reason.slice(0, 300);
+              setPairing((p) => ({ ...p, note }));
+            }
             break;
+          case "words":
           case "card":
-            setPairing((p) => ({ ...p, confirming: true }));
+            setPairing((p) => ({ ...p, checking: true, ...(peerName ? { peerName } : {}) }));
             break;
           case "done":
             pairingRef.current = undefined;
@@ -242,6 +249,14 @@ export function SettingsEntry({ props }: { props: SettingsEntryProps }) {
     ];
     return () => offs.forEach((off) => off());
   }, [core, api]);
+  // The relay the links use (§8.3): read when the devices are shown, and again after each choice.
+  const [relay, setRelay] = useState<RelayChoice | undefined>(undefined);
+  useEffect(() => {
+    if (section !== "devices" || core === undefined) return;
+    let live = true;
+    void (core.call as (m: string, p: unknown) => Promise<RelayChoice>)("device.relay.get", {}).then((r) => live && setRelay(r), () => undefined);
+    return () => { live = false; };
+  }, [section, core]);
   const pairCall = (m: string, p: unknown): Promise<any> => (core!.call as (m: string, p: unknown) => Promise<unknown>)(m, p);
   const pairingFailed = (err: unknown): void => {
     pairingRef.current = undefined;
@@ -309,7 +324,7 @@ export function SettingsEntry({ props }: { props: SettingsEntryProps }) {
       { id: "accept-edits", label: "Accept edits" },
       { id: "automatic", label: "Fully automatic" },
     ],
-    devices: devices.map((d) => ({ id: d.id, name: d.name, kind: deviceKind(d), ...(d.isThis ? { here: true } : {}), ...(d.isMain ? { main: true } : {}) })),
+    devices: devices.map((d) => ({ id: d.id, name: d.name, kind: deviceKind(d), ...(d.isThis ? { here: true } : {}), ...(d.isMain ? { main: true } : {}), ...(d.online ? { online: true } : {}), ...(d.lastSeenAt !== undefined ? { lastSeen: d.lastSeenAt } : {}) })),
   };
 
   const onChange = (path: string, value: unknown) => {
@@ -394,21 +409,18 @@ export function SettingsEntry({ props }: { props: SettingsEntryProps }) {
             // (`devices.manage`), each ending in the engine's own sealed card.
             onPairBegin: () => {
               void pairCall("device.pair.begin", {}).then(
-                (r: { pairingId: string; code?: string; qr?: string }) => { pairingRef.current = { id: r.pairingId }; setPairing({ code: r.code ?? r.qr ?? "" }); },
+                (r: { pairingId: string; code?: string; qr?: string; expiresAt?: number }) => {
+                  pairingRef.current = { id: r.pairingId };
+                  setPairing({ ...(r.code ? { code: r.code } : {}), ...(r.qr ? { qr: r.qr } : {}), ...(typeof r.expiresAt === "number" ? { expiresAt: r.expiresAt } : {}) });
+                },
                 pairingFailed,
               );
             },
             onPairJoin: (code: string) => {
               void pairCall("device.pair.join", { code }).then(
-                (r: { pairingId: string; words?: string[] }) => { pairingRef.current = { id: r.pairingId, ...(r.words ? { words: r.words } : {}) }; setPairing(r.words ? { words: r.words } : {}); },
+                (r: { pairingId: string }) => { pairingRef.current = { id: r.pairingId }; setPairing({ checking: true }); },
                 pairingFailed,
               );
-            },
-            onPairConfirm: () => {
-              const now = pairingRef.current;
-              if (now?.words === undefined) return;
-              setPairing((p) => ({ ...p, confirming: true }));
-              void pairCall("device.pair.confirm", { pairingId: now.id, words: now.words }).then(() => undefined, pairingFailed);
             },
             onPairCancel: () => {
               const now = pairingRef.current;
@@ -419,9 +431,14 @@ export function SettingsEntry({ props }: { props: SettingsEntryProps }) {
             onRemoveDevice: (id: string) => {
               void pairCall("device.revoke", { id }).then(() => undefined, () => setFailure(S.choiceFailed(S.section.devices)));
             },
+            onSetRelay: (choice: RelayChoice) => {
+              void pairCall("device.relay.set", choice).then((r: RelayChoice) => setRelay({ ...r }), () => { setFailure(S.choiceFailed(S.relayTitle)); void pairCall("device.relay.get", {}).then((r: RelayChoice) => setRelay({ ...r }), () => undefined); });
+            },
           }
         : {})}
       {...(pairing ? { pairing } : {})}
+      {...(relay ? { relay } : {})}
+      relayPlugins={(loaded?.plugins ?? []).filter((p) => p.labels?.includes("Relay")).map((p) => ({ id: p.id, name: plain(p.name), ...(p.reason ? { why: p.reason } : {}) }))}
       {...(logs ? { logs: { ...logs, onBack: () => setLogs(undefined) } } : {})}
       extraSections={extra}
       {...(toolsRaw !== undefined ? { tools: { plugins: toolsRaw.plugins.map((p) => ({ ...p, tools: p.tools.map((t) => ({ ...t, cardRules: t.cardRules.map((r) => ({ ...r, botName: bots.find((b) => b.id === r.bot)?.name ?? botNameOf(r.bot) })) })) })) } } : {})}

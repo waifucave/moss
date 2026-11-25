@@ -627,9 +627,9 @@ describe("the stacked asks (C, L, H, F, G, A, I)", () => {
     expect(set.params.safeParse({ ...key, alg: "ed25519" }).success).toBe(true);
     expect(set.params.safeParse(key).success).toBe(true);
     expect(set.params.safeParse({ ...key, alg: "rsa" }).success).toBe(false);
-    expect(DeviceOs.options).toEqual(["macos", "windows", "linux", "ios"]);
+    expect(DeviceOs.options).toEqual(["macos", "windows", "linux", "ios", "android"]);
     expect(Os.options).toEqual(["macos", "windows", "linux"]);
-    expect([isComputerOs("ios"), isComputerOs("linux")]).toEqual([false, true]);
+    expect([isComputerOs("ios"), isComputerOs("android"), isComputerOs("linux")]).toEqual([false, false, true]);
     expect(DeviceView.shape.os.safeParse("ios").success).toBe(true);
     expect(DeviceView.shape.answers.safeParse({ held: "tpm", alg: "p256" }).success).toBe(true);
   });

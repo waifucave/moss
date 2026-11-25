@@ -15,7 +15,7 @@
 //
 // What it saw goes to the report file, one JSON line each, for the harness (testing/harness.ts).
 import { spawn, type ChildProcess } from "node:child_process";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import type { AgentEvent, AgentQuirks } from "../../contracts/agent-backend";
 import type { AgentStep } from "../../contracts/fakes/agent-backend";
 import { RpcPeer, RpcError } from "@waifucave/clover-agent-sdk/acp";
@@ -37,6 +37,10 @@ export type FakeAcpStep =
   | { sayBridgeToken: true }
   /** Reports how much of its context it uses (ACP's `usage_update`: `used` of `size` tokens). */
   | { context: { used: number; size: number } }
+  /** Reads each file the turn's prompt names as `[File #n: <path>]`, as a real agent opens the paths it is told: asks to read it (a
+   *  `read` call naming the path), and when allowed reads it unless its own sandbox (the policy file its start was given) denies
+   *  reading the path. Reports what happened to each: `file-read` with `outcome` `read` (and `text`), `refused` or `sandbox-denied`. */
+  | { readNamed: true }
   /** Sends these `session/update` updates as they are, `_meta` and all: an adapter's own frames, as recorded or as read
    *  from its code (Claude Code's subagent calls, §9.5). */
   | { raw: Record<string, unknown>[] };
@@ -282,9 +286,24 @@ function names(servers: unknown): string[] {
 
 const script = [...cfg.script];
 
+/** Whether the agent's own sandbox (the policy file its start named in `FAKE_SANDBOX_POLICY`) denies reading `path`: the real path is
+ *  inside a folder the policy's `denyRead` lists, as a real sandbox judges it. */
+function sandboxDenies(path: string): boolean {
+  const file = process.env["FAKE_SANDBOX_POLICY"];
+  if (file === undefined) return false;
+  const policy = JSON.parse(readFileSync(file, "utf8")) as { denyRead?: string[] };
+  const real = realpathSync(path);
+  return (policy.denyRead ?? []).some((d) => {
+    let root = d;
+    try { root = realpathSync(d); } catch { /* not there: as written */ }
+    return real === root || real.startsWith(`${root}/`);
+  });
+}
+
 async function runTurn(params: Record<string, unknown>): Promise<unknown> {
   const prompt = (params["prompt"] as { type: string; text?: string }[] | undefined) ?? [];
-  report({ type: "prompt", text: prompt.map((b) => b.text ?? "").join("") });
+  const promptText = prompt.map((b) => b.text ?? "").join("");
+  report({ type: "prompt", text: promptText });
   const steps = script.shift() ?? [];
   const t: TurnState = { cancelled: false };
   turn = t;
@@ -350,6 +369,32 @@ async function runTurn(params: Record<string, unknown>): Promise<unknown> {
       const answers = await Promise.all(asks);
       report({ type: "flood", allowed: answers.filter((a) => a.allowed).length, cancelled: t.cancelled });
       if (t.cancelled) return finish("cancelled");
+    }
+    else if ("readNamed" in step) {
+      for (const m of promptText.matchAll(/\[File #\d+: ([^\]]+)\]/g)) {
+        const path = m[1]!;
+        const id = `call-${++toolSeq}`;
+        open.add(id);
+        update({ sessionUpdate: "tool_call", toolCallId: id, title: `Read ${path}`, kind: "read", status: "pending", rawInput: { file_path: path }, locations: [{ path }] });
+        const a = await askPermission(id, "read", `Read ${path}`);
+        if (a.cancelled) return finish("cancelled");
+        if (!a.allowed) {
+          report({ type: "file-read", path, outcome: "refused" });
+          if (refuse(id) === "end") return finish("end_turn");
+          continue;
+        }
+        update({ sessionUpdate: "tool_call_update", toolCallId: id, status: "in_progress" });
+        let outcome: Record<string, unknown>;
+        try {
+          if (sandboxDenies(path)) outcome = { outcome: "sandbox-denied" };
+          else outcome = { outcome: "read", text: readFileSync(path, "utf8") };
+        } catch (err) {
+          outcome = { outcome: "error", error: err instanceof Error ? err.message : String(err) };
+        }
+        report({ type: "file-read", path, ...outcome });
+        open.delete(id);
+        update({ sessionUpdate: "tool_call_update", toolCallId: id, status: "completed" });
+      }
     }
     else if ("think" in step) update({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: step.think } });
     else if ("usage" in step) usage = step.usage;

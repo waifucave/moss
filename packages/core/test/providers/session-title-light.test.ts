@@ -79,10 +79,12 @@ describe("a session's title on its own family's light model", () => {
     expect(used).toEqual(["anthropic/claude-haiku-5-5"]); // only the ACP session's title ran, on the default's light model
   });
 
-  test("a session on a provider that serves no light model of its family: not run on its main model", async () => {
+  test("a session on a provider that serves no light model of its family: never run on its main model; another family's light model there (2026-11-24)", async () => {
     const r = await routerWith(["groq", "anthropic"]);
     const s = settingsWith("anthropic/claude-opus-5-5");
-    expect(isInternalRefusal(r.resolve("titles.model", s, { lightOf: "groq/llama-3.3-70b-versatile" as ModelTag }))).toBe(true);
+    const call = r.resolve("titles.model", s, { lightOf: "groq/llama-3.3-70b-versatile" as ModelTag });
+    if (isInternalRefusal(call)) throw new Error(call.reason);
+    expect(String(call.tag)).toBe("groq/openai/gpt-oss-20b"); // was: refused
   });
 
   test("an explicit setting for titles wins over the session's family", async () => {

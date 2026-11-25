@@ -19,12 +19,13 @@
 //
 // The recommended model is the provider's family's ONE default (a model and an effort, `FAMILY_DEFAULTS`, the owner's
 // for Claude and GPT) as that provider serves it: a family whose `vendorProviders` names the provider, in catalog order,
-// and in it a row of that provider whose canonical id is the family's default, which a session can run. A provider
-// that is no family's vendor (an aggregator, a local server), or that doesn't serve its family's default, recommends
-// nothing, and the person picks.
+// and in it a row of that provider whose canonical id is the family's default, or else the first of its fallbacks
+// (`then`, 2026-11-24), which a session can run and which is not weak (a weak model is never a default:
+// `family-defaults.ts`). A provider that is no family's vendor (an aggregator, a local server), or that serves none of its
+// family's list, recommends nothing, and the person picks.
 import type { WinterCatalog } from "@waifucave/clover-provider-catalog";
 import { effortVocabularyOf, toolsRefusedFor } from "./runtime-sdk/provider-selection";
-import { FAMILY_DEFAULTS, type FamilyDefault } from "./runtime-sdk/model-plugins/family-defaults";
+import { choicesOf, FAMILY_DEFAULTS } from "./runtime-sdk/model-plugins/family-defaults";
 
 /** The harness's provider-less test doubles (`winter-test/*`): always "had", they need no key. */
 const TEST_PREFIX = "winter-test/";
@@ -47,19 +48,35 @@ export interface Recommendation {
   effort?: string;
 }
 
-/** The family a model row belongs to (whose `vendorProviders` names its provider), and that family's default. */
-function familyOf(catalog: Pick<WinterCatalog, "families">, providerId: string): { id: string; def: FamilyDefault }[] {
-  return (catalog.families ?? []).filter((f) => (f.vendorProviders ?? []).includes(providerId) && FAMILY_DEFAULTS[f.id] !== undefined).map((f) => ({ id: f.id, def: FAMILY_DEFAULTS[f.id]! }));
+/** The families whose `vendorProviders` name this provider and that declare a default, in catalog order. */
+function familiesOf(catalog: Pick<WinterCatalog, "families">, providerId: string): string[] {
+  return (catalog.families ?? []).filter((f) => (f.vendorProviders ?? []).includes(providerId) && FAMILY_DEFAULTS[f.id] !== undefined).map((f) => f.id);
 }
 
-/** A provider's recommended default from its family's (see the header), or none. */
-export function recommended(catalog: Pick<WinterCatalog, "families" | "models">, providerId: string): Recommendation | undefined {
-  for (const { def } of familyOf(catalog, providerId)) {
+/** A weak model is never recommended (`family-defaults.ts`): the catalog's hand-set class, and a row that states none
+ *  is weak (the agent SDK's own reading, `WinterModelDescriptor.strength`). */
+export function isWeak(row: { strength?: string }): boolean {
+  return row.strength !== "strong" && row.strength !== "medium";
+}
+
+/** A family's recommendation on this provider: the FIRST of its default and fallbacks (`choicesOf`) the provider serves,
+ *  not blocked, not deprecated, tools not refused, never weak; or none. */
+export function recommendedFor(catalog: Pick<WinterCatalog, "families" | "models">, providerId: string, familyId: string): Recommendation | undefined {
+  for (const def of choicesOf(FAMILY_DEFAULTS[familyId])) {
     const row = catalog.models.find((m) => m.providerId === providerId && m.canonicalModelId === def.model
-      && m.status !== "blocked" && m.status !== "deprecated" && !toolsRefusedFor(m));
+      && m.status !== "blocked" && m.status !== "deprecated" && !toolsRefusedFor(m) && !isWeak(m));
     if (row === undefined) continue;
     const efforts = effortVocabularyOf(row) ?? [];
     return { model: row.key, ...(def.effort !== undefined && efforts.includes(def.effort) ? { effort: def.effort } : {}) };
+  }
+  return undefined;
+}
+
+/** A provider's recommended default from its families' (see the header), the first family in catalog order that has one. */
+export function recommended(catalog: Pick<WinterCatalog, "families" | "models">, providerId: string): Recommendation | undefined {
+  for (const familyId of familiesOf(catalog, providerId)) {
+    const r = recommendedFor(catalog, providerId, familyId);
+    if (r !== undefined) return r;
   }
   return undefined;
 }
@@ -100,6 +117,8 @@ export interface ProvidersRead {
   present: ReadonlySet<string>;
   complete: boolean;
   keyless?: ReadonlySet<string>;
+  /** Bundled remote providers nobody can add (no key entry, no slot, not local): a default named on one is no default. */
+  unsignable?: ReadonlySet<string>;
 }
 
 export interface DefaultOptions {
@@ -107,6 +126,15 @@ export interface DefaultOptions {
   /** Whether the read is complete (default true). */
   complete?: boolean;
   keyless?: ReadonlySet<string>;
+  unsignable?: ReadonlySet<string>;
+}
+
+/** Whether a named model is on a provider nobody can add (2026-11-24: a remote keyless service whose beta closed): such a
+ *  default is no default, so the computed one (the one provider's recommended model) takes its place, exactly as for the
+ *  untouched legacy default, and the guide never asks to "sign in again" to a provider that has no sign-in. */
+export function isUnsignableNamed(stored: string | undefined, unsignable: ReadonlySet<string> | undefined): boolean {
+  const p = stored === undefined ? undefined : providerOfTag(stored);
+  return p !== undefined && unsignable !== undefined && unsignable.has(p);
 }
 
 /** Whether a named model is the untouched older default: the legacy tag with no Codex credential. */
@@ -131,7 +159,7 @@ function computed(present: ReadonlySet<string>, recommend: (provider: string) =>
  *  see: there is no default to answer with until it is back. */
 export function effectiveDefault(stored: string | undefined, present: ReadonlySet<string>, recommend: (provider: string) => Recommendation | undefined, o: DefaultOptions = {}): DefaultAnswer {
   const complete = o.complete ?? true;
-  if (stored !== undefined && !isUntouchedLegacy(stored, present)) {
+  if (stored !== undefined && !isUntouchedLegacy(stored, present) && !isUnsignableNamed(stored, o.unsignable)) {
     if (!complete || namedIsHad(stored, present, o.keyless)) return { model: stored, source: "chosen", ...(o.storedEffort !== undefined ? { effort: o.storedEffort } : {}) };
     return { signedOut: stored };
   }
@@ -147,10 +175,11 @@ export function settledDefault(stored: string | undefined, read: ProvidersRead, 
   if (!read.complete) return undefined;
   const p = stored === undefined ? undefined : providerOfTag(stored);
   const removedNamed = stored !== undefined && p !== undefined && removed.has(p) && !namedIsHad(stored, read.present, read.keyless);
-  if (stored !== undefined && !isUntouchedLegacy(stored, read.present) && !removedNamed) return undefined;
+  const unsignableNamed = isUnsignableNamed(stored, read.unsignable);
+  if (stored !== undefined && !isUntouchedLegacy(stored, read.present) && !removedNamed && !unsignableNamed) return undefined;
   const next = computed(read.present, recommend);
   if (next.model !== undefined) return next.model === stored ? undefined : { kind: "write", model: next.model, ...(next.effort !== undefined ? { effort: next.effort } : {}) };
-  return removedNamed ? { kind: "clear" } : undefined;
+  return removedNamed || unsignableNamed ? { kind: "clear" } : undefined;
 }
 
 /** What is missing before a first reply can come: a provider, then a default model; or the named default's provider
@@ -158,7 +187,9 @@ export function settledDefault(stored: string | undefined, read: ProvidersRead, 
 export type SetupMissing = "provider" | "model" | "default-provider";
 
 export function setupMissing(present: ReadonlySet<string>, answer: DefaultAnswer): SetupMissing[] {
-  if (answer.signedOut !== undefined) return ["default-provider"];
+  // A named model whose provider isn't had, in a home with no provider at all (2026-11-24: a fresh home whose only "provider"
+  // was a remote keyless service that now needs a key): the person adds a provider, not "signs in again".
+  if (answer.signedOut !== undefined) return present.size === 0 ? ["provider", "model"] : ["default-provider"];
   if (present.size === 0 && answer.model === undefined) return ["provider", "model"];
   return answer.model === undefined ? ["model"] : [];
 }
@@ -166,6 +197,33 @@ export function setupMissing(present: ReadonlySet<string>, answer: DefaultAnswer
 /** The plain sentence a turn that needs a model and has none is refused with: it leads to adding a provider or picking
  *  a model. */
 export const NO_DEFAULT_MODEL_REASON = "There's no model to answer with yet: add a model provider (a key or a sign-in), sign in again to your default model's provider, or pick a default model, in Settings or the setup guide.";
+
+/** The sentence for a home whose every provider serves only models that are no family's default because they are weak
+ *  (a Llama-only host: DeepInfra, Together; 2026-11-24): nothing was recommended, and the person can still pick one. */
+export const NO_RECOMMENDED_DEFAULT_REASON = "No default model was picked for you: the models your provider serves are not recommended as a default (each is marked weak, less reliable when it acts for you). You can still pick one as your default in Settings or the setup guide, or add another provider.";
+
+/** Whether every provider the person has belongs only to families that declare no default (their vendors serve only weak
+ *  models), so nothing is recommended for that reason and not because the provider is an aggregator or a local server. */
+export function onlyWeakFamilies(catalog: Pick<WinterCatalog, "families">, present: ReadonlySet<string>): boolean {
+  if (present.size === 0) return false;
+  for (const p of present) {
+    const fams = (catalog.families ?? []).filter((f) => (f.vendorProviders ?? []).includes(p));
+    if (fams.length === 0 || fams.some((f) => FAMILY_DEFAULTS[f.id] !== undefined)) return false;
+  }
+  return true;
+}
+
+let noDefaultContext: (() => { catalog: Pick<WinterCatalog, "families">; present: ReadonlySet<string> } | undefined) | undefined;
+/** The engine says where the person's providers are read from (the setup service), so a refusal names the right case. */
+export function setNoDefaultModelContext(fn: typeof noDefaultContext): void {
+  noDefaultContext = fn;
+}
+
+/** The plain sentence a turn with no model is refused with: the weak-only case its own, else the general one. */
+export function noDefaultModelReason(): string {
+  const c = noDefaultContext?.();
+  return c !== undefined && onlyWeakFamilies(c.catalog, c.present) ? NO_RECOMMENDED_DEFAULT_REASON : NO_DEFAULT_MODEL_REASON;
+}
 
 /** The refusal's code, on the `agent_error` and the driver's typed refusal. */
 export const NO_DEFAULT_MODEL_CODE = "no_default_model";

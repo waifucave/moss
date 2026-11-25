@@ -57,7 +57,7 @@ jobs:
         timeout-minutes: 40
         run: scripts/ci/windows-fence/setup.ps1
 
-      - name: Where a fenced command's time goes (the launcher's logon, the shells, the reset, the read grant)
+      - name: Where a fenced command's time goes (the launcher's logon, the shells, the reset, the read grant; the delete-child guard)
         timeout-minutes: 20
         run: scripts/ci/windows-fence/timing.ps1
 
@@ -73,6 +73,20 @@ jobs:
         if: ${{ !cancelled() }}
         timeout-minutes: 20
         run: scripts/ci/windows-fence/remove.ps1
+
+      # Lane WS7: srt-win's own tests of the ACL code the MOSS patches change (patch 0004's entry shapes, and an access
+      # check of the delete-child entries), in the tree the launcher step patched: its release build compiles no test.
+      - name: srt-win's tests of the patched ACL code (acl's unit tests, the access-check cases)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 30
+        working-directory: vendor/srt-win-src/vendor/srt-win-src
+        run: |
+          cargo test --locked --lib acl::
+          $unit = $LASTEXITCODE
+          cargo test --locked --test persistent_grant_access_check
+          $access = $LASTEXITCODE
+          Write-Output "acl unit tests: exit $unit; access-check tests: exit $access"
+          if ($unit -ne 0 -or $access -ne 0) { exit 1 }
 
   # The daemon as it runs for real: a standard user's, started by its password startup task, so in Session 0 with a
   # password logon. The user's unelevated setup refuses with exit 2; an administrator sets the sandbox up for it from
@@ -94,6 +108,40 @@ jobs:
       - name: Set up, run the fenced suite as the user's task, remove
         timeout-minutes: 60
         run: scripts/ci/windows-fence/standard-user.ps1
+
+  # Windows on Arm (lane WS7): what runs on GitHub's arm64 Windows image (`windows-11-arm`, free for public
+  # repositories). The launcher is built natively for arm64 with MOSS's patches and its digest compared with the arm64
+  # pin; Bun's own architecture there and whether it compiles a binary for `bun-windows-arm64` are recorded (the daemon
+  # has no arm64 Windows target yet); the fence's unit tests run.
+  arm64:
+    name: windows fence · arm64 (launcher, Bun, unit)
+    runs-on: windows-11-arm
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - *checkout
+      - *bun
+      - *where
+      - name: Bun on this machine, and a compile for bun-windows-arm64
+        continue-on-error: true
+        run: |
+          bun -e "console.log(JSON.stringify({ bun: Bun.version, arch: process.arch, platform: process.platform }))"
+          Set-Content -LiteralPath hello.ts -Value 'console.log(JSON.stringify({ hello: process.arch }))'
+          bun build --compile --target=bun-windows-arm64 hello.ts --outfile hello-arm64.exe
+          if (Test-Path hello-arm64.exe) { & ./hello-arm64.exe } else { Write-Output "no bun-windows-arm64 binary was made" }
+      - name: Build srt-win natively for arm64 from the pinned source and compare its digest with the arm64 pin
+        run: scripts/ci/windows-fence/build-launcher.ps1
+      # The workspace's install runs workerd's postinstall (wrangler's), which has no Windows arm64 binary and fails;
+      # the fence's tests need none of the install scripts.
+      - name: Install dependencies (no install scripts)
+        run: bun install --frozen-lockfile --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Core · the Windows fence's unit tests (arm64)
+        working-directory: packages/core
+        run: bun test --timeout 30000 test/platform/win-pipe.test.ts test/platform/win-job.test.ts test/fence/win-sandbox.test.ts test/fence/win-fenced.test.ts
 
   # The Windows fence's own unit tests, which no other job ran (the core suite's Windows run doesn't exist; the Linux
   # shards skip them): the named pipe, the job object and the launcher's pure half.
@@ -119,7 +167,7 @@ jobs:
         working-directory: packages/core
         run: bun test --timeout 30000 test/platform/win-pipe.test.ts test/platform/win-job.test.ts test/fence/win-sandbox.test.ts test/fence/win-fenced.test.ts
 
-      - name: Core · a bot session on the embedded runtime, the fenced shell tools swapped in (agent SDK 0.0.84)
+      - name: Core · a bot session on the embedded runtime, the fenced shell tools swapped in (agent SDK 0.0.85)
         working-directory: packages/core
         run: |
           $env:MOSS_WIN_RUNTIME_E2E = "1"

@@ -26,8 +26,11 @@ function capsOf(pluginId: string): ReadonlySet<string> {
   return caps;
 }
 const verdict = (part: string, method: string, params?: unknown) => treeVerdict(capsOf(part), method, params);
-/** The devices page's calls (`devices.manage`). */
-const DEVICE_CALLS = ["device.pair.begin", "device.pair.join", "device.pair.confirm", "device.pair.cancel", "device.revoke"] as const;
+/** The devices page's calls that are the user's press (`devices.manage`); `device.pair.confirm` is not among them (it is never a page's: `NEVER`),
+ *  and `device.relay.get` is a read. */
+const DEVICE_CALLS = ["device.pair.begin", "device.pair.join", "device.pair.cancel", "device.revoke"] as const;
+/** The relay's calls: their own capability, `devices.relay` (a relay sees which devices are online and can drop traffic), never `devices.manage`'s. */
+const RELAY_CALLS = ["device.relay.get", "device.relay.set"] as const;
 
 describe("the door for parts: by capability, never by id (F2)", () => {
   test("a read passes for a part whose plugin holds its capability, whichever plugin; a method the table doesn't name isn't its business", () => {
@@ -74,7 +77,15 @@ describe("the door for parts: by capability, never by id (F2)", () => {
     }
   });
 
-  test("the devices page: pairing and removing a device are the user's press under devices.manage, and no part without it gets through", () => {
+  test("the devices page: pairing and removing a device are the user's press under devices.manage, and no part without it gets through; confirming a pairing is no page's call at all", () => {
+    // Nothing for a page to confirm: the engine raises the add card itself, with its own four words. Not this door's, whoever asks.
+    expect(NEVER.has("device.pair.confirm")).toBe(true);
+    for (const caps of [["devices.manage"], ["devices.manage", "devices.read", "plugins.manage"], []]) {
+      expect(treeVerdict(caps, "device.pair.confirm", { pairingId: "p", words: ["a", "b", "c", "d"] })).toMatchObject({ ok: false, owned: true });
+    }
+    expect(Object.hasOwn(TREE_CALLS, "device.pair.confirm")).toBe(false);
+    expect(TREE_CALLS["device.relay.get"]?.disposition).toBe("read");
+    expect(TREE_CALLS["device.relay.set"]?.disposition).toBe("gesture");
     for (const m of DEVICE_CALLS) {
       expect(TREE_CALLS[m]?.disposition).toBe("gesture");
       // Settings holds it; the composer, the shell and a third party's plugin that doesn't ask for it do not.
@@ -83,6 +94,21 @@ describe("the door for parts: by capability, never by id (F2)", () => {
       expect(treeVerdict(["devices.read"], m)).toMatchObject({ ok: false, owned: true });
       expect(treeVerdict(["devices.manage"], m)).toMatchObject({ ok: true, by: "devices.manage" });
     }
+  });
+
+  test("the relay is its own capability: devices.manage opens pairing and removing and never the relay; only devices.relay chooses it, on the user's press", () => {
+    for (const m of RELAY_CALLS) {
+      // A plugin that may pair and remove devices, and even read and manage everything else, is refused by this door for the relay.
+      for (const caps of [["devices.manage"], ["devices.manage", "devices.read", "plugins.manage", "app.settings"], ["devices.read"], []]) {
+        expect(treeVerdict(caps, m)).toMatchObject({ ok: false, owned: true, why: `${m} needs the devices.relay capability` });
+      }
+      expect(treeVerdict(["devices.relay"], m)).toMatchObject({ ok: true, by: "devices.relay" });
+      // The bundled Settings part declares it; the composer's plugin does not.
+      expect(verdict("moss/settings", m)).toMatchObject({ ok: true, by: "devices.relay" });
+      expect(verdict("moss/composer", m)).toMatchObject({ ok: false, owned: true });
+    }
+    // And the relay's capability opens nothing of pairing or removing.
+    for (const m of DEVICE_CALLS) expect(treeVerdict(["devices.relay"], m)).toMatchObject({ ok: false, owned: true });
   });
 
   test("what the daemon doesn't serve is refused", () => {
@@ -445,6 +471,8 @@ const EXPECTED: Record<string, { needs: string[]; /** Every one of these as well
   "ui.pick": { needs: ["plugins.manage"], gesture: true },
   "account.status": { needs: ["account.read"], gesture: false },
   ...Object.fromEntries(DEVICE_CALLS.map((m) => [m, { needs: ["devices.manage"], gesture: true }])),
+  "device.relay.get": { needs: ["devices.relay"], gesture: false },
+  "device.relay.set": { needs: ["devices.relay"], gesture: true },
   "archive.history": { needs: [], all: ["sessions.read", "conversation.read"], gesture: false },
   "archive.list": { needs: [], all: ["sessions.read", "conversation.read"], gesture: false },
   "models.list": { needs: ["sessions.read", "bots.read"], gesture: false },
@@ -519,7 +547,8 @@ const WORST: Record<string, Worst> = {
   "tool.permissions": "read", // plugin tools by their own names, each with its value and the bots' saved card rules
   "device.pair.begin": "harmless change", // shows a code for another device to enter; nothing is added by it
   "device.pair.join": "user's permission press", // dials out to the device a typed code names and starts a pairing with it; the person's own press, and nothing is added until the add card (which shows the four words itself)
-  "device.pair.confirm": "sealed card", // adding the device: the engine raises the sealed card (or answers it, in the user's terminal only), never this call
+  "device.relay.get": "read", // n0's relays, none, or the address of the person's own server
+  "device.relay.set": "user's permission press", // which relay the links use: a relay sees which devices are online, never what they say; the person's own press, https only, applied at once
   "device.pair.cancel": "harmless change", // ends a pairing under way
   "device.revoke": "sealed card", // removing a device: the engine raises the sealed card, and `applied: false` comes back until the user answers it
   "tool.setPermission": "user's permission press", // always allow, ask or always block: the user's own press in Settings, never another part

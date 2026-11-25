@@ -124,9 +124,13 @@ export function pluginRegistryMethods(o: {
    *  the app waits for it. Absent until the daemon's broker is wired, when adding one from the app is refused. */
   openCard?: CardOpener;
   /** Asked before a plugin is removed, after the checks and before its card: a part of the core that holds something the
-   *  plugin runs (a cloud computer provider's machines, `CloudPoint.guardRemoval`) asks the person what to do with it,
-   *  and throws to stop the removal. Absent: nothing is asked. */
-  beforeRemove?: (pluginId: string) => Promise<void>;
+   *  plugin runs (a cloud computer provider's machines, `CloudPoint.guardRemoval`) asks the person what to do with it, and
+   *  throws to stop the removal. It may return what to do once the removal is confirmed (run just before the plugin's keys
+   *  and folder go, and a failure of it stops the removal). Absent: nothing is asked. */
+  beforeRemove?: (pluginId: string) => Promise<{ commit: () => Promise<void>; note?: string } | undefined>;
+  /** The same for switching a plugin off (`plugin.setEnabled` with `enabled: false`, the whole plugin): asked first; what
+   *  the answer means is done at once, before it is switched off, and a failure of it stops the switch. */
+  beforeDisable?: (pluginId: string) => Promise<{ commit: () => Promise<void>; note?: string } | undefined>;
   os?: "macos" | "windows" | "linux";
   /** The plugin indexes (§5.1); absent, there are none (the lists are empty and adding one is refused). */
   indexes?: IndexClient;
@@ -236,6 +240,8 @@ export function pluginRegistryMethods(o: {
       requireUser(ctx, "switch a plugin on or off");
       if (bots !== undefined) notServed("choosing the bots a plugin dresses", "a plugin's `when.bot` override isn't kept yet");
       must(id);
+      // Switching a plugin off with machines it runs (a cloud computer provider) asks first, and does what the answer says.
+      if (enabled === false && part === undefined) await (await o.beforeDisable?.(id))?.commit();
       // `part: "app"`: only its parts beside its bot (§5.5), the bot kept.
       return part === undefined ? registry.setEnabled(id, enabled) : registry.setEnabled(id, enabled, { part });
     }),
@@ -291,11 +297,15 @@ export function pluginRegistryMethods(o: {
       if (!folder.startsWith(pluginsDir + sep) || !existsSync(folder)) throw new ContractError("refused", `${id}'s folder isn't in the plugins directory`);
       // What the plugin holds is asked about first (its cloud computers keep billing once it is gone): the person's answer
       // to that question, then the removal's own card.
-      await o.beforeRemove?.(id);
+      // The question's answer is DONE only once the removal itself is confirmed (`commit`, below): a removal the person
+      // declines changes nothing the question was about.
+      const guard = await o.beforeRemove?.(id);
+      const commit = guard?.commit;
       const remove = async (): Promise<string | undefined> => {
         // The tree as it is when the user says yes (a card may wait).
         const now = registry.get(id);
         if (now === undefined) return "It was already removed.";
+        await commit?.();
         const children = registry.list().filter((c) => c.parent === now.id).map((c) => c.id);
         // What it leaves goes first: a secret that can't be deleted stops the removal, so no later plugin under the same
         // id finds it (#332's second review).
@@ -319,10 +329,15 @@ export function pluginRegistryMethods(o: {
       const opened = await o.openCard!({
         kind: "change", origin: "user", computers: [], effect: "other", change: "plugin-remove",
         fields: {
-          title: { type: "text", text: `Remove ${typeof r.name === "string" ? r.name : id}?` },
+          // The plugin's name is its own text: a row of its own (a name), never a word of the engine's title.
+          // Always the fixed title: a bundled plugin is never removed here (refused above), so the name is always a third party's.
+          title: { type: "text", text: "Remove this plugin?" },
+          source: { type: "rows", rows: [{ label: "Plugin", value: typeof r.name === "string" ? r.name : id, name: true }, { label: "Id", value: id }] },
           detail: { type: "list", items: [
             deleteData === true ? "Its saved keys, settings and data on this computer are deleted, for good." : "Its saved keys and settings on this computer are deleted. Its data is set aside.",
             folders.okText(id, o.os ?? "macos").source,
+            // What the question before this card decided, said here too: the machines go (or stay) when this is confirmed.
+            ...(guard?.note !== undefined ? [guard.note] : []),
           ] },
         },
       });
@@ -384,7 +399,8 @@ export function pluginRegistryMethods(o: {
       const opened = await o.openCard!({
         kind: "change", origin: "user", computers: [], effect: "other", change: "dev-folder",
         fields: {
-          title: { type: "text", text: `Keep loading the plugin you're developing at ${d.path} for another 24 hours?` },
+          title: { type: "text", text: "Keep loading a plugin you're developing for another 24 hours?" },
+          source: { type: "rows", rows: [{ label: "Its folder", value: d.path }] },
           detail: { type: "list", items: ["Its code runs on this computer as it is, reloading when it changes."] },
         },
       });
@@ -423,7 +439,7 @@ export function pluginRegistryMethods(o: {
       // From the Plugins page (main sets `card`): an update that runs on the old OK asks on a sealed card first. The call answers at once (offered, "waiting for your yes on its card"); the yes applies that
       // tree, and only that one, by a check of its own, so an unanswered card never holds the updater's turn.
       const confirm = card === true
-        ? async (c: { id: string; from: string; to: string; source: string; treeHash: string; root: string; changed: string }): Promise<boolean | "asked" | "pending"> => {
+        ? async (c: { id: string; from: string; to: string; source: string; via: "npm" | "index"; treeHash: string; root: string; changed: string }): Promise<boolean | "asked" | "pending"> => {
           if (updateCards.has(c.id)) return "pending";
           if (o.openCard === undefined) throw new ContractError("refused", "applying this update from this page needs a sealed card, and this computer's approval broker isn't running");
           const n = registry.get(c.id)?.name;
@@ -432,7 +448,17 @@ export function pluginRegistryMethods(o: {
           const opened = await o.openCard({
             kind: "change", origin: "user", computers: [], effect: "other", change: "plugin-update",
             fields: {
-              title: { type: "text", text: `Update ${typeof n === "string" ? n : c.id} ${c.from} → ${c.to} from ${c.source}?` },
+              // The name, the versions and the source's name are the plugin's or its index's own text: rows, never words of the engine's title.
+              // Where it comes from is said in the engine's own words (npm, or a plugin index); the name the index or package gives is a row.
+              // Always the fixed title: an update comes from an index or npm (a third party's text), and a bundled plugin updates with the app.
+              title: { type: "text", text: "Update this plugin?" },
+              what: { type: "text", text: c.via === "npm" ? "A newer version of this plugin is on npm." : "A newer version of this plugin is in a plugin index." },
+              source: { type: "rows", rows: [
+                { label: "Plugin", value: typeof n === "string" ? n : c.id, name: true },
+                { label: "Now", value: c.from },
+                { label: "Update to", value: c.to },
+                { label: c.via === "npm" ? "From npm" : "From the index", value: c.source },
+              ] },
               detail: { type: "list", items: ["Its new code runs on the OK you gave before.", c.changed] },
             },
           });

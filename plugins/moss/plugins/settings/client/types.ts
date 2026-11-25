@@ -47,6 +47,10 @@ export interface SettingsDevice {
   /** This device. */
   here?: boolean;
   main?: boolean;
+  /** Reached over its link now. */
+  online?: boolean;
+  /** When it was last seen over its link, in ms (shown when it is not online now). */
+  lastSeen?: number;
 }
 
 /** One computer's level (spec §9.1: levels are per computer). */
@@ -124,14 +128,18 @@ export interface SettingsModalProps {
   onRemoveDevice?: (id: string) => void;
   /** Ask to make a computer the main one: a sealed card too (§6.4). */
   onMakeMain?: (id: string) => void;
-  /** Pairing a device without an account (§8.1): the code this device shows, or the four words both show. */
+  /** Pairing a device without an account (§8.1): the code this device shows with its expiry, then the step the engine's card is at. */
   pairing?: SettingsPairing;
+  /** Which relay the links use (§8.3); undefined while it loads. */
+  relay?: RelayChoice;
+  /** The relay plugins installed: listed, not offered (the links take no relay plugin yet). */
+  relayPlugins?: { id: string; name: string; why?: string }[];
+  /** The person's own choice of relay, applied at once by the engine. */
+  onSetRelay?: (choice: RelayChoice) => void;
   /** Show a code here for another device to enter. */
   onPairBegin?: () => void;
   /** Enter the code another device shows. */
   onPairJoin?: (code: string) => void;
-  /** The four words match on both devices: adding it is a sealed card. */
-  onPairConfirm?: () => void;
   onPairCancel?: () => void;
   /** Sections plugins add, after MOSS's own. */
   extraSections?: ExtraSection[];
@@ -150,14 +158,29 @@ export interface SettingsModalProps {
   onPickActive?: (point: string, entry: { pluginId: string; entryId: string }) => void;
 }
 
-/** A pairing under way: the code to enter on the other device, then the four words both show. */
+/** A pairing under way: the code (and the picture a phone scans) to enter on the other device and when it stops working, then the
+ *  engine's own card, which draws the four words. This page never has the words: it is told the step and the other device's name. */
 export interface SettingsPairing {
+  /** The short code to type on the other device, when the engine has one. */
   code?: string;
-  words?: string[];
-  /** Asked for: its card waits. */
-  confirming?: boolean;
+  /** What the QR picture holds (and what can be typed or pasted when there is no short code). */
+  qr?: string;
+  /** When the code stops working, in ms; absent when not known. */
+  expiresAt?: number;
+  /** Another device is in: the add card is up (or on its way), and the words are on it. */
+  checking?: boolean;
+  /** The name the other device gave itself, once it is known. */
+  peerName?: string;
+  /** While the code waits: a device tried to join and was turned away, in the engine's words (never the other device's own text). */
+  note?: string;
   /** It ended without a device: why, in words. */
   ended?: string;
+}
+
+/** The relay the links use (§8.3, `device.relay.get`): n0's public relays, none, or a server of the person's own. */
+export interface RelayChoice {
+  mode: "n0" | "off" | "custom";
+  url?: string;
 }
 
 export interface Language {

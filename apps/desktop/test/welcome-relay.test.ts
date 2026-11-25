@@ -1,5 +1,5 @@
 // MOSS Code's setup guide, the relay page (spec §8.3): reached from the done step; what a relay is for, n0's public relays on
-// by default, a server of the person's own, none; the cloud computer's and Cloudflare's shown and not offered. Saved through the
+// by default, a server of the person's own, none; an installed relay plugin shown and not offered. Saved through the
 // engine's relay methods (the page's calls `welcome.relay` and `welcome.setRelay`).
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, describe, expect, test } from "bun:test";
@@ -14,7 +14,7 @@ afterAll(async () => {
 const wait = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 
 describe("the guide's relay page", () => {
-  test("from the done step: n0's relays by default, the two relay plugins not offered, a server of your own saved, back to the done step", async () => {
+  test("from the done step: n0's relays by default, an installed relay plugin not offered, a server of your own saved, back to the done step", async () => {
     const host = document.createElement("div");
     host.id = "moss-page";
     document.body.append(host);
@@ -25,7 +25,7 @@ describe("the guide's relay page", () => {
       if (name === "welcome.providers") return { providers: [{ id: "moss/model-anthropic", name: "Anthropic", auth: [{ index: 0, method: "api-key", state: "signed-in" }] }] };
       if (name === "welcome.setup") return setup;
       if (name === "welcome.models") return { models: [{ id: "anthropic/claude-opus-5-5", name: "Claude Opus 5.5", provider: "anthropic", providerName: "Anthropic" }] };
-      if (name === "welcome.relay") return kept;
+      if (name === "welcome.relay") return { ...kept, plugins: [{ id: "moss/relay-cloudflare", name: "Cloudflare relay", why: "not available in this build yet" }] };
       if (name === "welcome.setRelay") {
         sets.push(params);
         const p = params as { mode: string; url?: string };
@@ -46,12 +46,12 @@ describe("the guide's relay page", () => {
     (host.querySelector("[data-moss-welcome=relay]") as HTMLButtonElement).click();
     await wait();
     expect(host.querySelector("[data-moss-welcome-step=relay]")).not.toBeNull();
-    const radio = (v: string) => host.querySelector(`[data-moss-relay=${v}] input`) as HTMLInputElement;
+    const radio = (v: string) => host.querySelector(`[data-moss-relay='${v}'] input`) as HTMLInputElement;
     const save = () => host.querySelector("[data-moss-welcome=relay-save]") as HTMLButtonElement;
     expect(radio("n0").checked).toBe(true);
     expect(save().disabled).toBe(true);
-    expect(radio("cloud").disabled).toBe(true);
-    expect(radio("cloudflare").disabled).toBe(true);
+    expect(radio("plugin:moss/relay-cloudflare").disabled).toBe(true);
+    expect(host.querySelector("[data-moss-relay='plugin:moss/relay-cloudflare']")?.textContent).toContain("Cloudflare relay");
     // Your own server: refused without https, kept with it.
     radio("custom").click();
     const url = host.querySelector("[data-moss-relay-url]") as HTMLInputElement;
@@ -87,6 +87,7 @@ describe("the guide's relay page", () => {
     await pageCall("welcome.relay", {}, deps);
     await pageCall("welcome.setRelay", { mode: "custom", url: "https://r.example.test" }, deps);
     await expect(pageCall("welcome.setRelay", { mode: "bogus" }, deps)).rejects.toThrow();
-    expect(seen).toEqual([["device.relay.get", {}], ["device.relay.set", { mode: "custom", url: "https://r.example.test" }]]);
+    // The relay, and the plugins installed (to list the relay ones).
+    expect(seen).toEqual([["device.relay.get", {}], ["plugin.list", {}], ["device.relay.set", { mode: "custom", url: "https://r.example.test" }]]);
   });
 });

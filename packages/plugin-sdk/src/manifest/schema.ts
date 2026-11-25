@@ -490,8 +490,10 @@ export const ManifestSchema = z.strictObject({
   /** MOSS's own plugins only (the bundled `moss` tree): a plugin this build lists but can't run yet (`not-yet`),
    *  with a short reason key (what it waits for is in the owner's PARKED list). The registry never starts it (no host,
    *  no server, no hooks, no part, no tool, no capability in force) and refuses to switch it; its OK, switch and
-   *  settings stay as they were. A plugin outside MOSS's tree carrying it is refused at validation. */
-  availability: z.strictObject({ status: z.literal("not-yet"), reason: utf16(40, 1).regex(/^[a-z0-9][a-z0-9-]*$/) }).optional(),
+   *  settings stay as they were. A plugin outside MOSS's tree carrying it is refused at validation. `note`: what it waits
+   *  for, in the person's words (one line, up to 200 characters): the registry shows it as the plugin's reason in place of
+   *  the fixed "not available in this build yet". */
+  availability: z.strictObject({ status: z.literal("not-yet"), reason: utf16(40, 1).regex(/^[a-z0-9][a-z0-9-]*$/), note: Text.optional() }).optional(),
   /** Default "both"; covers mcpServers, skills, agents, hooks. `own-bot`: a bot plugin's own parts, only the sessions of
    *  the bots its tree contributes and the agents they delegate to (a server or hook may still say otherwise). */
   scope: z.union([Scope, z.literal("own-bot")]).optional(),

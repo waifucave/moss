@@ -38,6 +38,13 @@ export interface FencedRun {
    *  escape account, which reaches the network but the cloud metadata address (`escapeMember`). macOS and Linux
    *  ignore it (their escape is the runtime's own). */
   readonly network?: boolean;
+  /** Each piece of the command's output as it comes, past the result's own cap too (a background command's log on
+   *  Windows, `win-shell-tools.ts`). */
+  readonly onOutput?: (text: string, stream: "stdout" | "stderr") => void;
+  /** A long command (a background one on Windows, `win-shell-tools.ts`): told once, while it runs, that the fenced set
+   *  has grown past what it was started under (a path it may not read appeared, or the profile read grant's
+   *  exclusions must be made again), so the caller ends it. Windows only; elsewhere never called. */
+  readonly onFenceGrew?: () => void;
   /** Whose run it is: the fence's set, the home default-deny's allows, and the network rule are this caller's. */
   readonly who: {
     readonly caller: Caller; readonly hook?: string;
@@ -253,7 +260,9 @@ export async function runCommand(r: FencedRun, how: { shell: RunShell; argv: rea
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
-        if (got[into].length < OUTPUT_CAP) got[into] += dec.decode(value, { stream: true });
+        const text = dec.decode(value, { stream: true });
+        if (got[into].length < OUTPUT_CAP) got[into] += text;
+        if (r.onOutput !== undefined) { try { r.onOutput(text, into); } catch { /* a listener never fails the command */ } }
       }
     } catch { /* the pipe failed */ }
   };

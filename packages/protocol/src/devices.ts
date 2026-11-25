@@ -17,6 +17,15 @@ import { UserMessageInput } from "./sessions";
 export const DeviceKind = z.enum(["desktop", "server", "cloud", "phone", "browser"]);
 export type DeviceKind = z.infer<typeof DeviceKind>;
 
+/** Which of the two phone apps a paired phone is: MOSS (the bots) or MOSS Code (sessions with coding agents). The program
+ *  names (`WindowProgram`, surfaces.ts: `PHONE_APPS` is the same list, checked in `push-routing.ts`; written out here
+ *  because surfaces.ts imports this file). It is recorded once, in the pairing exchange (`DeviceRecord.app`, links/pairing.ts), and
+ *  never changes: a paired phone can't later claim to be the other app. A phone that paired without one, or through the
+ *  account, has none. It decides only where a push goes (push-routing.ts), never what the phone may list or answer. */
+export const PHONE_APPS = ["moss", "code"] as const;
+export const PhoneApp = z.enum(PHONE_APPS);
+export type PhoneApp = z.infer<typeof PhoneApp>;
+
 /** How a link reaches its peer (§8.2): the same LAN, direct over the internet, or through a relay plugin. */
 export const LinkPath = z.enum(["lan", "direct", "relay"]);
 export type LinkPath = z.infer<typeof LinkPath>;
@@ -95,6 +104,8 @@ export const DeviceView = z.object({
   /** Its folder-tree name, for a device that runs moss-core. */
   computer: ComputerName.optional(),
   hasDisplay: z.boolean().optional(),
+  /** For a phone: the app it paired as (`PhoneApp`); absent for any other device and for a phone that recorded none. */
+  app: PhoneApp.optional(),
   online: z.boolean(),
   link: LinkView.optional(),
   isThis: z.boolean(),
@@ -227,13 +238,13 @@ export const DEVICES_METHODS = {
   devicePairJoin: defineMethod({
     name: "device.pair.join", owner: "H", roles: ["app", "cli"], userOnly: true,
     params: z.object({ code: utf16(4096, 1) }), result: PairingView,
-    doc: "Joins another device's pairing by its code or QR payload; both then show the same four words.",
+    doc: "Joins another device's pairing by its code or QR payload; both then show the same four words: on the engine's sealed add card, which it raises itself for an app caller (the result carries no words), or in the user's own terminal (the words come back, and `device.pair.confirm` is the check).",
   }),
   devicePairConfirm: defineMethod({
     name: "device.pair.confirm", owner: "H", roles: ["app", "cli"], userOnly: true, change: "sensitive",
     params: z.object({ pairingId: utf16(128, 1), words: z.array(utf16(32)).length(4) }),
     result: ChangeResult,
-    doc: "Confirms the four words; adding a device is a sealed card unless made in the user's own terminal.",
+    doc: "Confirms the four words typed by the user's own terminal (no card), or, from an app that holds them, asks for the sealed add card the engine raises anyway (once per pairing). A page of a plugin never holds the words and the app's door does not offer it this call.",
   }),
   devicePairCancel: defineMethod({
     name: "device.pair.cancel", owner: "H", roles: ["app", "cli"], userOnly: true,
@@ -409,7 +420,14 @@ export const LinkChangedEvent = coreEvent("link_changed", { link: LinkView });
 export const PairingChangedEvent = coreEvent("pairing_changed", {
   pairingId: utf16(128, 1),
   step: z.enum(["waiting", "words", "card", "done", "failed", "expired"]),
+  /** The four words to compare. Only the person's own terminal (a `cli` connection that calls as the user, never a CLI a bot's or
+   *  an agent's session runs) ever gets them: an app or a plugin's page sees the step only, and the words are drawn by the engine in the add card's sealed frame (`TERMINAL_ONLY_FIELDS`, §5.5). */
   words: z.array(utf16(32)).length(4).optional(),
+  /** The name the other device gave itself, from the step where it is known (shown as text, never trusted). */
+  peerName: utf16(63).optional(),
+  /** In words the person reads, never the other device's own text. On `failed`: why the pairing ended. On `expired`: absent (the code's
+   *  expiry came, which the engine's timer ends at that time, whatever step the pairing had reached). On `waiting`: a device tried to
+   *  join and was turned away over its name, kind or system; the code still works for the right device. */
   reason: Text.optional(),
 });
 export const AccountChangedEvent = coreEvent("account_changed", { account: AccountView });
@@ -439,8 +457,9 @@ export const DEVICES_EVENTS = {
     doc: "A link came up, went down or changed path.",
   }),
   pairingChanged: defineEvent({
-    // `layer`: a plugin's part that holds `devices.manage` (Settings' Devices page) hears the steps of the pairing the user
-    // started in its frame, its four words included; no other plugin does (`capability`).
+    // `layer`: a plugin's part that holds `devices.manage` (Settings' Devices page) hears the steps of the pairings on this
+    // computer and the other device's name, never the four words: those go to the person's own terminal alone (a CLI that calls as the user, not one a session runs), and everyone else
+    // compares them on the engine's sealed add card. No other plugin hears it (`capability`).
     type: "pairing_changed", owner: "H", roles: ["app", "cli", "layer"], capability: "devices.manage", schema: PairingChangedEvent,
     fixture: { type: "pairing_changed", ts: 1781270000000, pairingId: "pair_1", step: "words", words: ["maple", "orbit", "velvet", "canyon"] },
     doc: "A pairing moved on.",

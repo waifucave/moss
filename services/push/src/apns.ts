@@ -4,14 +4,15 @@
 // What goes to Apple is content-free (spec §10): a count and a fixed, localizable "you have N updates"; the
 // app's notification service extension then connects to the user's own computer to fetch what happened.
 
+import type { PushApp } from "../../../packages/protocol/src/push-routing";
 import { importPkcs8, signJwt } from "./es256";
 
 export interface ApnsConfig {
   /** The APNs key's 10-character Key ID, and the 10-character Team ID. */
   keyId: string;
   teamId: string;
-  /** The iOS app's bundle id. */
-  topic: string;
+  /** The iOS apps' bundle ids by phone app (`APNS_TOPIC_MOSS`, `APNS_TOPIC_CODE`): configuration, never in code. */
+  topics: Record<PushApp, string>;
   /** The .p8 key (PKCS #8 PEM): a secret. */
   privateKey: string;
   productionOrigin: string;
@@ -23,6 +24,8 @@ export interface ApnsConfig {
 export interface ApnsTarget {
   token: string;
   env: "production" | "sandbox";
+  /** The phone app this token belongs to: a token is one bundle id's, and the app picks the topic it is pushed under. */
+  app: PushApp;
 }
 
 /**
@@ -78,6 +81,9 @@ export const APNS_TOKEN_RE = /^(?:[0-9a-f]{2}){32,100}$/;
 
 // Keeps its old spelling on purpose: clients that keep the old name speak this value on the wire.
 export async function sendApns(config: ApnsConfig, target: ApnsTarget, badge: number, now: number): Promise<SendOutcome> {
+  // An app with no topic configured is nothing to push to: not sent, and the target stays (it is not the token's fault).
+  const topic = config.topics[target.app];
+  if (typeof topic !== "string" || topic === "") return { ok: false, gone: false, status: 0, reason: "not_configured" };
   const origin = target.env === "sandbox" ? config.sandboxOrigin : config.productionOrigin;
   const body = JSON.stringify(apnsPayload(badge));
   let outcome: SendOutcome = { ok: false, gone: false, status: 0, reason: "not sent" };
@@ -86,7 +92,7 @@ export async function sendApns(config: ApnsConfig, target: ApnsTarget, badge: nu
       method: "POST",
       headers: {
         authorization: `bearer ${await providerToken(config, now, fresh)}`,
-        "apns-topic": config.topic,
+        "apns-topic": topic,
         "apns-push-type": "alert",
         "apns-priority": badge === 0 ? "5" : "10",
         "apns-expiration": String(Math.floor(now / 1000) + 24 * 3600),

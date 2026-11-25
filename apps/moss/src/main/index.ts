@@ -12,6 +12,9 @@ import { BotFace as ProtocolBotFace, compareReleases, CORE_EVENT_NOTIFICATION, R
 import { adoptHomeEngine, cliLauncher, installEngineCopy, startEngineThroughOs } from "@waifucave/moss-app-release/engine-launch";
 import { createRelease, type ReleaseNotice } from "@waifucave/moss-app-release/release";
 import { InstallGate, MOSS_APP_FEED_PREFIX, startUpdater, type Updater } from "@waifucave/moss-app-release/updater";
+import { AppLog, appLogPath, LineLimiter, MOSS_APP_LOG_FILE } from "@waifucave/moss-app-release/app-log";
+import { appOwnLoad, StallWatch } from "@waifucave/moss-app-release/stall-watch";
+import { fileLine } from "./file-log";
 import { daemonEndpoint, dial, type DaemonClient } from "./client";
 import { bundlePathOf, carriesHost, writeOwnRecord } from "./install-record";
 import { EngineConnection, locateEngine, tokenPath, type ConnectionState } from "./connection";
@@ -24,7 +27,7 @@ import { engineHome, MAIN_WINDOW_ID, mossIdentity, parseLaunchArgs, resolveProfi
 import { fileVault, memoryVault, ProgramAnswerKey, safeStorageVault, vaultChoice } from "./answer-key";
 import { refusedLaunchSwitches } from "./debug-guard";
 import { PresenceReporter } from "./presence";
-import { answerPress, cardHeight, PressRecord, refusalWords, windowPointOf } from "./press";
+import { answerPress, cardHeight, PressRecord, refusalWords, windowPointOf, writeRefusalWords, type WriteTake } from "./press";
 import { buttonAt, inWindow, MISS_BOUND_MS, MissWatch, type Box } from "./sealed-miss";
 import { watchSealedDraw, type RedrawDeps } from "./sealed-redraw";
 import { coverOfPress, loadWindowList, windowIdOfMediaSource, type WindowList } from "./overlap";
@@ -87,16 +90,24 @@ const SEALED_SCHEME = "moss-sealed";
 protocol.registerSchemesAsPrivileged([APP_SCHEME, SEALED_SCHEME].map((scheme) => ({ scheme, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } })));
 
 const logLines: string[] = [];
+// MOSS's own file under the home's logs (`<home>/logs/moss-app.log`, the shared writer MOSS Code's `app.log` uses): a refused
+// send or press leaves its reason here though the app is packaged and nobody watches its output. Bots can read the home's logs,
+// so the file gets only what `fileLine` (file-log.ts) lets through: checks and ms, lifecycle lines, error kinds; never an
+// error's text, a card's id or text, or a bot's name. The process's output and the memory keep every line as before.
+const appLog = new AppLog(appLogPath(home, MOSS_APP_LOG_FILE));
 function log(line: string): void {
   const text = `${new Date().toISOString()} ${line}`;
   logLines.push(text);
   if (logLines.length > 2_000) logLines.shift();
   console.log(`moss: ${line}`);
+  appLog.write(fileLine(line));
 }
 
 const sealed = new SealedFrames("moss");
 const engine = new MossEngine(sealed, log);
-const record = new PressRecord();
+// The press record's stall watch: how long this process itself was not running since a press (press.ts `takeWrite`).
+const stalls = new StallWatch({ ownLoad: appOwnLoad(() => app.getAppMetrics()) });
+const record = new PressRecord(Date.now, stalls);
 const presence = new PresenceReporter(log);
 const answerKey = new ProgramAnswerKey((() => {
   // The acceptance's kept key is read only in a test-marked build (the label tested inline, so a real build has none of it).
@@ -552,6 +563,18 @@ function fromPage(event: IpcMainEvent | IpcMainInvokeEvent): BrowserWindow | und
 /** What the person picked or dropped for the composer, by id, until sent, removed or its composer goes (attachments.ts). */
 const attachments = new PickedAttachments();
 
+/** A table of at most four texts keyed by texts (an answer to a question, keyed by the question's own words), or null. */
+function textMap(v: unknown): Record<string, string> | null {
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return null;
+  const entries = Object.entries(v);
+  if (entries.length > 4) return null;
+  const out: Record<string, string> = {};
+  for (const [k, x] of entries) {
+    if (k.length > 2_000 || typeof x !== "string" || x.length > 10_000) return null;
+    out[k] = x;
+  }
+  return out;
+}
 const str = (v: unknown, max: number): string | undefined => (typeof v === "string" && v.length > 0 && v.length <= max ? v : undefined);
 
 function handle(channel: string, fn: (w: BrowserWindow, a: Record<string, unknown>) => unknown): void {
@@ -569,12 +592,26 @@ function on(channel: string, fn: (w: BrowserWindow, a: Record<string, unknown>) 
 }
 
 /** A write the person makes in the window (a send, a new bot, holding the microphone): only right after their own press in
- *  MOSS's page (main's press record, the page's own frame), one write per press. */
-function personPressed(w: BrowserWindow): boolean {
+ *  MOSS's page (main's press record, the page's own frame), one write per press. The press's age is counted without the time
+ *  this process itself was not running (press.ts `takeWrite`). A refusal leaves one line saying which check refused and by
+ *  how many ms; `what` names the write. */
+const refusalLines = new LineLimiter();
+function pressOf(w: BrowserWindow, what: string): WriteTake {
   const mainFrame = frameKey(w.webContents.mainFrame);
-  if (mainFrame === undefined) return false;
-  if (record.take(w.id, mainFrame) !== undefined) return true;
-  return (typeof __MOSS_TEST_BUILD__ === "string") && process.env.MOSS_TEST_PRESSES === "1";
+  const r: WriteTake = mainFrame === undefined ? { ok: false, check: "no press seen" } : record.takeWrite(w.id, mainFrame);
+  if (r.ok) {
+    if (r.stalledMs > 0) log(`press: ${what} taken; the process itself was not running for ${r.stalledMs} ms of the press's age`);
+    return r;
+  }
+  // A test-marked build may stand in for the person's press (the label tested inline, so a real build has none of it).
+  if ((typeof __MOSS_TEST_BUILD__ === "string") && process.env.MOSS_TEST_PRESSES === "1") return { ok: true, how: "click", stalledMs: 0 };
+  // A frame looping on a refused write can't rotate the log away: five lines per write kind in ten seconds, then the count.
+  const said = refusalLines.check(what, String(w.id));
+  if (said.ok) log(`${what}: refused by the press check (${r.check}${r.overMs !== undefined ? `, ${r.overMs} ms past its bound` : ""}${r.stalledMs !== undefined && r.stalledMs > 0 ? `; the process itself was not running for ${r.stalledMs} ms` : ""})${said.left > 0 ? ` (${said.left} like it left out)` : ""}`);
+  return r;
+}
+function personPressed(w: BrowserWindow, what = "a write"): boolean {
+  return pressOf(w, what).ok;
 }
 
 const talk = new Talk(async (held) => {
@@ -612,10 +649,8 @@ function wireBridge(): void {
     const fileIds = Array.isArray(a.files) ? a.files.filter((x): x is string => typeof x === "string").slice(0, 10) : [];
     const files = fileIds.flatMap((id) => { const f = attachments.files.get(id); return f === undefined ? [] : [f]; });
     if (bot === undefined || (text === "" && images.length === 0 && files.length === 0)) return { ok: false, why: "Nothing to send." };
-    if (!personPressed(w)) {
-      log("send: refused (no press of the person's own just before)");
-      return { ok: false, why: "Words go only right after your own key press or click." };
-    }
+    const pressed = pressOf(w, "send");
+    if (!pressed.ok) return { ok: false, why: writeRefusalWords(pressed) };
     const r = await engine.send(bot, text === "" ? (files.length > 0 ? "(a file)" : "(a picture)") : text, randomUUID(), images.map((p) => ({ mediaType: p.mediaType, data: p.data })), files.map((f) => ({ path: f.path })));
     if (r.ok) attachments.release([...ids, ...fileIds]);
     return r;
@@ -687,8 +722,7 @@ function wireBridge(): void {
   });
   on("moss:talk", (w, a) => {
     if (a.phase === "down") {
-      if (personPressed(w)) talk.down("button");
-      else log("voice: refused (no press of the person's own just before)");
+      if (personPressed(w, "voice")) talk.down("button");
     } else talk.up();
   });
   handle("moss:plugins", () => engine.plugins());
@@ -727,7 +761,8 @@ function wireBridge(): void {
   });
 
   // Pairing a device and removing one (spec §8.1): each the person's own press; the engine raises the sealed card for adding
-  // (the confirm) and for removing, and the router places it in this window. Nothing here applies either.
+  // (itself, once the other device is in: it draws the four words, this window never has them) and for removing, and the router places
+  // it in this window. Nothing here applies either, and there is no call that confirms.
   const pairingPress = (w: BrowserWindow): { ok: false; why: string } | undefined =>
     personPressed(w) ? undefined : { ok: false, why: "Pairing starts only right after your own key press or click." };
   handle("moss:pair-begin", (w) => pairingPress(w) ?? engine.pairBegin());
@@ -743,7 +778,6 @@ function wireBridge(): void {
     if (mode === undefined || !personPressed(w)) return { ok: false as const, why: "The relay is chosen only right after your own key press or click." };
     return engine.setRelay({ mode, ...(url !== undefined ? { url } : {}) });
   });
-  handle("moss:pair-confirm", (w) => pairingPress(w) ?? engine.pairConfirm());
   handle("moss:pair-cancel", (w) => (personPressed(w) ? engine.pairCancel() : false));
   handle("moss:remove-device", (w, a) => {
     const id = str(a.id, 128);
@@ -827,6 +861,33 @@ function wireBridge(): void {
     if (bot === undefined) return { ok: false, why: "No bot." };
     if (!personPressed(w)) return { ok: false, why: "Try again goes only right after your own click." };
     return engine.retry(bot);
+  });
+  // A bot's waiting question is answered only right after the person's own press (a click on Send answer, or Enter in its box),
+  // as a send is; the answers are text keyed by the question's own text, sized here before the engine sees them.
+  handle("moss:answer", (w, a) => {
+    const bot = str(a.bot, 64);
+    const callId = str(a.callId, 200);
+    const answers = textMap(a.answers);
+    const notes = a.notes === undefined ? undefined : textMap(a.notes);
+    if (bot === undefined || callId === undefined || answers === null || Object.keys(answers).length === 0 || notes === null) return { ok: false, why: "Not an answer." };
+    if (!personPressed(w)) return { ok: false, why: "A question is answered only right after your own key press or click." };
+    return engine.answerQuestion(bot, callId, answers, notes);
+  });
+  // Stop on the composer: the person's own press ends the bot's turn (background tasks keep running).
+  handle("moss:stop", (w, a) => {
+    const bot = str(a.bot, 64);
+    if (bot === undefined) return { ok: false, why: "No bot." };
+    if (!personPressed(w)) return { ok: false, why: "Stop goes only right after your own click." };
+    return engine.stop(bot);
+  });
+  // A link in a bot's reply: the person's own click, an http, https or mailto address only, opened in their browser.
+  handle("moss:open-link", (w, a) => {
+    const url = str(a.url, 4_000);
+    if (url === undefined || !/^(https?:\/\/|mailto:)/i.test(url) || !personPressed(w)) return false;
+    try { new URL(url); } catch { return false; }
+    // A headless run opens nothing on the screen.
+    if (!headless) void shell.openExternal(url);
+    return true;
   });
   handle("moss:restore-bot", (w, a) => {
     const id = str(a.id, 64);

@@ -9,7 +9,7 @@
 // computer, which shows its own card (`mountMainChoiceRequests`), since its main choice is its own to take. The peer
 // methods (`peer.*`, `sync.*`) ride the link and aren't here.
 import {
-  MOSS_ERR, DEVICES_METHODS, ERR,
+  MOSS_ERR, DEVICES_METHODS, ERR, PhoneApp,
   type AccountView, type Caller, type ChangeResult, type DeviceView, type LinkView, type MethodSpec,
 } from "@waifucave/moss-protocol";
 import type { z } from "zod";
@@ -23,6 +23,7 @@ import { answerKeyOf, type DeviceRecord } from "../contracts/device-registry";
 import type { LinkTransport } from "../contracts/link-transport";
 import type { AccountClient } from "../identity/account";
 import type { PairingService, PairingState } from "../links/pairing";
+import { cleanName, nameProblem } from "./names";
 import { type RevokeOptions, revokeDevice } from "./account-devices";
 import type { FileDeviceRegistry } from "./registry";
 import { ANSWER_KEY_ROTATE_MAX_SKEW_MS, type AnswerKeyRotationRefusal, rotateOwnAnswerKey } from "../approvals/answer-key-rotation";
@@ -75,12 +76,12 @@ export const UNNAMED_CARD = "card:unnamed";
 /** Opens a sealed card and hands back its id with the decision still to come. */
 /** Opens a card. `checked` is the children the answer checked, for a card with a checkbox per child (the group's
  *  cards: the computers to invite, the keys to keep). */
-export type CardOpener = (req: ApprovalRequest) => Promise<{ card?: string; allowed: Promise<boolean>; checked?: Promise<readonly string[]> }>;
+export type CardOpener = (req: ApprovalRequest, opts?: { signal?: AbortSignal }) => Promise<{ card?: string; allowed: Promise<boolean>; checked?: Promise<readonly string[]> }>;
 
 /** The opener over lane C's broker: the card's id comes from its `requested` event, the checked children from its
  *  `resolved` one. */
 export function brokerCardOpener(broker: Pick<ApprovalBroker, "request" | "watch">): CardOpener {
-  return (req) => new Promise((resolve) => {
+  return (req, opts) => new Promise((resolve) => {
     let settled = false;
     let cardId: string | undefined;
     let gotChecked: (c: readonly string[]) => void = () => undefined;
@@ -95,6 +96,7 @@ export function brokerCardOpener(broker: Pick<ApprovalBroker, "request" | "watch
     });
     let allowed: Promise<boolean> = Promise.resolve(false);
     allowed = broker.request(req, {
+      ...(opts?.signal ? { signal: opts.signal } : {}),
       onCard: (id) => {
         if (settled) return;
         settled = true;
@@ -152,13 +154,95 @@ const ROTATION_REFUSED: Record<AnswerKeyRotationRefusal, string> = {
   refused: "the device registry refused the new key",
 };
 
+/** What each phone app is called to the person (the card's row). */
+const PHONE_APP_NAMES: Record<"moss" | "code", string> = { moss: "MOSS", code: "MOSS Code" };
+
 export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodHandler> {
   const M = DEVICES_METHODS;
   const { registry, pairing } = deps;
-  const changeCard = (change: "device-add" | "device-revoke", what: string, device: string, more: string[] = []): ApprovalRequest => ({
-    kind: "change", origin: "user", computers: [], effect: "other", change,
-    fields: { title: { type: "text", text: what }, detail: { type: "list", items: [device, ...more] } },
+  /** A device's card (§5.5): the engine's own title and sentence, and what a device calls itself only as the value of a row of its
+   *  own, never inside a sentence, so no character in a name can close or continue what the engine says. */
+  const changeCard = (change: "device-add" | "device-revoke", title: string, what: string | undefined, rows: { label: string; value: string; name?: true }[], aboutDevice?: string, computersOnly?: { askedBy?: string }): ApprovalRequest => ({
+    kind: "change", origin: "user", computers: [], effect: "other", change, ...(aboutDevice === undefined ? {} : { aboutDevice }), ...(computersOnly === undefined ? {} : { computersOnly }),
+    fields: { title: { type: "text", text: title }, ...(what === undefined ? {} : { what: { type: "text", text: what } }), detail: { type: "rows", rows } },
   });
+
+  // The add card (§5.5): the engine raises it, with its own four words and the other device's name, on every pairing an app began or
+  // joined (a page's included) the moment the words step is reached; the person compares the words on the card and presses it. A
+  // pairing the user's own terminal began is confirmed there instead (`device.pair.confirm` with the words typed). The card is
+  // raised once per pairing, and what a card says is the engine's, never a caller's.
+  const cardDriven = new Set<string>();
+  const asked = new Map<string, Promise<ChangeResult>>();
+  /** Each pairing's card is withdrawn when the pairing ends any other way (cancelled, failed, a wrong guess): a yes on it later adds nothing. */
+  const withdraw = new Map<string, AbortController>();
+  const askToAdd = (pairingId: string): Promise<ChangeResult> => {
+    const had = asked.get(pairingId);
+    if (had) return had;
+    const run = async (): Promise<ChangeResult> => {
+      const state = pairing.get(pairingId);
+      const real = state?.view.words;
+      if (!state || real === undefined || state.status !== "words") throw new MethodError(ERR.INVALID_REQUEST, "the pairing isn't showing its words");
+      // What the other device calls itself is its own word: checked when the pairing read it (`cleanName`) and again here, and drawn on a row
+      // of its own, so it never reads as the engine's words. The kind is from the protocol's enum.
+      const peer = state.peer;
+      if (!peer || !cleanName(peer.name) || typeof peer.kind !== "string") throw new MethodError(ERR.INVALID_REQUEST, "the other device's name can't be shown");
+      watchPairings();
+      const ctl = new AbortController();
+      withdraw.set(pairingId, ctl);
+      const opened = await deps.openCard(changeCard("device-add", "Add this device?", `Check that these four words are the same on the other device's screen: ${real.join(" ")}`, [
+        { label: "The name it gives itself", value: peer.name, name: true },
+        { label: "What it says it is", value: peer.kind },
+        { label: "It would join", value: registry.self().name, name: true },
+      ]), { signal: ctl.signal });
+      if (!opened.card) {
+        // Answered before its id was known: still a card's answer, never the user's terminal.
+        if (!(await opened.allowed)) throw new MethodError(ERR.INVALID_REQUEST, "refused");
+        await pairing.confirm(pairingId, real, { card: UNNAMED_CARD, allowed: Promise.resolve(true) });
+        return { applied: true };
+      }
+      void pairing.confirm(pairingId, real, { card: opened.card, allowed: opened.allowed }).catch(() => undefined);
+      return { applied: false, card: opened.card };
+    };
+    const once = run();
+    asked.set(pairingId, once);
+    // A failed ask is not kept. The pairing is over, or it never reached its words, or its card could not be built: then it is
+    // ended here, at once and with a reason, never left at the words step with no card to press.
+    once.catch(() => {
+      asked.delete(pairingId);
+      pairing.abort(pairingId, "the card to add the device couldn't be shown");
+      withdraw.delete(pairingId);
+    });
+    return once;
+  };
+  /** The pairing service is watched from the first pairing taken (or asked for): a card is withdrawn when its pairing ends, and a
+   *  pairing the engine drives is asked for its card at its words step. */
+  let watching = false;
+  const watchPairings = (): void => {
+    if (watching) return;
+    watching = true;
+    pairing.watch((c) => {
+      if (c.type === "removed") {
+        withdraw.get(c.pairingId)?.abort();
+        withdraw.delete(c.pairingId);
+        cardDriven.delete(c.pairingId);
+        asked.delete(c.pairingId);
+        return;
+      }
+      const pid = c.pairing.view.pairingId;
+      if (c.pairing.status === "failed" || c.pairing.status === "cancelled") {
+        withdraw.get(pid)?.abort();
+        return;
+      }
+      if (c.pairing.status === "words" && cardDriven.has(pid)) void askToAdd(pid).catch(() => undefined);
+    });
+  };
+  /** Takes a pairing the engine raises the add card for. A joiner's words step is reached inside `join` itself, before its
+   *  caller has the id, so the step is looked at once here too. */
+  const drive = (id: string): void => {
+    watchPairings();
+    cardDriven.add(id);
+    if (pairing.get(id)?.status === "words") void askToAdd(id).catch(() => undefined);
+  };
 
   return {
     [M.deviceList.name]: handler(M.deviceList, () => {
@@ -168,6 +252,9 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
 
     [M.deviceRename.name]: handler(M.deviceRename, async (p, ctx): Promise<ChangeResult> => {
       requireUser(ctx, "rename a device");
+      // The one rule for a name (`names.ts`): a name this device would give itself is a name every other device takes.
+      const why = nameProblem(p.name);
+      if (why !== null) throw new MethodError(ERR.INVALID_REQUEST, why);
       const d = registry.get(p.id);
       if (!d || d.revokedAt !== undefined) throw new MethodError(ERR.NOT_FOUND, `no device ${p.id}`);
       // Another computer's name is its own: the rename goes to it, and it tells everyone (S4 of H-M1's review).
@@ -194,7 +281,13 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
         await run();
         return { applied: true };
       }
-      const opened = await deps.openCard(changeCard("device-revoke", `Revoke ${d.name}?`, `${d.name} (${d.kind})`));
+      const opened = await deps.openCard(changeCard("device-revoke", "Revoke this device?", undefined, [
+        { label: "The device", value: d.name, name: true }, { label: "What it is", value: d.kind },
+        // A phone with both apps paired is two devices: the card says which app this one is, from the registry's record (never the device's own text).
+        ...(d.kind === "phone" && (d.app === "moss" || d.app === "code") ? [{ label: "The app", value: PHONE_APP_NAMES[d.app] }] : []),
+      ], p.id,
+        // Answered at a computer, or by the phone whose own request this is (a link's authenticated device, never what it says), never by another phone.
+        { ...(ctx.caller.kind === "user" && ctx.caller.client !== "app" && ctx.caller.client !== "cli" && ctx.caller.device !== undefined ? { askedBy: ctx.caller.device } : {}) }));
       if (!opened.card) {
         if (!(await opened.allowed)) throw new MethodError(ERR.INVALID_REQUEST, "refused");
         await run();
@@ -206,12 +299,19 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
 
     [M.devicePairBegin.name]: handler(M.devicePairBegin, async (_p, ctx) => {
       requireUser(ctx, "pair a device");
-      return pairing.begin();
+      const view = await pairing.begin();
+      if (!inTerminal(ctx)) drive(view.pairingId);
+      return view;
     }),
 
     [M.devicePairJoin.name]: handler(M.devicePairJoin, async (p, ctx) => {
       requireUser(ctx, "pair a device");
-      return pairing.join(p.code);
+      const view = await pairing.join(p.code);
+      if (inTerminal(ctx)) return view;
+      // An app (a page of its own included) is never given the four words: the engine draws them on the add card it raises itself.
+      drive(view.pairingId);
+      const { words: _words, ...rest } = view;
+      return rest;
     }),
 
     [M.devicePairConfirm.name]: handler(M.devicePairConfirm, async (p, ctx): Promise<ChangeResult> => {
@@ -222,27 +322,17 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
         await pairing.confirm(p.pairingId, p.words, { terminal: true });
         return { applied: true };
       }
-      // The words the person compares are the engine's own, drawn in the card's sealed frame: a part that holds `devices.manage` hears
-      // them and hands them back here, so its own drawing of them proves nothing. Words that aren't the pairing's fail it at once, with
-      // no card.
+      // Words that aren't the pairing's end it at once, and withdraw its card: one guess per pairing, so this is no oracle on the words
+      // (the card is already up by itself, so a wrong guess has to cost the pairing, not only itself). A caller that has the right ones
+      // (nothing a page can) gets the card the engine raised, never a second.
+      if (state.status !== "words" && state.status !== "confirmed") throw new MethodError(ERR.INVALID_REQUEST, "the pairing is over");
       const real = state.view.words;
       if (real === undefined || p.words.length !== 4 || p.words.some((w, i) => w.toLowerCase() !== real[i])) {
-        await pairing.confirm(p.pairingId, p.words, { card: UNNAMED_CARD, allowed: Promise.resolve(false) });
+        pairing.abort(p.pairingId, "the words don't match");
+        withdraw.get(p.pairingId)?.abort();
         throw new MethodError(ERR.INVALID_REQUEST, "the words don't match: pair again");
       }
-      const name = state.peer ? `${state.peer.name} (${state.peer.kind})` : "a device";
-      const opened = await deps.openCard(changeCard("device-add", `Add ${state.peer?.name ?? "this device"}?`, name, [
-        `Check that these four words are the same on the other device's screen: ${real.join(" ")}`,
-        `It joins ${registry.self().name}.`,
-      ]));
-      if (!opened.card) {
-        // Answered before its id was known: still a card's answer, never the user's terminal.
-        if (!(await opened.allowed)) throw new MethodError(ERR.INVALID_REQUEST, "refused");
-        await pairing.confirm(p.pairingId, p.words, { card: UNNAMED_CARD, allowed: Promise.resolve(true) });
-        return { applied: true };
-      }
-      void pairing.confirm(p.pairingId, p.words, { card: opened.card, allowed: opened.allowed }).catch(() => undefined);
-      return { applied: false, card: opened.card };
+      return askToAdd(p.pairingId);
     }),
 
     [M.devicePairCancel.name]: handler(M.devicePairCancel, async (p, ctx) => {
@@ -411,7 +501,8 @@ function mustMain(deps: Pick<DevicesMethodsDeps, "main">): NonNullable<DevicesMe
 
 const mainCard = (name: string): ApprovalRequest => ({
   kind: "change", origin: "user", computers: [], effect: "other", change: "main-computer",
-  fields: { title: { type: "text", text: `Make ${name} the main computer?` }, detail: { type: "list", items: [name] } },
+  // This computer's name is a row of its own, never a word inside the engine's title (the add card does the same).
+  fields: { title: { type: "text", text: "Make this computer the main computer?" }, detail: { type: "rows", rows: [{ label: "This computer", value: name, name: true }] } },
 });
 
 /** Makes this computer the main one: at once from the user's terminal, otherwise once its card is approved. */
@@ -454,6 +545,7 @@ export function deviceView(d: DeviceRecord, self: string, link: LinkView | undef
   return {
     id: d.id, name: d.name, kind: d.kind, runsCore: d.runsCore, online: d.id === self || link?.up === true, isThis: d.id === self, isMain, addedAt: d.addedAt,
     ...(d.os ? { os: d.os } : {}), ...(d.computer ? { computer: d.computer } : {}), ...(d.hasDisplay !== undefined ? { hasDisplay: d.hasDisplay } : {}),
+    ...(d.kind === "phone" && PhoneApp.safeParse(d.app).success ? { app: d.app } : {}),
     ...(link ? { link } : {}), ...(d.lastSeenAt !== undefined ? { lastSeenAt: d.lastSeenAt } : {}), ...(answers ? { answers } : {}),
   };
 }
@@ -481,7 +573,8 @@ export function devicesEvents(
     emit({
       type: "pairing_changed", ts: ts(), pairingId: c.pairing.view.pairingId, step,
       ...(step === "words" && c.pairing.view.words ? { words: c.pairing.view.words } : {}),
-      ...(c.pairing.error ? { reason: c.pairing.error } : {}),
+      ...(c.pairing.peer ? { peerName: c.pairing.peer.name.slice(0, 63) } : {}),
+      ...(c.pairing.error ? { reason: c.pairing.error } : c.pairing.note ? { reason: c.pairing.note } : {}),
     });
   }));
   if (deps.account) offs.push(deps.account.watch((account) => emit({ type: "account_changed", ts: ts(), account })));

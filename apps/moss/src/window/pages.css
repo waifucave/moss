@@ -145,3 +145,9 @@
 .setup__actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
 .setup__gap { flex: 1; }
 .setup__skip { border-color: transparent; color: var(--muted); }
+
+/* The picture of a pairing's text for a phone to scan (white whatever the theme: a camera needs the contrast), and the Relay choice. */
+.ma2-pair__qr { display: block; width: 11rem; height: 11rem; max-width: 100%; margin: 4px 0 10px; border-radius: 6px; }
+.ma2-pair__text { margin-bottom: 10px; }
+.ma2-relay { display: flex; flex-direction: column; gap: 8px; }
+.ma2-relay__option { display: flex; align-items: flex-start; gap: 8px; }

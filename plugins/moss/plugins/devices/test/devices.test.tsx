@@ -72,6 +72,15 @@ describe("the Devices tab's model", () => {
     expect(rows.find((r) => r.id === "phone")).toMatchObject({ state: "offline", status: "Seen 3 h ago", detail: "Last linked through waifucave relay", quiet: true });
   });
 
+  test("a phone shows the app it paired as, so a phone with both apps is two entries told apart; no app (or a browser) shows the kind alone", () => {
+    const phone = (id: string, app?: "moss" | "code") => ({ id, name: "Pocket", kind: "phone" as const, runsCore: false, online: false, isThis: false, isMain: false, addedAt: 0, ...(app === undefined ? {} : { app }) });
+    const rows = deviceRows([phone("a", "code"), phone("b", "moss"), phone("c"), { ...DEVICES.find((d) => d.id === "chrome")!, app: "moss" as const }], NOW);
+    expect(rows.find((r) => r.id === "a")!.side).toBe("Phone · MOSS Code");
+    expect(rows.find((r) => r.id === "b")!.side).toBe("Phone · MOSS");
+    expect(rows.find((r) => r.id === "c")!.side).toBe("Phone");
+    expect(rows.find((r) => r.id === "chrome")!.side).toBe("Browser");
+  });
+
   test("two groups, each with its count online; an empty group is left out", () => {
     const groups = deviceGroups(DEVICES, NOW);
     expect(groups.map((g) => [g.id, g.title, g.meta, g.rows.map((r) => r.id)])).toEqual([

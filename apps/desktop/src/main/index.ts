@@ -44,7 +44,9 @@ import { testTimeScale } from "./test-scale";
 import { anyReady, guideOpens, guideStepsAside, listProviders, pageCall, type CorePage } from "./core-pages";
 import type { KeyTarget } from "./ui/tree-calls";
 import { AnswerKey, KeyRegistration, fileVault, memoryVault, safeStorageVault } from "./answer-key";
-import { AppLog, appLogPath } from "./app-log";
+import { AppLog, appLogPath, LineLimiter } from "./app-log";
+import { fileLine } from "./file-log";
+import { appOwnLoad, StallWatch } from "@waifucave/moss-app-release/stall-watch";
 import { LAYER_CALL_MAX, LayerLinks } from "./layer-links";
 import { placeWindow, TitleDrag } from "./ui/window-drag";
 import { KeyLog, PasteModes, keyBytes, preparePaste } from "./terminal-input";
@@ -215,14 +217,19 @@ app.commandLine.appendSwitch("no-proxy-server");
 const session_ = linuxSession(process.env);
 registerSchemes();
 
+// Bots can read `<home>/logs`, so the file gets only what `fileLine` (file-log.ts) lets through: checks, numbers, lifecycle lines and error
+// kinds, never an error's message or stack, a card's id or a page's address. The process's output keeps every line. A test-marked or acceptance
+// build (never a person's, its home is a temporary one) writes the raw line to the file too: the acceptance run reads its steps' evidence there
+// (with the time of each line), and the filter itself is held by file-log.test.ts.
+const rawFileLines = typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string";
 const appLog = new AppLog(appLogPath(home));
 function log(line: string): void {
   process.stdout.write(`[moss-app] ${line}\n`);
-  appLog.write(line);
+  appLog.write(rawFileLines ? line : fileLine(line));
 }
 
 // A packaged app never shows Electron's "A JavaScript error occurred in the main process" box: an uncaught exception or
-// an unhandled rejection is one line and its stack in app.log, and the app goes on. A test-marked or acceptance build
+// an unhandled rejection is one line in the process's output with its stack (the file gets its kind only, `fileLine`), and the app goes on. A test-marked or acceptance build
 // keeps the default loud behaviour, so a run still fails on one.
 if (app.isPackaged && typeof __MOSS_TEST_BUILD__ !== "string" && typeof __MOSS_ACCEPTANCE_BUILD__ !== "string") {
   const note = (kind: string, err: unknown): void => {
@@ -514,7 +521,9 @@ async function ready(): Promise<void> {
     // A part's gestured call spends only a press that landed in its own frame (F2, read 52).
     takeGesture: (windowId, frameId, arrived) => {
       const ok = sends.takeIn(windowId, frameId, arrived);
-      if (!ok) log(`press: a call from frame ${frameId} found no press of its own (the latest press: ${JSON.stringify(sends.pressFrames(windowId) ?? null)})`);
+      // A frame looping on refused calls can't rotate the log away: five lines per frame in ten seconds, then the count.
+      const said = ok ? undefined : refusalLines.check(`press:${frameId}`, String(windowId));
+      if (said?.ok === true) log(`press: a call from frame ${frameId} found no press of its own (${sends.whyNot(windowId, frameId, arrived)}; the latest press: ${JSON.stringify(sends.pressFrames(windowId) ?? null)})${said.left > 0 ? ` (${said.left} like it left out)` : ""}`);
       return ok;
     },
     settleGesture: (windowId) => sends.settle(windowId),
@@ -760,7 +769,8 @@ async function ready(): Promise<void> {
       // Everything that can be refused is refused first, so a refused call spends nobody's gesture. Each refusal says why in
       // the app's log (the reason only, never the words) and reaches the person as the error the sender shows.
       const refuse = (reason: string, say = reason): never => {
-        log(`send: refused (${reason})`);
+        const said = refusalLines.check(`send:${frameId}`, String(windowId));
+        if (said.ok) log(`send: refused (${reason})${said.left > 0 ? ` (${said.left} like it left out)` : ""}`);
         throw new LayerError(say);
       };
       const target = sendTarget(to);
@@ -778,7 +788,7 @@ async function ready(): Promise<void> {
         // The press must have landed in THIS frame (F2, read 52): a press in another frame of the window is not this sender's.
         const arrived = Date.now();
         await sends.settle(windowId);
-        if (!sends.takeIn(windowId, frameId, arrived)) return refuse("the main process saw no key press or click land in this frame just before", "the user's words go only right after their own key press or click");
+        if (!sends.takeIn(windowId, frameId, arrived)) return refuse(`the main process saw no key press or click land in this frame just before (${sends.whyNot(windowId, frameId, arrived)})`, "the user's words go only right after their own key press or click");
       }
       try {
         return await client.request<{ seq?: number }>("user.send", { to: target, text: message.text, ...(images.length > 0 ? { images } : {}), clientMessageId: randomUUID() }, 30_000);
@@ -793,6 +803,7 @@ async function ready(): Promise<void> {
       const [x, y] = win.getPosition();
       const r = windowDrags.start(windowId, { shell, titleHeight: TITLE_BAR_HEIGHT, cardPending: sealed.anyPending(), window: { x: x ?? 0, y: y ?? 0 }, cursor: cursorPoint(windowId) });
       if (!r.ok) log(`window: a drag was refused (${r.why})`);
+      else log(`window: a drag began (window at ${x ?? 0}, ${y ?? 0}; cursor at ${cursorPoint(windowId)?.x ?? "?"}, ${cursorPoint(windowId)?.y ?? "?"})`);
     },
     activeSession: (windowId, session) => {
       activeSessions.set(windowId, session);
@@ -2375,8 +2386,8 @@ function startFrontSeam(): void {
 }
 
 /** A test-marked build's stand-in for the user closing and reopening the main window (the background part's row): the file named
- *  by MOSS_TEST_WINDOW_FILE holds `close <n>` or `open <n>`, read every 100 ms; a new line closes the main window or opens it
- *  again, as the tray's Open does. Compiled out of a release (the marker gate's TEST_ONLY_APP_STRINGS checks it). */
+ *  by MOSS_TEST_WINDOW_FILE holds `close <n>`, `open <n>` or `move <x> <y>`, read every 100 ms; a new line closes the main window, opens it
+ *  again (as the tray's Open does) or puts it at a place. Compiled out of a release (the marker gate's TEST_ONLY_APP_STRINGS checks it). */
 function startWindowSeam(): void {
   if ((typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") && headless && process.env.MOSS_TEST_WINDOW_FILE) {
     const file = process.env.MOSS_TEST_WINDOW_FILE;
@@ -2391,6 +2402,11 @@ function startWindowSeam(): void {
       } else if (word.startsWith("open")) {
         log("window: the test seam opens the main window");
         void openMainWindow();
+      } else if (word.startsWith("move")) {
+        // `move <x> <y>`: the window put at a place (a drag row's start: a press sent through DevTools carries no screen point of its own,
+        // so the drag reads it in the window's own coordinates, right only with the window at the screen's origin).
+        const m = /^move (-?\d+) (-?\d+)(?: \d+)?$/.exec(word);
+        if (m !== null && mainWindow !== undefined && !mainWindow.isDestroyed()) { mainWindow.setPosition(Number(m[1]), Number(m[2])); log(`window: the test seam moves the main window to (${m[1]}, ${m[2]})`); }
       }
     }, 100).unref?.();
   }
@@ -3031,7 +3047,10 @@ async function okToPaste(windowId: number, lines: number): Promise<boolean> {
 }
 
 /** Sends counted as the user's: one key press or click per send (the user-send gate). */
-const sends = new SendGate();
+const sends = new SendGate(Date.now, new StallWatch({ ownLoad: appOwnLoad(() => app.getAppMetrics()) }));
+/** At most a few refusal lines per frame in the app log (a frame that loops on a refused call is not a reason to lose the log), and 30 a minute
+ *  for all of one window's frames together (a plugin that makes frame after frame is a new frame each time). */
+const refusalLines = new LineLimiter();
 // A frame's own document received a trusted pointerdown (the preload, every frame): it names where the window's latest mouse
 // press landed, bound to the frame the report came from (never a payload). First report wins; one with no recent press is dropped.
 ipcMain.on("moss:press-seen", (event) => {
@@ -3074,6 +3093,7 @@ function dragEnd(windowId: number): void {
     if (win.isDestroyed()) return;
     const [x, y] = win.getPosition();
     if (x !== from.x || y !== from.y) log(`window: moved by its title area, from (${from.x}, ${from.y}) to (${x}, ${y})`);
+    else log(`window: a drag ended with the window where it began (${x}, ${y})`);
   };
   if (process.platform === "linux") setTimeout(report, 300).unref?.();
   else report();

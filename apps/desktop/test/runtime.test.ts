@@ -567,8 +567,8 @@ describe("what a conversation's inner spots need is the data's own kind (spec re
 });
 
 describe("sleeping frames, surfaces, and the brokers' part of the runtime", () => {
-  function withFixtureFrame() {
-    const s = setup(composerFixture());
+  function withFixtureFrame(o: { now?: () => number } = {}) {
+    const s = setup(composerFixture(), o);
     const shell = mountShell(s);
     const tab = s.rt.resolve(shell.shellFrame, shell.info.mount, "main", "agent").items[0]!;
     const item = s.rt.resolve(shell.shellFrame, tab.mount, "composer").items[0] as { mount: string; url: string };
@@ -663,6 +663,20 @@ describe("sleeping frames, surfaces, and the brokers' part of the runtime", () =
     const token = new URL((reload!.m as { url: string }).url).searchParams.get("mount")!;
     const again = s.rt.serveDocument("fixture-composer", token);
     expect(s.rt.mountForDocument(again!).assets.module).toBe(`/_b/fixture-composer/${"cd".repeat(8)}/index.js`);
+  });
+
+  test("a document loaded again for a changed module is sent its address once: a load of the address it replaced, a moment later, sends it no second time (the parent would load the spent one twice)", () => {
+    let t = 2_000_000;
+    const { s, item } = withFixtureFrame({ now: () => t });
+    const old = new URL(item.url).searchParams.get("mount")!;
+    s.sent.length = 0;
+    const built = composerFixture().map((p) => ({ ...p, clientEntry: undefined, clientBuild: { base: "/x", file: "index.js", sha256: "cd".repeat(32) } }));
+    s.rt.setRegistry([...readUiPlugins([...mossViews(), alphaView()] as never), ...built]);
+    expect(s.sent.filter((x) => x.m.type === "child-reload")).toHaveLength(1);
+    // The old document, still loading its replaced address: nothing more goes to the parent.
+    s.sent.length = 0;
+    s.rt.serveDocument("fixture-composer", old);
+    expect(s.sent.filter((x) => x.m.type === "child-reload")).toEqual([]);
   });
 
   test("the microphone follows the capability for a frame already open: the plugin stays listed, its live frame loads again with the new policy (withdrawn and given)", () => {
@@ -986,6 +1000,23 @@ describe("a plugin's sealed frames: its own cards only (the core's `ownedBy`: it
   test("with approvals.all a plugin places any card, another bot's and a card of no bot too, whoever it is (no id decides it)", () => {
     const { s, docFrame, mount } = placed(false, true);
     for (const id of ["card_own", "card_other", "card_none", "card_named"]) expect(s.rt.sealedFrameOf(docFrame, mount, id, "button:allow_once")).toMatch(/^moss-sealed:\/\/card\//);
+  });
+
+  test("the add-a-device card's four words stay in main's sealed store: a part that places it (approvals.all, the widest) is given a frame url and nothing of the card's text", () => {
+    const { s, store, docFrame, mount } = placed(false, true);
+    const words = "maple orbit velvet canyon";
+    store.fromCore({
+      ...card("card_add", undefined, undefined), kind: "change", change: "device-add",
+      fields: { title: { type: "text", text: "Add this device?" }, detail: { type: "list", items: ["It calls itself \u201cPixel\u201d and says it is a phone.", `Check that these four words are the same on the other device's screen: ${words}`, "It joins Studio."] } },
+    });
+    const got: unknown[] = [];
+    for (const el of ["field:detail", "field:title", "button:allow_once"]) got.push(s.rt.sealedFrameOf(docFrame, mount, "card_add", el));
+    for (const g of got) expect(String(g)).toMatch(/^moss-sealed:\/\/card\/card_add\//);
+    // What the part was handed, and everything main sent to any window while it asked: no word of the card.
+    const seen = JSON.stringify([got, s.sent]);
+    for (const w of words.split(" ")) expect(seen).not.toContain(w);
+    // The text is main's: the store has it, to draw in the frame's own page (a url single-use and bound to the frame), and no call of the part's reads it.
+    expect(JSON.stringify(store.get("card_add"))).toContain(words);
   });
 
   test("approvals.all without approvals places nothing, and with both it places any card", () => {

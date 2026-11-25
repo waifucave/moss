@@ -233,7 +233,9 @@ describe("child-parser contract (clover-sdk coerceMaterial)", () => {
     // 0.0.82 → 0.0.83 (reasoning native-only, the ACP error result, the catalog): `git diff v0.0.82 v0.0.83 --
     // packages/runtime/src/provider/keychain-store.ts` EMPTY; the mirror stands.
     // 0.0.83 → 0.0.84 (the runtime starts on Windows): `git diff v0.0.83 v0.0.84 -- packages/runtime/src/provider/keychain-store.ts` EMPTY; the mirror stands.
-    expect(pkg.version).toBe("0.0.84");
+    // 0.0.84 → 0.0.85 (a host tool named like a built-in is offered as the host wrote it; the catalog refresh): `git diff v0.0.84
+    // v0.0.85 -- packages/runtime/src/provider/keychain-store.ts` EMPTY; the mirror stands.
+    expect(pkg.version).toBe("0.0.85");
   });
 
 

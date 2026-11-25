@@ -21,6 +21,8 @@ import type { PrivateFileStep } from "./private-file";
 import { SECRETS_FILE_NAME } from "./secret-files";
 
 export type SecretsBackend = Pick<typeof Bun.secrets, "get" | "set" | "delete">;
+/** The file's backend also reads, or makes and writes, an item in one hold of the file's lock. */
+export type FileSecretsBackend = SecretsBackend & { getOrSet(a: { service: string; name: string }, make: () => string): Promise<{ value: string; made: boolean }> };
 
 /** A flat-name item's key in the file. */
 export const itemKey = (service: string, name: string) => `kc/${service}/${name}`;
@@ -132,7 +134,7 @@ const RETRY_MOVE_MS = 30_000;
  *  One more rule: while the one-time move has not finished (the OS store did not answer), a `get` of a name that may
  *  still be there and is not in the file throws `locked` and never answers null, because the callers mint a new pairing
  *  token for a missing one and would strand the old tokens, unpairing every device with no message. */
-export function fileSecretsBackend(o: FileBackendOptions): SecretsBackend {
+export function fileSecretsBackend(o: FileBackendOptions): FileSecretsBackend {
   const os = o.os ?? (process.platform === "win32" ? "windows" : "linux");
   const log = o.log ?? ((l: string) => console.error(l));
   interface Open { values: EncryptedFileValues; pending: Set<string>; osStore: "absent" | "locked" | "unlocked" | undefined; retryAt: number }
@@ -166,6 +168,23 @@ export function fileSecretsBackend(o: FileBackendOptions): SecretsBackend {
     return ready;
   };
   return {
+    /** One hold of the file's lock: two processes starting on a fresh home make one item, not two (lane SE). */
+    async getOrSet(a: { service: string; name: string }, make: () => string): Promise<{ value: string; made: boolean }> {
+      const st = await open();
+      const key = itemKey(a.service, a.name);
+      const held = await st.values.get(key);
+      if (held !== null && held !== "") return { value: held, made: false };
+      await refuseWhilePending(st, a.name); // a name the move may still find is never made anew
+      let out: { value: string; made: boolean } = { value: "", made: false };
+      await st.values.mutate((all) => {
+        const now = all[key];
+        if (now !== undefined && now !== "") { out = { value: now, made: false }; return false; }
+        out = { value: make(), made: true };
+        all[key] = out.value;
+        return true;
+      });
+      return out;
+    },
     get: (async (a: { service: string; name: string }) => {
       const st = await open();
       const v = await st.values.get(itemKey(a.service, a.name));
@@ -192,10 +211,10 @@ export function fileSecretsBackend(o: FileBackendOptions): SecretsBackend {
   };
 }
 
-const shared = new Map<string, SecretsBackend>();
+const shared = new Map<string, FileSecretsBackend>();
 
 /** The process's one backend for a home and service: its key is read once, and the move runs once. */
-export function sharedFileSecretsBackend(o: { home: string; service: string }): SecretsBackend {
+export function sharedFileSecretsBackend(o: { home: string; service: string }): FileSecretsBackend {
   const k = `${o.home}\0${o.service}`;
   let b = shared.get(k);
   if (b === undefined) { b = fileSecretsBackend(o); shared.set(k, b); }

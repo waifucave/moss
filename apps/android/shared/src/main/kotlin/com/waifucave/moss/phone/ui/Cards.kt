@@ -1,0 +1,209 @@
+package com.waifucave.moss.phone.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.DesktopWindows
+import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.TimerOff
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.unit.dp
+import com.waifucave.moss.phone.model.Card
+import com.waifucave.moss.phone.model.CardOption
+import com.waifucave.moss.phone.model.SealedValue
+import com.waifucave.moss.phone.vm.CardNote
+import com.waifucave.moss.phone.vm.CardsModel
+import kotlinx.coroutines.launch
+
+/**
+ * What a card draws: the sealed text with control characters and bidirectional marks made visible as escapes (`\u{202E}`), so
+ * what the person approves is what runs; and a field too long for its space is cut openly, never silently.
+ */
+object Sealed {
+    fun visible(s: String): String {
+        val out = StringBuilder()
+        var i = 0
+        while (i < s.length) {
+            val v = s.codePointAt(i)
+            val bidi = v in 0x202A..0x202E || v in 0x2066..0x2069 || v == 0x200E || v == 0x200F || v == 0x061C
+            val control = (v < 0x20 && v != 0x0A && v != 0x09) || v in 0x7F..0x9F || v == 0x200B || v == 0xFEFF
+            if (bidi || control) out.append("\\u{").append(Integer.toHexString(v).uppercase()).append("}") else out.appendCodePoint(v)
+            i += Character.charCount(v)
+        }
+        return out.toString()
+    }
+
+    data class Cut(val shown: String, val hiddenCount: Int)
+    /** The first `limit` characters (escaped), and how many were left out. */
+    fun cut(s: String, limit: Int): Cut {
+        val v = visible(s)
+        return if (v.length <= limit) Cut(v, 0) else Cut(v.take(limit), v.length - limit)
+    }
+}
+
+private val ORDER = listOf("command", "paths", "detail", "reason", "risk", "computer")
+private val LABELS = mapOf("risk" to "Risk", "reason" to "Why", "paths" to "Files", "detail" to "Details")
+
+/** A pending card: small, never raw JSON. Its title, what it asks, the command or paths it covers, and its sealed buttons. */
+@Composable
+fun CardView(card: Card, busy: Boolean, note: CardNote?, onAnswer: (CardOption) -> Unit, onSettle: () -> Unit, modifier: Modifier = Modifier) {
+    val c = MossTheme.colors
+    val now = nowMs()
+    val large = largeText()
+    var expanded by remember(card.id) { mutableStateOf(setOf<String>()) }
+    Column(
+        modifier.fillMaxWidth().cardSurface(c).padding(14.dp).alpha(if (note == null || note == CardNote.failed) 1f else 0.75f),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(Sealed.visible(card.title), style = MossType.title, color = c.text, modifier = Modifier.semantics { heading() })
+            card.what?.let { Text(Sealed.visible(it), style = MossType.line, color = c.secondary) }
+        }
+        for (name in ORDER) {
+            val value = card.fields[name] ?: continue
+            when (value) {
+                is SealedValue.Text -> if (name != "computer") Labelled(name) {
+                    CutText(value.text, 600, expanded.contains(name), { expanded = expanded + name }, MossType.body)
+                }
+                is SealedValue.Code -> Box(Modifier.fillMaxWidth().background(c.code, RoundedCornerShape(10.dp)).padding(10.dp)) {
+                    CutText(value.code, 800, expanded.contains(name), { expanded = expanded + name }, MossType.footnote.copy(fontFamily = FontFamily.Monospace))
+                }
+                is SealedValue.ListOf -> Labelled(name) {
+                    Column {
+                        value.items.take(8).forEach { Text(Sealed.visible(it), style = MossType.footnote.copy(fontFamily = FontFamily.Monospace), color = c.text) }
+                        if (value.items.size > 8) Text("and ${value.items.size - 8} more", style = MossType.footnote, color = c.secondary)
+                    }
+                }
+                is SealedValue.Rows -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    value.rows.forEach { r ->
+                        if (large) Column {
+                            Text(Sealed.visible(r.label), style = MossType.body, color = c.secondary)
+                            Text(Sealed.visible(r.value), style = MossType.body, color = c.text)
+                        } else Row {
+                            Text(Sealed.visible(r.label), style = MossType.body, color = c.secondary)
+                            Spacer(Modifier.width(12.dp).weight(1f))
+                            Text(Sealed.visible(r.value), style = MossType.body, color = c.text)
+                        }
+                    }
+                }
+                else -> {}
+            }
+        }
+        // The footer: which computer, and how long the card has left.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            (card.fields["computer"] as? SealedValue.Text)?.let {
+                Icon(Icons.Outlined.DesktopWindows, null, tint = c.secondary, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("on ${Sealed.visible(it.text)}", style = MossType.caption, color = c.secondary)
+            }
+            Spacer(Modifier.weight(1f))
+            val left = (card.expiresAt - now) / 1000
+            if (left > 0) Text("Expires in ${left / 60} min", style = MossType.caption, color = c.secondary)
+        }
+        if (note != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(if (note == CardNote.failed) Icons.Outlined.ErrorOutline else Icons.Outlined.TimerOff, null, tint = c.secondary, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(note.text, style = MossType.footnote, color = c.secondary)
+            }
+            OutlinedButton(onClick = onSettle, modifier = Modifier.fillMaxWidth()) { Text(if (note == CardNote.failed) "Try again" else "Dismiss", color = c.secondary) }
+        } else {
+            val buttons: @Composable (CardOption, Modifier) -> Unit = { option, m ->
+                val approve = option.kind == CardOption.Kind.approve
+                FilledTonalButton(
+                    onClick = { onAnswer(option) }, enabled = !busy, modifier = m.semantics {
+                        contentDescription = if (option.rememberAlways) "${option.label}, and remember" else option.label
+                        stateDescription = if (approve) "Approves this request" else "Refuses this request"
+                    },
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = if (approve) c.text.copy(alpha = if (c.dark) 0.22f else 0.12f) else c.text.copy(alpha = 0.05f),
+                        contentColor = if (approve) c.text else c.secondary,
+                    ),
+                ) { Text(Sealed.visible(option.label), maxLines = 2) }
+            }
+            if (card.options.size > 2 || large) Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                card.options.forEach { buttons(it, Modifier.fillMaxWidth()) }
+            } else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                card.options.forEach { buttons(it, Modifier.weight(1f)) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun Labelled(name: String, content: @Composable () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        LABELS[name]?.let { Text(it, style = MossType.caption, color = MossTheme.colors.secondary) }
+        content()
+    }
+}
+
+/** A long field is cut openly: it says how much is hidden and offers the rest. */
+@Composable
+private fun CutText(s: String, limit: Int, open: Boolean, onOpen: () -> Unit, style: androidx.compose.ui.text.TextStyle) {
+    val c = MossTheme.colors
+    val cut = Sealed.cut(s, limit)
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(if (open) Sealed.visible(s) else cut.shown, style = style, color = c.text)
+        if (cut.hiddenCount > 0 && !open) {
+            TextButton(onClick = onOpen, contentPadding = PaddingValues(0.dp)) {
+                Text("Cut short: ${cut.hiddenCount} more characters. Show all", style = MossType.footnote.copy(textDecoration = TextDecoration.Underline), color = c.secondary)
+            }
+        }
+    }
+}
+
+/** The gathered list of cards, behind the bell: both apps share it. */
+@Composable
+fun NeedsYouScreen(model: CardsModel, who: (Card) -> String, onBack: () -> Unit) {
+    val c = MossTheme.colors
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(model) { model.run() }
+    Scaffold(
+        containerColor = c.grouped,
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = { Text("Needs you", style = MossType.title) },
+                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = c.grouped),
+            )
+        },
+    ) { pad ->
+        Box(Modifier.fillMaxSize().padding(pad)) {
+            when {
+                !model.loaded -> Loading(Modifier.align(Alignment.Center))
+                model.cards.isEmpty() && !model.loadFailed -> EmptyState(Icons.Outlined.CheckCircle, "Nothing needs you",
+                    "When a bot or an agent needs your answer, it shows here.", modifier = Modifier.align(Alignment.Center))
+                else -> LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                    if (model.loadFailed) item {
+                        UnreachableNotice(null, null, { scope.launch { model.load() } }, Modifier.cardSurface(c).padding(14.dp))
+                    }
+                    items(model.cards.sortedByDescending { it.issuedAt }, key = { it.id }) { card ->
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            GroupHeading(who(card), Modifier.padding(start = 6.dp))
+                            CardView(card, card.id in model.answering, model.note(card),
+                                onAnswer = { o -> scope.launch { model.answer(card, o) } },
+                                onSettle = { if (model.note(card) == CardNote.failed) model.clearFailure(card) else model.dismiss(card) })
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -961,8 +961,10 @@ const BUNDLED_MCP_WAIT_MS = 5_000;
 // turn's request (did it offer them?), on the product's own clock; its listing time is reported. A boot with no turn
 // proves nothing for the owner: it fails only past twice the wait (a regression, not a hot machine). The watch goes on
 // to BUNDLED_MCP_CEILING_MS so a late listing is timed, not lost.
-const BUNDLED_MCP_NO_TURN_MS = 2 * BUNDLED_MCP_WAIT_MS;
-const BUNDLED_MCP_CEILING_MS = 20_000;
+// Both bounds are the harness's, not the product's (the product's own 5 s is judged by the turn's request): a daemon starting on a
+// loaded runner lists later, so they scale with the run's time scale like every other wait here (45444575911: listed, after 20 s).
+const BUNDLED_MCP_NO_TURN_MS = scaled(2 * BUNDLED_MCP_WAIT_MS);
+const BUNDLED_MCP_CEILING_MS = scaled(20_000);
 const BUNDLED_LISTED = /\[plugins\] plugin MCP moss\/web\/web: (listed \d+ tool\(s\): [^\n]*|not served: [^\n]*)/;
 // Any plugin's host server whose listing failed, or whose worker went under it, fails the step. And a served server
 // that runs a worker must list in time too: the web one isn't started while it isn't served, so the plugin step 4
@@ -1557,7 +1559,13 @@ async function pressApprove(cdp: Cdp, card: Card, appLog = join(logs, "app.log")
       return first;
     }, 300).catch((err: unknown) => fail(`${why(err)}: ${firstLine(appLog, new RegExp(`fallback card for ${card.id}`)) ?? "the app logged nothing about its fallback"}${tried.length ? `; pressed before: ${tried.join(" | ")}` : ""} [apps/desktop/src/main/index.ts showFallbackCard]`));
     const isOwn = found.url.startsWith(`${cardUrl}own`);
-    if (isOwn && !fallbackChecked) { await fallbackLooksRight(cdp, found.session, card); fallbackChecked = true; }
+    // The page found can be drawn again before it is read (its session is then gone: "Session with given id not found", canvas row 128,
+    // run 45384059255): the card's page is looked for again, as for a press that brought no answer.
+    if (isOwn && !fallbackChecked) {
+      const checked = await fallbackLooksRight(cdp, found.session, card).then(() => true, (err: unknown) => { if (/Session with given id not found/.test(String((err as Error)?.message))) return false; throw err; });
+      if (!checked) { tried.push("fallback: its page was drawn again while it was read"); continue; }
+      fallbackChecked = true;
+    }
     const s = found.session;
     const btn = await until("the card's Approve button", 10_000, () => cdp.centerOf(s, PLAIN_APPROVE), 300).catch(() => undefined);
     if (btn === undefined) { tried.push(`${isOwn ? "fallback" : "island"}: no button`); continue; }
@@ -5890,12 +5898,21 @@ async function reopenSteps(app: { exe: string; args: string[] }): Promise<void> 
           if (toolCall) {
             if (fake!.requests.slice(asked).some((r) => r.lastUserText.includes(tag) && r.answered === "text")) block("the bot has no Echo tool (the fixture plugin isn't installed: step 4)");
             // The call running: its card (if any) answered as the app would, its tool_call in the log with no result.
+            // The call's tool_call event comes BEFORE its approval card (the call waits in the approval, "in: the approval (a card waits
+            // here for an answer)", until the card is answered): a call counted as running the moment its event shows can be one still
+            // waiting for a card that arrives a moment later, and an engine with a card waiting for the user does not take the app's
+            // quit (runs 45363969824 and 45372871025: "still waiting after 90 s, in: the approval"). The call is running when its event
+            // has stood through two looks, 300 ms apart, with no card of the session left waiting.
+            let looks = 0;
             heldCall = await until("the held Echo call to be running", 60_000, async () => {
-              for (const card of await cards(c).catch(() => [])) if (card.session === undefined || card.session === session) await approve(c, card, { log: appA!.log }).catch(() => undefined);
+              let waiting = 0;
+              for (const card of await cards(c).catch(() => [])) if (card.session === undefined || card.session === session) { waiting++; await approve(c, card, { log: appA!.log }).catch(() => undefined); }
               const evs = (await history(c, session!)).filter((e) => typeof e.seq === "number" && e.seq > sent.seq);
               const call = evs.find((e) => e.type === "tool_call" && /Echo$/.test(String(e.name)));
               const id = call === undefined ? undefined : String(call.callId);
-              return id !== undefined && !evs.some((e) => e.type === "tool_result" && e.callId === id) ? id : undefined;
+              const running = id !== undefined && !evs.some((e) => e.type === "tool_result" && e.callId === id);
+              looks = running && waiting === 0 ? looks + 1 : 0;
+              return running && looks >= 2 ? id : undefined;
             }, 300);
           }
           c.close();
@@ -6596,7 +6613,7 @@ async function upgradeRun(app: { exe: string; args: string[] }): Promise<void> {
   // 10: MOSS's own plugin this build can't run yet, which the old build ran: listed off as not available, its switch
   // as the old run left it (on), never forgotten, and no card raised for it.
   try {
-    const id = "moss/forwarder";
+    const id = "moss/companion-web";
     const got = await c.request<{ plugin?: { state?: string; reason?: string; enabled?: boolean } }>("plugin.get", { id });
     if (got.plugin === undefined) fail(`plugin.get ${id}: not listed`);
     if (got.plugin!.state !== "off" || got.plugin!.reason !== NOT_AVAILABLE_YET) fail(`${id} is ${got.plugin!.state}${got.plugin!.reason ? ` (${got.plugin!.reason})` : ""}, not off as not available`);
@@ -6813,7 +6830,7 @@ async function uiPhase(app: { exe: string; args: string[] }, daemonUp: boolean, 
       uiSettings: () => { try { return JSON.parse(readFileSync(join(home, "settings", "ui.json"), "utf8")) as { appearance?: string }; } catch { return {}; } },
       setAppearance: (scheme: "dark" | "light" | "system") => writeFileSync(appearanceFile, scheme),
       pressKey,
-      mainWindow: (what: "close" | "open") => writeFileSync(join(root, "main-window"), `${what} ${++windowSeam}`),
+      mainWindow: (what: "close" | "open" | `move ${number} ${number}`) => writeFileSync(join(root, "main-window"), `${what} ${++windowSeam}`),
       daemonLog: () => readLog(join(logs, `daemon-${daemonRun}.log`)),
       ...(pressable ? {
         pressCard: async (what: string, match: (c: Card) => boolean) => {

@@ -291,7 +291,7 @@ interface Hosted {
   released?: Promise<void>;
   asleep: boolean;
   clientIds: Map<string, { seq: number; disposition: Disposition }>;
-  questions: Set<string>;
+  questions: Map<string, OpenQuestion>;
   cards: number;
   /** A turn's start the disk refused, to be tried again. */
   retry?: ReturnType<Clock["setTimeout"]>;
@@ -357,13 +357,22 @@ function rememberClientId(map: Hosted["clientIds"], id: string, entry: { seq: nu
   while (map.size > CLIENT_IDS_KEPT) map.delete(map.keys().next().value as string);
 }
 
+/** An `AskUserQuestion` asked and not yet answered: its call, the record that asked it, when, and the questions as the log holds them
+ *  (what a client draws). */
+export interface OpenQuestion {
+  callId: string;
+  seq: number;
+  askedAt: number;
+  questions: unknown[];
+}
+
 /** Tracks the open `AskUserQuestion`s a driver's events show; true when the set changed. */
-function trackQuestion(questions: Set<string>, event: { type: string; [key: string]: unknown }): boolean {
+function trackQuestion(questions: Map<string, OpenQuestion>, event: { type: string; [key: string]: unknown }, at: { seq: number; ts: number }): boolean {
   const callId = typeof event.callId === "string" ? event.callId : undefined;
   if (callId === undefined) return false;
   if (event.type === "question_asked") {
     if (questions.has(callId)) return false;
-    questions.add(callId);
+    questions.set(callId, { callId, seq: at.seq, askedAt: at.ts, questions: Array.isArray(event.questions) ? structuredClone(event.questions) : [] });
     return true;
   }
   if (event.type === "question_resolved") return questions.delete(callId);
@@ -383,7 +392,7 @@ class Replay {
   failure: SessionFailure | undefined;
   updatedAt: number | undefined;
   readonly clientIds: Hosted["clientIds"] = new Map();
-  readonly questions = new Set<string>();
+  readonly questions = new Map<string, OpenQuestion>();
   /** The calls the core closed as interrupted (`closedCalls`). */
   readonly closedCalls = new Set<string>();
   /** The driver events that start or end a subagent row, in order, with their times (§9.5 "Subagents"). */
@@ -443,7 +452,7 @@ class Replay {
         }
         break;
       case "driver":
-        trackQuestion(this.questions, r.event);
+        trackQuestion(this.questions, r.event, { seq: r.seq, ts: r.ts });
         if (this.running) trackCall(this.openCalls, r.event);
         if (isInterruptedClose(r.event)) this.closedCalls.add(callIdOf(r.event)!);
         {
@@ -695,6 +704,13 @@ export class DurableSessionHost implements SessionHost {
     return [...this.#sessions.values()]
       .filter((s) => (filter.bot === undefined || s.meta.bot === filter.bot) && (filter.kind === undefined || s.meta.kind === filter.kind) && (filter.parent === undefined || s.meta.parent === filter.parent))
       .map((s) => this.#viewOf(s));
+  }
+
+  /** The `AskUserQuestion`s this session has asked and not had answered, in the order they were asked, as the log holds them: what
+   *  `needsYou.questions` counts. Empty for a session this host doesn't hold. */
+  openQuestions(id: string): OpenQuestion[] {
+    const s = this.#sessions.get(id);
+    return s === undefined ? [] : structuredClone([...s.questions.values()]).sort((x, y) => x.seq - y.seq);
   }
 
   get(id: string): SessionView | undefined {
@@ -1273,7 +1289,7 @@ export class DurableSessionHost implements SessionHost {
     s.clientIds.clear();
     for (const [k, v] of replay.clientIds) s.clientIds.set(k, v);
     s.questions.clear();
-    for (const q of replay.questions) s.questions.add(q);
+    for (const [k, q] of replay.questions) s.questions.set(k, q);
     if (replay.running && replay.runningOn !== undefined && replay.runningOn !== this.#computer) s.foreignTurn = { on: replay.runningOn };
     else delete s.foreignTurn;
     s.late = undefined;
@@ -1357,7 +1373,7 @@ export class DurableSessionHost implements SessionHost {
     replay.status = hosted.view.status;
     replay.failure = hosted.view.failure;
     for (const [k, v] of hosted.clientIds) replay.clientIds.set(k, v);
-    for (const q of hosted.questions) replay.questions.add(q);
+    for (const [k, q] of hosted.questions) replay.questions.set(k, q);
     let appended = 0;
     for (const r of records) {
       if (r.seq < target.length) continue;
@@ -1373,7 +1389,7 @@ export class DurableSessionHost implements SessionHost {
     hosted.pending = replay.pending;
     for (const [k, v] of replay.clientIds) hosted.clientIds.set(k, v);
     hosted.questions.clear();
-    for (const q of replay.questions) hosted.questions.add(q);
+    for (const [k, q] of replay.questions) hosted.questions.set(k, q);
     // A turn the runner has open is caught up only if this computer takes the session over.
     if (replay.running && replay.runningOn !== undefined && replay.runningOn !== this.#computer) hosted.foreignTurn = { on: replay.runningOn };
     else delete hosted.foreignTurn;
@@ -1871,7 +1887,7 @@ export class DurableSessionHost implements SessionHost {
       releasing: false,
       asleep: false,
       clientIds: new Map(),
-      questions: new Set(),
+      questions: new Map(),
       closedCalls: new Set(),
       cards: 0,
       deferredCompact: [],
@@ -1928,7 +1944,7 @@ export class DurableSessionHost implements SessionHost {
     s.queue = replay.queue;
     s.pending = replay.pending;
     for (const [k, v] of replay.clientIds) s.clientIds.set(k, v);
-    for (const q of replay.questions) s.questions.add(q);
+    for (const [k, q] of replay.questions) s.questions.set(k, q);
     for (const c of replay.closedCalls) s.closedCalls.add(c);
     this.#sessions.set(meta.id, s);
     // Its subagent rows as its log holds them, before a restart's closing of its open calls ends the running ones.
@@ -1969,7 +1985,7 @@ export class DurableSessionHost implements SessionHost {
       log.append(record, durable);
     }
     s.subscribers.emit(structuredClone(record));
-    if (body.type === "driver" && trackQuestion(s.questions, body.event)) this.#emitView(s);
+    if (body.type === "driver" && trackQuestion(s.questions, body.event, { seq: record.seq, ts: record.ts })) this.#emitView(s);
     if (this.#taps.size > 0) this.#taps.emit({ record: structuredClone(record), view: this.#viewOf(s) });
     return record;
   }

@@ -34,6 +34,136 @@
   },
   "rows": [
     {
+      "key": "meta-anthropic/muse-ember-1.0",
+      "providerId": "meta-anthropic",
+      "upstreamId": "muse-ember-1.0",
+      "displayName": "Muse Ember 1.0 (Anthropic format)",
+      "aliases": [],
+      "endpoints": [
+        "chat"
+      ],
+      "contextWindow": {
+        "value": 1048576,
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/muse-ember (read 2026-11-24) — context window 1,048,576 tokens; https://dev.meta.ai/docs/models.md (read 2026-11-24): Muse Ember `muse-ember-1.0`",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "inputModalities": {
+        "value": [
+          "text",
+          "image",
+          "video",
+          "audio",
+          "pdf"
+        ],
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/muse-ember (read 2026-11-24) — input text, image, video, audio and PDF; output text",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "outputModalities": {
+        "value": [
+          "text"
+        ],
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/muse-ember (read 2026-11-24) — output text only",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "toolCalling": {
+        "value": "native",
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/muse-ember (read 2026-11-24) — \"works with computer use, image understanding, tool calling, structured output, and search grounding\"; API formats Responses, Chat Completions and Messages",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "nativeTools": {
+        "value": true,
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/muse-ember (read 2026-11-24) — tool calling supported",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "parallelTools": {
+        "value": true,
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/protocols/messages — disable_parallel_tool_use true prevents parallel calls, implying parallel tool use normally available",
+        "confidence": "declared",
+        "observedAt": "2026-09-25T10:38:08Z"
+      },
+      "structuredOutput": {
+        "value": true,
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/muse-ember (read 2026-11-24) — structured output supported",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "promptCaching": {
+        "value": true,
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/pricing-rate-limits — Muse Spark cached input has a separate price and prompt-prefix cache hits are documented",
+        "confidence": "declared",
+        "observedAt": "2026-09-25T10:38:08Z"
+      },
+      "reasoning": {
+        "supported": {
+          "value": true,
+          "source": "official-doc",
+          "sourceRef": "https://dev.meta.ai/docs/protocols/messages — Muse Spark always reasons; output_config.effort low/medium/high/xhigh; redacted_thinking encrypted blob can be replayed",
+          "confidence": "declared",
+          "observedAt": "2026-09-25T10:38:08Z"
+        },
+        "efforts": [],
+        "continuation": "opaque-provider-state",
+        "continuationDomain": {
+          "value": [
+            "meta-anthropic/muse-ember-1.0"
+          ],
+          "source": "official-doc",
+          "sourceRef": "BOTH halves. Own-state acceptance: https://dev.meta.ai/docs/protocols/messages (read 2026-10-29): assistant replay accepts \"thinking / redacted_thinking: prior reasoning. `redacted_thinking` carries the encrypted blob; replay it to preserve chain of thought\"; response \"reasoning maps to `thinking` (`encrypted_content` maps to `redacted_thinking`)\". The Anthropic adapter replays both block types verbatim on the producing model's next request. Why the domain is NARROW: the state is valid only for the model that produced it on this route -- a different model, or the same model at another provider (a different credential and account), never receives it, and the history renderer strips it there.",
+          "confidence": "declared",
+          "observedAt": "2026-10-29T20:00:00Z"
+        }
+      },
+      "pricing": {
+        "value": {
+          "inputPerMTokUsd": 0.1,
+          "outputPerMTokUsd": 0.5,
+          "cacheReadPerMTokUsd": 0.004,
+          "longContextTiers": [
+            {
+              "minPromptTokens": 200001,
+              "inputPerMTokUsd": 0.3,
+              "outputPerMTokUsd": 1.5,
+              "cacheReadPerMTokUsd": 0.012
+            }
+          ]
+        },
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/pricing-rate-limits.md (read 2026-11-24) — Muse Ember (`muse-ember-1.0`, Standard only): up to 200K input tokens $0.10 input / $0.004 cached input / $0.50 output per 1M; over 200K input tokens $0.30 / $0.012 / $1.50, and \"A request over 200K input tokens is billed at the long-context rates for all of its tokens\". Contributor mode is not offered for Muse Ember.",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "unsupportedParameters": [
+        "stop_sequences",
+        "top_k",
+        "container",
+        "inference_geo"
+      ],
+      "status": "candidate",
+      "maxOutputTokens": {
+        "value": 524288,
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/muse-ember (read 2026-11-24) — max output 524,288 tokens",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "canonicalModelId": "muse-ember-1.0",
+      "modelFamily": "muse",
+      "strength": "weak"
+    },
+    {
       "key": "meta-anthropic/muse-spark-1.1",
       "providerId": "meta-anthropic",
       "upstreamId": "muse-spark-1.1",

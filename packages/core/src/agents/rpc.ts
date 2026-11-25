@@ -11,6 +11,7 @@ import type { AgentBackend } from "../contracts/agent-backend";
 import type { PluginRegistry } from "../contracts/plugin-registry";
 import { ContractError } from "../contracts/common";
 import { MethodError, toMethodError } from "../rpc/handler";
+import { isPhoneCaller } from "../rpc/phone-door";
 import type { AgentManager } from "./manager";
 import { agentTaskText, type AgentDefinitionView } from "./tools";
 import type { BackendLook } from "./backend-look";
@@ -38,9 +39,22 @@ export interface AgentMethodsOptions {
    *  person's own `agent.start` is remembered through it). Without it neither method is served. */
   startOptions?: AgentStartOptions;
   now?: () => number;
+  /** Whether the paired phone `device` may start a session now (`mayStartSessions` over the device registry's record of it).
+   *  `agent.start` from a phone's connection (`remote`) is refused unless this says yes; without it none is let start. */
+  phoneMayStart?: (device: string) => boolean;
 }
 
 export type AgentMethod = (params: unknown, ctx: { caller: Caller }) => Promise<unknown>;
+
+/** How long a phone's `agent.backends` and `agent.options` answers are reused: each looks at programs on this computer (a
+ *  version line, a model list command), and a phone's sheet may ask on every open. */
+export const PHONE_LOOK_TTL_MS = 30_000;
+
+/** What a phone's sheet is shown of a backend: what it needs to draw the choice and to say what a start will ask. Left out: the
+ *  program's version line (the program's own output, which a phone has no use for). Backends a person can't start are not listed. */
+export function backendsForPhone(backends: readonly AgentBackendView[]): AgentBackendView[] {
+  return backends.filter((b) => b.userStartable).map((b) => ({ ...b, computers: b.computers.map(({ version: _version, ...rest }) => rest) }));
+}
 
 
 function parse<S extends MethodSpec>(spec: S, raw: unknown): z.output<S["params"]> {
@@ -50,9 +64,28 @@ function parse<S extends MethodSpec>(spec: S, raw: unknown): z.output<S["params"
 }
 
 export function agentMethods(o: AgentMethodsOptions): Record<string, AgentMethod> {
-  const methods: Record<string, AgentMethod> = {
-    [AGENTS_METHODS.agentBackends.name]: async (raw) => {
-      parse(AGENTS_METHODS.agentBackends, raw);
+  const now = o.now ?? Date.now;
+  /** A phone's reads of what looks at programs here, kept for `PHONE_LOOK_TTL_MS` (by what was asked, not by who asks). */
+  const looked = new Map<string, { at: number; value: Promise<unknown> }>();
+  /** A phone's read: only a phone that is still paired with an answer key (as for a start); with a `key`, an answer under
+   *  `PHONE_LOOK_TTL_MS` old is reused instead of looking at the programs again. */
+  const phoneRead = (caller: Caller, key: string | undefined, make: () => Promise<unknown>): Promise<unknown> => {
+    if (caller.kind !== "user" || caller.device === undefined || o.phoneMayStart?.(caller.device) !== true) {
+      throw new ContractError("refused", "this phone isn't paired with an answer key any more, so it can't read what a session starts with here");
+    }
+    if (key === undefined) return make();
+    const t = now();
+    const had = looked.get(key);
+    if (had !== undefined && t - had.at < PHONE_LOOK_TTL_MS) return had.value;
+    const value = make();
+    looked.set(key, { at: t, value });
+    // A failed look is not kept.
+    value.catch(() => { if (looked.get(key)?.value === value) looked.delete(key); });
+    while (looked.size > 64) looked.delete(looked.keys().next().value as string);
+    return value;
+  };
+  const desktopBackends = async (): Promise<{ backends: AgentBackendView[] }> => {
+    {
       const backends: AgentBackendView[] = [];
       const list = o.backends();
       const looks = await o.looks?.(list.map((b) => b.id)).catch(() => undefined);
@@ -83,6 +116,13 @@ export function agentMethods(o: AgentMethodsOptions): Record<string, AgentMethod
         });
       }
       return { backends };
+    }
+  };
+  const methods: Record<string, AgentMethod> = {
+    [AGENTS_METHODS.agentBackends.name]: async (raw, ctx) => {
+      parse(AGENTS_METHODS.agentBackends, raw);
+      if (isPhoneCaller(ctx.caller)) return phoneRead(ctx.caller, "backends", async () => ({ backends: backendsForPhone((await desktopBackends()).backends) }));
+      return desktopBackends();
     },
     [AGENTS_METHODS.agentDefinitions.name]: async (raw) => {
       parse(AGENTS_METHODS.agentDefinitions, raw);
@@ -91,6 +131,14 @@ export function agentMethods(o: AgentMethodsOptions): Record<string, AgentMethod
     [AGENTS_METHODS.agentStart.name]: async (raw, ctx) => {
       const p = parse(AGENTS_METHODS.agentStart, raw);
       if (ctx.caller.kind !== "user") throw new ContractError("refused", "only the user starts a coding session");
+      // A phone's start (the owner's decision of 2026-11-24): the same call and the same checks below, with two more. The phone
+      // is still a paired phone with an answer key (read from the registry now, so a revocation ends it), and it names this
+      // computer, the one its link reaches: starting on another computer through this one is the desktop's door, not a phone's.
+      const fromPhone = isPhoneCaller(ctx.caller);
+      if (fromPhone) {
+        if (ctx.caller.device === undefined || o.phoneMayStart?.(ctx.caller.device) !== true) throw new ContractError("refused", "this phone isn't paired with an answer key any more, so it can't start a session here");
+        if (p.computer !== o.computer) throw new ContractError("refused", `a phone starts a session on the computer it is linked to (${o.computer}), not on ${p.computer.slice(0, 80)}`);
+      }
       if (o.backends().find((b) => b.id === p.backend)?.userStartable === false) throw new ContractError("refused", `${p.backend.slice(0, 64)} is not an agent a person opens a session with`);
       const def = p.definition === undefined ? undefined : o.definition?.(p.definition, p.backend);
       if (p.definition !== undefined && def === undefined) throw new ContractError("not_found", `no agent definition ${p.definition.slice(0, 120)} reaches a code session on ${p.backend.slice(0, 64)} (Glossary lists them as <plugin>:<id>)`);
@@ -105,20 +153,25 @@ export function agentMethods(o: AgentMethodsOptions): Record<string, AgentMethod
       });
       // The person's last start (never a bot's or a spawn's: only this method, only the user), kept by the engine for the
       // start page of any client. A first message is not kept; the model and effort are what the person chose.
+      // (Not a phone's: the desktop's start page remembers what the person chose at their computer.)
       try {
-        o.startOptions?.remember({ backend: p.backend, computer: p.computer, root: p.root, ...(p.model === undefined ? {} : { model: p.model }), ...(p.effort === undefined ? {} : { effort: p.effort }) }, (o.now ?? Date.now)());
+        if (!fromPhone) o.startOptions?.remember({ backend: p.backend, computer: p.computer, root: p.root, ...(p.model === undefined ? {} : { model: p.model }), ...(p.effort === undefined ? {} : { effort: p.effort }) }, (o.now ?? Date.now)());
       } catch { /* the start went ahead; the memory is a convenience */ }
       return { session: r.sessionId };
     },
   };
   if (o.startOptions !== undefined) {
     const start = o.startOptions;
-    methods[AGENTS_METHODS.agentOptions.name] = async (raw) => {
+    methods[AGENTS_METHODS.agentOptions.name] = async (raw, ctx) => {
       const p = parse(AGENTS_METHODS.agentOptions, raw);
+      if (isPhoneCaller(ctx.caller)) return phoneRead(ctx.caller, `options:${p.backend}`, () => start.options(p.backend, p.computer));
       return start.options(p.backend, p.computer);
     };
-    methods[AGENTS_METHODS.agentRecent.name] = async (raw) => {
+    methods[AGENTS_METHODS.agentRecent.name] = async (raw, ctx) => {
       parse(AGENTS_METHODS.agentRecent, raw);
+      // A phone is told what the desktop's start page is: the person's last starts at their computers. Its own starts are
+      // not part of it (they are not remembered), so a phone can't move what the desktop preselects.
+      if (isPhoneCaller(ctx.caller)) return phoneRead(ctx.caller, undefined, async () => start.recent());
       return start.recent();
     };
   }
@@ -150,12 +203,12 @@ export function pluginAgentDefinitions(registry: Pick<PluginRegistry, "entries">
  *  getter, and is refused while none run. A thrown `ContractError` becomes its JSON-RPC code (`toMethodError`). */
 export function lateAgentMethods(
   agents: () => RunningAgents | undefined,
-  o: Pick<AgentMethodsOptions, "localDevice" | "definitions" | "definition" | "looks" | "startOptions" | "now">,
+  o: Pick<AgentMethodsOptions, "localDevice" | "definitions" | "definition" | "looks" | "startOptions" | "now" | "phoneMayStart">,
 ): Record<string, AgentMethod> {
   const made = new WeakMap<RunningAgents, Record<string, AgentMethod>>();
   const methodsOf = (a: RunningAgents): Record<string, AgentMethod> => {
     let m = made.get(a);
-    if (!m) made.set(a, (m = agentMethods({ manager: a.manager, backends: a.backends, computer: a.computer, localDevice: o.localDevice, ...(o.definitions ? { definitions: o.definitions } : {}), ...(o.definition ? { definition: o.definition } : {}), ...(o.looks ? { looks: o.looks } : {}), ...(o.startOptions ? { startOptions: o.startOptions } : {}), ...(o.now ? { now: o.now } : {}) })));
+    if (!m) made.set(a, (m = agentMethods({ manager: a.manager, backends: a.backends, computer: a.computer, localDevice: o.localDevice, ...(o.definitions ? { definitions: o.definitions } : {}), ...(o.definition ? { definition: o.definition } : {}), ...(o.looks ? { looks: o.looks } : {}), ...(o.startOptions ? { startOptions: o.startOptions } : {}), ...(o.now ? { now: o.now } : {}), ...(o.phoneMayStart ? { phoneMayStart: o.phoneMayStart } : {}) })));
     return m;
   };
   const names = [AGENTS_METHODS.agentBackends.name, AGENTS_METHODS.agentDefinitions.name, AGENTS_METHODS.agentStart.name, ...(o.startOptions ? [AGENTS_METHODS.agentOptions.name, AGENTS_METHODS.agentRecent.name] : [])];

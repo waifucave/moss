@@ -67,10 +67,7 @@ const WORDS = {
   relayCustom: "A server of your own",
   relayCustomDetail: "Your own relay server's address.",
   relayCustomLabel: "Relay server's address",
-  relayCloud: "Your cloud computer",
-  relayCloudDetail: "Available once you have a cloud computer.",
-  relayCloudflare: "Your own Cloudflare account",
-  relayCloudflareDetail: "Not available in this build yet.",
+  relayPluginDetail: "A relay plugin: not offered yet, the links don't take one in this build.",
   relayOff: "No relay",
   relayOffDetail: "Devices that can't reach each other directly won't connect at all. A small share of pairs are like that.",
   relaySave: "Save",
@@ -291,25 +288,26 @@ function Done(props: { model: string; bot: string; onBack: () => void; onDone: (
   );
 }
 
-/** The relay page (spec §8.3): what a relay is for, n0's public relays on by default, and the person's own choices. The cloud
- *  computer's relay and a Cloudflare relay are relay plugins the links don't take yet: shown, and not offered. */
+/** The relay page (spec §8.3): what a relay is for, n0's public relays on by default, and the person's own choices. A relay plugin
+ *  that is installed (the engine lists them by what they bring) is shown, and not offered: the links don't take one yet. */
 function Relay(props: { onBack: () => void }) {
   const [saved, setSaved] = useState<RelayRow | undefined>(undefined);
   const [mode, setMode] = useState<RelayRow["mode"]>("n0");
   const [url, setUrl] = useState("");
   const [note, setNote] = useState<string | undefined>(undefined);
   const touched = useRef(false);
+  const [plugins, setPlugins] = useState<NonNullable<RelayRow["plugins"]>>([]);
   useEffect(() => {
     // What the engine has kept, unless the person has already started choosing.
-    void bridge().relay().then((r) => { if ("waiting" in r) { setNote(WORDS.failed); return; } setSaved(r); if (!touched.current) { setMode(r.mode); setUrl(r.url ?? ""); } });
+    void bridge().relay().then((r) => { if ("waiting" in r) { setNote(WORDS.failed); return; } setSaved(r); setPlugins(r.plugins ?? []); if (!touched.current) { setMode(r.mode); setUrl(r.url ?? ""); } });
   }, []);
   const save = async (): Promise<void> => {
     const r = await bridge().setRelay({ mode, ...(mode === "custom" ? { url: url.trim() } : {}) });
     if (r.ok) { setSaved(r.relay); setUrl(r.relay.url ?? ""); setNote(WORDS.relaySaved); } else setNote(r.why);
   };
   const changed = saved !== undefined && (saved.mode !== mode || (mode === "custom" && (saved.url ?? "") !== url.trim()));
-  const choice = (value: RelayRow["mode"] | "cloud" | "cloudflare", title: string, detail: string, off = false) => (
-    <label className="setup__check" data-setup-relay={value} aria-disabled={off || undefined}>
+  const choice = (value: string, title: string, detail: string, off = false) => (
+    <label key={value} className="setup__check" data-setup-relay={value} aria-disabled={off || undefined}>
       <input type="radio" name="relay" value={value} disabled={off} checked={!off && mode === value} onChange={() => undefined} onClick={() => { touched.current = true; setNote(undefined); setMode(value as RelayRow["mode"]); }} />
       <span><strong>{title}</strong> <span className="muted small">{detail}</span></span>
     </label>
@@ -323,8 +321,7 @@ function Relay(props: { onBack: () => void }) {
         {choice("n0", WORDS.relayN0, WORDS.relayN0Detail)}
         {choice("custom", WORDS.relayCustom, WORDS.relayCustomDetail)}
         {mode === "custom" ? <input className="ma2-field" type="url" placeholder="https://relay.example.com" aria-label={WORDS.relayCustomLabel} value={url} onChange={(e) => { touched.current = true; setNote(undefined); setUrl(e.target.value); }} data-setup-relay-url /> : null}
-        {choice("cloud", WORDS.relayCloud, WORDS.relayCloudDetail, true)}
-        {choice("cloudflare", WORDS.relayCloudflare, WORDS.relayCloudflareDetail, true)}
+        {plugins.map((r) => choice(`plugin:${r.id}`, r.name, `${WORDS.relayPluginDetail}${r.why !== undefined ? ` (${r.why})` : ""}`, true))}
         {choice("off", WORDS.relayOff, WORDS.relayOffDetail)}
       </fieldset>
       {note !== undefined ? <p className="muted small" role="status" data-setup-relay-note>{note}</p> : null}

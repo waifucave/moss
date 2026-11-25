@@ -12,7 +12,8 @@ import { WebLinkHost } from "../src/web-host";
 import type { HostApi } from "./api";
 
 export const DEFAULT_HANDSHAKE = "https://handshake.waifucave.com";
-export const DEFAULT_WEB = "https://clover.waifucave.com";
+// A placeholder host: the owner picks the final one (it also stands in services/web/wrangler.jsonc).
+export const DEFAULT_WEB = "https://app.moss.waifucave.com";
 
 /** node-datachannel's RTCPeerConnection, which spike S1 showed answering Chrome, Firefox and Safari under Bun. */
 export const nodeRtc: RtcEnvironment = {

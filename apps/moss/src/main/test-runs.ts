@@ -97,6 +97,8 @@ export const SCENES: readonly Scene[] = [
   // The conversation with its file and its own card whole (the strip has a scene of its own).
   { name: "conversation", go: { bot: "juniper", panel: false, strip: false } },
   { name: "strip", go: { bot: "kite", panel: false } },
+  // A reply in Markdown, and a question the bot waits on, in her conversation (no strip: the question is the conversation's own).
+  { name: "question", go: { bot: "kite", panel: false, strip: false } },
   // Lane MA2's pages (the side panel, Plugins, Settings), written as `ma2-<scene>-<theme>-<size>.png`.
   { name: "ma2-panel", go: { bot: "juniper", panel: true } },
   { name: "ma2-plugins", go: { page: "plugins", strip: false } },

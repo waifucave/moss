@@ -21,8 +21,10 @@ export interface Env {
 
   APNS_KEY_ID: string;
   APNS_TEAM_ID: string;
-  /** The iOS app's bundle id. */
-  APNS_TOPIC: string;
+  /** The iOS apps' bundle ids, one per phone app: MOSS's and MOSS Code's. A push to a phone of an app goes under that app's
+   *  topic, and an app whose topic is empty can't be pushed to (its targets are kept and each notify says it failed). */
+  APNS_TOPIC_MOSS: string;
+  APNS_TOPIC_CODE: string;
   APNS_PRODUCTION_ORIGIN: string;
   APNS_SANDBOX_ORIGIN: string;
   /** Secret: the APNs auth key (.p8, PKCS #8 PEM). */
@@ -44,7 +46,7 @@ export function apnsConfig(env: Env): ApnsConfig {
   return {
     keyId: env.APNS_KEY_ID,
     teamId: env.APNS_TEAM_ID,
-    topic: env.APNS_TOPIC,
+    topics: { moss: env.APNS_TOPIC_MOSS, code: env.APNS_TOPIC_CODE },
     privateKey: env.APNS_PRIVATE_KEY,
     productionOrigin: env.APNS_PRODUCTION_ORIGIN,
     sandboxOrigin: env.APNS_SANDBOX_ORIGIN,

@@ -92,18 +92,21 @@ import { bunRunner } from "./platform/login/live";
 declare const __MOSS_TEST_BUILD__: string | false | undefined;
 import { claimDaemonChildren } from "./platform/daemon-children";
 import { MossSecretStore, KeychainValues, memoryVault, openMossSecretStore, secretStoreWarning } from "./secrets/moss-secret-store";
-import { defaultDeviceName, refuseUntilBroker, startDaemonLinks, type DaemonLinks, type DaemonLinksInput } from "./ipc/device-links";
+import { defaultDeviceName, openOnBroker, startDaemonLinks, type DaemonLinks, type DaemonLinksInput } from "./ipc/device-links";
 import { botApprovalCheck, runsLaterPlace, type BundledToolKind } from "./approvals/bot-check";
 import { builtCopy } from "./approvals/bundled-tools";
 import { sendMessageTarget } from "./bots/tools";
 import type { BotSessionContext } from "./bots/service";
 import { answerKeyMethods, brokerCardOpener } from "./devices/rpc";
+import { mayStartSessions } from "./contracts/device-registry";
 import type { FileDeviceRegistry } from "./devices/registry";
 import { agentDefinitionOf, GLOSSARY_TOOL_NAME } from "./runtime-sdk/turn-loop/glossary";
 import { partsServe } from "./runtime-sdk/turn-loop/only-backends";
 import { AgentStarts, agentStartPolicy } from "./agents/start-policy";
 import { computerNameFor } from "./devices/registry";
 import { joinCloudComputerUntilPaired } from "./computers/cloud-join";
+import { askBeforeProviderGoes } from "./computers/cloud-point";
+import { FileCloudStateStore } from "./computers/cloud";
 import { readCloudJoinFiles } from "./computers/image";
 import { startPluginHost, type DaemonPluginHost, type MainHere } from "./plugin-host/daemon-host";
 import { pluginBotSettings } from "./bots/plugin-bot-settings";
@@ -146,7 +149,7 @@ import { plainText } from "./bots/service";
 import { ClientBuilds } from "./registry/client-builds";
 import { botDriverFactory, botFileFence, botSandbox, withBotKeyReads, withSecretReads } from "./runtime-sdk/turn-loop/driver";
 import { fencedSpawner } from "./fence/fenced-process";
-import { windowsShellTools } from "./fence/win-shell-tools";
+import { endWindowsBackgroundOf, endWindowsBackgroundOn, stopWindowsBackground, windowsShellTools } from "./fence/win-shell-tools";
 import { botCoreTools } from "./runtime-sdk/turn-loop/wiring";
 import { defaultTreeRoot } from "./tree/root";
 import { hostOs } from "./tree/names";
@@ -157,7 +160,7 @@ import { SessionMessaging } from "./agent/session-messaging";
 import { McpAppsService } from "./mcp-apps/service";
 import { mcpAppMethods } from "./mcp-apps/methods";
 import { readProviders, SetupService, setupMethods } from "./setup-state";
-import { defaultEffortFor, recommended } from "./default-model";
+import { defaultEffortFor, recommended, setNoDefaultModelContext } from "./default-model";
 import { clearProviderModel, relayChoiceFrom, sidecarRelayOf, loadSettings, saveSettings, describeInternalJobModels, setupDismissedFrom, providerBaseUrlFor, loadPermissionDirs, effortRefusalFor, hooksEnabledFrom, lspAutoDiagnosticsEnabledFrom, cleanerEnabledFrom, retiredRuntimeSettingKeys, winterLegDisabledKeys, mossOptionsFromSettings, ownProviderFor, pinsFor, stdioMcpServersFor, computerUseEnabledFrom, computerUseLegacyComputerFrom, lspEnabledFrom, sdkAllowRules, sdkAutoMemory, sdkLocalMcpServers, sdkOutputStyle, sdkUserMcpServers, liveSettingsView, type Settings } from "./settings";
 import { ProjectSettingsResolver } from "./project-settings";
 import { memoryDirFor, globalMemoryDirFor, assistantMemoryDirFor, memoryProjectKeyFor } from "./agent/memory-dir";
@@ -252,8 +255,10 @@ import { createConsoleProfileBroker } from "./auth/console-profile-broker";
 import { resolveAntExecutable } from "./runtime-sdk/bundle-layout";
 import { attachedFacetFor, parkRecoveredSessions } from "./runtime-sdk/messaging";
 import { startModelPlugins, type StartModelPluginsOptions, type StartedModelPlugins } from "./runtime-sdk/model-plugins/start";
+import { accountTokenSource } from "./identity/account-tokens";
 import { userEndpointOf } from "./runtime-sdk/model-plugins/user-endpoint";
 import { createOAuthRenewal } from "./runtime-sdk/model-plugins/oauth-renewal";
+import { isBundledMoss } from "./runtime-sdk/model-plugins/load";
 import { createHostCredentialBroker, type ProviderRefresher } from "./runtime-sdk/host-credentials";
 import { botApprovalsFrom, botProviderFill } from "./runtime-sdk/turn-loop/provider-fill";
 import { ContractError } from "./contracts/common";
@@ -268,7 +273,7 @@ import { DOWNLOAD_LIMITS, httpsFetch, INDEX_FETCH_TIMEOUT_MS } from "./registry/
 import { createPluginAuth, pluginAuthMethods, type PluginAuth } from "./runtime-sdk/plugin-auth";
 import { evictSessionsForCredential, evictSessionsForModelCatalog } from "./runtime-sdk/credentials";
 import { activeCatalog, installedModelPlugins, modelProviderKey, onModelCatalogChange } from "./runtime-sdk/model-plugins";
-import { catalogModelListings, contributedProviders, modelOffer, modelsMethods } from "./runtime-sdk/models-list";
+import { catalogModelListings, contributedProviders, listModels, modelOffer, modelsMethods, type ModelsListDeps } from "./runtime-sdk/models-list";
 import { coldResumeRunHomeFor, createMossSessionDrivers, sessionPermissionClassFor, type MossLegDeps, type MossSessionDrivers } from "./runtime-sdk/session-driver";
 import { linkedRouterSupportsRunHome, linkedRunHomeBuilder, runHomeHandleOf, runHomeReportSummary } from "./runtime-sdk/run-home-support";
 import { recoverRunRoots, rootRecoveryDetail, type RootReconcile } from "./runtime-state/root-recovery";
@@ -2706,6 +2711,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     onStoredSessionDeleted(sessionId);
     // ComputerV2: the session's automation worker ends with it, and the helper releases its targets.
     computerUseRuntime.service.endSession(sessionId);
+    // Its Windows background commands (lane WS7) end with it.
+    void endWindowsBackgroundOf(sessionId, "its conversation was deleted");
   };
   /** Task 17: what the engine used to answer, over the driver table + the child roster. */
   const grantDeniedPrefixes = [mossHome];
@@ -3482,6 +3489,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     emit: (state) => void mossServer?.coreEvent({ type: "setup_changed", setup: state }),
     log: (line) => console.error(line),
   });
+  // A turn refused for want of a model names the weak-only case on its own (default-model.ts).
+  setNoDefaultModelContext(() => ({ catalog: activeCatalog(), present: setup.present() }));
   const liveModel = liveSelection && liveProvider
     ? () => (setup.defaultModel() ?? "") as ModelTag
     : undefined;
@@ -3607,7 +3616,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     ...Object.keys((await credentialPresenceFrom(secrets)).byProvider),
     ...(await pluginAuth?.signedInProviders().catch(() => new Set<string>()) ?? []),
   ]);
-  Object.assign(mossLaneHandlers, laneMethodHandlers(modelsMethods({
+  const modelsDeps: ModelsListDeps = {
     signedIn: signedInNow,
     defaultModel: () => liveModel?.() || undefined,
     // An agent session's own models (lane MS): what its agent reported, else the agent's list as known; any other
@@ -3619,7 +3628,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       const options = selectableOptions(info.session, { modelOption: info.backend.quirks.config.modelOption, effortOption: info.backend.quirks.config.effortOption, ...(info.backend.readOnlyMode ? { readOnlyOption: info.backend.readOnlyMode.option } : {}) });
       return { kind: "own", models: await agentSessionListing(info.backend, info.options, lists), options };
     },
-  })));
+  };
+  Object.assign(mossLaneHandlers, laneMethodHandlers(modelsMethods(modelsDeps)));
   // The setup guide's questions (`setup.state`, `setup.dismiss`, `models.setDefault`), any client's.
   if (settings) Object.assign(mossLaneHandlers, laneMethodHandlers(setupMethods(setup)));
   // The relay the device links use (§8.3, the setup guide's relay page): n0's by default; the choice is kept in the settings and put to
@@ -3801,6 +3811,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
   }), laneMethodHandlers(lateAgentMethods(() => daemonParts?.agents, {
     // A user's call made on this computer (the app or the terminal here) is this computer's device.
     localDevice: () => liveDeviceId,
+    // A paired phone starts a session here only while its record says it is a phone with an answer key (and not revoked).
+    phoneMayStart: (device) => mayStartSessions(ownDevices?.get(device)),
     startOptions,
     looks: (ids) => backendLooks.ofAll(ids),
     definitions: () => daemonParts?.agentDefinitions?.() ?? [],
@@ -3835,6 +3847,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     handOver: async () => { await daemonLinks?.handOver(); },
     // The link sidecar (lane H): the one local process whose hello may be `remote`, `web` or `peer`.
     linkPid: () => daemonLinks?.links?.sidecarPid(),
+    // A phone's connection is labelled `ios` or `android` from the OS its pairing recorded.
+    deviceOs: (device) => ownDevices?.get(device)?.os,
     ...(pairSide ? { pair: pairSide.pair, appToken: pairSide.appToken } : {}),
     endpoint: dirs.socketPath,
     ...(opts.appPeer !== undefined ? { appPeer: opts.appPeer } : {}),
@@ -4127,7 +4141,23 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
   /** The install door for a component's `plugins.install`, handed out by the registry's methods once they're made. */
   let componentInstall: ComponentInstallDoor | undefined;
   // Set once this computer's node is up (it is the cloud computers' part): asks about a provider plugin's machines before it is removed.
-  let beforeCloudPluginRemoved: ((id: string) => Promise<void>) | undefined;
+  let beforeCloudPluginRemoved: ((id: string, action: "remove" | "switch-off") => Promise<{ commit: () => Promise<void>; note: string } | undefined>) | undefined;
+  // The question before a provider plugin goes (removed or switched off). Until the parts are up, and for good on a
+  // computer whose node never started, a plugin that provides cloud computers is refused: its machines could not be asked
+  // about and would be left billing unasked.
+  const askCloudComputers = async (id: string, action: "remove" | "switch-off"): Promise<{ commit: () => Promise<void>; note: string } | undefined> => {
+    if (beforeCloudPluginRemoved) return beforeCloudPluginRemoved(id, action);
+    // Its own record of machines (`cloud.json`), read now: the parts that keep it aren't up.
+    const machinesOf = (ids: string[]) => new FileCloudStateStore(mossHome, (l) => console.error(l)).loadStrict().vms.filter((v) => ids.includes(v.provider)).map((v) => v.name);
+    // The other computers that run the core, from the device registry (readable without the parts); no links at all is a lone computer.
+    const otherComputers = (): string[] | undefined => {
+      if (opts.links === false) return [];
+      if (ownDevices === undefined) return undefined;
+      const self = ownDevices.self().id;
+      return ownDevices.list().filter((d) => d.runsCore && d.id !== self).map((d) => d.computer ?? d.name);
+    };
+    return askBeforeProviderGoes(undefined, pluginHost?.registry, id, action, { otherComputers, machinesOf });
+  };
   // The main computer, for a host half whose `host.start` is `main`: not known until the links and the parts are up
   // (the lease), so such a host half waits; with no links, this computer is its own main.
   let pluginMain: MainHere | undefined | "later" = opts.links === false ? undefined : "later";
@@ -4256,6 +4286,10 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     const hostComputer = computerNameFor(defaultDeviceName(hostname())) || "Computer";
     const notify = new NotifyService({
       home: mossHome, computer: hostComputer, clock: { now: () => Date.now() }, registry: opened.registry, host: () => pluginHost?.host,
+      // Which phone app each paired phone is, for where the core's own updates are pushed (protocol `phonesToWake`).
+      phones: () => (ownDevices?.all() ?? []).filter((d) => d.kind === "phone").map((d) => ({ id: d.id, ...(d.app === undefined ? {} : { app: d.app }), ...(d.revokedAt === undefined ? {} : { revokedAt: d.revokedAt }) })),
+      // A notifier sees which phones an update is for only with `devices.read` (the same grants the plugin API checks).
+      grants: (pluginId) => grantsInForce(opened.registry.get(pluginId)),
       approvals: { pending: () => daemonParts?.broker?.pending() ?? [], watch: (fn) => pluginsBroker.watch(fn) },
       desktop: desktopPort, log: (line) => console.error(line),
     });
@@ -4371,7 +4405,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       ...glossaryMethods(glossary),
       // Its sealed cards (a development folder from the app, a removal or an update from the Plugins page) ask on the
       // daemon's one broker once the parts are up (`pluginsBroker`); before, they wait for it, bounded.
-      ...pluginRegistryMethods({ beforeRemove: (id) => (beforeCloudPluginRemoved ? beforeCloudPluginRemoved(id) : Promise.resolve()), componentInstalls: (door) => { componentInstall = door; }, onRestart: (id) => notices.userRestarted(id), opened, host: pluginHost.host, home: mossHome, secrets: contractSecrets, os: hostOs(), openCard: brokerCardOpener(pluginsBroker), emit: (event) => void mossServer?.coreEvent(event), log: (line) => console.error(line), ...(pluginIndexes ? { indexes: pluginIndexes } : {}), ...(opened.updater ? { updater: opened.updater } : {}), ...(pluginReviews ? { reviews: pluginReviews } : {}) }),
+      ...pluginRegistryMethods({ beforeRemove: (id) => askCloudComputers(id, "remove"), beforeDisable: (id) => askCloudComputers(id, "switch-off"), componentInstalls: (door) => { componentInstall = door; }, onRestart: (id) => notices.userRestarted(id), opened, host: pluginHost.host, home: mossHome, secrets: contractSecrets, os: hostOs(), openCard: brokerCardOpener(pluginsBroker), emit: (event) => void mossServer?.coreEvent(event), log: (line) => console.error(line), ...(pluginIndexes ? { indexes: pluginIndexes } : {}), ...(opened.updater ? { updater: opened.updater } : {}), ...(pluginReviews ? { reviews: pluginReviews } : {}) }),
       ...pluginUiParts.methods,
     };
     const host = pluginHost;
@@ -4402,6 +4436,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
         dangerousAdded: () => dangerousDomainsAdded() ?? [],
         // A provider the user pointed at an endpoint of their own: its plugin reaches that origin alone, read live.
         userEndpoint: (id) => userEndpointOf(host.registry.get(id), settings),
+        accountTokens: () => accountTokenSource(daemonLinks?.account, partsClock),
         log: (line) => console.error(line),
       }).then(
         (started) => {
@@ -4443,7 +4478,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
         await internalRouter?.view.refresh().catch((err: unknown) => { console.error(`[plugin-auth] the internal jobs' view kept its set (${err instanceof Error ? err.name : typeof err})`); });
       },
       log: (line) => console.error(line),
-    }), { openCard: brokerCardOpener(pluginsBroker), nameOf: (id) => { const n = opened.registry.get(id)?.name; return typeof n === "string" ? n : undefined; }, emit: (event) => void mossServer?.coreEvent(event), log: (line) => console.error(line) })));
+    }), { openCard: brokerCardOpener(pluginsBroker), nameOf: (id) => { const n = opened.registry.get(id)?.name; return typeof n === "string" ? n : undefined; }, bundled: (id) => { const r = opened.registry.get(id); return r !== undefined && isBundledMoss(r); }, emit: (event) => void mossServer?.coreEvent(event), log: (line) => console.error(line) })));
     // The setup's providers read again now the plugins' sign-ins can be asked, and the default settled (a home with
     // one provider and an older build's written default gets that provider's recommended model).
     void setup.refresh();
@@ -4666,6 +4701,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       pluginSettings: pluginBotSettings({ registry, backend: filePluginSettings(mossHome), settings: () => pluginHost?.settings }),
       // A bot's model is one a plugin that is on offers (as the picker lists it), or one whose plugin is on while the
       // model plugins are still taking it in (their start or a rebuild), which the session then reopens on.
+      composerModels: (session) => listModels(modelsDeps, { session }),
       modelOffer: (model) => modelOffer(model, {
         catalog: activeCatalog(),
         settling: installedModelPlugins() === undefined || installedModelPlugins()!.rebuilding,
@@ -4727,6 +4763,10 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
             return floored;
           },
           userHome: fence.home, temp: fence.temp, mossHome,
+          // Rule B: the level a background command starts under, so lowering it ends the command (below, after the parts).
+          level: () => levelOfSession(ctx),
+          // Rule B: a background command's end comes back to the conversation as a background task's notification.
+          ...(ctx.wake === undefined ? {} : { wake: (input: { task: string; status: "completed" | "failed" | "stopped"; text: string }) => ctx.wake!(input) }),
         });
         botShellRoots = (conversation, bot, level) => {
           const session = conversation ?? "";
@@ -4742,7 +4782,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
         const check = broker === undefined ? undefined : botApprovalCheck(broker, {
           // The core's Agent and TaskStop too, once lane K's agents are up (`botCoreTools`): never taken for the runtime's own;
           // and lane C's RequestAccess.
-          hostTools: (ctx) => [...(side()?.tools(ctx.sessionId) ?? []).map((t) => t.name), GLOSSARY_TOOL_NAME, REQUEST_ACCESS_TOOL, ...(agents() === undefined ? [] : ["Agent", "TaskStop"])],
+          hostTools: (ctx) => [...(side()?.tools(ctx.sessionId) ?? []).map((t) => t.name), GLOSSARY_TOOL_NAME, REQUEST_ACCESS_TOOL, ...(agents() === undefined ? [] : ["Agent", "AgentModels", "TaskStop"])],
           home: opts.parts?.userHome ?? homedir(), localComputer: main.self, fence, mossHome,
           levelOf: (c) => node?.registry.get(c)?.level,
           // The drop: a bot's file-tool write into a folder it makes new in the plugins folder names it as the builder.
@@ -4818,7 +4858,9 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
         });
         const baseTools = botCoreTools({
           side: { tools: (id) => side()?.tools(id) ?? [] },
-          agents: { manager: () => agents()?.manager, backends: agentBackendIds, levelOf: (ctx) => ctx.level, definition: definitionOf },
+          agents: { manager: () => agents()?.manager, backends: agentBackendIds, levelOf: (ctx) => ctx.level, definition: definitionOf, modelsOf: (backend) => startOptions.options(backend) },
+          // Lane WS7: on Windows the core's background commands stop by their id through TaskStop.
+          ...(process.platform === "win32" ? { stopTask: (ctx: BotSessionContext, id: string) => stopWindowsBackground(ctx.sessionId, id) } : {}),
         });
         // Whether the conversation's shell can already write `folder`: inside its drawn write roots now (at accept edits
         // the home's ordinary top-level folders), by real paths only. On any doubt, no (the card is asked).
@@ -5033,7 +5075,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       // A paired phone's or browser's MOSS connection over its link (C-M3 item 3).
       clients: { server: mossServer, tokens: mossTokens },
       // A sensitive device change asks on the daemon's one broker once the parts are up (C-M3); before, it's refused.
-      openCard: (req) => (daemonParts?.broker ? brokerCardOpener(daemonParts.broker)(req) : refuseUntilBroker(req)),
+      openCard: openOnBroker(() => daemonParts?.broker),
       onRegistry: (r) => { ownDevices = r; },
       sidecar: { relay: sidecarRelayOf(relayChoiceFrom(settings)) },
       emit: (event) => void mossServer?.coreEvent(event as Parameters<MossServer["coreEvent"]>[0]),
@@ -5042,6 +5084,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       ...(opts.links ?? {}),
     });
     daemonLinks = started;
+    console.error(`[parts] the links part is up (${started.links ? "with links" : "local-only"}); waiting for the plugin registry`);
     if (partsStopping) return void (await closeStarted());
     if (!started.links) {
       setPluginMain(undefined);
@@ -5050,11 +5093,13 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     const links = started.links;
     if (opts.cloudJoin !== undefined) startCloudJoin(links, opts.cloudJoin.dir);
     const pluginRegistry = await pluginsStarted;
+    console.error(`[parts] the plugin registry is ${pluginRegistry === undefined ? "absent" : "up"}; making the bot side`);
     if (partsStopping) return void (await closeStarted());
     // A node or bot side that can't start leaves the links up (their methods answer), and says why.
     try {
       const p = opts.parts ?? {};
       const bots = p.bots === false ? false : p.bots ?? (pluginRegistry !== undefined ? await daemonBots(pluginRegistry) : false);
+      console.error("[parts] the bot side is made; starting the computer node, the browser and the agents");
       if (partsStopping) return void (await closeStarted());
       // The tree folder only for the default home: a dev or test daemon never makes the shared one.
       const treeRoot = opts.secrets === undefined && isDefaultMossHome(home, profile) ? (() => { try { return defaultTreeRoot(); } catch { return undefined; } })() : undefined;
@@ -5134,19 +5179,31 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
           if (mossServer === undefined) return () => {};
           // A connection that subscribes to `approvals` is told the cards already pending (ipc/moss.ts `pendingCards`).
           const server = mossServer;
-          server.pendingCards = () => broker.cards();
+          server.pendingCards = (device) => broker.cards().filter((c) => broker.answerableBy(c.id, device));
           const unroute = routeBrokerCards(broker, server.surfaces.router);
           return () => { unroute(); server.pendingCards = undefined; };
         },
         log: (line) => console.error(line),
       });
+      console.error("[parts] the computer node, the browser and the agents are up");
       const cloudPoint = daemonParts.node?.cloud;
-      if (cloudPoint) beforeCloudPluginRemoved = (id) => cloudPoint.guardRemoval(id);
+      if (cloudPoint) beforeCloudPluginRemoved = (id, action) => cloudPoint.guardRemoval(id, action);
       okTicks.flush();
       if (partsStopping) return void (await closeStarted());
       // The lease is read now: a `host.start: "main"` host half starts here when this computer is the main (no lease
       // here: it is its own).
       setPluginMain(daemonParts.main);
+      // Windows background commands (lane WS7, the WS7 reviewer's item 2; spec §9.2: the pause switch pauses everything,
+      // and a background command can't be held at a tool call as a turn is): MOSS ends a conversation's background
+      // commands, each told why, when the bots are paused or this computer stops running them, when the bot is removed or
+      // archived, when the approval level drops below the one a command started under, and when its conversation ends
+      // or is deleted (`onSessionDeleted`). Off Windows none ever runs.
+      // The listeners go with the gate, the bot service and the registry when the parts close.
+      if (process.platform === "win32") {
+        const side = daemonParts.bots;
+        const levels = daemonParts.node?.registry;
+        endWindowsBackgroundOn({ ...(side === undefined ? {} : { gate: side.gate, bots: side.bots }), ...(levels === undefined ? {} : { levels }) });
+      }
       // The activity feed reads the session host: its sessions' states, tools and cards, never their words. A session that
       // stops takes its live pictures with it.
       const sessionHost = daemonParts?.bots?.host;
@@ -5154,7 +5211,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
         activityTracker = new ActivityTracker({
           host: sessionHost, feed: activityFeed, now: () => Date.now(),
           botName: (id) => { const name = daemonParts?.bots?.bots.get(id)?.name; return typeof name === "string" ? name : undefined; },
-          onSessionEnded: (id) => { browserDrives.sessionEnded(id); livePictures.sessionEnded(id); },
+          onSessionEnded: (id) => { browserDrives.sessionEnded(id); livePictures.sessionEnded(id); void endWindowsBackgroundOf(id, "its conversation ended"); },
         });
         activityTracker.start();
       }

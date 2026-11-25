@@ -599,3 +599,38 @@
   color: var(--moss-color-text-secondary);
   font-size: 0.85em;
 }
+
+/* The picture of a pairing's text for a phone to scan, on white whatever the theme (a camera needs the contrast), and the text under it. */
+.cl-settings__qr {
+  display: block;
+  inline-size: 11rem;
+  block-size: 11rem;
+  max-inline-size: 100%;
+  margin: 0 0 var(--moss-space-m);
+  border-radius: var(--moss-radius-small);
+}
+
+.cl-settings__pair-text {
+  margin-bottom: var(--moss-space-m);
+  color: var(--moss-color-text-muted);
+}
+
+.cl-settings__pair-qrtext {
+  margin: var(--moss-space-s) 0 0;
+  max-block-size: 6rem;
+  overflow: auto;
+  color: var(--moss-color-text);
+  font-family: var(--moss-font-mono);
+  font-size: var(--moss-font-size-caption);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.cl-settings__relay {
+  margin-top: var(--moss-space-l);
+}
+
+.cl-settings__relay-options {
+  flex-wrap: wrap;
+  margin-block: var(--moss-space-s);
+}

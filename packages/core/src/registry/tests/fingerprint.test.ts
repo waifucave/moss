@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FingerprintCache, fingerprint, fingerprintStats } from "../fingerprint";
+import { FINGERPRINT_RACY_MS, FingerprintCache, fingerprint, fingerprintStats } from "../fingerprint";
 
 function tree(): string {
   const root = mkdtempSync(join(tmpdir(), "moss-fp-"));
@@ -18,6 +18,7 @@ describe("FingerprintCache", () => {
   test("an unchanged folder is looked at again with no directory listing, and gives the full walk's print", () => {
     const root = tree();
     const cache = new FingerprintCache();
+    Bun.sleepSync(FINGERPRINT_RACY_MS + 20); // a folder stamped a moment ago is walked in full again (the next test): let this one age
     expect(readdirsDuring(() => cache.print(root))).toBe(4); // root, a, a/b, c (node_modules is never walked)
     for (let i = 0; i < 3; i++) {
       let got = "";
@@ -48,6 +49,16 @@ describe("FingerprintCache", () => {
       expect(after, what).not.toBe(before);
       same();
     }
+  });
+
+  test("a change in the same clock tick as the last look is seen: a folder stamped a moment ago is walked in full again, and settles once it has aged", () => {
+    const root = tree();
+    const cache = new FingerprintCache();
+    cache.print(root);
+    expect(readdirsDuring(() => cache.print(root))).toBe(4); // still racy: listed again, not trusted
+    Bun.sleepSync(FINGERPRINT_RACY_MS + 20);
+    cache.print(root); // a walk that saw nothing recent
+    expect(readdirsDuring(() => cache.print(root))).toBe(0);
   });
 
   test("a file put into a folder whose modification time is set back is still seen (the change time can't be)", () => {

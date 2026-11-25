@@ -15,6 +15,7 @@
 // Sealed card frames are outside both (E-M3).
 import type { OpenTarget } from "@waifucave/moss-plugin-sdk/ui/bridge";
 import { SessionId, TreePath } from "@waifucave/moss-protocol";
+import { STALL_CREDIT_MAX_MS } from "@waifucave/moss-app-release/stall-watch";
 
 export interface MenuItem {
   id?: string;
@@ -303,6 +304,11 @@ export const SEND_INPUT_WINDOW_MS = 1_000;
 /** How long after a mouse press its frame's report (`seen`: the preload's trusted pointerdown) may still name where it landed. */
 export const PRESS_REPORT_MS = 1_000;
 
+/** How long an earlier press that never got its report may still have its report arrive and be taken for a later press's. */
+const OPEN_REPORT_MS = PRESS_REPORT_MS + STALL_CREDIT_MAX_MS;
+/** How many earlier unreported presses are remembered (the OLDEST are kept: a stall since the oldest is the likeliest to refuse). */
+const OPEN_MAX = 32;
+
 /** How long after a press's release the frame may send once (hold-to-talk: the release, then the transcription). */
 export const SEND_RELEASE_WINDOW_MS = 30_000;
 
@@ -311,16 +317,27 @@ export const SEND_RELEASE_WINDOW_MS = 30_000;
 export class SendGate {
   private readonly lastInput = new Map<number, number>();
 
-  constructor(private readonly now: () => number = Date.now) {}
+  /** `stalls`: the main process's own unscheduled time (`@waifucave/moss-app-release/stall-watch`). A press is timed by when the main
+   *  process HANDLED the mouse down, the page's report and the call, so a machine that left the process waiting for seconds
+   *  aged a genuine press. With it, a press's age and its report's delay are counted without the time the process itself was
+   *  not running (never more than STALL_CREDIT_MAX_MS, and none for time it spent working); without it, or with no stall, the
+   *  bounds are exactly SEND_INPUT_WINDOW_MS and PRESS_REPORT_MS. */
+  constructor(private readonly now: () => number = Date.now, private readonly stalls?: { arm(forMs: number): void; credit(from: number, to?: number): number }) {}
+
+  /** The main process's own unscheduled time in [from, to], at most the cap (0 without a watch). */
+  private stalled(from: number, to: number = this.now()): number {
+    return this.stalls === undefined ? 0 : Math.min(STALL_CREDIT_MAX_MS, this.stalls.credit(from, to));
+  }
 
   input(windowId: number): void {
     this.lastInput.set(windowId, this.now());
+    this.stalls?.arm(SEND_INPUT_WINDOW_MS + STALL_CREDIT_MAX_MS + 500);
   }
 
   take(windowId: number, arrived: number = this.now()): boolean {
     const at = this.lastInput.get(windowId);
     this.lastInput.delete(windowId);
-    const ok = at !== undefined && arrived - at <= SEND_INPUT_WINDOW_MS;
+    const ok = at !== undefined && arrived - at - this.stalled(at, arrived) <= SEND_INPUT_WINDOW_MS;
     if (ok) {
       // One press, one send, whichever rule spends it: this press's hold is spent (a key's send comes on its key down, a click's on
       // its release), and an allowance its release already gave is gone; `takeIn` can't spend the same press again.
@@ -355,7 +372,7 @@ export class SendGate {
   takeIn(windowId: number, frameId: string, arrived: number = this.now()): boolean {
     // Timed by the press itself (browser-press, read 53's item 6): never one press's frames with another input's time.
     const p = this.lastPress.get(windowId);
-    if (p === undefined || p.spent || arrived - p.at > SEND_INPUT_WINDOW_MS || arrived < p.at) return false;
+    if (p === undefined || p.spent || arrived - p.at - this.stalled(p.at, arrived) > SEND_INPUT_WINDOW_MS || arrived < p.at) return false;
     if (p.frames === undefined || [...p.frames].at(-1) !== frameId) return false;
     // Spent as `take` spends it: this press, its hold and allowances, and the window's one-second record.
     p.spent = true;
@@ -364,6 +381,21 @@ export class SendGate {
     if (h !== undefined) h.spent = true;
     this.dropAllowances(windowId);
     return true;
+  }
+
+  /** Why a call from `frameId` found no press of its own, for the log line a refused call writes: which check refused and by how
+   *  many ms (never a page's word). */
+  whyNot(windowId: number, frameId: string, arrived: number = this.now()): string {
+    const p = this.lastPress.get(windowId);
+    if (p === undefined) return "no press seen in this window";
+    if (p.spent) return "the press was already used";
+    const stalled = this.stalled(p.at, arrived);
+    const over = arrived - p.at - stalled - SEND_INPUT_WINDOW_MS;
+    const stall = stalled > 0 ? `; the process itself was not running for ${stalled} ms of it` : "";
+    if (p.frames === undefined && this.crowded(p, arrived)) return `two presses close together on a stalled machine${stall}`;
+    if (over > 0) return `the call came ${over} ms past the press's bound${stall}`;
+    if (p.frames === undefined) return `no pointerdown report named where the press landed${stall}`;
+    return `the press landed in another frame${stall}`;
   }
 
   /** The frames the window's latest press landed in (outermost first), for the log line a refused call writes. */
@@ -378,7 +410,15 @@ export class SendGate {
     const p = this.lastPress.get(windowId);
     if (p === undefined || p.frames !== undefined) return Promise.resolve();
     return new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, ms);
+      const started = this.now();
+      // The timer fires after the wait on a machine that kept up. If the process was itself not running meanwhile (the stall that
+      // held the report up held the timer too, and the report may be queued right behind it), it waits once more for as long as it
+      // was stalled (at most `ms`), so the wait is not measured across the stall.
+      let timer = setTimeout(() => {
+        const stalled = this.stalled(started);
+        if (stalled > 0) timer = setTimeout(resolve, Math.min(stalled, ms));
+        else resolve();
+      }, ms);
       const list = this.waiting.get(p) ?? [];
       list.push(() => { clearTimeout(timer); resolve(); });
       this.waiting.set(p, list);
@@ -407,9 +447,16 @@ export class SendGate {
   press(windowId: number, press: { kind: "key" | "mouse"; key: string; frames?: readonly string[] }): Hold {
     this.input(windowId);
     this.dropAllowances(windowId);
-    const h: Hold = { kind: press.kind, key: press.key, at: this.now(), spent: false, ...(press.frames !== undefined ? { frames: new Set(press.frames) } : {}) };
-    this.holds.set(windowId, h);
+    const at = this.now();
     const was = this.lastPress.get(windowId);
+    // EVERY earlier mouse press that never got its report and is young enough for a report to be taken as its (the one just before
+    // this one, and those it already listed, whether or not a press between them was reported, and whether or not its own report
+    // window has closed): whichever report comes next could be any of theirs. Whether that matters is judged when the report is
+    // taken (`seen`): see `crowded`.
+    const open = [...(was?.open ?? []), ...(was !== undefined && was.kind === "mouse" && !was.spent && was.frames === undefined ? [was.at] : [])].filter((t) => at - t <= OPEN_REPORT_MS).slice(0, OPEN_MAX);
+    const h: Hold = { kind: press.kind, key: press.key, at, spent: false, ...(press.frames !== undefined ? { frames: new Set(press.frames) } : {}), ...(open.length > 0 ? { open } : {}) };
+    this.holds.set(windowId, h);
+    this.stalls?.arm(SEND_INPUT_WINDOW_MS + STALL_CREDIT_MAX_MS + 500);
     if (was !== undefined) this.framesKnown(was);
     this.lastPress.set(windowId, h);
     return h;
@@ -421,9 +468,29 @@ export class SendGate {
    *  document) keeps no frames, and no frame takes it. True when it was taken. */
   seen(windowId: number, frames: readonly string[]): boolean {
     const p = this.lastPress.get(windowId);
-    if (p === undefined || p.kind !== "mouse" || p.frames !== undefined || this.now() - p.at > PRESS_REPORT_MS || frames.length === 0) return false;
+    if (p === undefined || p.kind !== "mouse" || p.frames !== undefined || frames.length === 0) return false;
+    const age = this.now() - p.at;
+    // A report taken once the machine has stalled since an earlier press that never reported may be that press's: refused.
+    if (this.crowded(p, this.now())) return false;
+    if (age - this.stalled(p.at) > PRESS_REPORT_MS) return false;
     this.holdFrames(windowId, p, frames);
     return true;
+  }
+
+  /** Whether a report (or call) for the press `p`, judged at `at`, could be an earlier unreported press's, with the machine's stall
+   *  to pay for the difference: some earlier press that never reported has had a stall since it, and EITHER it was still young when
+   *  `p` came (its own report could still have been due: its age less the stall since is within PRESS_REPORT_MS), OR `p` needs the
+   *  stall's credit at all (its report is more than PRESS_REPORT_MS after its mouse down): a page's own delay could then be paid for
+   *  by a stall, however long before the earlier press was (up to the cap). A press that needs no credit, after a stall that ended
+   *  well before it, is judged as it always was. */
+  private crowded(p: Hold, at: number): boolean {
+    if (p.open === undefined) return false;
+    const needsCredit = at - p.at > PRESS_REPORT_MS;
+    for (const o of p.open) {
+      if (this.stalled(o, at) <= 0) continue;
+      if (needsCredit || p.at - o - this.stalled(o, p.at) <= PRESS_REPORT_MS) return true;
+    }
+    return false;
   }
 
   /** The frames a mouse press happened in, once found (the release may already have come: it is credited now). */
@@ -506,6 +573,9 @@ export interface Hold {
   spent: boolean;
   frames?: Set<string>;
   releasedAt?: number;
+  /** The times of every earlier mouse press that still had no report and was within PRESS_REPORT_MS plus the cap when this one came
+   *  (`press`; oldest first, at most OPEN_MAX): a report may be any of theirs, once the machine stalled. */
+  open?: number[];
 }
 
 /** A hold nobody released (a right-button press, a press whose release went to another window) is forgotten after this. */

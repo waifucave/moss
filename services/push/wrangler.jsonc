@@ -5,9 +5,11 @@
   //
   // The top level is the local profile that the tests use, where every outbound request goes to local fakes of
   // APNs and the Web Push services; env.production is what the first deploy at the live gates would use.
-  // Nothing here has been deployed. Secrets are never in this file: APNS_PRIVATE_KEY and VAPID_PRIVATE_KEY come
+  // One APNs topic per phone app (APNS_TOPIC_MOSS, APNS_TOPIC_CODE): the apps' bundle ids are configuration, set at the live
+  // gates, never in code.
+  // Nothing here has been deployed (no Worker with these names exists on the owner's Cloudflare account, checked read-only on 2026-11-24). Secrets are never in this file: APNS_PRIVATE_KEY and VAPID_PRIVATE_KEY come
   // from `wrangler secret put` (production) or the test harness (local).
-  "name": "clover-push-local",
+  "name": "moss-push-local",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
   "workers_dev": false,
@@ -19,7 +21,8 @@
     "PUSH_AUDIENCE": "push.waifucave.com",
     "APNS_KEY_ID": "LOCALKEY00",
     "APNS_TEAM_ID": "LOCALTEAM0",
-    "APNS_TOPIC": "com.waifucave.clover.ios",
+    "APNS_TOPIC_MOSS": "local.test.moss",
+    "APNS_TOPIC_CODE": "local.test.code",
     "APNS_PRODUCTION_ORIGIN": "https://api.push.apple.com",
     "APNS_SANDBOX_ORIGIN": "https://api.sandbox.push.apple.com",
     "VAPID_SUBJECT": "mailto:push@waifucave.invalid",
@@ -37,22 +40,23 @@
   ],
   "env": {
     "production": {
-      "name": "clover-push",
+      "name": "moss-push",
       "workers_dev": false,
       "observability": { "enabled": false },
       "routes": [{ "pattern": "push.waifucave.com", "custom_domain": true }],
       // The account service's keys go through this binding: a Worker can't fetch another Worker's route on its own
       // zone. ACCOUNT_JWKS_URL is the path asked for, and the fallback.
-      "services": [{ "binding": "ACCOUNT_SERVICE", "service": "clover-accounts" }],
+      "services": [{ "binding": "ACCOUNT_SERVICE", "service": "moss-accounts" }],
       "vars": {
         // waifucave's account service (services/accounts): its issuer and its keys' URL. Set at the live gates:
-        // the APNs key's ids, the iOS app's bundle id and the VAPID public key (the private halves are secrets).
+        // the APNs key's ids, the two iOS apps' bundle ids (APNS_TOPIC_MOSS, APNS_TOPIC_CODE) and the VAPID public key (the private halves are secrets).
         "ACCOUNT_ISSUER": "https://waifucave.com/auth",
         "ACCOUNT_JWKS_URL": "https://waifucave.com/auth/.well-known/jwks.json",
         "PUSH_AUDIENCE": "push.waifucave.com",
         "APNS_KEY_ID": "",
         "APNS_TEAM_ID": "",
-        "APNS_TOPIC": "",
+        "APNS_TOPIC_MOSS": "",
+        "APNS_TOPIC_CODE": "",
         "APNS_PRODUCTION_ORIGIN": "https://api.push.apple.com",
         "APNS_SANDBOX_ORIGIN": "https://api.sandbox.push.apple.com",
         "VAPID_SUBJECT": "mailto:push@waifucave.com",

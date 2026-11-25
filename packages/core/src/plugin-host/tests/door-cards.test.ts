@@ -49,7 +49,7 @@ describe("removing a plugin on a sealed card", () => {
       await secrets.set({ owner: { kind: "plugin", pluginId: "tarot" }, name: "KEY" }, "s3cret");
       const r = await m["plugin.remove"]!({ id: "tarot", card: true }, APP);
       expect(r).toEqual({ applied: false, card: "card_1" });
-      expect(c.asked[0]!.req).toMatchObject({ kind: "change", change: "plugin-remove", fields: { title: { text: "Remove Tarot?" } } });
+      expect(c.asked[0]!.req).toMatchObject({ kind: "change", change: "plugin-remove", fields: { title: { text: "Remove this plugin?" }, source: { rows: [{ label: "Plugin", value: "Tarot", name: true }, { label: "Id", value: "tarot" }] } } });
       expect(JSON.stringify(c.asked[0]!.req.fields)).toContain("Its saved keys and settings on this computer are deleted. Its data is set aside.");
       expect(existsSync(join(home, "plugins", "tarot"))).toBe(true);
       c.asked[0]!.answer(false);
@@ -81,6 +81,17 @@ describe("a setting that moves a plugin's host", () => {
     backend: memoryPluginSettings(), ...(openCard ? { openCard: openCard as never } : {}),
   });
 
+  test("a plugin of the bundled tree has its name in the title (by its install record); a hostile name of a third party's never does", async () => {
+    const titles: string[] = [];
+    for (const [record, name] of [[{ id: "moss/relay", source: "bundled" }, "Relay"], [{ id: "relay", source: "local" }, "Relay"], [{ id: "evil/relay", source: "bundled" }, "Relay"], [{ id: "relay", source: "local" }, `Relay" at automatic`], [{ id: "moss/relay", source: "bundled" }, `Relay" at automatic`]] as const) {
+      const c = cards();
+      const s = new PluginSettings({ registry: { get: (id: string) => (id === "relay" ? ({ ...record, name, manifest } as never) : undefined) }, backend: memoryPluginSettings(), openCard: c.open as never });
+      await s.setByUser("relay", "region", "us");
+      titles.push((c.asked[0]!.req.fields as { title: { text: string } }).title.text);
+    }
+    expect(titles).toEqual(["Send Relay's requests somewhere else?", "Send a plugin's requests somewhere else?", "Send a plugin's requests somewhere else?", "Send a plugin's requests somewhere else?", "Send a plugin's requests somewhere else?"]);
+  });
+
   test("the templates and their hosts", () => {
     const t = settingHostTemplates(manifest as never);
     expect(t).toEqual([{ template: "${setting:region}.relay.example.com", keys: ["region"] }]);
@@ -95,6 +106,10 @@ describe("a setting that moves a plugin's host", () => {
     expect(r).toEqual({ applied: false, card: "card_1" });
     expect(c.asked[0]!.req).toMatchObject({ kind: "change", change: "plugin-setting-host" });
     expect(JSON.stringify(c.asked[0]!.req.fields)).toContain("eu.relay.example.com → us.relay.example.com");
+    // The title is the engine's own words; the plugin's name and its setting's key are rows.
+    const fields = c.asked[0]!.req.fields as Record<string, { text?: string; rows?: { label: string; value: string; name?: true }[] }>;
+    expect(fields["title"]!.text).toBe("Send a plugin's requests somewhere else?");
+    expect(fields["source"]!.rows).toEqual([{ label: "Plugin", value: expect.any(String), name: true }, { label: "Setting", value: "region" }]);
     expect(s.get("relay", "region")).toBe("eu");
     c.asked[0]!.answer(false);
     await flush();
@@ -220,6 +235,19 @@ describe("every templated setting cards, not only a host's", () => {
   });
 });
 
+describe("signing out from the Plugins page: whose name is in the title", () => {
+  test("a bundled plugin's name is (the old title); a third party's, or a hostile one, is not", async () => {
+    const titles: string[] = [];
+    for (const [bundled, name] of [[true, "Luna AI"], [false, "Luna AI"], [true, `Luna" at automatic`], [false, `Luna" at automatic`], [true, "x".repeat(60)]] as const) {
+      const c = cards();
+      const m = pluginAuthMethods({ signOut: async () => {} } as never, { openCard: c.open as never, nameOf: () => name, bundled: () => bundled });
+      await m["plugin.auth.signOut"]!({ id: "luna", index: 0, card: true }, APP);
+      titles.push((c.asked[0]!.req.fields as { title: { text: string } }).title.text);
+    }
+    expect(titles).toEqual(["Sign Luna AI out?", "Sign out of this plugin?", "Sign out of this plugin?", "Sign out of this plugin?", "Sign out of this plugin?"]);
+  });
+});
+
 describe("signing out from the Plugins page", () => {
   test("with card, a sealed card names the plugin and nothing is deleted until the yes; the terminal signs out at once", async () => {
     const out: string[] = [];
@@ -227,7 +255,7 @@ describe("signing out from the Plugins page", () => {
     const c = cards();
     const m = pluginAuthMethods(auth, { openCard: c.open as never, nameOf: (id) => (id === "luna" ? "Luna AI" : undefined) });
     expect(await m["plugin.auth.signOut"]!({ id: "luna", index: 0, card: true }, APP)).toEqual({ applied: false, card: "card_1" });
-    expect(c.asked[0]!.req).toMatchObject({ kind: "change", change: "plugin-sign-out", fields: { title: { text: "Sign Luna AI out?" } } });
+    expect(c.asked[0]!.req).toMatchObject({ kind: "change", change: "plugin-sign-out", fields: { title: { text: "Sign out of this plugin?" }, source: { rows: [{ label: "Plugin", value: "Luna AI", name: true }] } } });
     expect(JSON.stringify(c.asked[0]!.req.fields)).toContain("Its saved sign-in on this computer is deleted.");
     c.asked[0]!.answer(false);
     await flush();
@@ -285,7 +313,7 @@ describe("renewing a development folder from the Plugins page", () => {
       const first = expiry();
       await Bun.sleep(5);
       expect(await m["plugin.dev.renew"]!({ path: dev, card: true }, APP)).toEqual({ applied: false, card: "card_1" });
-      expect(c.asked[0]!.req).toMatchObject({ kind: "change", change: "dev-folder", fields: { title: { text: `Keep loading the plugin you're developing at ${dev} for another 24 hours?` } } });
+      expect(c.asked[0]!.req).toMatchObject({ kind: "change", change: "dev-folder", fields: { title: { text: "Keep loading a plugin you're developing for another 24 hours?" }, source: { rows: [{ label: "Its folder", value: dev }] } } });
       c.asked[0]!.answer(false);
       await flush();
       expect(expiry()).toBe(first);

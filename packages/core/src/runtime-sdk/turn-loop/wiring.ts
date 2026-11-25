@@ -18,6 +18,9 @@ import type { CoreToolDef } from "./servers";
 export interface BotCoreToolsOptions {
   /** Lane D's bot side: `SendMessage` and `ListAgents` for one session. */
   side: { tools(sessionId: string): readonly CoreToolDef[] };
+  /** A background task of the session's that `TaskStop` stops by its id when no agent has it: on Windows the core's
+   *  background commands (`stopWindowsBackground`, lane WS7). Null: none has that id. */
+  stopTask?: (ctx: BotSessionContext, id: string) => Promise<{ text: string; isError: boolean } | null>;
   /** Lane K's agents: `Agent` and `TaskStop`. */
   agents?: {
     /** The manager, or a getter for one that comes up with the bot side (none yet: no Agent tool). */
@@ -27,6 +30,8 @@ export interface BotCoreToolsOptions {
     levelOf?: (ctx: BotSessionContext) => Level | undefined;
     /** Plugins' agent definitions, by Glossary's name (`agentDefinitionOf`). */
     definition?: AgentToolOptions["definition"];
+    /** What an agent backend offers to start with (`agent.options`), for `Agent`'s model check and `AgentModels`. */
+    modelsOf?: AgentToolOptions["modelsOf"];
   };
 }
 
@@ -41,7 +46,11 @@ export function botCoreTools(o: BotCoreToolsOptions): NonNullable<BotDriverDeps[
       }, {
         ...(o.agents.backends === undefined ? {} : { backends: o.agents.backends }),
         ...(o.agents.definition === undefined ? {} : { definition: o.agents.definition }),
+        ...(o.agents.modelsOf === undefined ? {} : { modelsOf: o.agents.modelsOf }),
         botModel: () => ctx.current().model,
+        ...(o.stopTask === undefined ? {} : {
+          stopRuntimeTask: async (id: string) => (await o.stopTask!(ctx, id)) ?? { text: `TaskStop: none of your background agents or commands has the id ${id}`, isError: true },
+        }),
         // Lane D's provider check: an agent on a provider the user didn't choose or allow for the bot asks first.
         ...(ctx.providerCheck === undefined ? {} : { checkModel: (model: string) => ctx.providerCheck!(model, origin()) }),
       }));

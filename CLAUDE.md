@@ -48,9 +48,11 @@ bun run dev:app --dry-run            # the dev app's plan; without --dry-run it 
 # Live suites: WINTER_CU_LIVE_TESTS=1 bun run e2e:cu-live (NEVER from an agent); MOSS_BROWSER_E2E=1 bun run e2e:browser (likewise)
 
 # The whole check, on GitHub, for the branch you are on (docs/claude/testing.md, "CI for the lanes"): the suites on every OS and the acceptance run
-scripts/ci/lane start               # push the branch and start CI on it (a `lane-int/*` branch starts it by itself on push)
-scripts/ci/lane wait                # one blocking call: ends with the jobs' results; exit 0 when `lane gate` passed
+scripts/ci/lane start               # push the branch and start CI on it, SCOPED to what its changes need (--all: every job but the parked Swift/Cowork macOS ones, which run for their own sources only, `--parked` adds them; a `lane-int/*` branch starts by itself on push, whole)
+scripts/ci/lane wait                # one blocking call: ends with the jobs' results and the run's scope; exit 0 when `lane gate` passed
 scripts/ci/lane failures            # the failing steps and their error lines
+scripts/ci/lane result [sha]        # the gate and every non-green check from the commit's check-runs (works when the job list answers 502)
+scripts/ci/lane rerun               # the failed jobs of a finished run, once
 ```
 
 While coding run only the scoped tests (one file, one package); the whole suite and the acceptance run are CI's, not this Mac's.

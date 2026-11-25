@@ -21,7 +21,7 @@ import type { PluginAuth } from "./runtime-sdk/plugin-auth";
  *  worked, and no slot's probe failed. */
 export async function readProviders(deps: {
   presence(): Promise<Pick<CredentialPresence, "byProvider" | "failedProbes">>;
-  auth(): Pick<PluginAuth, "signedInProviders" | "keylessProviders" | "modelPluginsReady"> | undefined;
+  auth(): Pick<PluginAuth, "signedInProviders" | "keylessProviders" | "modelPluginsReady"> & Partial<Pick<PluginAuth, "unsignableProviders">> | undefined;
 }): Promise<ProvidersRead & { incomplete?: string }> {
   const presence = await deps.presence();
   const present = new Set(Object.keys(presence.byProvider));
@@ -29,6 +29,7 @@ export async function readProviders(deps: {
   if (presence.failedProbes !== undefined && presence.failedProbes > 0) incomplete = `${presence.failedProbes} credential slot probe(s) failed`;
   const auth = deps.auth();
   let keyless: Set<string> | undefined;
+  let unsignable: Set<string> | undefined;
   if (auth === undefined) incomplete ??= "the plugins haven't opened yet";
   else {
     if (!auth.modelPluginsReady()) incomplete ??= "the model plugins haven't started yet";
@@ -38,8 +39,9 @@ export async function readProviders(deps: {
       incomplete ??= `the plugins' sign-ins weren't read (${err instanceof Error ? err.name : typeof err})`;
     }
     keyless = auth.keylessProviders();
+    unsignable = auth.unsignableProviders?.();
   }
-  return { present, complete: incomplete === undefined, ...(incomplete !== undefined ? { incomplete } : {}), ...(keyless !== undefined ? { keyless } : {}) };
+  return { present, complete: incomplete === undefined, ...(incomplete !== undefined ? { incomplete } : {}), ...(keyless !== undefined ? { keyless } : {}), ...(unsignable !== undefined ? { unsignable } : {}) };
 }
 
 export interface SetupDeps {
@@ -93,6 +95,7 @@ export class SetupService {
       ...(this.deps.storedEffort() !== undefined ? { storedEffort: this.deps.storedEffort()! } : {}),
       complete: this.#read.complete,
       ...(this.#read.keyless !== undefined ? { keyless: this.#read.keyless } : {}),
+      ...(this.#read.unsignable !== undefined ? { unsignable: this.#read.unsignable } : {}),
     });
   }
 
@@ -154,7 +157,7 @@ export class SetupService {
   async #readNow(covers: number): Promise<void> {
     try {
       const read = await this.deps.readPresent();
-      this.#read = { present: new Set(read.present), complete: read.complete, ...(read.keyless !== undefined ? { keyless: new Set(read.keyless) } : {}) };
+      this.#read = { present: new Set(read.present), complete: read.complete, ...(read.keyless !== undefined ? { keyless: new Set(read.keyless) } : {}), ...(read.unsignable !== undefined ? { unsignable: new Set(read.unsignable) } : {}) };
       const why = read.complete ? undefined : read.incomplete;
       if (why !== undefined && why !== this.#lastIncomplete) this.deps.log(`[setup] the providers' read isn't complete (${why}): the default model is left as it is`);
       this.#lastIncomplete = why;

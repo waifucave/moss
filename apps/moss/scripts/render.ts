@@ -51,6 +51,10 @@ const engine = await startFakeEngine({ home, picturePng: await pagePng(), frameM
 });
 engine.feed.set({ subject: { kind: "bots", id: "brook" }, state: "working", name: "Brook", tool: "Read", since: Date.now() - 20_000 });
 engine.feed.set({ subject: { kind: "bots", id: "ada" }, state: "working", name: "Ada", tool: "WebFetch", since: Date.now() - 20_000 });
+// Kite's conversation ends with a reply in Markdown and a question she is waiting on (the question scene).
+engine.say("kite", { type: "user_message", text: "Start a Codex agent on a new project and use terra.", clientName: "MOSS" });
+engine.say("kite", { type: "assistant_message", text: "Here is what I can do for you:\n\n- **Start a coding agent for you.** You tell me what to build and where, and I start it in the background.\n- **Look things up.** I search the web and read `notes.txt` when it helps.\n\nRun it later with:\n\n```sh\nnpm test\n```\n\nSee [the docs](https://example.com/docs) for more." });
+engine.say("kite", { type: "question_asked", callId: "call_render_1", questions: [{ question: "Which model should the Codex agent use?", header: "Model", multiSelect: false, options: [{ label: "Codex's default (Recommended)", description: "Whatever Codex picks for itself." }, { label: "Use fable", description: "A Claude model." }, { label: "Use opus", description: "A Claude model." }, { label: "Hold off", description: "Do nothing yet." }] }] });
 const env: NodeJS.ProcessEnv = { ...process.env, MOSS_HOME: home, MOSS_USER_DATA: join(home, "user-data"), MOSS_TEST_FRONT: "1" };
 delete env.MOSS_PROFILE;
 delete env.ELECTRON_RUN_AS_NODE;

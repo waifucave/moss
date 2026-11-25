@@ -17,17 +17,40 @@ const KEY_NAME = "forwarder";
 let client: ForwarderClient | null = null;
 let current: WebhookIngress | null = null;
 
+/** The service's origin: the default, or a development profile's local emulator (the `origin` setting, this device's
+ *  own): `https:`, or plain `http:` to this computer's loopback; anything else is the default. The core adds the account
+ *  token only for waifucave.com hosts (or a development profile's emulator) in this plugin's `network:` list. */
+export function originFrom(setting: unknown): string {
+  if (typeof setting !== "string" || setting === "") return DEFAULT_ORIGIN;
+  try {
+    const url = new URL(setting);
+    const loopback = url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]";
+    if (url.username !== "" || url.password !== "") return DEFAULT_ORIGIN;
+    if (url.protocol === "https:" || (url.protocol === "http:" && loopback)) return url.origin;
+  } catch {
+    // not a URL
+  }
+  return DEFAULT_ORIGIN;
+}
+
+/** One line in the plugin's log (a host half's console goes there). Never a webhook's key or body. */
+function log(level: "info" | "warn" | "error", message: string): void {
+  console[level](`forwarder: ${message}`);
+}
+
 export async function start(api: HostApi): Promise<void> {
   if (client) return;
-  const origin = api.env?.MOSS_HOOKS_ORIGIN ?? DEFAULT_ORIGIN;
+  // This computer's keys are served only to MOSS's own plugin process; elsewhere there is nothing to open webhooks with.
+  if (api.keys === undefined) throw new Error("the forwarder needs this computer's own keys, which only MOSS's own plugins get");
+  const origin = originFrom(await api.settings.get<string>("origin"));
   let ingressRef: WebhookIngress | null = null;
   client = new ForwarderClient({
     origin,
     fetch: (url, init) => api.net.fetch(url, init, { auth: "waifucave" }),
     keys: coreKeys(api.keys, KEY_NAME),
-    ...(api.computer?.name ? { deviceName: api.computer.name } : {}),
+    deviceName: api.plugin.computer,
     onDelivery: (delivery) => ingressRef?.accept(delivery),
-    log: (level, message) => api.log[level](`forwarder: ${message}`),
+    log,
   });
   ingressRef = new WebhookIngress(client);
   current = ingressRef;

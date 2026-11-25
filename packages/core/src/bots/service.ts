@@ -36,7 +36,7 @@
 //
 // The driver of each session comes from `DriverFactory`: lane A's embedded runtime once A-M1 merges; tests use the
 // contracts' FakeSessionDriver.
-import { NO_DEFAULT_MODEL_CODE, NO_DEFAULT_MODEL_REASON } from "../default-model";
+import { NO_DEFAULT_MODEL_CODE, noDefaultModelReason } from "../default-model";
 import {
   MOSS_ERR, type BotView, type Caller, type ChangeResult, type Level, type RoutineRunView, type SessionView, type Text, type TurnOrigin, type UserMessageInput,
 } from "@waifucave/moss-protocol";
@@ -1105,8 +1105,9 @@ export class BotService {
     const run = driver.turn.bind(driver);
     driver.turn = (input, ctl): Promise<TurnEnd> => {
       if (this.#effective(live).model !== "") return run(input, ctl);
-      ctl.record({ type: "agent_error", threadId: ctx.sessionId, message: NO_DEFAULT_MODEL_REASON, code: NO_DEFAULT_MODEL_CODE });
-      return Promise.resolve({ reason: "failed", failure: "error", text: NO_DEFAULT_MODEL_REASON } satisfies TurnEnd);
+      const why = noDefaultModelReason();
+      ctl.record({ type: "agent_error", threadId: ctx.sessionId, message: why, code: NO_DEFAULT_MODEL_CODE });
+      return Promise.resolve({ reason: "failed", failure: "error", text: why } satisfies TurnEnd);
     };
     const consent = this.#o.providerConsent;
     if (consent === undefined) return driver;

@@ -15,6 +15,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Runner } from "../login/live";
+import { ownerOnlyProblem } from "../win-acl";
 import type { DaemonPlatform } from "../transport";
 
 export const APP_TOKEN_FILE = "app.token";
@@ -52,6 +53,9 @@ async function writeOwnerOnly(path: string, text: string, deps: RunFileDeps): Pr
       // Drop the inherited entries and grant the user alone; the ACL moves with the rename.
       const r = await deps.run(["icacls", tmp, "/inheritance:r", "/grant:r", `*${deps.userSid}:F`]);
       if (!r.ok) throw new Error("icacls refused the ACL");
+      // icacls is not taken at its word (win-acl.ts): the owner and the allow entries are read back before the secret is written.
+      const problem = ownerOnlyProblem(tmp, deps.userSid);
+      if (problem !== null) throw new Error(`the file's ACL is not owner-only (${problem})`);
     } else {
       chmodSync(tmp, 0o600);
     }
@@ -71,6 +75,8 @@ export async function lockRunDir(runDir: string, deps: RunFileDeps): Promise<voi
     if (!deps.userSid) throw new Error("no user SID for the run folder's ACL");
     const r = await deps.run(["icacls", runDir, "/inheritance:r", "/grant:r", `*${deps.userSid}:(OI)(CI)F`]);
     if (!r.ok) throw new Error("icacls refused the run folder's ACL");
+    const problem = ownerOnlyProblem(runDir, deps.userSid);
+    if (problem !== null) throw new Error(`the run folder's ACL is not owner-only (${problem})`);
   } else {
     chmodSync(runDir, 0o700);
   }

@@ -1,0 +1,7 @@
+{
+  "images": [
+    { "idiom": "universal", "filename": "moss-code.png", "scale": "3x" },
+    { "idiom": "universal", "appearances": [{ "appearance": "luminosity", "value": "dark" }], "filename": "moss-code-dark.png", "scale": "3x" }
+  ],
+  "info": { "author": "xcode", "version": 1 }
+}

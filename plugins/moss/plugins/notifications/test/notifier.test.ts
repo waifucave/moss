@@ -111,6 +111,17 @@ describe("DesktopNotifier", () => {
     expect(shown.map((s) => s.body)).toEqual(["Has a question for you · 2 unseen"]);
   });
 
+  test("a coding session's or an agent's update shows no banner here (it is the phone's push, and it names no bot); a bot's still does", async () => {
+    const { desktop, shown } = fakeDesktop();
+    const n = new DesktopNotifier({ desktop });
+    await n.notify(update("card", { sessionKind: "coding", session: "s_1" }));
+    await n.notify(update("question", { sessionKind: "agent", session: "s_2" }));
+    await n.notify(update("agent-finished", { sessionKind: "coding", session: "s_1" }));
+    expect(shown).toEqual([]);
+    await n.notify(update("card", { sessionKind: "bot", bot: "alpha", session: "b_alpha" }));
+    expect(shown).toHaveLength(1);
+  });
+
   test("the user caught up: every banner goes", async () => {
     const { desktop, shown, closed } = fakeDesktop();
     const n = new DesktopNotifier({ desktop, botName: (id) => NAMES[id] });

@@ -295,13 +295,14 @@ export async function showWelcome(host: HTMLElement, t: Translate, call: Call, d
   };
 
   // The relay page (spec §8.3), reached from the done step: what a relay is for, n0's public relays on by default, the person's
-  // own server, or none. The cloud computer's relay and a Cloudflare relay are shown and not offered (relay plugins the links
-  // don't take yet).
+  // own server, or none. A relay plugin that is installed (the engine's `welcome.relay` lists them by what they bring) is shown and
+  // not offered: the links don't take one yet.
   const relayStep = async (model: string, m: PickView | undefined, effort: string | undefined): Promise<void> => {
     const page = frame(host, t("welcome.relay-title"), undefined, t);
     host.querySelector("section")?.setAttribute("data-moss-welcome-step", "relay");
-    let saved: { mode: string; url?: string } | undefined;
+    let saved: { mode: string; url?: string; plugins?: { id: string; name: string; why?: string }[] } | undefined;
     let mode = "n0";
+    const plugins = el("div", {});
     const url = el("input", { type: "url", placeholder: "https://relay.example.com", "aria-label": t("welcome.relay-custom-label"), "data-moss-relay-url": "" });
     url.hidden = true;
     const save = button(t("welcome.relay-save"), async () => {
@@ -332,15 +333,15 @@ export async function showWelcome(host: HTMLElement, t: Translate, call: Call, d
       choice("n0", t("welcome.relay-n0"), t("welcome.relay-n0-detail")),
       choice("custom", t("welcome.relay-custom"), t("welcome.relay-custom-detail")),
       url,
-      choice("cloud", t("welcome.relay-cloud"), t("welcome.relay-cloud-detail"), true),
-      choice("cloudflare", t("welcome.relay-cloudflare"), t("welcome.relay-cloudflare-detail"), true),
+      plugins,
       choice("off", t("welcome.relay-off"), t("welcome.relay-off-detail")),
     );
     url.addEventListener("input", () => { page.status.textContent = ""; refresh(); });
     page.actions.append(button(t("welcome.back"), () => doneStep(model, m, effort), { "data-moss-welcome": "back" }), save);
     save.disabled = true;
     try {
-      saved = (await call("welcome.relay")) as { mode: string; url?: string };
+      saved = (await call("welcome.relay")) as NonNullable<typeof saved>;
+      for (const r of saved.plugins ?? []) plugins.append(choice(`plugin:${r.id}`, r.name, `${t("welcome.relay-plugin-detail")}${r.why ? ` (${r.why})` : ""}`, true));
       mode = saved.mode;
       url.value = saved.url ?? "";
       for (const input of host.querySelectorAll<HTMLInputElement>("input[name=relay]")) input.checked = !input.disabled && input.value === mode;

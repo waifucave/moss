@@ -313,7 +313,7 @@ async function runInstall(args: readonly string[], call: MossPluginCall, io: Cli
     const v = at > 0 ? spec.slice(at + 1) : version;
     if (name === "") return fail(usage, 2);
     source = { from: "npm", name, ...(v ? { version: v } : {}) };
-  } else if (existsAt(io.cwd, what) !== undefined && (what.includes("/") || what.startsWith("."))) {
+  } else if (existsAt(io.cwd, what) !== undefined && (what.includes("/") || what.startsWith(".") || (process.platform === "win32" && (what.includes("\\") || /^[A-Za-z]:/.test(what))))) {
     source = { from: "folder", path: existsAt(io.cwd, what) };
   } else {
     source = { from: "index", id: what, ...(index ? { index } : {}), ...(version ? { version } : {}) };

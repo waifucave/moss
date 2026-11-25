@@ -6,6 +6,7 @@ import { SystemClock } from "../../src/clock/system-clock";
 import { MemoryNetwork } from "../../src/links/memory-wire";
 import { MemoryRendezvous } from "../../src/links/pairing";
 import { MossSecretStore, KeychainValues, memoryVault } from "../../src/secrets/moss-secret-store";
+import { cleanName } from "../../src/devices/names";
 import { defaultDeviceName, linkSidecarBinary, refuseUntilBroker, startDaemonLinks, type DaemonLinks } from "../../src/ipc/device-links";
 import type { MossHandler } from "../../src/ipc/moss";
 
@@ -173,6 +174,11 @@ describe("the daemon's links (H-M1 wiring)", () => {
     expect(defaultDeviceName("")).toBe("Computer");
     expect(defaultDeviceName(".local")).toBe("Computer");
     expect(defaultDeviceName("tab\there")).toBe("tabhere");
+    // A host name made of what the one rule for names refuses is cleaned to a name every other device takes (`devices/names.ts`).
+    expect(defaultDeviceName("Pi\u200Bxe\u202El.local")).toBe("Pixel");
+    expect(defaultDeviceName("\u3164\u115F")).toBe("Computer");
+    expect(defaultDeviceName("e\u0301\u0302\u0303\u0304\u0305\u0306x")).toBe("e\u0301\u0302\u0303\u0304x");
+    expect(cleanName(defaultDeviceName("\u{E0041}\u{E0042}x.local"))).toBe(true);
   });
 
   test("a host name too long for the registry still starts the links", async () => {

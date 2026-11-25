@@ -17,7 +17,7 @@ import type { SecretStore as DaemonSecretStore } from "../../auth/secret-store";
 import type { ProviderRefresher } from "../host-credentials";
 import { installedModelPlugins, installModelPlugins, modelCatalogMaybeChanged } from "./index";
 import { keychainModelPluginCredentials } from "./keychain-tokens";
-import { modelPluginApiHandlers, secretStoreCredentials } from "./plugin-api";
+import { modelPluginApiHandlers, secretStoreCredentials, type ModelPluginApiOptions } from "./plugin-api";
 import { ModelPlugins } from "./service";
 import type { OAuthRenewal } from "./oauth-renewal";
 
@@ -54,6 +54,10 @@ export interface StartModelPluginsOptions {
    *  proven over a real host with a fake provider wire (plugin-host/tests/code-adapters-host.test.ts). `false` keeps
    *  every code provider on this build's own compiled adapter (`mergeWithCompiled`). */
   serveCodeAdapters?: boolean;
+  /** This computer's waifucave account tokens, read at each call (`net.fetch` with `auth: "waifucave"`). */
+  accountTokens?: ModelPluginApiOptions["accountTokens"];
+  /** Where the account token may go, when not production's waifucave.com hosts (a development profile's emulators). */
+  waifucaveTarget?: ModelPluginApiOptions["waifucaveTarget"];
 }
 
 export interface StartedModelPlugins {
@@ -91,6 +95,8 @@ export async function startModelPlugins(opts: StartModelPluginsOptions): Promise
     ...(opts.audit !== undefined ? { audit: opts.audit } : {}), ...(opts.dangerousAdded !== undefined ? { dangerousAdded: opts.dangerousAdded } : {}),
     ...(opts.log !== undefined ? { log: opts.log } : {}),
     ...(opts.userEndpoint !== undefined ? { userEndpoint: opts.userEndpoint } : {}),
+    ...(opts.accountTokens !== undefined ? { accountTokens: opts.accountTokens } : {}),
+    ...(opts.waifucaveTarget !== undefined ? { waifucaveTarget: opts.waifucaveTarget } : {}),
   }));
   const serve = removeHandlers !== undefined && opts.serveCodeAdapters !== false;
   if (!serve) opts.log?.(`[model-plugins] code providers stay on the compiled path (${removeHandlers === undefined ? "the plugin host takes no model plugin handlers" : "serving their plugins' adapters is off"})`);

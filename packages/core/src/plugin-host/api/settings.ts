@@ -26,6 +26,7 @@ import { readJsonOrKeepAside } from "../paths";
 import { randomUUID } from "node:crypto";
 import { listenerArg, stringArg, type ApiHandlers } from "./router";
 import { onCardYes, type CardYesOutput } from "../card-yes";
+import { titleWithName } from "../../approvals/title-name";
 
 /** The most a setting's value may hold, as JSON, for a plugin's own layer to read it (a `string` field holds at most
  *  8,192 characters; a default is the manifest's). */
@@ -213,8 +214,12 @@ export class PluginSettings {
       const opened = await this.#o.openCard({
         kind: "change", origin: "user", computers: [], effect: "other", change: "plugin-setting-host",
         fields: {
-          title: { type: "text", text: settingHostTemplates(this.#o.registry.get(pluginId)?.manifest).some((t) => t.keys.includes(key)) ? `Send ${name}'s requests somewhere else?` : `Change what ${name} runs with?` },
-          detail: { type: "list", items: [...moves.map((m) => `${m.from} → ${m.to}`), `${key} is written into where ${name} sends its requests or what it runs, with the keys it uses.`] },
+          // The plugin's name and its setting's key are the plugin's own text: rows (the name marked as one), never words of the engine's title.
+          title: { type: "text", text: settingHostTemplates(this.#o.registry.get(pluginId)?.manifest).some((t) => t.keys.includes(key))
+            ? titleWithName({ kind: "plugin", record: this.#o.registry.get(pluginId) }, name, (n) => `Send ${n}'s requests somewhere else?`, "Send a plugin's requests somewhere else?")
+            : titleWithName({ kind: "plugin", record: this.#o.registry.get(pluginId) }, name, (n) => `Change what ${n} runs with?`, "Change what a plugin runs with?") },
+          source: { type: "rows", rows: [{ label: "Plugin", value: name, name: true }, { label: "Setting", value: key }] },
+          detail: { type: "list", items: [...moves.map((m) => `${m.from} → ${m.to}`), "The setting is written into where the plugin sends its requests or what it runs, with the keys it uses."] },
         },
       });
       onCardYes(this.#o, opened.card, "plugin-setting-host", opened.allowed, () => {

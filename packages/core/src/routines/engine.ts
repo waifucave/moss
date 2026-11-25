@@ -28,7 +28,7 @@ import { isAnyPluginId, levelAbove, pluginIdFromSegment, type Level, type Routin
 import type { ApprovalBroker } from "../contracts/approval-broker";
 import type { Clock, TimerHandle } from "../contracts/clock";
 import { ContractError, Listeners, type Unsubscribe } from "../contracts/common";
-import type { SecretStore } from "../contracts/secret-store";
+import { getOrCreateSecret, type SecretStore } from "../contracts/secret-store";
 import { readJson, writeJsonAtomic } from "../sessions/atomic-file";
 import { botSegment, transcriptsDir } from "../sessions/ids";
 import type { SideThreadRun } from "../bots/service";
@@ -374,12 +374,10 @@ export class RoutineEngine {
     if (!this.webhooksAvailable()) throw new ContractError("refused", `${WEBHOOKS_UNAVAILABLE}, so ${id} has no webhook URL`);
     if (!this.#o.secrets) throw new ContractError("refused", "no credential store holds webhook keys here");
     const ref = { owner: { kind: "core" as const }, name: `routine-webhook:${id}` };
-    let key = opts.rotate ? undefined : (await this.#o.secrets.get(ref))?.value.reveal();
-    if (key === undefined) {
-      const bytes = crypto.getRandomValues(new Uint8Array(32));
-      key = Buffer.from(bytes).toString("base64url");
-      await this.#o.secrets.set(ref, key);
-    }
+    const fresh = () => Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
+    let key: string;
+    if (opts.rotate) { key = fresh(); await this.#o.secrets.set(ref, key); }
+    else key = (await getOrCreateSecret(this.#o.secrets, ref, fresh)).value.reveal(); // one key even from two processes at once
     const url = this.#o.registerWebhook === undefined
       ? `${(this.#o.webhookBase ?? "https://hooks.waifucave.com").replace(/\/+$/, "")}/${id}`
       : await this.#o.registerWebhook(id, key, trigger.ingress);
@@ -660,8 +658,11 @@ export class RoutineEngine {
       const decision = await approvals.request({
         kind: "change", change: "routine-level", bot: l.bot, origin: "routine", computers: [this.#o.computer], effect: "other",
         fields: {
-          title: { type: "text", text: `Let "${l.routine.name}" run at ${level}?` },
-          what: { type: "text", text: `The routine asks to run at ${level}, above this computer's level (${this.#o.computerLevel()}).${webhook ? " Anyone with its webhook URL can start it." : ""}` },
+          // The routine's name is chosen by whoever wrote the routine (a bot, maybe one that was led astray): it is a row of its own (a name),
+          // never a word of the title, and the level is said by the engine alone, in its own words.
+          title: { type: "text", text: "Let a routine run at a higher level?" },
+          what: { type: "text", text: `The routine named below asks to run at ${level}, above this computer's level (${this.#o.computerLevel()}).${webhook ? " Anyone with its webhook URL can start it." : ""}` },
+          detail: { type: "rows", rows: [{ label: "The routine", value: l.routine.name, name: true }] },
           computer: { type: "text", text: this.#o.computer },
           command: { type: "code", code: l.routine.body.slice(0, 64_000), language: "markdown" },
         },

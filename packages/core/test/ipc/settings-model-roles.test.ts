@@ -493,9 +493,10 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     const c = await TestClient.connect(socketPath);
     await c.hello(harnessToken, "cli");
     const first = (await c.request(METHODS.settingsModelRoles, {})).result.roles;
-    expect(first["titles.model"].model).toBeNull();
-    // The reviewer, a safety gate, runs on the default model itself (claim restored: it never goes unreviewed while its own provider is credentialed).
-    expect(first["reviewer.model"].model).toBe("groq/llama-3.3-70b-versatile");
+    // 2026-11-24: Groq serves no Llama light model but serves gpt-oss-20b, another family's: the jobs run on it, never on
+    // the default model (was: titles null, the reviewer on the default model itself).
+    expect(first["titles.model"].model).toBe("groq/openai/gpt-oss-20b");
+    expect(first["reviewer.model"].model).toBe("groq/openai/gpt-oss-20b");
     expect(first["reviewer.model"].problem).toBeNull();
     // Move the session default to a Claude row: groq is still the only credential, but it is not the default's
     // provider, so no job runs on it (was: a light job took groq's gpt-oss-20b).
@@ -525,9 +526,10 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     const c = await TestClient.connect(socketPath);
     await c.hello(harnessToken, "cli");
     const res = await c.request(METHODS.settingsModelRoles, {});
-    // 2026-11-22: was the user's own model, `groq/llama-3.3-70b-versatile`, with no problem.
-    expect(res.result.roles["pins.dream"].model).toBeNull();
-    expect(res.result.roles["pins.dream"].problem?.reason).toBe("no-default-model");
+    // 2026-11-22: was the user's own model, `groq/llama-3.3-70b-versatile`, with no problem. 2026-11-24: another family's
+    // light model on the same provider, never the default model.
+    expect(res.result.roles["pins.dream"].model).toBe("groq/openai/gpt-oss-20b");
+    expect(res.result.roles["pins.dream"].problem).toBeNull();
     c.close();
   });
 

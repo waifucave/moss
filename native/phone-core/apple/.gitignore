@@ -1,0 +1,5 @@
+# Built in CI: the XCFramework and the generated Swift.
+/MossPhoneCoreFFI.xcframework
+/Sources/MossPhoneCore/*.swift
+/.build
+/.swiftpm

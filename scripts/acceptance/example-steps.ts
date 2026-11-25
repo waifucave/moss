@@ -449,11 +449,22 @@ async function notesSteps(ctx: ExampleCtx, session: string): Promise<string> {
   }, () => frames(cdp));
   if (control.value !== "oldest" || control.label !== "Order on the page" || control.options.join("|") !== "Newest first|Oldest first") fail(`the detail's control reads ${JSON.stringify(control)}`);
   if (/asks you first/.test(control.text)) fail("the detail says changing the order asks first, though it feeds nothing the plugin runs");
-  // The user's key press on the control (main's gesture record), then the choice.
-  await cdp.evaluate(control.session, "(() => { document.querySelector('[data-setting=order] select').focus(); return true; })()");
-  for (const type of ["rawKeyDown", "keyUp"]) await cdp.send("Input.dispatchKeyEvent", { type, key: "Shift", code: "ShiftLeft", windowsVirtualKeyCode: 16 }, control.session);
-  await cdp.evaluate(control.session, "(() => { const s = document.querySelector('[data-setting=order] select'); s.value = 'newest'; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()");
+  // The user's key press on the control (main's gesture record), then the choice. A key press allows one call for one second after it
+  // (SEND_INPUT_WINDOW_MS): on a loaded runner the three round trips of this sequence can take longer than that (run 45408410103: "the
+  // call came 200 ms past the press's bound"), and the app then rightly refuses the call. The sequence is the person's, made again from
+  // its key press, until the setting is changed; the last wait says what the page said.
   const orderNow = async () => (await rpc.request<{ settings: { key: string; value?: unknown }[] }>("plugin.settings.get", { id })).settings.find((s) => s.key === "order")?.value;
+  const choose = async (): Promise<void> => {
+    await cdp.evaluate(control.session, "(() => { const s = document.querySelector('[data-setting=order] select'); s.value = 'oldest'; s.focus(); return true; })()");
+    for (const type of ["rawKeyDown", "keyUp"]) await cdp.send("Input.dispatchKeyEvent", { type, key: "Shift", code: "ShiftLeft", windowsVirtualKeyCode: 16 }, control.session);
+    await cdp.evaluate(control.session, "(() => { const s = document.querySelector('[data-setting=order] select'); s.value = 'newest'; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()");
+  };
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await choose();
+    const end = Date.now() + scaled(6_000);
+    while ((await orderNow()) !== "newest" && Date.now() < end) await sleep(300);
+    if ((await orderNow()) === "newest") break;
+  }
   await until("the Plugins page's choice in its setting", 15_000, async () => ((await orderNow()) === "newest" ? true : undefined), async () => `it is ${JSON.stringify(await orderNow())}; the page says ${String(await cdp.evaluate(control.session, "(document.querySelector('.cl-plugin-index__status') || {}).innerText || 'nothing'").catch(() => "?"))}`);
   const carded = (await rpc.request<{ cards: Card[] }>("card.list")).cards.filter((c) => !cardsBefore.has(c.id));
   if (carded.length > 0) fail(`changing the order on the Plugins page raised ${carded.map((c) => `${c.kind}${c.change ? ` (${c.change})` : ""}`).join(", ")}`);

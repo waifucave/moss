@@ -7,7 +7,7 @@
 // E-M1's app starts the daemon and the daemon its sidecar. The dmg and the Windows installer come with E-M1's app;
 // signing and updates are M2.
 //
-//   bun scripts/build-packages.ts [--arch x64|arm64[,…]] [--formats deb,rpm,AppImage] [--channel latest|beta] [--check] [--dry-run]
+//   bun scripts/build-packages.ts [--arch x64|arm64[,…]] [--formats deb,rpm,AppImage] [--channel latest|beta] [--check] [--dry-run] [--require-keyring]
 //
 // Linux only: electron-builder makes the deb and the rpm with fpm, and the rpm needs rpmbuild (`apt-get install rpm`).
 // An architecture builds on its own machine (CI runs one job per architecture): moss-link is Rust with ring's C,
@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import { daemonOutput, runScriptLine, type DaemonTarget } from "./build-daemon";
 import { bundledBinaryProblems, bundledFiles } from "./bundled-binaries";
 import { runNameScan } from "./release/name-scan";
+import { keyringProblem } from "./release/linux-repo";
 import { sealProblems } from "./seal-bun-doors";
 import { channelArgs, checkoutCommit, parseChannel, writeBuildCommit, writeCoreAssets, writePluginBunAssets, writePluginsAssets, writeServedCopies, type Channel } from "./release/lib";
 import { builtArtifactProblems, installerName, INSTALLER_ROWS, type AppKey, type ReleaseOs } from "./release/artifacts";
@@ -239,11 +240,19 @@ function checkBuilt(outDir: string, arch: LinuxArch, formats: readonly LinuxForm
 
 export async function main(argv: readonly string[], root: string): Promise<number> {
   let args: BuildPackagesArgs;
+  // `--require-keyring` (the release workflow's): refuse to build packages for a release while the repositories' public key is not
+  // committed (scripts/release/linux-repo.ts `keyringProblem`). Without it the build only says so.
+  const requireKeyring = argv.includes("--require-keyring");
   try {
-    args = parseBuildPackagesArgs(argv, process.arch);
+    args = parseBuildPackagesArgs(argv.filter((a) => a !== "--require-keyring"), process.arch);
   } catch (err) {
     console.error(`build-packages: ${(err as Error).message}`);
     return 2;
+  }
+  const keyring = keyringProblem(root);
+  if (keyring !== undefined) {
+    if (requireKeyring) { console.error(`build-packages: ${keyring}`); return 1; }
+    console.log(`build-packages: NOTE: ${keyring}`);
   }
   if (process.platform !== "linux" && !args.dryRun) {
     console.error("build-packages: the Linux packages build on Linux (fpm and rpmbuild); use --dry-run elsewhere");

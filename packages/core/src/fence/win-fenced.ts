@@ -41,7 +41,9 @@
 //  8. Reads: the user's profile through srt-win's profile read grant (`grantProfile`), less every `denyRead`. The
 //     grant's exclusions are added to the ones in force, never replacing another engine's (another MOSS home of the
 //     same Windows user); a per-command read deny is dropped only when the grant IN FORCE, read back at that command
-//     (`profile status`), excludes the path; otherwise it is stamped (`perExecReadDenies`).
+//     (`profile status`), excludes the path; otherwise it is stamped (`perExecReadDenies`). 8b: when the fenced set
+//     gains a path that exists, the grant is made again with it before a command, between commands (`refreshExcludes`).
+//     8c: a long command (`onFenceGrew`) is watched while it runs, and ended by its caller when its fenced set grows.
 //  9. Nothing carries over (spec §9.1): after each command the reset task (SYSTEM, `sandbox reset`) deletes the
 //     principal's whole profile and hive and makes a fresh one from the default profile, then writes a new generation;
 //     a command runs only as a principal whose generation isn't the one last used (`leaseFresh`), and marks it used
@@ -60,7 +62,7 @@ import { runCommand, type FencedRun, type FencedRunResult, type FencedSpawner, t
 import {
   createWindowsLockStore, execArgs, isFreshGeneration, poolStateDir, poolStateFiles, runResetTaskArgs, installMarkerPath, launcherProblem, minimalChildEnv, parseInstallMarker,
   sandboxLeasesDir, sessionGrantArgs, sessionGrantInput,
-  sessionRevokeArgs, setupBashRefusal, srtWinArch, srtWinPath, winLaunchPlan, type InstallMarker, type LeaseStore,
+  sessionRevokeArgs, setupBashRefusal, srtWinArch, srtWinPath, USER_STATUS_ARGS, winLaunchPlan, type InstallMarker, type LeaseStore,
 } from "./win-sandbox";
 
 /** The two shells a fenced command runs in on Windows. */
@@ -162,6 +164,14 @@ export const UNWALKED_DENY_LIMIT = 256;
  *  one whole name, `**` any depth). A path that doesn't exist isn't stamped (srt-win fails an exec on one). */
 export function existingDenies(paths: readonly string[], o: WalkOptions = {}): string[] {
   return existingDeniesOf(paths, o).paths;
+}
+
+/** Rule 8c: what a long command's watch looks at, each time: the literal read denies that exist and the matches of
+ *  the fixed-depth globs (expanded a segment at a time, listing only the folders the pattern names, never walking a
+ *  tree). A `**` glob is not watched: it would walk a whole tree every time (none is among a bot's read denies; a
+ *  match made later under one is the per-command stamp's limit, as for a foreground command). */
+export function watchedReadDenies(denyRead: readonly string[], o: WalkOptions = {}): string[] {
+  return existingDeniesOf(denyRead.filter((p) => !win32.normalize(p).split("\\").includes("**")), o).paths;
 }
 
 export interface WalkOptions {
@@ -329,6 +339,8 @@ export interface WinFencedDeps {
   /** How long a command waits for a free, reset principal before it is refused, and how often it looks. */
   readonly leaseTimeoutMs?: number;
   readonly leasePollMs?: number;
+  /** Rule 8c: how often a long command's fenced set is looked at again (`FencedRun.onFenceGrew`). */
+  readonly fenceWatchMs?: number;
 }
 
 declare const __MOSS_TEST_BUILD__: string | false | undefined;
@@ -506,6 +518,10 @@ export function profileExcludeCandidates(fence: Pick<MossFence, "policy" | "cont
 /** The profile read grant, by launcher and MOSS home: made once per process for each home (`grantProfile`), again
  *  after one that failed. */
 const profileGrants = new Map<string, Promise<string | null>>();
+/** Rule 8b: this process's commands past their exclusions' check and not yet ended, every spawner counted. */
+let commandsActive = 0;
+/** The exclusions the last grant this process made succeeded with, by the same key (rule 8b). */
+const grantedExcludes = new Map<string, string[]>();
 
 /** The literal paths the profile read grant in force excludes, from `srt-win profile status` (its `exclusions`: every
  *  protected path, built-in and added, of whichever run made the grant last), or [] when it can't be read or a grant
@@ -527,6 +543,26 @@ const plansInFlight = new Set<PlanInFlight>();
  *  --persistent`): its group entry, read included, stays after the command and the daemon, so a later command of
  *  another caller whose plan denies a folder above it stamps that root by name (`strayRoots`). */
 const grantedRoots = new Map<string, string>();
+/** Rule 3c across a restart (the WS4 reviewer's item 2): srt-win keeps the roots it granted for this user (`user status`,
+ *  `persistent_grants.roots`, and `pending` for an absent volume) after the engine that granted them is gone, so the
+ *  record is seeded from that list once per process and launcher, before any command's plan is drawn. A seed that
+ *  fails is not kept: the next command reads it again. */
+const rootsSeeded = new Map<string, Promise<boolean>>();
+/** The persistent roots srt-win lists for the calling user, as plain paths (`persistent_grants.roots`, and `pending`
+ *  when present); null when the output isn't that shape (not JSON, no `persistent_grants` object, `roots` not a list
+ *  of strings, `pending` present but not one): the seed then counts as failed, never as an empty list (the WS5
+ *  reviewer's should-fix 2). */
+export function parsePersistentRoots(stdout: string): string[] | null {
+  let o: unknown;
+  try { o = JSON.parse(stdout); } catch { return null; }
+  if (typeof o !== "object" || o === null) return null;
+  const g = (o as { persistent_grants?: unknown }).persistent_grants;
+  if (typeof g !== "object" || g === null) return null;
+  const { roots, pending } = g as { roots?: unknown; pending?: unknown };
+  const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === "string" && x.length > 0);
+  if (!strings(roots) || (pending !== undefined && !strings(pending))) return null;
+  return [...roots, ...(pending ?? [])].map((x) => x.replace(/^\\\\\?\\/, ""));
+}
 /** The roots this process granted that lie strictly under one of `denyRead` without being denied by name there, and
  *  under none of the command's own folders (`own`): each gets a read deny of its own for the command. */
 export function strayRoots(granted: Iterable<string>, denyRead: readonly string[], own: readonly string[]): string[] {
@@ -636,23 +672,78 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         if (again.some((p) => !excludes.some((e) => fold(e) === fold(p)))) { const r2 = await grant(again); if (r2.code === 0) excludes = again; else r = r2; }
       }
       const took = `${Math.round((Date.now() - started) / 1000)} s`;
-      if (r.code === 0) return null;
+      if (r.code === 0) { grantedExcludes.set(grantKey, excludes); return null; }
       profileGrants.delete(grantKey);
       return `the read grant on your profile didn't complete (srt-win exit ${r.code}, ${took}): commands can't read your home folder yet`;
     })();
     profileGrants.set(grantKey, p);
     return p;
   };
+  // Rule 8b (lane WS7): the exclusions follow the fenced set. A secret folder made after the grant (a new key store, a
+  // new place the fence names) is excluded only by a per-command deny, which costs its stamp and its parent's every
+  // command; so before a command, when no command of this process holds session grants (srt-win refuses a grant while
+  // one does), the exclusions are read again and, when one was added, the grant is made again with them (a run that
+  // changes only what changed). A command that comes meanwhile waits for it; one that fails (another engine's command,
+  // srt-win's exit 24) leaves the grant as it was, and the per-command denies stand in until a later command tries.
+  let refreshing: Promise<void> | null = null;
+  const counted = new Set<FencedRun>();
+  const refreshExcludes = async (): Promise<void> => {
+    if (refreshing !== null) return refreshing;
+    const had = grantedExcludes.get(grantKey);
+    // The command asking is counted already (`runOne`): none other may be.
+    if (had === undefined || heldGrants.inFlight > 0 || plansInFlight.size > 0 || commandsActive > 1) return;
+    const now = profileExcludes();
+    if (!now.some((p) => !had.some((e) => fold(e) === fold(p)))) return;
+    refreshing = (async () => {
+      const merged = uniq([...had, ...now]);
+      const r = await deps.exec([deps.launcher, "profile", "grant", "--quiet", "--json", ...merged.flatMap((p) => ["--exclude", p])], { timeoutMs: 1_800_000 });
+      if (r.code === 0) grantedExcludes.set(grantKey, merged);
+    })().finally(() => { refreshing = null; });
+    return refreshing;
+  };
   // The read grant is made when the spawner is, off any command's path (its first run walks the profile: ~18 s on the
   // runner); a command that comes before it ends waits for it, as before.
   if (o.grantAhead !== false) setTimeout(() => { if (!("why" in install())) void grantProfile(); }, 0);
+  /** Rule 3c's seed (`rootsSeeded`): srt-win's own list of this user's persistent roots, once per process. */
+  // No command runs until the seed has succeeded (the WS5 reviewer's should-fix 2): without it, a root granted before
+  // this engine started could open another caller's folder to a running command. A failed read is not kept: the
+  // next command reads it again. True when seeded.
+  const seedRoots = async (): Promise<boolean> => {
+    let p = rootsSeeded.get(deps.launcher);
+    if (p === undefined) {
+      p = (async () => {
+        const st = await deps.exec([deps.launcher, ...USER_STATUS_ARGS], { timeoutMs: 30_000 });
+        if (st.code !== 0) return false;
+        const roots = parsePersistentRoots(st.stdout);
+        if (roots === null) return false;
+        for (const x of roots) grantedRoots.set(fold(x), x);
+        return true;
+      })();
+      rootsSeeded.set(deps.launcher, p);
+    }
+    const ok = await p;
+    if (!ok) rootsSeeded.delete(deps.launcher);
+    return ok;
+  };
   return {
     get available() { return !("why" in install()); },
+    // Rule 8b's count: every command of this process from its exclusions' check to its end, so a fresh grant waits
+    // until none is between that check and its own session grant.
     run: async (r: FencedRun): Promise<FencedRunResult> => {
+      try { return await runOne(r); } finally { if (counted.delete(r)) commandsActive--; }
+    },
+  };
+
+  async function runOne(r: FencedRun): Promise<FencedRunResult> {
+    {
       if (r.signal?.aborted) return { kind: "refused", reason: "cancelled before it started" };
       const got = install();
       if ("why" in got) return refuse(got.why);
+      // Counted before the exclusions' check (the WS7 reviewer's nit): another command's check then sees this one.
+      commandsActive++;
+      counted.add(r);
       const readNote = await grantProfile();
+      if (readNote === null) await refreshExcludes();
       const shell: WinShell = r.shell ?? "bash";
       const exe = shell === "powershell" ? deps.shells.powershell : deps.shells.bash;
       if (exe === null) return refuse(shell === "powershell" ? "Windows PowerShell isn't in System32" : "Git for Windows' bash isn't installed (Program Files\\Git, or this user's Programs\\Git)");
@@ -667,6 +758,10 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
       // command only as a pool account (no network); an install without the escape account refuses the escape.
       const members = got.marker.members.filter((m) => (m.network === true) === (r.network === true));
       if (members.length === 0) return refuse(r.network === true ? "the escape account isn't set up; run `moss-core sandbox setup` again" : setupBashRefusal(null));
+      // Rule 3c's seed first, before an account is leased: a refusal here uses no account up (leasing marks a generation used, and a failed
+      // read can wait up to 30 s for `user status`). It needs neither the plan nor the account.
+      if (!(await seedRoots())) return refuse("the sandbox's list of folders it already opened (srt-win user status) couldn't be read; try again in a moment, and if it keeps failing run `moss-core sandbox setup` again, or restart MOSS");
+      mark("seed");
       const lease = await leaseFresh(leases, { ...got.marker, members }, deps.ownerSid!);
       mark("lease");
       if (!lease.ok) return refuse(lease.reason);
@@ -735,7 +830,8 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
           for (const x of roots) grantedRoots.set(fold(x), x);
           // Rule 4: what exists of the fenced set, stamped for this command; past a root's walk budget, the folders it
           // didn't read are denied whole (`existingDeniesOf`). And rule 3c's stray roots, by name.
-          const denyRead = await perExecReadDenies(uniq([...existingDeniesOf(plan.denyRead).paths, ...stray.filter((x) => existsSync(x))]));
+          const readWalk = existingDeniesOf(plan.denyRead);
+          const denyRead = await perExecReadDenies(uniq([...readWalk.paths, ...stray.filter((x) => existsSync(x))]));
           const writeWalk = existingDeniesOf(plan.denyWrite);
           // Only a write deny at or under a write root is stamped: nothing outside the roots is writable with the
           // write-restricted token (rule 3), and each stamp on a folder is a DACL write Windows carries down its whole
@@ -766,7 +862,34 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
           // its own lines go to the timing line, never into the command's output.
           const timing = process.env.MOSS_WIN_FENCE_TIMING === "1";
           const argv = timing ? built.argv.filter((a, i) => !(a === "--quiet" && i < built.argv.indexOf("--"))) : built.argv;
-          const ran = await runCommand({ ...r, env: minimalChildEnv() }, { shell: runShell, argv });
+          // Rule 8c (lane WS7, the WS7 reviewer's items 1 and 3): a long command is planned and stamped once, at its start,
+          // so what the fence protects that appears later (a secret file made in a folder its grant opens, a new match
+          // of a pattern, a place the profile grant must now exclude) would stay open to it for its whole life, and the
+          // grant's refresh (rule 8b) can't run while it holds its session grant. So while it runs, its fenced set is
+          // looked at again every `fenceWatchMs`: the paths its read denies match now (`watchedReadDenies`: the literal
+          // ones and the fixed-depth globs, a new conversation's transcript sidecar in the MOSS home included) against
+          // those at its start, and the profile grant's exclusions against what the grant IN FORCE holds (the WS7
+          // reviewer: a place that appeared before it started but after the grant counts too, or the refresh would wait
+          // for it); once either has grown, its caller is told (once) and ends it. Its write denies are not watched: inside its own
+          // write roots the command makes such paths itself (a `git clone` makes `.git\hooks`), and those are dealt
+          // with after it, as any command's are (rule 4's belt). A foreground command has no watch: it lives at most
+          // its 10-minute limit, and the next one is planned anew.
+          const fenceWatch = r.onFenceGrew === undefined ? null : (() => {
+            const had = new Set(watchedReadDenies(plan.denyRead).map(fold));
+            const grew = (): boolean => {
+              if (watchedReadDenies(plan.denyRead).some((p) => !had.has(fold(p)))) return true;
+              const granted = grantedExcludes.get(grantKey);
+              return granted !== undefined && profileExcludes().some((p) => !granted.some((e) => fold(e) === fold(p)));
+            };
+            const t = setInterval(() => {
+              if (!grew()) return;
+              clearInterval(t);
+              try { r.onFenceGrew!(); } catch { /* the caller's own */ }
+            }, deps.fenceWatchMs ?? 30_000);
+            return t;
+          })();
+          const ran = await runCommand({ ...r, env: minimalChildEnv() }, { shell: runShell, argv })
+            .finally(() => { if (fenceWatch !== null) clearInterval(fenceWatch); });
           mark("exec");
           if (ran.kind === "refused") return ran;
           let result = ran;
@@ -797,8 +920,8 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         // Rule 9: the principal's profile and hive go now, before another command takes it (the reset task, SYSTEM).
         void deps.exec(runResetTaskArgs(deps.ownerSid!), { timeoutMs: 30_000 });
       }
-    },
-  };
+    }
+  }
 
   /** Rules 2 and 9: lease a pool member no command holds (its `.lock`, an OS lock the reset takes too) whose profile
    *  the reset remade since its last command (`isFreshGeneration`: its `.gen` isn't its `.used`). The generation is

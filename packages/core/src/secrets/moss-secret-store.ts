@@ -1,7 +1,8 @@
 // The real SecretStore (B's contract `contracts/secret-store.ts`, owner lane C; spec §8.5, §9.1 "The secret store").
 //   - What the store knows about each item (its owner, name, generation, time and whether it syncs) sits in an index,
-//     `<home>/credentials/index.json`, inside the fenced set and owner-only. It never holds a value, so `list` and
-//     `watch` work while the values are locked.
+//     `<home>/credentials/index.json` with a second copy, inside the fenced set and owner-only. It never holds a value,
+//     so `list` and `watch` work while the values are locked. The values, not the index, say whether an item is there
+//     (`MossSecretStore`).
 //   - The values:
 //       macOS            one Keychain item per secret (`KeychainValues`), whose ACL trusts the daemon's binary
 //       Windows, Linux   one encrypted file, `<home>/secrets.enc` (AES-256-GCM, a fresh nonce per write), whose key
@@ -10,16 +11,17 @@
 //   - The OS stores are injected (`Vault`), so tests never touch the real Keychain, Credential Manager or keyring.
 // A value leaves only through `get`, wrapped in a `Secret`; nothing written to the index, a log or an error holds one.
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { SecretKeySource } from "@waifucave/moss-protocol";
 import type { Clock } from "../contracts/clock";
 import { ContractError, Listeners } from "../contracts/common";
 import { osSecretsBackend } from "../auth/secret-store";
-import { flushFile, readFileRetrying, renameDurably, withSecretsLock, writePrivateFile, type PrivateFileDeps } from "./private-file";
+import { flushFile, present, readFileRetrying, renameDurably, withSecretsLock, writePrivateFile, type PrivateFileDeps } from "./private-file";
 import {
-  SECRETS_BACKUP_SEGMENTS, SECRETS_FILE_NAME, SECRETS_KEY_FILE_NAME, SECRETS_LOCK_SEGMENTS, SECRETS_MADE_SEGMENTS,
-  SECRETS_SEALED_KEY_FILE_NAME, SECRETS_TMP_DIR_SEGMENTS,
+  SECRETS_BACKUP_SEGMENTS, SECRETS_FILE_NAME, SECRETS_INDEX_COPY_SEGMENTS, SECRETS_INDEX_LOCK_SEGMENTS, SECRETS_INDEX_MADE_SEGMENTS,
+  SECRETS_INDEX_SEGMENTS, SECRETS_KEY_FILE_NAME, SECRETS_LOCK_SEGMENTS, SECRETS_MADE_SEGMENTS, SECRETS_SEALED_KEY_FILE_NAME,
+  SECRETS_TMP_DIR_SEGMENTS,
 } from "./secret-files";
 import {
   SECRET_NAME_RE, Secret, secretOwnerKey, secretRefKey,
@@ -78,7 +80,7 @@ const madePath = (file: string) => join(dirname(file), ...SECRETS_MADE_SEGMENTS)
 export const secretDisk = (file: string): PrivateFileDeps => ({ tmpDir: join(dirname(file), ...SECRETS_TMP_DIR_SEGMENTS) });
 /** A secrets file was made here: it is there, its previous copy is, or the note that one was is. A key missing now is then
  *  lost, never to be made over (#205's S3). */
-export function secretsFileMade(file: string): boolean { return existsSync(file) || existsSync(backupPath(file)) || existsSync(madePath(file)); }
+export function secretsFileMade(file: string): boolean { return present(file) || present(backupPath(file)) || present(madePath(file)); }
 
 /** macOS: one vault item per secret. */
 export class KeychainValues implements ValueBackend {
@@ -93,7 +95,7 @@ const SOURCE_CODES: Record<SecretKeySource, number> = { "credential-manager": 1,
 /** The key source a secrets file records in its header (#205's S3): the store always uses it, never another. Null when
  *  there's no file; `unreadable` when it isn't one this store wrote. */
 export function recordedKeySource(path: string): SecretKeySource | null | "unreadable" {
-  if (!existsSync(path)) return null;
+  if (!present(path)) return null;
   let head: Buffer;
   try { head = readFileSync(path).subarray(0, 2); } catch { return "unreadable"; }
   if (head[0] !== 2) return "unreadable";
@@ -144,17 +146,17 @@ export class EncryptedFileValues implements BatchValues {
   async #load(): Promise<{ all: Record<string, string>; blob: Buffer | null; recovered: boolean }> {
     const bak = backupPath(this.path);
     let damage: unknown;
-    if (existsSync(this.path)) {
+    if (present(this.path)) {
       const blob = await readFileRetrying(this.path);
       try { return { all: await this.#decrypt(blob), blob, recovered: false }; }
       catch (e) { if (!(e instanceof ContractError) || e.code !== "invalid") throw e; damage = e; }
-    } else if (!existsSync(bak)) {
-      if (existsSync(madePath(this.path))) {
+    } else if (!present(bak)) {
+      if (present(madePath(this.path))) {
         throw new ContractError("locked", "the secrets file (secrets.enc) is missing though one was made here: saved logins stay locked until it is restored (or the note credentials/secrets-file.made is deleted to start empty)");
       }
       return { all: {}, blob: null, recovered: false };
     }
-    if (existsSync(bak)) {
+    if (present(bak)) {
       try {
         const blob = await readFileRetrying(bak);
         const all = await this.#decrypt(blob);
@@ -165,18 +167,26 @@ export class EncryptedFileValues implements BatchValues {
     throw damage ?? new ContractError("locked", "the secrets file (secrets.enc) is missing and its previous copy can't be read");
   }
 
-  /** Writes `all`: the file it replaces is first kept whole as the previous copy (durably), then the new file is written
-   *  (flushed, renamed, the rename flushed: `writePrivateFile`), then the note that a file was made. A crash anywhere
-   *  leaves the old whole file, the new whole file, or the previous copy beside whichever is there. */
-  async #write(all: Record<string, string>, from: { blob: Buffer | null; recovered: boolean }): Promise<void> {
+  /** Writes `all`. Its second whole copy (`credentials/secrets.enc.bak`) is made the NEW file first, then the file itself
+   *  is replaced (each flushed, renamed, the rename flushed: `writePrivateFile`), then once the note that a file was made.
+   *
+   *  So no copy ever holds what a write replaced (lane SE review: a removed item, and a REPLACED value such as a rotated
+   *  webhook key or a refreshed token, never reads again from the copy when the file is later damaged or restored; and
+   *  an item just added is not lost to damage of the file, which would make a device key be minted again). Every write,
+   *  not only removals and rotations: an addition kept out of the copy is exactly the device key lost.
+   *  A crash between the two leaves the OLD file (the write never returned, so it never happened) beside a copy that is
+   *  already the new one; damage of the file then reads that copy, a value its writer was told failed, never an older
+   *  one. A crash before the copy's rename leaves both as they were. */
+  async #write(all: Record<string, string>, _from: { all: Record<string, string>; blob: Buffer | null; recovered: boolean }): Promise<void> {
     const iv = randomBytes(12);
     const head = Buffer.from([2, SOURCE_CODES[this.source]]);
     const c = createCipheriv("aes-256-gcm", await this.key(), iv);
     c.setAAD(head);
     const body = Buffer.concat([c.update(JSON.stringify(all), "utf8"), c.final()]);
-    if (from.blob !== null && !from.recovered) await writePrivateFile(backupPath(this.path), from.blob, this.#disk);
-    await writePrivateFile(this.path, Buffer.concat([head, iv, c.getAuthTag(), body]), this.#disk);
-    if (!existsSync(madePath(this.path))) await writePrivateFile(madePath(this.path), "a secrets file was made here\n", this.#disk);
+    const next = Buffer.concat([head, iv, c.getAuthTag(), body]);
+    await writePrivateFile(backupPath(this.path), next, this.#disk);
+    await writePrivateFile(this.path, next, this.#disk);
+    if (!present(madePath(this.path))) await writePrivateFile(madePath(this.path), "a secrets file was made here\n", this.#disk);
   }
 
   async get(key: string) { return (await this.#load()).all[key] ?? null; }
@@ -244,7 +254,7 @@ export function systemdCredsKey(path: string, creds: SystemdCreds, secretsFile: 
   const name = "--name=moss-secrets-key";
   return async () => {
     if (cached) return cached;
-    if (!existsSync(path)) {
+    if (!present(path)) {
       if (secretsFileMade(secretsFile)) throw missingKey("its sealed credential (secrets.key.cred)");
       const fresh = randomBytes(32).toString("base64");
       // The half-made credential goes in the run folder, which every fence hides, and is flushed before it is renamed in.
@@ -274,7 +284,7 @@ export function secretStoreWarning(status: SecretStoreStatus): string | null {
 /** A headless computer's last resort: the key in a file only the user can read (status `plaintext`). */
 export function keyFileKey(path: string, secretsFile: string): () => Promise<Buffer> {
   return async () => {
-    if (!existsSync(path)) {
+    if (!present(path)) {
       if (secretsFileMade(secretsFile)) throw missingKey("its key file (secrets.key)");
       await writePrivateFile(path, randomBytes(32), secretDisk(secretsFile));
     }
@@ -282,15 +292,6 @@ export function keyFileKey(path: string, secretsFile: string): () => Promise<Buf
     if (k.length !== 32) throw new ContractError("invalid", "the key file is damaged");
     return k;
   };
-}
-
-function writeOwnerOnly(path: string, data: Buffer | string): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const tmp = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-  writeFileSync(tmp, "", { mode: 0o600, flag: "wx" });
-  if (process.platform !== "win32") chmodSync(tmp, 0o600);
-  writeFileSync(tmp, data, { flag: "r+" });
-  renameSync(tmp, path);
 }
 
 export interface MossSecretStoreOptions {
@@ -301,21 +302,63 @@ export interface MossSecretStoreOptions {
   clock?: Pick<Clock, "now">;
   /** Starts locked with this reason (a keyring still locked at the login screen). */
   locked?: string;
+  /** Says when the index was read from its second copy (the daemon's log by default). */
+  log?: (line: string) => void;
 }
 
 interface Index { version: 1; items: Record<string, SecretMeta> }
 
+/** An index as this store writes it, or null: the version, and each entry an item's meta under its own key. */
+function parseIndex(bytes: Buffer): Index | null {
+  let i: unknown;
+  try { i = JSON.parse(bytes.toString("utf8")); } catch { return null; }
+  if (typeof i !== "object" || i === null || (i as Index).version !== 1) return null;
+  const items = (i as Index).items;
+  if (typeof items !== "object" || items === null || Array.isArray(items)) return null;
+  for (const [key, m] of Object.entries(items)) {
+    if (typeof m !== "object" || m === null || typeof m.generation !== "number" || typeof m.ref?.name !== "string" || typeof m.ref.owner?.kind !== "string") return null;
+    if (secretRefKey(m.ref) !== key) return null;
+  }
+  return i as Index;
+}
+
+const INDEX_DAMAGED = "the secret store's index (credentials/index.json) is damaged and its second copy (index.json.bak) can't be read: saved items still read, but none can be added, changed, removed or listed until one of them is restored (or both are deleted with credentials/index.made, to start the list afresh)";
+const INDEX_MISSING = "the secret store's index (credentials/index.json) and its second copy are missing though one was made here: saved items still read, but none can be added, changed, removed or listed until one is restored (or credentials/index.made is deleted, to start the list afresh)";
+
+/** The store's items over a value backend, with an index of what is there (every OS).
+ *
+ *  The VALUES are the authority: `get` answers what the value backend holds, so an index that is damaged, short, missing,
+ *  or behind (a crash after the value was written and before the index) never makes a stored value read as "nothing
+ *  there", and nothing that makes an item when it finds none (the device key) makes one over the old. An item the index
+ *  doesn't know reads with generation 0.
+ *
+ *  The index is written as the secrets file is (`writePrivateFile`: owner-only from its first byte, the Windows ACL,
+ *  flushed, renamed, the rename flushed), then its second whole copy, then once the note that one was made. A damaged or
+ *  missing index is read from the second copy, and said once. With neither readable a write, a removal and a listing
+ *  are refused with a plain reason (`invalid` when the index is there but damaged, `locked` when both are gone though
+ *  the note says one was made), and nothing is written over them. A write of an item and its index holds the index's
+ *  lock across this user's processes (`run/secrets-index.lock`, taken before the file's own), so the daemon and the CLI
+ *  writing at once lose no entry. */
 export class MossSecretStore implements SecretStore {
   readonly #o: MossSecretStoreOptions;
   readonly #listeners = new Listeners<SecretChange>();
   readonly #indexPath: string;
+  readonly #copyPath: string;
+  readonly #madePath: string;
+  readonly #lockPath: string;
+  readonly #disk: PrivateFileDeps;
   readonly #unlockedStatus: SecretStoreStatus;
   #status: SecretStoreStatus;
-  #queue: Promise<unknown> = Promise.resolve();
+  #toldCopy = false;
+  #notedMade = false;
 
   constructor(o: MossSecretStoreOptions) {
     this.#o = o;
-    this.#indexPath = join(o.home, "credentials", "index.json");
+    this.#indexPath = join(o.home, ...SECRETS_INDEX_SEGMENTS);
+    this.#copyPath = join(o.home, ...SECRETS_INDEX_COPY_SEGMENTS);
+    this.#madePath = join(o.home, ...SECRETS_INDEX_MADE_SEGMENTS);
+    this.#lockPath = join(o.home, ...SECRETS_INDEX_LOCK_SEGMENTS);
+    this.#disk = { tmpDir: join(o.home, ...SECRETS_TMP_DIR_SEGMENTS) };
     this.#unlockedStatus = { ...o.status };
     this.#status = o.locked === undefined ? { ...o.status } : { ...o.status, state: "locked", reason: o.locked };
   }
@@ -333,65 +376,114 @@ export class MossSecretStore implements SecretStore {
     this.#listeners.emit({ status: this.status() });
   }
 
-  #index(): Index {
-    try {
-      const i = JSON.parse(readFileSync(this.#indexPath, "utf8")) as Index;
-      return i.version === 1 && typeof i.items === "object" ? i : { version: 1, items: {} };
-    } catch { return { version: 1, items: {} }; }
+  /** The index: the file, else its second copy (said once), else empty on a home where none was ever made. Throws
+   *  `invalid` when the index is there but neither copy reads, `locked` when both are gone though one was made. */
+  async #index(): Promise<Index> {
+    let damaged = false;
+    for (const [path, isCopy] of [[this.#indexPath, false], [this.#copyPath, true]] as const) {
+      if (!present(path)) continue;
+      let bytes: Buffer;
+      try { bytes = await readFileRetrying(path); } catch { damaged ||= !isCopy; continue; }
+      const i = parseIndex(bytes);
+      if (i === null) { damaged ||= !isCopy; continue; }
+      if (!isCopy) this.#noteMade();
+      if (isCopy && !this.#toldCopy) {
+        this.#toldCopy = true;
+        (this.#o.log ?? ((l: string) => console.error(l)))(`[secrets] the store's index (credentials/index.json) was ${damaged ? "damaged" : "missing"}: read from its second copy (index.json.bak); the next write puts it back`);
+      }
+      return i;
+    }
+    if (damaged) throw new ContractError("invalid", INDEX_DAMAGED);
+    if (present(this.#madePath)) throw new ContractError("locked", INDEX_MISSING);
+    return { version: 1, items: {} };
   }
 
-  #save(i: Index): void { writeOwnerOnly(this.#indexPath, JSON.stringify(i)); }
+  /** A home whose index was made before the note existed (before lane SE) gets the note the first time its index
+   *  reads whole, so losing both copies later is `locked` there too, never a quiet empty list. Best effort. */
+  #noteMade(): void {
+    if (this.#notedMade) return;
+    this.#notedMade = true;
+    try { if (present(this.#madePath)) return; } catch { return; }
+    void writePrivateFile(this.#madePath, "an index of saved items was made here\n", this.#disk).catch(() => { this.#notedMade = false; });
+  }
+
+  /** Writes the index, then its second copy, then (once) the note that one was made: each whole and durable. */
+  async #save(i: Index): Promise<void> {
+    const bytes = JSON.stringify(i);
+    await writePrivateFile(this.#indexPath, bytes, this.#disk);
+    await writePrivateFile(this.#copyPath, bytes, this.#disk);
+    if (!present(this.#madePath)) await writePrivateFile(this.#madePath, "an index of saved items was made here\n", this.#disk);
+  }
 
   #unlocked(): void {
     if (this.#status.state === "locked") throw new ContractError("locked", `the secret store is locked${this.#status.reason ? `: ${this.#status.reason}` : ""}`);
   }
 
-  /** One write at a time: the index and the encrypted file are read and rewritten whole. */
+  /** One write at a time, in this process and across this user's processes: an item and its index entry together. */
   #serial<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.#queue.then(fn, fn);
-    this.#queue = run.catch(() => undefined);
-    return run;
+    return withSecretsLock(this.#lockPath, fn);
   }
 
   async get(ref: SecretRef): Promise<SecretValue | null> {
     this.#unlocked();
     const key = secretRefKey(ref);
-    const meta = this.#index().items[key];
-    if (!meta) return null;
+    // The value is the authority; the index only gives its generation (0 when it can't).
     const value = await this.#o.values.get(key);
-    return value === null ? null : { value: new Secret(value), generation: meta.generation };
+    if (value === null) return null;
+    let generation = 0;
+    try { generation = (await this.#index()).items[key]?.generation ?? 0; } catch { /* the index can't be read: the value still can */ }
+    return { value: new Secret(value), generation };
   }
 
   set(ref: SecretRef, value: string | Secret, opts: { synced?: boolean } = {}): Promise<SecretMeta> {
+    return this.#serial(() => this.#setHeld(ref, value, opts));
+  }
+
+  /** The item, or the one `make` gives written first: the read and the write in ONE hold of the index's lock, across
+   *  this user's processes, so two processes starting on a fresh home never each make one and the second overwrite the
+   *  first (review should-fix 4). What everything that makes an item when it finds none uses (the device key, the box
+   *  key, a routine's webhook key, the registry's key). */
+  getOrCreate(ref: SecretRef, make: () => string | Secret, opts: { synced?: boolean } = {}): Promise<SecretValue> {
     return this.#serial(async () => {
-      this.#unlocked();
-      if (!SECRET_NAME_RE.test(ref.name)) throw new ContractError("invalid", "a secret's name is 1–128 of A-Z a-z 0-9 . _ : -");
-      const key = secretRefKey(ref);
-      const index = this.#index();
-      const meta: SecretMeta = {
-        ref: { owner: { ...ref.owner }, name: ref.name },
-        generation: (index.items[key]?.generation ?? 0) + 1,
-        updatedAt: this.#o.clock?.now() ?? Date.now(),
-        synced: ref.owner.kind === "device" ? false : (opts.synced ?? true),
-      };
-      await this.#o.values.set(key, value instanceof Secret ? value.reveal() : value);
-      index.items[key] = meta;
-      this.#save(index);
-      this.#listeners.emit({ meta: { ...meta }, deleted: false });
-      return { ...meta };
+      const found = await this.get(ref);
+      if (found !== null) return found;
+      const made = make();
+      const meta = await this.#setHeld(ref, made, opts);
+      return { value: made instanceof Secret ? made : new Secret(made), generation: meta.generation };
     });
+  }
+
+  /** `set`'s work, with the index's lock already held. */
+  async #setHeld(ref: SecretRef, value: string | Secret, opts: { synced?: boolean }): Promise<SecretMeta> {
+    this.#unlocked();
+    if (!SECRET_NAME_RE.test(ref.name)) throw new ContractError("invalid", "a secret's name is 1–128 of A-Z a-z 0-9 . _ : -");
+    const key = secretRefKey(ref);
+    const index = await this.#index(); // read before the value is written: a damaged index refuses the write whole
+    const meta: SecretMeta = {
+      ref: { owner: { ...ref.owner }, name: ref.name },
+      generation: (index.items[key]?.generation ?? 0) + 1,
+      updatedAt: this.#o.clock?.now() ?? Date.now(),
+      synced: ref.owner.kind === "device" ? false : (opts.synced ?? true),
+    };
+    await this.#o.values.set(key, value instanceof Secret ? value.reveal() : value);
+    index.items[key] = meta;
+    await this.#save(index);
+    this.#listeners.emit({ meta: { ...meta }, deleted: false });
+    return { ...meta };
   }
 
   delete(ref: SecretRef): Promise<boolean> {
     return this.#serial(async () => {
       this.#unlocked();
       const key = secretRefKey(ref);
-      const index = this.#index();
-      const meta = index.items[key];
+      const index = await this.#index();
+      // An item the index doesn't know (a crash after its value was written) is still removed: the values are the authority.
+      const meta = index.items[key] ?? ((await this.#o.values.get(key)) === null ? undefined
+        : { ref: { owner: { ...ref.owner }, name: ref.name }, generation: 0, updatedAt: this.#o.clock?.now() ?? Date.now(), synced: false });
       if (!meta) return false;
       await this.#o.values.delete(key);
       delete index.items[key];
-      this.#save(index);
+      await this.#save(index);
       this.#listeners.emit({ meta: { ...meta }, deleted: true });
       return true;
     });
@@ -399,7 +491,7 @@ export class MossSecretStore implements SecretStore {
 
   async list(owner?: SecretOwner): Promise<SecretMeta[]> {
     const want = owner ? secretOwnerKey(owner) : undefined;
-    return Object.values(this.#index().items)
+    return Object.values((await this.#index()).items)
       .filter((m) => want === undefined || secretOwnerKey(m.ref.owner) === want)
       .map((m) => ({ ...m, ref: { owner: { ...m.ref.owner }, name: m.ref.name } }))
       .sort((a, b) => secretRefKey(a.ref).localeCompare(secretRefKey(b.ref)));
@@ -407,8 +499,8 @@ export class MossSecretStore implements SecretStore {
 
   watch(fn: (change: SecretChange) => void): () => void { return this.#listeners.add(fn); }
 
-  /** Removes the index (tests' and an uninstaller's clean-up; the values go with their backend). */
-  dropIndex(): void { rmSync(this.#indexPath, { force: true }); }
+  /** Removes the index, its second copy and the note (tests' and an uninstaller's clean-up; the values go with their backend). */
+  dropIndex(): void { for (const p of [this.#indexPath, this.#copyPath, this.#madePath]) rmSync(p, { force: true }); }
 }
 
 /** What `chooseFileStore` settled on for the secrets file on this computer. */
@@ -447,7 +539,13 @@ export interface FileStoreOptions {
  *  from, so the two can never disagree about where the key is. */
 export async function chooseFileStore(o: FileStoreOptions): Promise<FileStoreChoice> {
   const seen: { osStore?: "absent" | "locked" | "unlocked" } = {};
-  const c = await chooseFileStoreInner(o, seen);
+  let c: FileStoreChoice;
+  try { c = await chooseFileStoreInner(o, seen); }
+  catch (e) {
+    // A file that can't be looked at now (`present`): locked, never a new store, and the daemon still starts.
+    if (!(e instanceof ContractError) || e.code !== "locked") throw e;
+    return { source: o.os === "windows" ? "credential-manager" : "key-file", key: async () => { throw e; }, locked: e.message };
+  }
   return seen.osStore === undefined ? c : { ...c, osStore: seen.osStore };
 }
 
@@ -489,7 +587,7 @@ async function chooseFileStoreInner(o: FileStoreOptions, seen: { osStore?: "abse
     const rank: Record<SecretKeySource, number> = { "key-file": 0, "systemd-creds": 1, "secret-service": 2, "credential-manager": 2 };
     let vaultHasKey = false;
     try { vaultHasKey = (await keys.get("secrets-file-key")) !== null; } catch { /* unreachable: no evidence either way */ }
-    const strongest = vaultHasKey ? 2 : existsSync(sealedFile) ? 1 : 0;
+    const strongest = vaultHasKey ? 2 : present(sealedFile) ? 1 : 0;
     if (rank[recorded] < strongest) {
       return { source: recorded, key: async () => { throw new ContractError("locked", "the secrets file may have been replaced"); }, locked: "the secrets file claims a weaker key than this computer keeps: it may have been replaced, so saved logins stay locked" };
     }

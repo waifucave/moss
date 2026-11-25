@@ -16,14 +16,15 @@ export const cardAudience = (card: { ownedBy?: readonly string[] }) => (pluginId
   capabilities.includes("approvals") && (capabilities.includes("approvals.all") || (card.ownedBy ?? []).includes(topPluginIdOf(pluginId)));
 
 /** Forwards `broker`'s events to `send` (the server's `coreEvent`), stamped with the shared clock's `now`. */
-export function approvalCoreEvents(broker: Pick<ApprovalBroker, "watch">, send: (event: CoreEventInput, opts?: CoreEventOptions) => unknown, now: () => number): Unsubscribe {
+export function approvalCoreEvents(broker: Pick<ApprovalBroker, "watch" | "answerableBy">, send: (event: CoreEventInput, opts?: CoreEventOptions) => unknown, now: () => number): Unsubscribe {
   // A resolved card is told to the plugins that heard it raised, and to no others.
   const owners = new Map<string, { ownedBy?: readonly string[] }>();
   return broker.watch((e) => {
     const ts = now();
     if (e.type === "requested") {
-      owners.set(e.card.id, { ...(e.card.ownedBy === undefined ? {} : { ownedBy: e.card.ownedBy }) });
-      send({ type: "card_requested", ts, card: e.card });
+      owners.set(e.card.id, e.card.ownedBy === undefined ? {} : { ownedBy: e.card.ownedBy });
+      // A card about a device, or a computer's alone, is never sent to a device that may not answer it.
+      send({ type: "card_requested", ts, card: e.card }, { exceptDevice: (device) => !broker.answerableBy(e.card.id, device) });
       send({ type: "card_pending", ts, card: cardMetaOf(e.card) }, { forPlugin: cardAudience(e.card) });
       return;
     }
@@ -32,6 +33,6 @@ export function approvalCoreEvents(broker: Pick<ApprovalBroker, "watch">, send: 
     send({
       type: "card_resolved", ts, id: e.cardId, outcome: e.outcome,
       ...(e.optionId === undefined ? {} : { option: e.optionId }), ...(e.device === undefined ? {} : { device: e.device }),
-    }, { forPlugin: cardAudience(owner) });
+    }, { forPlugin: cardAudience(owner), exceptDevice: (device) => !broker.answerableBy(e.cardId, device) });
   });
 }

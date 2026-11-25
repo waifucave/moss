@@ -14,7 +14,8 @@ import { FAKE_REGISTRY, FakeRegistry, packageTarball, publishAdapter } from "../
 import { FAKE_AGENT_PATH, fakeLaunch, writeFakeAgent } from "../testing/harness";
 import { tarballUrl } from "../adapter/types";
 import { agentMethods } from "../rpc";
-import { fakeAdmissions, waitFor, World } from "./world";
+import { fakeAdmissions, waitFor, World, type WorldOptions } from "./world";
+import { pairedPhone } from "./phone";
 
 setDefaultTimeout(60_000);
 
@@ -46,10 +47,13 @@ interface Setup {
 /** A world whose manager also knows `claude-code`, an adapter backend: its adapter's run file is the scripted fake agent
  *  (what a published adapter package would hold); `claude` is a stand-in program on its PATH. `own`: the person's own
  *  adapter installed too (a program that is the same scripted agent, saying "OWN"). */
-function make(o: { own?: boolean; claude?: boolean; sandbox?: "protected" | "none"; versions?: string } = {}): Setup {
+function make(o: { own?: boolean; claude?: boolean; sandbox?: "protected" | "none"; versions?: string; verify?: WorldOptions["verify"]; bundled?: boolean; name?: string; pluginId?: string } = {}): Setup {
   const reg = new FakeRegistry();
   let setup!: Setup;
   const w = new World({
+    ...(o.verify ? { verify: o.verify } : {}),
+    // The daemon's own answer, by the plugin's install record: the stand-in for the bundled tree's Claude Code plugin is bundled, a third party's is not.
+    bundledPlugin: (id) => o.bundled !== false && id.startsWith("moss/"),
     extraBackends: (wire, world) => {
       const bin = join(world.root, "bin");
       mkdirSync(bin, { recursive: true });
@@ -67,7 +71,7 @@ function make(o: { own?: boolean; claude?: boolean; sandbox?: "protected" | "non
         chmodSync(join(bin, "claude-agent-acp"), 0o755);
       }
       const backend = new AcpAgentBackend({
-        id: "claude-code", pluginId: "moss/agent-claude-code", bundled: true, name: "Claude Code", clock: world.clock, wire,
+        id: "claude-code", pluginId: o.pluginId ?? "moss/agent-claude-code", bundled: true, name: o.name ?? "Claude Code", clock: world.clock, wire,
         quirks: { ...QUIRKS, launch: { ...QUIRKS.launch, identity: { versionArgs: ["--version"], versionPattern: "^(\\d+\\.\\d+\\.\\d+)\\s*$" }, versions: o.versions ?? ">=1.0.0 <2.0.0" } },
         command: { program: "claude-agent-acp", acpArgs: [run.config, "acp"] },
         baseEnv: { PATH: bin, HOME: world.userHome },
@@ -107,11 +111,16 @@ describe("the download card", () => {
     expect(card).toMatchObject({ kind: "change", change: "agent-adapter" });
     expect(card.fields["title"]).toEqual({ type: "text", text: "Download Claude Code's adapter?" });
     const what = (card.fields["what"] as { text: string }).text;
-    expect(what).toContain("@fake/claude-adapter 1.0.0 from npm");
+    // The agent's name and the package are rows, never words of the engine's sentence.
+    expect(what).not.toContain("Claude Code");
+    expect(what).not.toContain("@fake/claude-adapter");
+    expect(what).toContain("from npm");
     expect(what).toContain("code from npm that MOSS will run");
     expect(what).toContain("Nothing is downloaded unless you say yes");
     const rows = Object.fromEntries([...(card.fields["source"] as { rows: { label: string; value: string }[] }).rows, ...(card.fields["detail"] as { rows: { label: string; value: string }[] }).rows].map((r) => [r.label, r.value]));
     expect(rows["Package"]).toBe("@fake/claude-adapter 1.0.0");
+    expect(rows["Agent's name"]).toBe("Claude Code");
+    expect((card.fields["source"] as { rows: { label: string; name?: true }[] }).rows.find((r) => r.label === "Agent's name")?.name).toBe(true);
     expect(rows["Downloaded from"]).toBe(FAKE_REGISTRY);
     expect(rows["Size"]).toMatch(/under 1 MB, 2 packages/);
     expect(rows["Kept in"]).toBe(join(s.w.mossHome, "run", "agent-adapters", "@fake__claude-adapter", "1.0.0"));
@@ -195,6 +204,28 @@ describe("the download card", () => {
   });
 });
 
+describe("a phone's start", () => {
+  test("a phone's start of an agent whose adapter isn't in place raises the same download card, and nothing is fetched until the phone's signed yes", async () => {
+    let verify: WorldOptions["verify"];
+    const s = make({ verify: (card, answer, from) => (verify === undefined ? false : verify(card, answer, from)) });
+    const p = await pairedPhone(s.w.clock);
+    verify = p.verify;
+    const methods = agentMethods({ manager: s.w.manager, backends: () => [s.backend], computer: "Studio", localDevice: () => "l".repeat(32), phoneMayStart: p.mayStart });
+    const { session } = await methods["agent.start"]!({ backend: "claude-code", computer: "Studio", root: "home/Studio/project1", prompt: "Fix the tests." }, { caller: p.caller() }) as { session: string };
+    const card = await waitFor(() => adapterCards(s.w)[0], "the download card");
+    expect(card).toMatchObject({ kind: "change", change: "agent-adapter" });
+    expect(card.fields["title"]).toEqual({ type: "text", text: "Download Claude Code's adapter?" });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(s.reg.asked).toEqual([]);
+    // The app's sealed frame is not the phone's answer; the phone answers with its answer key's signature.
+    expect(await p.answer(s.w, card, "approve", undefined, { via: "sealed-frame", frame: "forged", input: "click", at: s.w.clock.now() })).toEqual({ accepted: false, reason: "the answer can't come from here" });
+    expect(await p.answer(s.w, card, "approve")).toEqual({ accepted: true });
+    await waitFor(() => s.w.host.history(session).some((r) => r.type === "turn_ended") || undefined, "the turn's end");
+    expect(s.reg.asked.sort()).toEqual([tarballUrl(FAKE_REGISTRY, "@fake/claude-adapter", "1.0.0"), tarballUrl(FAKE_REGISTRY, "zod", "4.6.7")]);
+    expect(s.w.host.get(session)).toMatchObject({ kind: "coding", backend: "claude-code" });
+  });
+});
+
 describe("the person's own installed adapter", () => {
   test("refusing the download starts the agent on their own adapter, and the card is not raised again in this run", async () => {
     const s = make({ own: true });
@@ -233,6 +264,34 @@ const adapterDir = (w: World) => join(w.mossHome, "run", "agent-adapters", "@fak
 const rowsOf = (card: ReturnType<World["approvals"]["cards"]>[number]) =>
   Object.fromEntries([...(card.fields["source"] as { rows: { label: string; value: string }[] }).rows, ...(card.fields["detail"] as { rows: { label: string; value: string }[] }).rows].map((r) => [r.label, r.value]));
 
+/** Names a third party's agent entry could carry, and what the sealed card must then NOT put in its title. */
+const HOSTILE_AGENT_NAMES = [`Codex" run at automatic`, "Codex? Approve this", "Codex\u202E", "</bdi><b>x</b>", "exam\u200Cple", "a\u2064b", "x".repeat(300)];
+
+describe("a third party's agent: the title is the fixed one, the name a marked row", () => {
+  // Table: [what is raised, the fixed title it must have, the title the bundled agent has]. `sandbox: "none"` makes it the one combined card.
+  const cases = [
+    { sandbox: "protected" as const, fixed: "Download an adapter for an agent?" },
+    { sandbox: "none" as const, fixed: "Start an agent?" },
+  ];
+  for (const c of cases) {
+    for (const hostile of HOSTILE_AGENT_NAMES) {
+      for (const bundled of [false, true]) {
+        test(`${c.fixed} for ${bundled ? "a bundled plugin whose name breaks the name rule" : "a plugin that is not bundled"}: ${JSON.stringify(hostile.slice(0, 20))}`, async () => {
+          const s = make({ sandbox: c.sandbox, bundled, name: hostile });
+          await s.w.delegate("Fix the tests.", { backend: "claude-code" });
+          const card = await waitFor(() => allCards(s.w)[0], "the card");
+          expect(card.fields["title"]).toEqual({ type: "text", text: c.fixed });
+          expect(JSON.stringify(card.fields["what"])).not.toContain("Codex");
+          const named = (card.fields["source"] as { rows: { label: string; value: string; name?: true }[] }).rows.find((r) => r.label === "Agent's name")!;
+          expect(named.name).toBe(true);
+          expect(named.value.length).toBeGreaterThan(0);
+          await answer(s.w, card, "deny");
+        });
+      }
+    }
+  }
+});
+
 describe("one card for the download and the start", () => {
   test("a start that needs both raises ONE card with both sets of facts: nothing is fetched or started while it waits", async () => {
     const s = make({ sandbox: "none" });
@@ -243,13 +302,14 @@ describe("one card for the download and the start", () => {
     expect(card).toMatchObject({ kind: "change", change: "agent-unsandboxed" });
     expect(card.fields["title"]).toEqual({ type: "text", text: "Start Claude Code?" });
     const what = (card.fields["what"] as { text: string }).text;
-    expect(what).toBe("Claude Code needs an adapter that MOSS doesn't have yet. If you say yes, MOSS downloads @fake/claude-adapter 1.0.0 from npm (code from npm that MOSS will run, not MOSS's own) and starts Claude Code without a sandbox. While it runs, it could read MOSS's logins and approve its own cards. Nothing is downloaded unless you say yes, and nothing is started.");
+    expect(what).toBe("The agent below needs an adapter that MOSS doesn't have yet. If you say yes, MOSS downloads the package named below from npm (code from npm that MOSS will run, not MOSS's own) and starts the agent without a sandbox. While it runs, it could read MOSS's logins and approve its own cards. Nothing is downloaded unless you say yes, and nothing is started.");
     const rows = rowsOf(card);
     // The download's facts and the start's, and not the long path of where it is kept.
     expect(rows["Package"]).toBe("@fake/claude-adapter 1.0.0");
     expect(rows["Downloaded from"]).toBe(FAKE_REGISTRY);
     expect(rows["Size"]).toMatch(/under 1 MB, 2 packages/);
     expect(rows["Agent"]).toBe("claude-code");
+    expect(rows["Agent's name"]).toBe("Claude Code");
     expect(rows["Plugin"]).toBe("moss/agent-claude-code");
     expect(rows["Started by"]).toBe("alpha");
     expect(rows["Folder"]).toBeDefined();
@@ -347,10 +407,11 @@ describe("one card for the download and the start", () => {
     expect(card).toMatchObject({ kind: "change", change: "agent-unsandboxed" });
     expect(card.fields["title"]).toEqual({ type: "text", text: "Start Claude Code?" });
     const what = (card.fields["what"] as { text: string }).text;
-    expect(what).toContain("downloads @fake/claude-adapter 1.0.0 from npm");
-    expect(what).toContain("Its version 1.0.0 is outside the versions MOSS was tested with, so its sandbox may not hold.");
+    expect(what).toContain("downloads the package named below from npm");
+    expect(what).toContain("Its version (below) is outside the versions MOSS was tested with, so its sandbox may not hold.");
     expect(what).not.toContain("without a sandbox");
-    expect(what).toContain("starts Claude Code. Its version 1.0.0 is outside");
+    expect(what).toContain("starts the agent. Its version (below) is outside");
+    expect(rowsOf(card)["Its version"]).toBe("1.0.0");
     await answer(s.w, card, "approve");
     expect((await waitFor(() => notification(s.w), "the turn's end")).text).toBe(REPLY);
     expect(s.raised.length).toBe(1);
@@ -360,7 +421,7 @@ describe("one card for the download and the start", () => {
     const s = make({ sandbox: "none", versions: ">=2.0.0 <3.0.0" });
     await s.w.delegate("one", { backend: "claude-code" });
     const card = await waitFor(() => allCards(s.w)[0], "the one card");
-    expect((card.fields["what"] as { text: string }).text).toBe("Claude Code needs an adapter that MOSS doesn't have yet. If you say yes, MOSS downloads @fake/claude-adapter 1.0.0 from npm (code from npm that MOSS will run, not MOSS's own) and starts Claude Code without a sandbox. Its version 1.0.0 is outside the versions MOSS was tested with. While it runs, it could read MOSS's logins and approve its own cards. Nothing is downloaded unless you say yes, and nothing is started.");
+    expect((card.fields["what"] as { text: string }).text).toBe("The agent below needs an adapter that MOSS doesn't have yet. If you say yes, MOSS downloads the package named below from npm (code from npm that MOSS will run, not MOSS's own) and starts the agent without a sandbox. Its version (below) is outside the versions MOSS was tested with. While it runs, it could read MOSS's logins and approve its own cards. Nothing is downloaded unless you say yes, and nothing is started.");
   });
 
   test("two sessions starting together share the one card and one fetch, and both start", async () => {
@@ -484,7 +545,7 @@ describe("agent.backends", () => {
     watch(s.backend, slow);
     watch(s.w.backend, async () => { throw new Error("it can't be looked at"); });
     const methods = agentMethods({ manager: s.w.manager, backends: () => [s.w.backend, s.backend], computer: "Studio", localDevice: () => "a".repeat(32) });
-    const r = await methods["agent.backends"]!({}, { caller: { kind: "user" } as never }) as { backends: { id: string; name: string; computers: { installed: boolean }[] }[] };
+    const r = await methods["agent.backends"]!({}, { caller: { kind: "user", client: "app" } as never }) as { backends: { id: string; name: string; computers: { installed: boolean }[] }[] };
     expect(most).toBe(2);
     expect(r.backends.map((b) => [b.id, b.name, b.computers[0]!.installed])).toEqual([["fake", "fake", false], ["claude-code", "Claude Code", true]]);
   });

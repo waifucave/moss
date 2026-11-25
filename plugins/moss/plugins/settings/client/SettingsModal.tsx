@@ -5,8 +5,9 @@
 // with its own sections; a plugin adds one there.
 import { createContext, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { IconClose, IconPlugin, IconSearch, SECTION_ICONS } from "./icons";
+import { qrEncode, qrPath } from "./qr";
 import { S } from "./strings";
-import type { OneAtATimeView, SettingsModalProps, SettingsSection, ToolAvailability, ToolPermission, ToolsView } from "./types";
+import type { OneAtATimeView, RelayChoice, SettingsDevice, SettingsModalProps, SettingsSection, ToolAvailability, ToolPermission, ToolsView } from "./types";
 
 export const SECTIONS: readonly SettingsSection[] = ["account", "devices", "appearance", "notifications", "plugins", "tools", "levels"];
 
@@ -203,11 +204,41 @@ function Choice<T extends string>({ label, value, options, labels, onChange, pat
   );
 }
 
-/** Pairing a device without an account (§8.1): show a code here, or enter the other device's; then check that both
- *  show the same four words. Adding the device is a sealed card. */
+/** The picture of a pairing's text a phone can scan (drawn here from the text; nothing leaves the page). */
+function QrPicture({ text, label }: { text: string; label: string }) {
+  let drawn: { viewBox: string; d: string } | undefined;
+  try {
+    drawn = qrPath(qrEncode(text), 2);
+  } catch {
+    drawn = undefined;
+  }
+  if (!drawn) return null;
+  return (
+    <svg className="cl-settings__qr" role="img" aria-label={label} viewBox={drawn.viewBox} shapeRendering="crispEdges">
+      <rect width="100%" height="100%" fill="#fff" />
+      <path d={drawn.d} fill="#000" />
+    </svg>
+  );
+}
+
+const clock = (ms: number): string => new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+
+/** Pairing a device without an account (§8.1): show a code here (and a picture of it for a phone), or enter the other device's. The
+ *  four words are never on this page: once another device is in, the engine raises a sealed card that draws them, and the person
+ *  compares them with the other screen and presses it there. */
 function Pairing({ props }: { props: SettingsModalProps }) {
   const [code, setCode] = useState("");
   const p = props.pairing;
+  // The code's own clock: it stops working at its expiry whether or not the engine has said so.
+  const [now, setNow] = useState(() => Date.now());
+  const ticking = p !== undefined && p.ended === undefined && p.checking !== true && p.expiresAt !== undefined && p.expiresAt > 0;
+  useEffect(() => {
+    if (!ticking) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [ticking, p?.expiresAt]);
+  const lapsed = ticking && p!.expiresAt! <= now;
   return (
     <section className="cl-settings__pairing" aria-label={S.pairTitle}>
       <h3 className="cl-settings__subhead">{S.pairTitle}</h3>
@@ -240,31 +271,102 @@ function Pairing({ props }: { props: SettingsModalProps }) {
         <div className="cl-settings__pair" role="status">
           {p.ended !== undefined ? (
             <p className="cl-settings__note">{p.ended}</p>
-          ) : p.words ? (
-            <>
-              <p className="cl-settings__note">{S.pairWords}</p>
-              <p className="cl-settings__pair-words">{p.words.join(" · ")}</p>
-            </>
+          ) : p.checking ? (
+            <p className="cl-settings__note" data-pairing-step="card">{S.pairWaitingCard(p.peerName)}</p>
+          ) : lapsed ? (
+            <p className="cl-settings__note" data-pairing-step="lapsed">{S.pairLapsed}</p>
           ) : (
-            p.code && (
-              <>
-                <p className="cl-settings__note">{S.pairCodeNote}</p>
-                <p className="cl-settings__pair-code">{p.code}</p>
-              </>
+            (p.code || p.qr) && (
+              <div data-pairing-step="code">
+                {p.note && <p className="cl-settings__note" role="alert" data-pairing-note>{p.note}</p>}
+                {p.code && (
+                  <>
+                    <p className="cl-settings__note">{S.pairCodeNote}</p>
+                    <p className="cl-settings__pair-code">{p.code}</p>
+                  </>
+                )}
+                {p.qr && (
+                  <>
+                    <p className="cl-settings__note">{S.pairQrNote}</p>
+                    <QrPicture text={p.qr} label={S.pairQrNote} />
+                    <details className="cl-settings__pair-text">
+                      <summary>{S.pairTextNote}</summary>
+                      <p className="cl-settings__pair-qrtext">{p.qr}</p>
+                    </details>
+                  </>
+                )}
+                {p.expiresAt !== undefined && p.expiresAt > 0 && <p className="cl-settings__note" data-pairing-expiry>{S.pairExpires(clock(p.expiresAt))}</p>}
+              </div>
             )
           )}
           <div className="cl-settings__control">
-            {p.ended === undefined && p.words && props.onPairConfirm && (
-              <button type="button" className="cl-settings__button" disabled={p.confirming} onClick={props.onPairConfirm}>
-                {p.confirming ? S.pairConfirming : S.pairConfirm}
-              </button>
-            )}
             <button type="button" className="cl-settings__button" onClick={props.onPairCancel}>
-              {p.ended !== undefined ? S.pairClose : S.pairCancel}
+              {p.ended !== undefined || lapsed ? S.pairClose : S.pairCancel}
             </button>
           </div>
         </div>
       )}
+    </section>
+  );
+}
+
+const last = (d: SettingsDevice): string => (d.online || d.here ? S.online : d.lastSeen !== undefined ? S.lastSeen(new Date(d.lastSeen).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })) : S.neverSeen);
+
+/** Which relay the links use (§8.3): n0's public relays (the default), a server of the person's own, or none; saved at once by the
+ *  engine. A relay plugin that is installed is listed and not offered, as the setup guide's page does. */
+function Relay({ props }: { props: SettingsModalProps }) {
+  const held = props.relay;
+  const [mode, setMode] = useState<RelayChoice["mode"]>(held?.mode ?? "n0");
+  const [url, setUrl] = useState(held?.url ?? "");
+  const [saved, setSaved] = useState(false);
+  // What the engine holds is what the control shows: read again, or changed from elsewhere.
+  useEffect(() => {
+    if (held === undefined) return;
+    setMode(held.mode);
+    setUrl(held.url ?? "");
+  }, [held]);
+  if (!props.onSetRelay) return null;
+  const valid = mode !== "custom" || /^https:\/\/[^\s/@]+/i.test(url.trim());
+  const choose = (m: RelayChoice["mode"]) => {
+    setMode(m);
+    setSaved(false);
+  };
+  const options: { value: RelayChoice["mode"]; title: string; detail?: string }[] = [
+    { value: "n0", title: S.relayN0, detail: S.relayN0Detail },
+    { value: "custom", title: S.relayCustom },
+    { value: "off", title: S.relayOff, detail: S.relayOffDetail },
+  ];
+  return (
+    <section className="cl-settings__relay" aria-label={S.relayTitle}>
+      <h3 className="cl-settings__subhead">{S.relayTitle}</h3>
+      <p className="cl-settings__note">{S.relayDetail}</p>
+      <div className="cl-settings__three cl-settings__relay-options" role="radiogroup" aria-label={S.relayTitle}>
+        {options.map((o) => (
+          <button key={o.value} type="button" role="radio" aria-checked={mode === o.value} data-relay={o.value} className="cl-settings__three-option" disabled={held === undefined} onClick={() => choose(o.value)} title={o.detail}>
+            {o.title}
+          </button>
+        ))}
+      </div>
+      {mode === "custom" && (
+        <div className="cl-settings__control cl-settings__pair-row">
+          <input className="cl-settings__input" type="url" aria-label={S.relayCustomLabel} placeholder="https://relay.example.com" value={url} onChange={(e) => { setUrl(e.target.value); setSaved(false); }} />
+          {!valid && url.trim() !== "" && <span className="cl-settings__reason" role="alert">{S.relayInvalid}</span>}
+        </div>
+      )}
+      <div className="cl-settings__control">
+        <button
+          type="button"
+          className="cl-settings__button"
+          disabled={held === undefined || !valid || (mode === "custom" && url.trim() === "") || (held.mode === mode && (mode !== "custom" || held.url === url.trim()))}
+          onClick={() => { props.onSetRelay?.(mode === "custom" ? { mode, url: url.trim() } : { mode }); setSaved(true); }}
+        >
+          {S.relaySave}
+        </button>
+        {saved && held?.mode === mode && <span className="cl-settings__detail" role="status">{S.relaySaved}</span>}
+      </div>
+      {(props.relayPlugins ?? []).map((r) => (
+        <p key={r.id} className="cl-settings__note" data-relay-plugin={r.id}>{S.relayPluginNote(r.name, r.why)}</p>
+      ))}
     </section>
   );
 }
@@ -437,7 +539,7 @@ function Page({ props }: { props: SettingsModalProps }) {
           <h3 className="cl-settings__subhead">{S.devices}</h3>
           <p className="cl-settings__note">{S.devicesDetail}</p>
           {values.devices.map((d) => (
-            <Row key={d.id} label={d.name} mark={marks(props.item, d.id)} detail={[d.here ? S.thisDevice : "", d.main ? S.mainDevice : ""].filter(Boolean).join(" · ") || undefined}>
+            <Row key={d.id} label={d.name} mark={marks(props.item, d.id)} detail={[S.kind[d.kind], d.here ? S.thisDevice : "", d.main ? S.mainDevice : "", last(d)].filter(Boolean).join(" · ")}>
               {d.kind === "computer" && !d.main && props.onMakeMain && (
                 <button type="button" className="cl-settings__button" aria-label={S.makeMain(d.name)} onClick={() => props.onMakeMain?.(d.id)}>
                   {S.makeMainLabel}
@@ -451,6 +553,7 @@ function Page({ props }: { props: SettingsModalProps }) {
             </Row>
           ))}
           {(props.onPairBegin || props.onPairJoin) && <Pairing props={props} />}
+          {props.onSetRelay && <Relay props={props} />}
         </>
       );
     default:

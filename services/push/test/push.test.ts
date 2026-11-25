@@ -40,11 +40,11 @@ describe("targets", () => {
     const phone = await device(account, "phone");
     const browser = await device(account, "firefox");
     const token = apnsToken();
-    expect((await call(phone.token, "PUT", "/v1/targets/self", { kind: "apns", token, env: "production" })).status).toBe(204);
+    expect((await call(phone.token, "PUT", "/v1/targets/self", { kind: "apns", app: "moss", token, env: "production" })).status).toBe(204);
     expect((await call(browser.token, "PUT", "/v1/targets/self", { kind: "webpush", ...subscriptions.mozilla })).status).toBe(204);
     const listed = (await (await call(phone.token, "GET", "/v1/targets")).json()) as { targets: Record<string, unknown>[] };
     expect(listed.targets.map(({ added: _added, ...rest }) => rest)).toEqual([
-      { id: "phone", kind: "apns", env: "production" },
+      { id: "phone", kind: "apns", env: "production", app: "moss" },
       { id: "firefox", kind: "webpush", host: "updates.push.services.mozilla.com" },
     ]);
     expect(JSON.stringify(listed)).not.toContain(token);
@@ -57,8 +57,8 @@ describe("targets", () => {
     const offCurve = btoa(String.fromCharCode(4, ...new Array(64).fill(7))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
     const bad = [
       { kind: "webpush", endpoint: subscriptions.fcm.endpoint, keys: { p256dh: offCurve, auth: subscriptions.fcm.keys.auth } },
-      { kind: "apns", token: "xyz", env: "production" },
-      { kind: "apns", token: apnsToken(), env: "staging" },
+      { kind: "apns", app: "moss", token: "xyz", env: "production" },
+      { kind: "apns", app: "moss", token: apnsToken(), env: "staging" },
       { kind: "webpush", endpoint: "https://evil.example/push", keys: subscriptions.fcm.keys },
       { kind: "webpush", endpoint: "http://fcm.googleapis.com/fcm/send/x", keys: subscriptions.fcm.keys },
       { kind: "webpush", endpoint: subscriptions.fcm.endpoint, keys: { p256dh: "AAAA", auth: subscriptions.fcm.keys.auth } },
@@ -71,15 +71,15 @@ describe("targets", () => {
     const account = uniqueAccount();
     const devices = await Promise.all(Array.from({ length: 6 }, (_, i) => device(account, `phone${i}`)));
     for (const d of devices.slice(0, 5)) {
-      expect((await call(d.token, "PUT", "/v1/targets/self", { kind: "apns", token: apnsToken(), env: "sandbox" })).status).toBe(204);
+      expect((await call(d.token, "PUT", "/v1/targets/self", { kind: "apns", app: "moss", token: apnsToken(), env: "sandbox" })).status).toBe(204);
     }
-    const over = await call(devices[5]!.token, "PUT", "/v1/targets/self", { kind: "apns", token: apnsToken(), env: "sandbox" });
+    const over = await call(devices[5]!.token, "PUT", "/v1/targets/self", { kind: "apns", app: "moss", token: apnsToken(), env: "sandbox" });
     expect(over.status).toBe(409);
     expect((await call(devices[5]!.token, "DELETE", "/v1/targets/phone0")).status).toBe(204);
-    expect((await call(devices[5]!.token, "PUT", "/v1/targets/self", { kind: "apns", token: apnsToken(), env: "sandbox" })).status).toBe(204);
+    expect((await call(devices[5]!.token, "PUT", "/v1/targets/self", { kind: "apns", app: "moss", token: apnsToken(), env: "sandbox" })).status).toBe(204);
     // Removing phone0's target did not revoke phone0: it can register again once there is room.
     expect((await call(devices[1]!.token, "DELETE", "/v1/targets/self")).status).toBe(204);
-    expect((await call(devices[0]!.token, "PUT", "/v1/targets/self", { kind: "apns", token: apnsToken(), env: "sandbox" })).status).toBe(204);
+    expect((await call(devices[0]!.token, "PUT", "/v1/targets/self", { kind: "apns", app: "moss", token: apnsToken(), env: "sandbox" })).status).toBe(204);
   });
 
   it("removing another device's target only stops pushes to it: that device can register again", async () => {
@@ -96,16 +96,16 @@ describe("targets", () => {
     const account = uniqueAccount();
     const kept = await device(account, "kept-phone");
     const lost = await device(account, "lost-phone");
-    expect((await call(lost.token, "PUT", "/v1/targets/self", { kind: "apns", token: apnsToken(), env: "production" })).status).toBe(204);
+    expect((await call(lost.token, "PUT", "/v1/targets/self", { kind: "apns", app: "moss", token: apnsToken(), env: "production" })).status).toBe(204);
     expect((await call(kept.token, "DELETE", "/v1/devices/lost-phone")).status).toBe(204);
     expect(((await (await call(kept.token, "GET", "/v1/targets")).json()) as { targets: unknown[] }).targets).toEqual([]);
-    expect((await call(lost.token, "PUT", "/v1/targets/self", { kind: "apns", token: apnsToken(), env: "production" })).status).toBe(403);
+    expect((await call(lost.token, "PUT", "/v1/targets/self", { kind: "apns", app: "moss", token: apnsToken(), env: "production" })).status).toBe(403);
     expect((await call(lost.token, "POST", "/v1/notify", { badge: 1 })).status).toBe(403);
     expect((await call(lost.token, "GET", "/v1/targets")).status).toBe(403);
     // Any id: a device revoked before it ever registered stays out too.
     expect((await call(kept.token, "DELETE", "/v1/devices/never-seen")).status).toBe(204);
     const never = await device(account, "never-seen");
-    expect((await call(never.token, "PUT", "/v1/targets/self", { kind: "apns", token: apnsToken(), env: "production" })).status).toBe(403);
+    expect((await call(never.token, "PUT", "/v1/targets/self", { kind: "apns", app: "moss", token: apnsToken(), env: "production" })).status).toBe(403);
   });
 
   it("prunes revocations by age, once every token issued before them has expired, not by count", async () => {
@@ -118,9 +118,9 @@ describe("targets", () => {
       state.storage.sql.exec("INSERT INTO revoked (id, at) VALUES ('long-ago', ?), ('lately', ?)", now - REVOCATION_KEEP_MS - 1, now - 3600_000);
     });
     const back = await device(account, "long-ago");
-    expect((await call(back.token, "PUT", "/v1/targets/self", { kind: "apns", token: apnsToken(), env: "sandbox" })).status).toBe(204);
+    expect((await call(back.token, "PUT", "/v1/targets/self", { kind: "apns", app: "moss", token: apnsToken(), env: "sandbox" })).status).toBe(204);
     const recent = await device(account, "lately");
-    expect((await call(recent.token, "PUT", "/v1/targets/self", { kind: "apns", token: apnsToken(), env: "sandbox" })).status).toBe(403);
+    expect((await call(recent.token, "PUT", "/v1/targets/self", { kind: "apns", app: "moss", token: apnsToken(), env: "sandbox" })).status).toBe(403);
     expect((await call(admin.token, "DELETE", "/v1/devices/fresh")).status).toBe(204);
     const left = await runInDurableObject(object, (_i: PushDO, state) =>
       state.storage.sql.exec<{ id: string }>("SELECT id FROM revoked ORDER BY id").toArray().map((row) => row.id),
@@ -152,7 +152,7 @@ describe("notify", () => {
     const account = uniqueAccount();
     const phone = await device(account, "phone");
     const token = apnsToken();
-    await call(phone.token, "PUT", "/v1/targets/self", { kind: "apns", token, env: "production" });
+    await call(phone.token, "PUT", "/v1/targets/self", { kind: "apns", app: "moss", token, env: "production" });
     for (const [name, subscription] of Object.entries({ fcm: subscriptions.fcm, apple: subscriptions.apple })) {
       const browser = await device(account, `browser-${name}`);
       await call(browser.token, "PUT", "/v1/targets/self", { kind: "webpush", ...subscription });
@@ -169,7 +169,7 @@ describe("notify", () => {
       status: 200,
       token,
       env: "production",
-      topic: env.APNS_TOPIC,
+      topic: env.APNS_TOPIC_MOSS,
       pushType: "alert",
       priority: "10",
       collapseId: "clover-updates",
@@ -192,9 +192,9 @@ describe("notify", () => {
   it("forgets targets their push service reports gone at once, and a 'bad token' only after three in a row", async () => {
     const account = uniqueAccount();
     const targets = [
-      ["live", { kind: "apns", token: apnsToken(), env: "production" }],
-      ["unregistered", { kind: "apns", token: apnsToken("dead"), env: "production" }],
-      ["bad-token", { kind: "apns", token: apnsToken("bad0"), env: "sandbox" }],
+      ["live", { kind: "apns", app: "moss", token: apnsToken(), env: "production" }],
+      ["unregistered", { kind: "apns", app: "moss", token: apnsToken("dead"), env: "production" }],
+      ["bad-token", { kind: "apns", app: "moss", token: apnsToken("bad0"), env: "sandbox" }],
       ["old-browser", { kind: "webpush", ...subscriptions.gone }],
     ] as const;
     for (const [id, body] of targets) {
@@ -214,9 +214,9 @@ describe("notify", () => {
   it("a phone that registers again starts its bad-token count over", async () => {
     const account = uniqueAccount();
     const phone = await device(account, "phone");
-    expect((await call(phone.token, "PUT", "/v1/targets/self", { kind: "apns", token: apnsToken("bad0"), env: "sandbox" })).status).toBe(204);
+    expect((await call(phone.token, "PUT", "/v1/targets/self", { kind: "apns", app: "moss", token: apnsToken("bad0"), env: "sandbox" })).status).toBe(204);
     for (let i = 0; i < 2; i++) await call(phone.token, "POST", "/v1/notify", { badge: i + 1 });
-    expect((await call(phone.token, "PUT", "/v1/targets/self", { kind: "apns", token: apnsToken("bad0"), env: "production" })).status).toBe(204);
+    expect((await call(phone.token, "PUT", "/v1/targets/self", { kind: "apns", app: "moss", token: apnsToken("bad0"), env: "production" })).status).toBe(204);
     expect(await (await call(phone.token, "POST", "/v1/notify", { badge: 3 })).json()).toEqual({ sent: 0, removed: 0, failed: 1 });
   });
 
@@ -224,8 +224,8 @@ describe("notify", () => {
     const account = uniqueAccount();
     const slow = await device(account, "slow-phone");
     const fine = await device(account, "phone");
-    await call(slow.token, "PUT", "/v1/targets/self", { kind: "apns", token: apnsToken("51ee"), env: "production" });
-    await call(fine.token, "PUT", "/v1/targets/self", { kind: "apns", token: apnsToken(), env: "production" });
+    await call(slow.token, "PUT", "/v1/targets/self", { kind: "apns", app: "moss", token: apnsToken("51ee"), env: "production" });
+    await call(fine.token, "PUT", "/v1/targets/self", { kind: "apns", app: "moss", token: apnsToken(), env: "production" });
     const started = Date.now();
     expect(await (await call(fine.token, "POST", "/v1/notify", { badge: 1 })).json()).toEqual({ sent: 1, removed: 0, failed: 1 });
     expect(Date.now() - started).toBeLessThan(2_500);
@@ -235,7 +235,7 @@ describe("notify", () => {
     const account = uniqueAccount();
     const phone = await device(account, "phone");
     const token = apnsToken();
-    await call(phone.token, "PUT", "/v1/targets/self", { kind: "apns", token, env: "production" });
+    await call(phone.token, "PUT", "/v1/targets/self", { kind: "apns", app: "moss", token, env: "production" });
     const before = await logLength();
     await call(phone.token, "POST", "/v1/notify", { badge: 1 });
     const sent = (await since(before)).find((e) => e.token === token)!;
@@ -248,7 +248,7 @@ describe("notify", () => {
     const account = uniqueAccount();
     const phone = await device(account, "phone");
     const token = apnsToken("e1e1");
-    await call(phone.token, "PUT", "/v1/targets/self", { kind: "apns", token, env: "production" });
+    await call(phone.token, "PUT", "/v1/targets/self", { kind: "apns", app: "moss", token, env: "production" });
     const before = await logLength();
     expect(await (await call(phone.token, "POST", "/v1/notify", { badge: 2 })).json()).toEqual({ sent: 1, removed: 0, failed: 0 });
     const tries = (await since(before)).filter((e) => e.token === token);
@@ -260,7 +260,7 @@ describe("notify", () => {
     const account = uniqueAccount();
     const phone = await device(account, "dev-phone");
     const token = apnsToken();
-    await call(phone.token, "PUT", "/v1/targets/self", { kind: "apns", token, env: "sandbox" });
+    await call(phone.token, "PUT", "/v1/targets/self", { kind: "apns", app: "moss", token, env: "sandbox" });
     const before = await logLength();
     await call(phone.token, "POST", "/v1/notify", { badge: 0 });
     const entry = (await since(before)).find((e) => e.token === token)!;
@@ -286,7 +286,7 @@ describe("notify", () => {
 
   it("an account's targets are its own", async () => {
     const mine = await device(uniqueAccount(), "phone");
-    await call(mine.token, "PUT", "/v1/targets/self", { kind: "apns", token: apnsToken(), env: "production" });
+    await call(mine.token, "PUT", "/v1/targets/self", { kind: "apns", app: "moss", token: apnsToken(), env: "production" });
     const other = await device(uniqueAccount(), "computer");
     expect(await (await call(other.token, "POST", "/v1/notify", { badge: 1 })).json()).toEqual({ sent: 0, removed: 0, failed: 0 });
     expect(((await (await call(other.token, "GET", "/v1/targets")).json()) as { targets: unknown[] }).targets).toEqual([]);

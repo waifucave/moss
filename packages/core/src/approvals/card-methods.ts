@@ -22,7 +22,7 @@ import { cardAudience } from "./core-events";
 /** The test-marked build's label (scripts/test-build.ts): `false` in every real build, a string only in a test one. */
 declare const __MOSS_TEST_BUILD__: string | false | undefined;
 
-type CardBroker = Pick<ApprovalBroker, "cards" | "get" | "frameChannel" | "answer">;
+type CardBroker = Pick<ApprovalBroker, "cards" | "get" | "frameChannel" | "answer" | "answerableBy">;
 
 /** Why an answer wasn't taken, as `card.answer`'s `reason`. */
 const REASONS: Record<Exclude<AnswerResult, "accepted">, string> = {
@@ -67,13 +67,18 @@ export function cardMethods(broker: () => CardBroker | undefined, capabilitiesOf
   return {
     [APPROVALS_METHODS.cardList.name]: async (conn): Promise<{ cards: Card[] }> => {
       usersOwn(conn, APPROVALS_METHODS.cardList.name);
-      return { cards: up().cards() };
+      // A card a device may not answer (a revoke that names it, or one only a computer answers) is not listed to it.
+      const b = up();
+      const asking = linkDevice(conn.role, conn.caller);
+      return { cards: b.cards().filter((c) => b.answerableBy(c.id, asking)) };
     },
     [APPROVALS_METHODS.cardGet.name]: async (conn, params) => {
       usersOwn(conn, APPROVALS_METHODS.cardGet.name);
       const { id } = params as { id: string };
-      const r = up().get(id);
-      if (!r) throw new MossRpcError(ERR.NOT_FOUND, `no card ${id}`);
+      const b = up();
+      const r = b.get(id);
+      const asking = linkDevice(conn.role, conn.caller);
+      if (!r || !b.answerableBy(id, asking)) throw new MossRpcError(ERR.NOT_FOUND, `no card ${id}`);
       return {
         card: r.card,
         ...(r.outcome === undefined ? {} : { outcome: r.outcome }),
@@ -105,6 +110,9 @@ export function cardMethods(broker: () => CardBroker | undefined, capabilitiesOf
         role: conn.role, ...(device === undefined ? {} : { device }),
         ...(typeof __MOSS_TEST_BUILD__ === "string" && conn.role === "cli" && conn.caller.kind === "user" ? { testHarness: true as const } : {}),
       };
+      // A card this device may not answer (it is about it, or a computer's alone) is refused here; the broker refuses it too, by the
+      // proof's device (a relayed answer).
+      if (device !== undefined && !up().answerableBy(p.id, device)) return { accepted: false, reason: REASONS["bad-origin"] };
       // A user's own device link answers for itself: its device must be the one whose key signed. A paired computer
       // (a `peer` caller, through `peer.call`) may relay another device's signed answer, which binds that device end to end.
       if (conn.caller.kind === "user" && conn.role === "remote" && p.proof.via === "device" && p.proof.device !== device) {

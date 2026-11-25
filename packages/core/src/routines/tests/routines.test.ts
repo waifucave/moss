@@ -186,6 +186,11 @@ describe("the routine engine", () => {
     expect(engine.get("r_lower001")).toMatchObject({ state: "active", level: "ask" });
     expect(asked[0]).toMatchObject({ kind: "change", change: "routine-level", bot: "alpha", computers: ["Studio"] });
     expect(JSON.stringify(asked[0]!.fields)).toContain("Anyone with its webhook URL can start it");
+    // The title is the engine's own words with no name in it, the level is said by the engine, and the routine's name (chosen by whoever wrote the file) is a row marked as a name.
+    const f = asked[0]!.fields as Record<string, { text?: string; rows?: { label: string; value: string; name?: true }[] }>;
+    expect(f["title"]!.text).toBe("Let a routine run at a higher level?");
+    expect(f["what"]!.text).toContain("The routine named below asks to run at automatic, above this computer's level (");
+    expect(f["detail"]!.rows).toEqual([{ label: "The routine", value: engine.get("r_deploy01")!.name, name: true }]);
     answer = { allowed: true, by: "card", cardId: "card_1" };
     writeFileSync(path, readFileSync(path, "utf8").replace("Do the thing.", "Deploy."));
     await engine.rescan();

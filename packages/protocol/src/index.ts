@@ -10,6 +10,7 @@ export * from "./cowork";
 // gathers them. Names here never repeat one of the inherited exports above.
 export * from "./common";
 export * from "./strings";
+export * from "./visible-text";
 export * from "./roles";
 export * from "./rpc";
 export * from "./plugins";
@@ -25,6 +26,7 @@ export * from "./moss";
 // The split into two apps on one engine (spec revision 19): surfaces and the router, the host, one release, what the
 // engine gives every place, and bots as engine data.
 export * from "./surfaces";
+export * from "./push-routing";
 export * from "./host";
 export * from "./release";
 export * from "./activity";

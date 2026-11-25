@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CloudComputers, FileCloudStateStore, type CloudAuthority, type CloudCard, type CloudFolder, type CloudProviderHandler } from "../../src/computers/cloud";
 import { automaticMain } from "../../src/lease/main-choice";
+import { answerKeyOf, mayAnswerCards } from "../../src/contracts/device-registry";
 import { cloudCardRequest } from "../../src/approvals/cloud-cards";
 import { CUSTOM_IMAGE_USER_DATA } from "../../src/computers/cloud";
 import { CloudPairer, joinCloudComputer, joinCloudComputerUntilPaired } from "../../src/computers/cloud-join";
@@ -42,11 +43,13 @@ class Cloud implements CloudProviderHandler {
   readonly calls: string[] = [];
   readonly userData: string[] = [];
   failNextCreate = false;
+  /** The machine disappeared from the cloud (deleted by hand). */
+  vanished = false;
   async create(a: { userData: string; label: string }) {
     if (this.failNextCreate) { this.failNextCreate = false; throw new Error("the cloud refused the create"); }
     this.calls.push("create"); this.userData.push(a.userData); return { serverId: "srv-1", address: "203.0.113.1" };
   }
-  async list(a: { label?: string }) { return this.userData.length ? [{ serverId: "srv-1", label: a.label ?? "computer-hetzner-1", region: "fsn1", state: "running" as const }] : []; }
+  async list(a: { label?: string }) { return this.userData.length && !this.vanished ? [{ serverId: "srv-1", label: a.label ?? "computer-hetzner-1", region: "fsn1", state: "running" as const }] : []; }
   async resize() {}
   async delete() {}
   async status() { return { state: "running" as const }; }
@@ -239,6 +242,27 @@ describe("a cloud computer joins its main computer", () => {
     expect(pairer.waiting).toBe(0);
     await until(() => main.pairing.list().every((p) => p.status !== "waiting"));
     expect(main.pairing.list().filter((p) => p.status === "waiting")).toEqual([]);
+  });
+
+  test("an own-image machine that disappears from the cloud takes its pairing and token with it, not an hour later", async () => {
+    const net = new MemoryNetwork();
+    const main = await device(net, "Studio");
+    const { provider, cloud, pairer } = setup(net, main);
+    await cloud.reconcile([folder]);
+    expect(pairer.waiting).toBe(1);
+    provider.vanished = true;
+    await cloud.reconcile([]);
+    expect(cloud.get("Cloud1")).toBeUndefined();
+    expect(pairer.waiting).toBe(0);
+    expect(cloud.pairing.waiting("Cloud1", "-:1")).toBe(false);
+    await until(() => main.pairing.list().every((p) => p.status !== "waiting"));
+  });
+
+  test("a cloud computer can never answer a card, even if its record later carried an answer key", () => {
+    const rec = { kind: "cloud" as const, publicKey: "k", revokedAt: undefined, answerKey: { publicKey: "ak", held: "keychain" as const } };
+    expect(answerKeyOf(rec)).toBeUndefined();
+    expect(mayAnswerCards(rec)).toBe(false);
+    expect(answerKeyOf({ ...rec, kind: "desktop" as const })).toBe("ak");
   });
 
   test("the person's own pairing is never confirmed by the main for them, whatever the other device calls itself", async () => {

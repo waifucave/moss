@@ -34,6 +34,7 @@ import { mkdirSync, renameSync, rmSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ffiLib, ffiPtr } from "../platform/ffi";
 import type { Unsubscribe } from "../contracts/common";
 import type { PluginRecord, PluginRegistry } from "../contracts/plugin-registry";
 import { plainNote } from "../plugin-host/card-yes";
@@ -115,11 +116,14 @@ export function childRunner(o: { mossHome: string; userHome?: string; bun?: stri
       const timeoutMs = o.timeoutMs ?? CLIENT_BUILD_LIMITS.timeoutMs;
       const timer = setTimeout(() => done({ ok: false, message: `the build took longer than ${Math.round(timeoutMs / 1000)} s and was stopped` }), timeoutMs);
       const maxRss = o.maxRssBytes ?? CLIENT_BUILD_LIMITS.maxRssBytes;
+      let unreadable = 0;
       const watch = setInterval(() => {
         if (child.pid === undefined) return;
-        const ps = Bun.spawnSync(["/bin/ps", "-o", "rss=", "-p", String(child.pid)], { stdout: "pipe", stderr: "ignore" });
-        const kb = Number(new TextDecoder().decode(ps.stdout).trim());
-        if (Number.isFinite(kb) && kb * 1024 > maxRss) done({ ok: false, message: `the build used more than ${Math.round(maxRss / 1024 / 1024)} MiB of memory and was stopped` });
+        const kb = residentKb(child.pid);
+        // A figure that can't be read is not "no limit": a build whose memory can't be seen for three looks in a row is stopped.
+        if (!Number.isFinite(kb)) { if (child.exitCode === null && ++unreadable >= 3) done({ ok: false, message: "the build's memory use couldn't be read, so its memory limit couldn't be held, and it was stopped" }); return; }
+        unreadable = 0;
+        if (kb * 1024 > maxRss) done({ ok: false, message: `the build used more than ${Math.round(maxRss / 1024 / 1024)} MiB of memory and was stopped` });
       }, o.watchEveryMs ?? 500);
       const onAbort = () => done(stoppedEarly);
       signal.addEventListener("abort", onAbort);
@@ -322,4 +326,33 @@ export class ClientBuilds {
       this.#next();
     }
   }
+}
+
+/** The resident memory of `pid` in KiB, or NaN when it can't be read. Windows has no `/bin/ps` (spawning it threw out of the interval and
+ *  ended the daemon, measured on a runner), and a `tasklist` spawn would block the daemon's loop twice a second and print in the OEM code
+ *  page: the working set comes from the OS itself (`K32GetProcessMemoryInfo`), with no child and no text to parse. */
+function residentKb(pid: number): number {
+  try {
+    if (process.platform === "win32") {
+      const lib = ffiLib("client-builds-k32", "kernel32.dll", {
+        OpenProcess: { args: ["u32", "i32", "u32"], returns: "u64" },
+        CloseHandle: { args: ["u64"], returns: "i32" },
+        K32GetProcessMemoryInfo: { args: ["u64", "ptr", "u32"], returns: "i32" },
+      });
+      if (lib === null) return Number.NaN;
+      // Some Windows versions want PROCESS_VM_READ beside the limited query right for K32GetProcessMemoryInfo: both where the process allows
+      // them, the limited right alone where it doesn't.
+      let h = BigInt(lib.OpenProcess!(0x1010 /* PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ */, 0, pid) as number | bigint);
+      if (h === 0n) h = BigInt(lib.OpenProcess!(0x1000, 0, pid) as number | bigint);
+      if (h === 0n) return Number.NaN;
+      try {
+        const counters = Buffer.alloc(72); // PROCESS_MEMORY_COUNTERS on 64-bit Windows: WorkingSetSize at 16
+        counters.writeUInt32LE(72, 0);
+        if ((lib.K32GetProcessMemoryInfo!(h, ffiPtr(counters), 72) as number) === 0) return Number.NaN;
+        return Number(counters.readBigUInt64LE(16) / 1024n);
+      } finally { lib.CloseHandle!(h); }
+    }
+    const ps = Bun.spawnSync(["/bin/ps", "-o", "rss=", "-p", String(pid)], { stdout: "pipe", stderr: "ignore" });
+    return Number(new TextDecoder().decode(ps.stdout).trim());
+  } catch { return Number.NaN; }
 }

@@ -41,7 +41,7 @@ export type CloudCardRequest =
   | { kind: "cloud-make-main"; name: string }
   /** A computer provider plugin is being removed while it still has machines: delete them, or keep them (and keep
    *  paying; MOSS can no longer manage them). */
-  | { kind: "cloud-provider-removal"; provider: string; machines: string[] };
+  | { kind: "cloud-provider-removal"; provider: string; machines: string[]; action?: "switch-off" };
 
 /** MOSS's own words for each card. */
 export const CLOUD_CARD_TEXT = {
@@ -50,6 +50,11 @@ export const CLOUD_CARD_TEXT = {
     title: "Create a cloud computer from a custom image",
     what: "Create a cloud computer from the image shown, which is not MOSS's own? It costs money while it exists. MOSS will not pair it by itself: whatever that image runs is not MOSS's, so you pair it yourself afterwards, with the four words.",
     yes: "Create", no: "Not now",
+  },
+  "cloud-provider-switch-off": {
+    title: "This provider still has cloud computers",
+    what: "Switching this provider off leaves its cloud computers running and billing, and MOSS can't manage them while it is off. Delete them first, or keep them and keep paying until you switch it on again or delete them in the provider's own console?",
+    yes: "Delete them", no: "Keep them and keep paying",
   },
   "cloud-provider-removal": {
     title: "This provider still has cloud computers",
@@ -74,22 +79,26 @@ const yesNo = (t: { yes: string; no: string }): NonNullable<ApprovalRequest["opt
   { id: "approve", kind: "approve", label: t.yes }, { id: "deny", kind: "deny", label: t.no },
 ];
 
+/** The longest image line a card shows, whole: the core refuses a folder whose image name is longer (`CLOUD_IMAGE_MAX`), so
+ *  the yes is never bound to a name the card cut. */
+export const CLOUD_IMAGE_SHOWN_MAX = 560;
+
 /** The longest value a card line shows; a provider's longer string is cut and marked. */
 export const CLOUD_VALUE_MAX = 120;
 
 /** `key: "value"` lines in a code field: each value with its hiding characters (newlines included) out, so none makes
  *  a line of its own; cut at `CLOUD_VALUE_MAX` code points (never inside a surrogate pair); and quoted, JSON-style, so
  *  where it starts and ends is plain. */
-function details(lines: readonly (readonly [string, string | undefined])[]): { type: "code"; code: string } {
-  const value = (v: string) => {
+function details(lines: readonly (readonly [string, string | undefined, number?])[]): { type: "code"; code: string } {
+  const value = (v: string, max: number) => {
     const points = Array.from(plainOf(v));
-    return JSON.stringify(points.length > CLOUD_VALUE_MAX ? `${points.slice(0, CLOUD_VALUE_MAX - 1).join("")}…` : points.join(""));
+    return JSON.stringify(points.length > max ? `${points.slice(0, max - 1).join("")}…` : points.join(""));
   };
-  return { type: "code", code: lines.filter(([, v]) => v !== undefined).map(([k, v]) => `${k}: ${value(v!)}`).join("\n") };
+  return { type: "code", code: lines.filter(([, v]) => v !== undefined).map(([k, v, max]) => `${k}: ${value(v!, max ?? CLOUD_VALUE_MAX)}`).join("\n") };
 }
 
 /** The card's image line: MOSS's own image, or a custom one in words a person can judge, with its name. */
-const imageLine = (image: string | undefined): readonly [string, string] => ["image", image === undefined ? "MOSS's own image" : `a custom image: ${image}`];
+const imageLine = (image: string | undefined): readonly [string, string, number] => ["image", image === undefined ? "MOSS's own image" : `a custom image: ${image}`, CLOUD_IMAGE_SHOWN_MAX];
 
 /** Whether each VM's device is paired: MOSS's own fact, in a text field from this table, never next to a
  *  provider's string. */
@@ -156,7 +165,7 @@ export function cloudCardRequest(card: CloudCardRequest, origin: TurnOrigin = "r
       } };
     }
     case "cloud-provider-removal": {
-      const t = CLOUD_CARD_TEXT["cloud-provider-removal"];
+      const t = CLOUD_CARD_TEXT[card.action === "switch-off" ? "cloud-provider-switch-off" : "cloud-provider-removal"];
       return { ...base, change: "computer-delete", options: yesNo(t), fields: {
         title: title(t.title), what: title(t.what), detail: details([["provider", card.provider], ["cloud computers", card.machines.join(", ")]]),
       } };

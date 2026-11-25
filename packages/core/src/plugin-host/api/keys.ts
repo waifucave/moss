@@ -16,7 +16,7 @@
 import { createHash } from "node:crypto";
 import { KEY_NAME_RE, KEYS_PER_PLUGIN_MAX } from "@waifucave/moss-plugin-sdk";
 import { ContractError } from "../../contracts/common";
-import type { SecretRef, SecretStore } from "../../contracts/secret-store";
+import { getOrCreateSecret, type Secret, type SecretRef, type SecretStore } from "../../contracts/secret-store";
 import { BoxKey } from "../../identity/box-key";
 import type { ApiCallContext, ApiHandlers } from "./router";
 
@@ -49,7 +49,14 @@ export function keysApi(o: { secrets: Pick<SecretStore, "get" | "set" | "delete"
   };
   const load = async (ctx: ApiCallContext, name: string, create: boolean): Promise<BoxKey | undefined> => {
     const ref = pluginKeyRef(ctx.pluginId, name);
-    const scoped = { get: (_r: SecretRef) => o.secrets.get(ref), set: (_r: SecretRef, value: string, opts?: { synced?: boolean }) => o.secrets.set(ref, value, opts) };
+    // Scoped to this plugin's key, whatever ref the caller names. `getOrCreate` goes to the real store's, which reads and
+    // makes the key in one hold of its lock: two first `keys.publicKey` calls at once make ONE key, never one written over
+    // the other (what was sealed to the first would no longer open). Lane SE review.
+    const scoped = {
+      get: (_r: SecretRef) => o.secrets.get(ref),
+      set: (_r: SecretRef, value: string | Secret, opts?: { synced?: boolean }) => o.secrets.set(ref, value, opts),
+      getOrCreate: (_r: SecretRef, make: () => string | Secret, opts: { synced?: boolean } = {}) => getOrCreateSecret(o.secrets, ref, make, opts),
+    };
     if (!create) return (await o.secrets.get(ref)) === null ? undefined : BoxKey.loadOrCreate(scoped);
     if ((await o.secrets.get(ref)) === null && (await count(ctx.pluginId)) >= KEYS_PER_PLUGIN_MAX) {
       throw new ContractError("refused", `${ctx.pluginId} holds ${KEYS_PER_PLUGIN_MAX} keys on this computer already: delete one first`);

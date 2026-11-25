@@ -23,7 +23,7 @@ import { doorMessage, inertAdmission, judgeHello, refusalMessage, type HelloVerd
 import { createHash } from "node:crypto";
 import { ERR_UNAUTHORIZED, isRefusal, type MossTokens } from "../auth/moss-tokens";
 import { proveDaemon } from "../platform/pair/run-files";
-import { capabilityRefusal, gateMossRequest, resolveMossCaller, type SessionProcesses } from "../auth/moss-caller";
+import { capabilityRefusal, gateMossRequest, remoteClientOf, resolveMossCaller, type SessionProcesses } from "../auth/moss-caller";
 import { probePeer, socketFd, WindowsPipePeers, type PeerFacts } from "../platform/caller-probe";
 import { peerHandle, type PeerHandle } from "../platform/peer-handle";
 import { defaultAppPeerCheck, type AppPeerPolicy } from "../platform/peer-signature";
@@ -35,7 +35,7 @@ import { EngineProgramOpener } from "./program-opener";
 import { resolveMossProfile } from "../profile";
 import type { DaemonPair, PairStopReason } from "../platform/pair/policy";
 import type { DaemonPlatform } from "../platform/transport";
-import { sendCoreEvent, type CoreEventInput, type CoreEventOptions } from "./core-events";
+import { deviceOfConn, sendCoreEvent, type CoreEventInput, type CoreEventOptions } from "./core-events";
 
 /** A thrown JSON-RPC error; the server's pump reads `code`, `message` and `data` off it. */
 /** Whether a connection is one of our programs' windows: role `app`, program MOSS or MOSS Code (never the host). */
@@ -171,6 +171,8 @@ export interface MossServerDeps {
   hostPidOf?(hostProcess: "moss" | "shared" | "own", pluginId?: string): number | undefined;
   /** The link sidecar's pid (lane H): the only local process that says hello as `remote`, `web` or `peer`. */
   linkPid?(): number | undefined;
+  /** The OS the device registry records for a paired device, which labels a phone's connection `ios` or `android`. */
+  deviceOs?(device: string): string | undefined;
   /** This run's app token, for `protocol.prove` (the app's check of the daemon before its hello). */
   readonly appToken?: string;
   /** Other lanes' MOSS methods, by wire name. */
@@ -286,7 +288,7 @@ export interface MossServer {
   /** The broker's pending cards in full (the daemon sets it once the broker is up): a connection that subscribes to
    *  `approvals` is told each of them (`card_requested`) before the subscription's answer, so no client loses a card by the
    *  order of its calls (a card raised before it subscribed reached no connection). */
-  pendingCards?: () => readonly Card[];
+  pendingCards?: (forDevice: string | undefined) => readonly Card[];
   /** Hears every connection that closed after its hello (its `surface` and `program` still on it), after the server let go
    *  of it: the hook for a lane that keeps state per connection (lane HS's host). Gives back the undo. */
   onClosed(fn: (conn: MossConn) => void): () => void;
@@ -592,7 +594,7 @@ export function createMossServer(deps: MossServerDeps): MossServer {
       // pending cards to one newly following `approvals`, and every card's place to one newly following `surfaces`, so a
       // client that subscribes after a card was raised or placed still hears it, and nothing told later is overtaken by it.
       const only = { connections: () => [conn][Symbol.iterator](), log: (line: string) => deps.log?.(line) };
-      if (fresh.includes("approvals")) for (const card of server.pendingCards?.() ?? []) sendCoreEvent(only, { type: "card_requested", ts: Date.now(), card });
+      if (fresh.includes("approvals")) for (const card of server.pendingCards?.(deviceOfConn(conn)) ?? []) sendCoreEvent(only, { type: "card_requested", ts: Date.now(), card });
       if (fresh.includes("surfaces")) for (const c of router.list()) sendCoreEvent(only, { type: "card_placed", ts: Date.now(), card: c.card, place: c.place as CardPlacement });
       return { ok: true };
     },
@@ -693,8 +695,12 @@ export function createMossServer(deps: MossServerDeps): MossServer {
     // another process's.
     opened(socket) {
       if (!pipePeers) { if (!deps.probe) handleOf(socket); return false; }
-      if (pipePeers.opened(socket) !== null && !deps.probe) handleOf(socket);
-      return pipePeers.isEarly(socket);
+      const pid = pipePeers.opened(socket);
+      if (pid !== null && !deps.probe) handleOf(socket);
+      // A connection whose client the handle scan could not name (two arrived before either was seen) is closed, as its comment on
+      // WindowsPipePeers says ("the client connects again"): left open, its server end stays unowned and makes every later connection
+      // ambiguous too, so no app could ever pair (the setup unit: -32020 on every attempt, 214 times).
+      return pipePeers.isEarly(socket) || (pid === null && !deps.probe);
     },
 
     lockedDown() { pipePeers?.lockedDown(); },
@@ -740,7 +746,7 @@ export function createMossServer(deps: MossServerDeps): MossServer {
           if (typeof r === "string") signed = r;
           return r;
         };
-        const resolved = resolveMossCaller({ binding, peer, processes: deps.processes, appPeer: namesProgram, ...(hostPid !== undefined ? { hostPid } : {}), ...(linkPid !== undefined ? { linkPid } : {}) });
+        const resolved = resolveMossCaller({ binding, peer, processes: deps.processes, appPeer: namesProgram, ...(hostPid !== undefined ? { hostPid } : {}), ...(linkPid !== undefined ? { linkPid } : {}), ...(deps.deviceOs !== undefined ? { deviceOs: deps.deviceOs } : {}) });
         if ("code" in resolved) throw new MossRpcError(resolved.code, resolved.message);
         caller = resolved;
         if (binding.role === "plugin-host") hostProcess = { hostProcess: binding.hostProcess, ...(binding.pluginId ? { pluginId: binding.pluginId } : {}) };
@@ -785,7 +791,7 @@ export function createMossServer(deps: MossServerDeps): MossServer {
       if (binding.role !== link.role || !("device" in binding) || binding.device !== link.device) throw new MossRpcError(ERR_UNAUTHORIZED, "the token is for another device or role");
       // The device may have been revoked while the token was checked: asked again just before it's registered.
       if (link.stillLinked !== undefined && !link.stillLinked()) throw new MossRpcError(MOSS_ERR.ROLE_REFUSED, "the device is no longer paired");
-      const caller: Caller = { kind: "user", client: link.role === "remote" ? "ios" : "web", device: link.device };
+      const caller: Caller = { kind: "user", client: link.role === "remote" ? remoteClientOf(deps.deviceOs?.(link.device)) : "web", device: link.device };
       const r = register(connId, h, caller, write, {});
       if (end) ends.set(connId, end);
       return r;

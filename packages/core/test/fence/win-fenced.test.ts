@@ -1,14 +1,14 @@
 // The Windows leg of the fenced spawner, its pure half and its refusals, on every OS (lane WS). The real launches run
 // in win-fenced.e2e.test.ts on windows-latest.
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
-import type { Caller } from "@waifucave/moss-protocol";
+import type { Caller, Level } from "@waifucave/moss-protocol";
 import { MossFence } from "../../src/fence/fence";
-import { escapedSandbox, windowsShellTools } from "../../src/fence/win-shell-tools";
+import { endWindowsBackgroundOf, endWindowsBackgroundOn, escapedSandbox, stopWindowsBackground, windowsBackgroundOf, windowsShellTools, WIN_SHELL_BACKGROUND_ENGINE, WIN_SHELL_BACKGROUND_PER_SESSION } from "../../src/fence/win-shell-tools";
 import {
-  existingDenies, existingDeniesOf, grantsConflict, parseProfileExclusions, strayRoots, treeWithin, planFromSettings, profileExcludeCandidates, quarantineWin, shellArgv, winChainIsClean, winChildEnv, winExecArgv, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
+  existingDenies, existingDeniesOf, grantsConflict, parsePersistentRoots, parseProfileExclusions, strayRoots, treeWithin, planFromSettings, profileExcludeCandidates, quarantineWin, shellArgv, winChainIsClean, winChildEnv, winExecArgv, watchedReadDenies, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
   type WinFencedDeps,
 } from "../../src/fence/win-fenced";
 import { formatInstallMarker, poolStateFiles, type LeaseStore } from "../../src/fence/win-sandbox";
@@ -145,7 +145,7 @@ const GEN1 = "1".repeat(32), GEN2 = "2".repeat(32);
 
 /** Fake machine: a launcher that is (or isn't) pinned, a marker, the pool's state files (each principal's generation
  *  and used record; by default both remade since their last command) and an in-memory lease store. */
-function machine(o: { pinned?: boolean; marker?: string | null; files?: Record<string, string> } = {}) {
+function machine(o: { pinned?: boolean; marker?: string | null; files?: Record<string, string>; roots?: string[] } = {}) {
   const root = mkdtempSync(join(tmpdir(), "moss-winfenced-"));
   const home = join(root, "home");
   mkdirSync(join(home, ".moss"), { recursive: true });
@@ -169,6 +169,7 @@ function machine(o: { pinned?: boolean; marker?: string | null; files?: Record<s
     async exec(argv) {
       execs.push(argv);
       if (argv[0] === "reg" && argv[2] === "HKLM\\SOFTWARE\\sandbox-runtime") return { code: 0, stdout: "    SandboxUserSid    REG_SZ    S-1-5-21-1002\r\n", stderr: "" };
+      if (argv[1] === "user" && argv[2] === "status") return { code: 0, stdout: JSON.stringify({ persistent_grants: { state: "none", roots: o.roots ?? [], pending: [] } }), stderr: "" };
       return { code: 0, stdout: "", stderr: "" };
     },
     readFile: (p) => (p.endsWith("S-1-5-21-1.json") ? marker : files[win32.basename(p)] ?? null),
@@ -452,5 +453,348 @@ describe("the move across drives is capped (the WS3 reviewer's finding 4)", () =
       expect(existsSync(small)).toBe(false);
       expect(readdirSync(join(mossHome, "quarantine")).some((n) => n.startsWith("small.quarantined-"))).toBe(true);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("rule 3c across an engine restart (the WS4 reviewer's item 2)", () => {
+  test("srt-win's own list of this user's persistent roots, long-path prefix off, pending ones too; nothing from bad JSON", () => {
+    const st = JSON.stringify({ persistent_grants: { state: "present", roots: ["\\\\?\\C:\\h\\.moss\\outputs\\a", "C:\\proj"], pending: ["E:\\x"] } });
+    expect(parsePersistentRoots(st)).toEqual(["C:\\h\\.moss\\outputs\\a", "C:\\proj", "E:\\x"]);
+    // Any other shape is a failed read (the WS5 reviewer's should-fix 2), never an empty list.
+    expect(parsePersistentRoots("nope")).toBeNull();
+    expect(parsePersistentRoots(JSON.stringify({ persistent_grants: { state: "none" } }))).toBeNull();
+    expect(parsePersistentRoots(JSON.stringify({ persistent_grants: { roots: "C:\\x" } }))).toBeNull();
+    expect(parsePersistentRoots(JSON.stringify({ persistent_grants: { roots: [1] } }))).toBeNull();
+    expect(parsePersistentRoots(JSON.stringify({ persistent_grants: { roots: [], pending: {} } }))).toBeNull();
+    expect(parsePersistentRoots(JSON.stringify({ persistent_grants_v2: { roots: [] } }))).toBeNull();
+    expect(parsePersistentRoots(JSON.stringify({ persistent_grants: { state: "none", roots: [], pending: [] } }))).toEqual([]);
+  });
+  test("a new engine reads that list before its first command draws a plan, once; a read that failed is tried again", async () => {
+    const m = machine();
+    let fails = 1;
+    const exec = m.deps.exec;
+    const deps: WinFencedDeps = { ...m.deps, launcher: "C:\\seed-test\\srt-win.exe", async exec(argv, o) {
+      if (argv[1] === "user" && argv[2] === "status") {
+        m.execs.push(argv);
+        if (fails-- > 0) return { code: 1, stdout: "", stderr: "busy" };
+        return { code: 0, stdout: JSON.stringify({ persistent_grants: { state: "present", roots: [] } }), stderr: "" };
+      }
+      return exec(argv, o);
+    } };
+    const s = winFencedSpawner({ fence: m.fence, deps, grantAhead: false });
+    const statusCalls = () => m.execs.filter((a) => a[1] === "user" && a[2] === "status").length;
+    m.files["moss-sb-aaaaaa-1.used"] = ""; m.files["moss-sb-aaaaaa-2.used"] = "";
+    await s.run(runOf(m.home));
+    expect(statusCalls()).toBe(1);
+    const firstGrant = m.execs.findIndex((a) => a[1] === "acl" && a[2] === "grant");
+    const firstStatus = m.execs.findIndex((a) => a[1] === "user" && a[2] === "status");
+    expect(firstStatus).toBeGreaterThanOrEqual(0);
+    if (firstGrant >= 0) expect(firstStatus).toBeLessThan(firstGrant);
+    m.files["moss-sb-aaaaaa-1.used"] = ""; m.files["moss-sb-aaaaaa-2.used"] = "";
+    await s.run(runOf(m.home));
+    expect(statusCalls()).toBe(2); // the first failed, so it is read again
+    m.files["moss-sb-aaaaaa-1.used"] = ""; m.files["moss-sb-aaaaaa-2.used"] = "";
+    await s.run(runOf(m.home));
+    expect(statusCalls()).toBe(2); // read once it succeeded
+  });
+});
+
+describe("the roots seed gates every command (the WS5 reviewer's should-fix 2)", () => {
+  /** A launcher that records its argv, one argument a line, and exits 0: what the command was launched with. */
+  const recorder = (dir: string) => {
+    const file = join(dir, "argv.txt");
+    const launcher = join(dir, "fake-srt.sh");
+    writeFileSync(launcher, `#!/bin/sh\nfor a in "$@"; do printf '%s\\n' "$a"; done > '${file}'\nexit 0\n`);
+    chmodSync(launcher, 0o755);
+    return { launcher, argv: () => (existsSync(file) ? readFileSync(file, "utf8").split("\n") : null) };
+  };
+  const coding = (cwd: string): FencedRun => ({ command: "echo hi", cwd, env: {}, timeoutMs: 10_000, who: { caller: { kind: "session", sessionId: "c1", sessionKind: "coding" } as Caller } });
+  // The recording launcher is a shell script, which only a POSIX host launches: the lane's macOS and Linux suites run
+  // this; the windows-fence unit job skips it (the e2e launches the real srt-win there).
+  test.skipIf(process.platform === "win32")("a root from srt-win's list under the plan's denied folder is stamped as a by-name read deny", async () => {
+    const m = machine();
+    const moss = join(m.home, ".moss");
+    mkdirSync(join(moss, "elsewhere", "root1"), { recursive: true });
+    const root = realpathSync(join(moss, "elsewhere", "root1")); // a folder the plan doesn't name: only the seed can
+    const cwd = join(moss, "outputs", "c1");
+    mkdirSync(cwd, { recursive: true });
+    const rec = recorder(mkdtempSync(join(tmpdir(), "ws6-rec-")));
+    const exec = m.deps.exec;
+    const deps: WinFencedDeps = { ...m.deps, launcher: rec.launcher, async exec(argv, o) {
+      if (argv[1] === "user" && argv[2] === "status") return { code: 0, stdout: JSON.stringify({ persistent_grants: { state: "present", roots: [`\\\\?\\${root}`], pending: [] } }), stderr: "" };
+      return exec(argv, o);
+    } };
+    const r = await winFencedSpawner({ fence: m.fence, deps, grantAhead: false }).run(coding(cwd));
+    const argv = rec.argv();
+    expect(r).not.toMatchObject({ kind: "refused" });
+    expect(argv).not.toBeNull();
+    const same = (a: string | undefined) => a !== undefined && win32.normalize(a).toLowerCase() === win32.normalize(root).toLowerCase();
+    const at = argv!.findIndex((a, i) => a === "--deny-read" && same(argv![i + 1]));
+    expect(at).toBeGreaterThanOrEqual(0);
+  });
+  test("a seed that fails or has another shape refuses the command, which never launches", async () => {
+    for (const answer of [{ code: 1, stdout: "" }, { code: 0, stdout: "not json" }, { code: 0, stdout: JSON.stringify({ persistent_grants: { roots: "x" } }) }]) {
+      const m = machine();
+      const cwd = join(m.home, ".moss", "outputs", "c1");
+      mkdirSync(cwd, { recursive: true });
+      const rec = recorder(mkdtempSync(join(tmpdir(), "ws6-rec-")));
+      const exec = m.deps.exec;
+      const deps: WinFencedDeps = { ...m.deps, launcher: rec.launcher, async exec(argv, o) {
+        if (argv[1] === "user" && argv[2] === "status") return { ...answer, stderr: "" };
+        return exec(argv, o);
+      } };
+      const r = await winFencedSpawner({ fence: m.fence, deps, grantAhead: false }).run(coding(cwd));
+      expect(r.kind).toBe("refused");
+      const reason = r.kind === "refused" ? r.reason : "";
+      expect(reason).toContain("couldn't be read");
+      // It says what to do when it keeps failing, and the refusal uses no account up: nothing was leased, so no generation was marked used.
+      expect(reason).toContain("if it keeps failing run `moss-core sandbox setup` again, or restart MOSS");
+      expect(m.writes).toEqual([]);
+      expect(rec.argv()).toBeNull();
+    }
+  });
+});
+
+describe("a background command on Windows (rule B, lane WS7)", () => {
+  /** A spawner whose commands stream two lines, then run until stopped or released. */
+  const slow = () => {
+    const runs: FencedRun[] = [];
+    const release: (() => void)[] = [];
+    const spawner: FencedSpawner = { available: true, run: (r) => new Promise((res) => {
+      runs.push(r);
+      r.onOutput?.("line one\n", "stdout");
+      r.onOutput?.("line two\n", "stderr");
+      const done = (code: number) => res({ kind: "exited", code, stdout: "line one\n", stderr: "line two\n", shell: "git-bash" });
+      r.signal?.addEventListener("abort", () => done(1), { once: true });
+      release.push(() => done(0));
+    }) };
+    return { runs, release, spawner };
+  };
+  const make = (spawner: FencedSpawner, session: string, wakes: unknown[], allowWrite?: (moss: string, cwd: string) => string[],
+    more: { bot?: string; sessionKind?: string; level?: () => Level | undefined } = {}) => {
+    const cwd = mkdtempSync(join(tmpdir(), "ws7-bg-"));
+    const moss = mkdtempSync(join(tmpdir(), "ws7-moss-"));
+    const caller = { kind: "session", sessionId: session, sessionKind: more.sessionKind ?? "bot", bot: more.bot ?? "luna" } as Extract<Caller, { kind: "session" }>;
+    const t = Object.fromEntries(windowsShellTools({
+      spawner, caller, kind: "bot", cwd: () => cwd, userHome: "C:\\h", temp: "C:\\t", mossHome: moss,
+      sandbox: () => (allowWrite === undefined ? {} : { filesystem: { allowWrite: allowWrite(moss, cwd) } }),
+      wake: async (w) => { wakes.push(w); },
+      ...(more.level === undefined ? {} : { level: more.level }),
+    }).map((x) => [x.name, x]));
+    return { t, cwd, moss };
+  };
+  const idOf = (text: string) => /win_bg_[0-9a-f]{8}/.exec(text)![0];
+  const told = async (wakes: { task: string }[], id: string) => { for (let i = 0; i < 200 && !wakes.some((w) => w.task === id); i++) await Bun.sleep(10); return wakes.find((w) => w.task === id) as { status: string; text: string } | undefined; };
+  test("it answers at once with its id and log; output is logged as it comes; its end is told; the lease is the run's", async () => {
+    const s = slow();
+    const wakes: { task: string; status: string; text: string }[] = [];
+    const { t, moss } = make(s.spawner, "bg-a", wakes);
+    const r = await t.Bash!.run({ command: "long", run_in_background: true });
+    expect(r.isError).toBe(false);
+    const id = /win_bg_[0-9a-f]{8}/.exec(r.text)![0];
+    const log = /written to (\S+\.log)/.exec(r.text)![1]!;
+    // The daemon's own folder, never the command's (which it could swap for a link to a file of the user's).
+    expect(log).toBe(join(moss, "logs", "background", "bg-a", `${id}.log`));
+    expect(windowsBackgroundOf("bg-a")).toEqual([id]);
+    expect(readFileSync(log, "utf8")).toBe("line one\nline two\n");
+    expect(s.runs[0]!.timeoutMs).toBe(24 * 3_600_000);
+    expect(wakes).toHaveLength(0);
+    s.release[0]!();
+    for (let i = 0; i < 50 && wakes.length === 0; i++) await Bun.sleep(10);
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({ task: id, status: "completed" });
+    expect(wakes[0]!.text).toContain("exited with code 0");
+    expect(readFileSync(log, "utf8")).toContain("[moss: the command exited with code 0]");
+    expect(windowsBackgroundOf("bg-a")).toEqual([]);
+  }, 30_000);
+  test("TaskStop's stop ends it (its session's only) and it is told as stopped; at most two run per session", async () => {
+    const s = slow();
+    const wakes: { task: string; status: string }[] = [];
+    const { t } = make(s.spawner, "bg-b", wakes);
+    const ids: string[] = [];
+    for (let i = 0; i < WIN_SHELL_BACKGROUND_PER_SESSION; i++) ids.push(/win_bg_[0-9a-f]{8}/.exec((await t.Bash!.run({ command: `c${i}`, run_in_background: true })).text)![0]);
+    const third = await t.PowerShell!.run({ command: "c3", run_in_background: true });
+    expect(third.isError).toBe(true);
+    expect(third.text).toContain("running on this computer already");
+    expect(await stopWindowsBackground("someone-else", ids[0]!)).toBeNull();
+    const stopped = await stopWindowsBackground("bg-b", ids[0]!);
+    expect(stopped).toMatchObject({ isError: false });
+    expect(s.runs[0]!.signal!.aborted).toBe(true);
+    for (let i = 0; i < 50 && wakes.length === 0; i++) await Bun.sleep(10);
+    expect(wakes[0]).toMatchObject({ task: ids[0], status: "stopped" });
+    expect(windowsBackgroundOf("bg-b")).toEqual([ids[1]!]);
+    await stopWindowsBackground("bg-b", ids[1]!);
+  }, 30_000);
+  test("a refusal that comes at once is the call's answer; never with the escape flag; never without a way to tell its end", async () => {
+    const refusing: FencedSpawner = { available: true, run: async () => ({ kind: "refused", reason: "Bash isn't set up" }) };
+    const wakes: unknown[] = [];
+    const { t } = make(refusing, "bg-c", wakes);
+    const r = await t.Bash!.run({ command: "x", run_in_background: true });
+    expect(r).toMatchObject({ isError: true, text: expect.stringContaining("Bash isn't set up") });
+    const esc = await t.Bash!.run({ command: "x", run_in_background: true, dangerouslyDisableSandbox: true });
+    expect(esc).toMatchObject({ isError: true, text: expect.stringContaining("runs in the foreground") });
+  });
+  test("never where the command may write: a write root that holds the log's folder refuses the start, and nothing runs", async () => {
+    for (const roots of [(moss: string) => [moss], (moss: string) => [join(moss, "logs")], (moss: string, cwd: string) => [cwd, join(moss, "logs", "background")]]) {
+      const s = slow();
+      const { t, moss } = make(s.spawner, "bg-d", [], roots);
+      const r = await t.Bash!.run({ command: "x", run_in_background: true });
+      expect(r).toMatchObject({ isError: true, text: expect.stringContaining("can't be kept where this command may write") });
+      expect(s.runs).toHaveLength(0);
+      expect(existsSync(join(moss, "logs", "background"))).toBe(false);
+    }
+    // The command's own folder as a root is fine: the log is not there.
+    const s = slow();
+    const { t } = make(s.spawner, "bg-e", [], (_m, cwd) => [cwd]);
+    const ok = await t.Bash!.run({ command: "x", run_in_background: true });
+    expect(ok.isError).toBe(false);
+    await stopWindowsBackground("bg-e", /win_bg_[0-9a-f]{8}/.exec(ok.text)![0]);
+  }, 30_000);
+  test("the whole engine runs at most two (the pool's four accounts less two kept for ordinary commands), across sessions", async () => {
+    expect(WIN_SHELL_BACKGROUND_ENGINE).toBe(2);
+    const s = slow();
+    const a = make(s.spawner, "bg-f1", []), b = make(s.spawner, "bg-f2", []), c = make(s.spawner, "bg-f3", []);
+    const ids = [idOf((await a.t.Bash!.run({ command: "x", run_in_background: true })).text), idOf((await b.t.Bash!.run({ command: "x", run_in_background: true })).text)];
+    const third = await c.t.Bash!.run({ command: "x", run_in_background: true });
+    expect(third.isError).toBe(true);
+    expect(third.text).toContain("running on this computer already");
+    expect(third.text).toContain("kept for ordinary commands");
+    expect(s.runs).toHaveLength(2);
+    // A foreground command of the third session still runs.
+    const fg = c.t.Bash!.run({ command: "y" });
+    expect(s.runs).toHaveLength(3);
+    s.release[2]!();
+    expect((await fg).isError).toBe(false);
+    await stopWindowsBackground("bg-f1", ids[0]!);
+    await stopWindowsBackground("bg-f2", ids[1]!);
+  }, 30_000);
+  test("rule 8c: when the fenced set grows, it is ended and the bot is told to run it again", async () => {
+    const s = slow();
+    const wakes: { task: string; status: string; text: string }[] = [];
+    const { t } = make(s.spawner, "bg-g", wakes);
+    const id = idOf((await t.Bash!.run({ command: "x", run_in_background: true })).text);
+    s.runs[0]!.onFenceGrew!();
+    const end = await told(wakes, id);
+    expect(end).toMatchObject({ status: "stopped" });
+    expect(end!.text).toContain("something the sandbox protects appeared");
+    expect(end!.text).toContain("run it again");
+    expect(windowsBackgroundOf("bg-g")).toEqual([]);
+  }, 30_000);
+  test("ended from outside, each told why: the pause, this computer no longer running the bots, a removed bot, a lowered level, a conversation ended", async () => {
+    let paused = false, runs = true;
+    const gateFns: (() => void)[] = [], botFns: ((e: { type: string; id?: unknown }) => void)[] = [], levelFns: (() => void)[] = [];
+    const off = endWindowsBackgroundOn({
+      gate: { watch: (fn) => { gateFns.push(fn); return () => {}; }, mayAct: (v) => v.kind === "coding" || (!paused && (v.kind !== "bot" || runs)), get paused() { return paused; } },
+      bots: { onEvent: (fn) => { botFns.push(fn); return () => {}; } },
+      levels: { watch: (fn) => { levelFns.push(fn); return () => {}; } },
+    });
+    const s = slow();
+    const wakes: { task: string; status: string; text: string }[] = [];
+    const start = async (session: string, more: Parameters<typeof make>[4] = {}) => idOf((await make(s.spawner, session, wakes, undefined, more).t.Bash!.run({ command: "x", run_in_background: true })).text);
+    const cases: [string, () => void, string, Parameters<typeof make>[4]?][] = [
+      ["bg-h1", () => { paused = true; gateFns.forEach((f) => f()); }, "the user paused the bots"],
+      ["bg-h2", () => { paused = false; runs = false; gateFns.forEach((f) => f()); }, "this computer stopped running the bots"],
+      ["bg-h3", () => { runs = true; botFns.forEach((f) => f({ type: "bot_removed", id: "nova" })); }, "its bot was removed or archived", { bot: "nova" }],
+      ["bg-h5", () => void endWindowsBackgroundOf("bg-h5", "its conversation was deleted"), "its conversation was deleted"],
+    ];
+    for (const [session, act, why, more] of cases) {
+      const id = await start(session, more);
+      // Another session's command, not picked by the event, keeps running.
+      const other = await start(`${session}-other`, { bot: "sol", sessionKind: "coding" });
+      act();
+      const end = await told(wakes, id);
+      expect([session, end?.status, end?.text.includes(why)]).toEqual([session, "stopped", true]);
+      expect(windowsBackgroundOf(`${session}-other`)).toEqual([other]);
+      await stopWindowsBackground(`${session}-other`, other);
+    }
+    // The level: lowered below the one it started under ends it; raised, or the same, doesn't.
+    let level: Level | undefined = "accept-edits";
+    const id = await start("bg-h4", { level: () => level });
+    level = "automatic"; levelFns.forEach((f) => f());
+    level = "accept-edits"; levelFns.forEach((f) => f());
+    await Bun.sleep(50);
+    expect(windowsBackgroundOf("bg-h4")).toEqual([id]);
+    level = "ask"; levelFns.forEach((f) => f());
+    const end = await told(wakes, id);
+    expect(end).toMatchObject({ status: "stopped", text: expect.stringContaining("the approval level was lowered") });
+    off();
+  }, 30_000);
+});
+
+describe("the exclusions follow the fenced set (rule 8b, lane WS7)", () => {
+  test("a fenced path made after the grant is excluded by a fresh grant before the next command; nothing changes when none is", async () => {
+    const m = machine();
+    const s = winFencedSpawner({ fence: m.fence, deps: m.deps, grantAhead: false });
+    const grants = () => m.execs.filter((a) => a[1] === "profile" && a[2] === "grant");
+    const fresh = () => { m.files["moss-sb-aaaaaa-1.used"] = ""; m.files["moss-sb-aaaaaa-2.used"] = ""; };
+    fresh();
+    await s.run(runOf(m.home));
+    const first = grants().length;
+    expect(first).toBeGreaterThan(0);
+    fresh();
+    await s.run(runOf(m.home));
+    expect(grants().length).toBe(first); // nothing new: no grant
+    // A place the fence names, made now (say a new key store in the home).
+    const candidate = profileExcludeCandidates(m.fence).find((p) => !existsSync(p))!;
+    expect(candidate).toBeDefined();
+    mkdirSync(candidate, { recursive: true });
+    fresh();
+    await s.run(runOf(m.home));
+    const again = grants();
+    expect(again.length).toBe(first + 1);
+    expect(again[again.length - 1]).toContain(candidate);
+  });
+  // A launcher that sleeps, so the command is running while the fence changes: a shell script, which only a POSIX host
+  // launches (the windows-fence unit job skips it; the e2e runs the real srt-win).
+  test.skipIf(process.platform === "win32")("rule 8c: a long command is told once when a protected path appears while it runs; one with nothing new is not", async () => {
+    for (const appears of [true, false]) {
+      const m = machine();
+      const dir = mkdtempSync(join(tmpdir(), "ws7-8c-"));
+      const launcher = join(dir, "sleepy-srt.sh");
+      writeFileSync(launcher, "#!/bin/sh\n/bin/sleep 2\nexit 0\n");
+      chmodSync(launcher, 0o755);
+      const exec = m.deps.exec;
+      const deps: WinFencedDeps = { ...m.deps, launcher, fenceWatchMs: 50, exec: (argv, o) => exec(argv[0] === launcher ? [m.deps.launcher, ...argv.slice(1)] : argv, o) };
+      const s = winFencedSpawner({ fence: m.fence, deps, grantAhead: false });
+      const candidate = profileExcludeCandidates(m.fence).find((p) => !existsSync(p))!;
+      let grew = 0;
+      const run = s.run({ ...runOf(m.home), timeoutMs: 10_000, onFenceGrew: () => { grew++; } });
+      if (appears) { await Bun.sleep(700); mkdirSync(candidate, { recursive: true }); }
+      const r = await run;
+      expect(r).not.toMatchObject({ kind: "refused" });
+      expect([appears, grew]).toEqual([appears, appears ? 1 : 0]);
+    }
+  }, 30_000);
+  test.skipIf(process.platform === "win32")("rule 8c's baseline is the grant in force: a place that appeared before the command but that the grant doesn't hold yet (its refresh failed) ends it", async () => {
+    const m = machine();
+    const dir = mkdtempSync(join(tmpdir(), "ws7-8c-"));
+    const launcher = join(dir, "sleepy-srt.sh");
+    writeFileSync(launcher, "#!/bin/sh\n/bin/sleep 2\nexit 0\n");
+    chmodSync(launcher, 0o755);
+    let grants = 0;
+    const exec = m.deps.exec;
+    const deps: WinFencedDeps = { ...m.deps, launcher, fenceWatchMs: 50, exec: (argv, o) => {
+      if (argv[1] === "profile" && argv[2] === "grant" && ++grants > 1) return Promise.resolve({ code: 24, stdout: "", stderr: "" }); // the refresh fails
+      return exec(argv[0] === launcher ? [m.deps.launcher, ...argv.slice(1)] : argv, o);
+    } };
+    const s = winFencedSpawner({ fence: m.fence, deps, grantAhead: false });
+    await s.run({ ...runOf(m.home), timeoutMs: 10_000 }); // the grant, made with what exists now
+    mkdirSync(profileExcludeCandidates(m.fence).find((p) => !existsSync(p))!, { recursive: true });
+    m.files["moss-sb-aaaaaa-1.used"] = ""; m.files["moss-sb-aaaaaa-2.used"] = "";
+    let grew = 0;
+    const r = await s.run({ ...runOf(m.home), timeoutMs: 10_000, onFenceGrew: () => { grew++; } });
+    expect(r).not.toMatchObject({ kind: "refused" });
+    expect(grants).toBeGreaterThan(1); // the refresh was tried, and failed
+    expect(grew).toBe(1);
+  }, 30_000);
+  test("rule 8c watches the literal denies and the fixed-depth globs, never a `**` walk", () => {
+    const tree = new Map<string, string[]>([["C:\\m", ["projects", "deep"]], ["C:\\m\\projects", ["p1"]], ["C:\\m\\projects\\p1", ["s.provider-state.jsonl"]], ["C:\\m\\deep", ["a"]], ["C:\\m\\deep\\a", ["k.pem"]]]);
+    const all = new Set(["C:\\m\\secret.txt", ...[...tree].flatMap(([d, ns]) => [d, ...ns.map((n) => `${d}\\${n}`)])]);
+    const listed: string[] = [];
+    const got = watchedReadDenies(["C:\\m\\secret.txt", "C:\\m\\absent", "C:\\m\\projects\\*\\*.provider-state.jsonl", "C:\\m\\deep\\**\\*.pem"], {
+      exists: (p) => all.has(p), list: (d) => { listed.push(d); return tree.get(d) ?? []; }, isDir: (p) => tree.has(p),
+    });
+    expect(got.sort()).toEqual(["C:\\m\\projects\\p1\\s.provider-state.jsonl", "C:\\m\\secret.txt"]);
+    expect(listed.some((d) => d.startsWith("C:\\m\\deep"))).toBe(false);
   });
 });

@@ -3,7 +3,7 @@
 // refuses the call up front, with no card, and tells the bot what it can do instead. Every entry of the shell's
 // run-later deny list, under a project at every level a write runs at, with Write and Edit: refused, and the broker
 // never asked. An ordinary file in the same project still goes on to the broker.
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,10 @@ import { MossFence } from "../../src/fence/fence";
 import { botSandboxSettings, runLaterByName } from "../../src/fence/sandbox-settings";
 import { PROJECT_DENIES, PROJECT_WHOLE_DENIES } from "../../src/registry/plugin-fence";
 import type { BotSessionContext } from "../../src/bots/service";
+
+// Each test here checks about 800 paths against the real disk (about 0.7 s on a free Mac): bun's 5 s allowance per test is the
+// machine's patience, not the claim, and a loaded Mac failed three runs of ten on it while the same file passed alone.
+setDefaultTimeout(60_000);
 
 const temps: string[] = [];
 afterAll(() => { for (const d of temps.splice(0)) rmSync(d, { recursive: true, force: true }); });

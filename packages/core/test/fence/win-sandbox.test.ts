@@ -60,6 +60,9 @@ import {
   poolPrincipalName,
   poolSublayerGuid,
   sandboxPool,
+  endAccountProcessesArgs,
+  endAccountUntilGone,
+  netUserState,
   userStatusArgs,
   sandboxLeasesDir,
   acquirePoolLease,
@@ -98,8 +101,8 @@ describe("the pinned launcher", () => {
   });
 
   test("the launcher has Authenticode digest pins for x64 and arm64", () => {
-    expect(SRT_WIN_PINS.x64).toBe("64068333097946441a0ec11b0d7ef81dac0d95d0115458d296742743051377ab"); // re-measured 2026-11-23 with patch 0002 (windows-launcher.ts)
-    expect(SRT_WIN_PINS.arm64).toBe("bcd117665fe9f64494bd535b9508e4808ae99ad0ff6118fb410a7f60bb47abb9");
+    expect(SRT_WIN_PINS.x64).toBe("b73f8f0afaea29757068363b7a4fab197dc6f8e3153b07a1842e160812fa14be"); // re-measured 2026-11-24 with patches 0001-0004 (windows-launcher.ts)
+    expect(SRT_WIN_PINS.arm64).toBe("0d52667a4d22750405bd086b47a541e81890c4c3b89f97d4122cb6aed15ea8e0"); // measured natively on windows-11-arm, 2026-11-24
   });
 
   test("a missing launcher is missing, and only the exact digest pins", () => {
@@ -921,5 +924,42 @@ describe("the pool's state (lane WS2: profiles remade ahead)", () => {
     expect(script).toContain("CreateProfile('S-1-5-21-1-2-3-1004', 'moss-sb-abcdef-2'");
     expect(() => remakeProfileArgs("S-1-5-21-1'; rm", "x")).toThrow();
     expect(() => remakeProfileArgs("S-1-5-21-1", "a'b")).toThrow();
+  });
+});
+
+describe("sandbox remove's helpers (the WS4 reviewer's item 1 and nit)", () => {
+  const decode = (argv: readonly string[]) => Buffer.from(argv[argv.length - 1]!, "base64").toString("utf16le");
+  test("ending an account's processes names exactly that pool account, never a pattern", () => {
+    for (const p of ["moss-sb-3d34c3-1", "moss-sb-3d34c3-e", "moss-sb-abcdef-12"]) {
+      const script = decode(endAccountProcessesArgs(p));
+      expect(script).toContain(`$who = [Environment]::MachineName + "\\${p}"`);
+      expect(script).not.toContain("$env:");
+      expect(script).toContain("$_.UserName -eq $who");
+      expect(script).toContain("Stop-Process -Id $p.Id -Force");
+      expect(script).toContain("exit 4");
+    }
+    for (const bad of ["moss-sb-*", "moss-sb-3d34c3-1*", "Administrator", "moss-sb-3d34c3-1' ; x", "moss-sb-3D34C3-1"]) expect(() => endAccountProcessesArgs(bad)).toThrow();
+  });
+  test("net user: gone only for 'user name could not be found' (2221); other failures are unknown", () => {
+    expect(netUserState(0, "User name moss-sb-1")).toBe("present");
+    expect(netUserState(2, "The user name could not be found.\r\n\r\nMore help is available by typing NET HELPMSG 2221.")).toBe("gone");
+    expect(netUserState(2, "System error 5 has occurred.\r\n\r\nAccess is denied.")).toBe("unknown");
+    expect(netUserState(1, "")).toBe("unknown");
+  });
+});
+
+describe("an account whose process can't be ended is not removed (the WS5 reviewer's should-fix 1)", () => {
+  const runs = (codes: number[]) => { const seen: number[] = []; return { seen, run: async () => { const c = codes[seen.length] ?? codes[codes.length - 1]!; seen.push(c); return { code: c, out: `ended 1, left ${c === 4 ? 1 : 0}` }; } }; };
+  const sleep = async () => {};
+  test("exit 4 (a process still lives after the kill) is tried again, and still alive after three tries is false", async () => {
+    const a = runs([4, 4, 4]);
+    expect(await endAccountUntilGone(a.run, "moss-sb-abcdef-1", { sleep })).toBe(false);
+    expect(a.seen).toEqual([4, 4, 4]);
+    const b = runs([4, 0]);
+    expect(await endAccountUntilGone(b.run, "moss-sb-abcdef-1", { sleep })).toBe(true);
+    expect(b.seen).toEqual([4, 0]);
+    const c = runs([1, 1, 1]); // PowerShell itself failed: never read as ended
+    expect(await endAccountUntilGone(c.run, "moss-sb-abcdef-1", { sleep })).toBe(false);
+    expect(await endAccountUntilGone(runs([0]).run, "moss-sb-abcdef-1", { sleep })).toBe(true);
   });
 });

@@ -177,7 +177,7 @@ describe("code, engines and platforms", () => {
   test("`availability: not-yet` is MOSS's own mark: its parked plugins carry it; any other plugin is refused for it", () => {
     const parked = { status: "not-yet", reason: "webhook-keys" };
     // MOSS's parked plugins, as they are in the tree, validate as its children.
-    for (const folder of ["companion-ios", "companion-web", "forwarder", "provider-gcp", "provider-hetzner", "push", "relay-cloudflare", "trigger-webhook"]) {
+    for (const folder of ["companion-ios", "companion-web", "provider-gcp", "provider-hetzner", "push", "relay-cloudflare"]) {
       const text = readFileSync(join(import.meta.dir, "..", "..", "..", "plugins", "moss", "plugins", folder, "moss.json"), "utf8");
       const r = validateManifest(text, { folderName: folder, parent: { id: "moss", namespace: "moss" }, bundled: true });
       expect([folder, r.ok, r.issues.filter((i) => i.severity === "error").map((i) => i.code)]).toEqual([folder, true, []]);

@@ -28,11 +28,14 @@ import type { Clock } from "../contracts/clock";
 import type { SecretStore } from "../contracts/secret-store";
 import type { AnswerLedger, CallCardRenderer } from "../contracts/approval-broker";
 import { SntpTimeSource } from "../clock/shared-clock";
+import type { AccountClient } from "../identity/account";
 import { waifucaveAccount, type WaifucaveAccount } from "../identity/account-config";
 import { DIST_BUILD } from "../build-kind";
 import { ContractError } from "../contracts/common";
-import { devicesEvents, devicesMethods, mountMainChoiceRequests, type CardOpener, type DevicesMethodsDeps } from "../devices/rpc";
+import { brokerCardOpener, devicesEvents, devicesMethods, mountMainChoiceRequests, type CardOpener, type DevicesMethodsDeps } from "../devices/rpc";
+import type { ApprovalBroker } from "../contracts/approval-broker";
 import type { UpdateRestartGate } from "../lease/main";
+import { safeDeviceName } from "../devices/names";
 import { HandshakeClient } from "../links/handshake";
 import { MemoryNetwork } from "../links/memory-wire";
 import { startDeviceLinks, type DeviceLinks, type DeviceLinksOptions } from "../links/node";
@@ -45,6 +48,14 @@ import { mountMossRemoteClients, type MossRemoteClientsOptions } from "./link-cl
 /** Until C-M3's broker: no card can be raised, so a change that needs one is refused. */
 export const refuseUntilBroker: CardOpener = async () => ({ allowed: Promise.resolve(false) });
 
+/** The daemon's card opener for the device changes: the broker's once the parts are up (`broker()` is undefined before), else a refusal.
+ *  The caller's options (`signal`: a pairing that ends withdraws its add card) go through to the broker: a wrapper that drops them leaves the
+ *  card of a failed pairing up for the person to press. */
+export const openOnBroker = (broker: () => Pick<ApprovalBroker, "request" | "watch"> | undefined): CardOpener => (req, opts) => {
+  const b = broker();
+  return b ? brokerCardOpener(b)(req, opts) : refuseUntilBroker(req, opts);
+};
+
 /** Until C-M3's sealed cards: no call's card can be rebuilt, so a signed answer never checks out. */
 export const renderNothing: CallCardRenderer = () => undefined;
 
@@ -55,12 +66,11 @@ export function memoryLedger(): AnswerLedger {
 }
 
 /** This computer's device name by default: its host name without the domain (`studio.local` is `studio`), with no
- *  control characters, cut to the registry's 63 characters; `Computer` when nothing is left. A host name the registry
- *  can't take as it is (a CI runner's long generated one) must never keep the links from starting. */
+ *  anything the one rule for names refuses (`devices/names.ts`: control, invisible and direction-changing characters, fillers,
+ *  stacks of accents) left out, cut to 63 characters; `Computer` when nothing is left. A host name the registry can't take as it is
+ *  (a CI runner's long generated one) must never keep the links from starting, and never be a name every other device turns away. */
 export function defaultDeviceName(host: string): string {
-  const first = host.split(".")[0] ?? "";
-  const clean = [...first.replace(/[\u0000-\u001f\u007f]/gu, "").trim()].slice(0, 63).join("").trim();
-  return clean.length > 0 ? clean : "Computer";
+  return safeDeviceName(host.split(".")[0] ?? "");
 }
 
 /** The link sidecar beside the daemon's own binary (its links resolved, `bundledLinkBinary`); null when there's none
@@ -126,6 +136,8 @@ export interface DaemonLinksInput {
 
 export interface DaemonLinks {
   readonly links: DeviceLinks | null;
+  /** The waifucave account client, when the account is set up here (its tokens: `identity/account-tokens.ts`). */
+  readonly account?: AccountClient;
   /** `pair.quit{handOver}`: the bots go to another computer (`main.handOver`); nothing without a main computer. */
   handOver(): Promise<void>;
   close(): Promise<void>;
@@ -210,6 +222,7 @@ export async function startDaemonLinks(input: DaemonLinksInput): Promise<DaemonL
   void links.refresh().catch(() => undefined);
   return {
     links,
+    ...(account?.account ? { account: account.account } : {}),
     handOver: async () => {
       if (links.main) await links.main.coordinator.handOver();
     },

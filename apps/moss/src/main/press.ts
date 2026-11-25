@@ -28,6 +28,7 @@
 // XTEST). Neither app has it yet; it is not built here either (the report says so).
 import { pressMatchesPlacement, type CardPlacement } from "@waifucave/moss-protocol";
 import type { SealedFrames, AnswerSigner } from "./sealed";
+import { STALL_CREDIT_MAX_MS } from "@waifucave/moss-app-release/stall-watch";
 import type { KeyState } from "./answer-key";
 
 /** How long after the press main saw the answer it carries may still be taken (the page asks for its fresh reading
@@ -35,26 +36,74 @@ import type { KeyState } from "./answer-key";
 export const PRESS_MS = 1_500;
 /** How long after main's mouse down the frame's own trusted pointerdown report may come. */
 export const REPORT_MS = 1_000;
+/** How long an earlier press that never got its report may still have its report arrive and be taken for a later press's. */
+const OPEN_MS = REPORT_MS + STALL_CREDIT_MAX_MS;
+/** How many earlier unreported presses are remembered (the OLDEST are kept: a stall since the oldest is the likeliest to refuse). */
+const OPEN_MAX = 32;
 
 interface Down {
   at: number;
   /** Where in the window's content it landed (CSS pixels from the content's top left), for the overlap check. */
   point?: { x: number; y: number };
-  /** The frame whose own document reported a trusted pointerdown for this press. */
+  /** The frame whose own document reported a trusted pointerdown for this press, within REPORT_MS of main's mouse down. */
   frame?: string;
+  /** A report that came after REPORT_MS: it counts only for a person's write (`takeWrite`), and only when the main process was
+   *  itself not running for the delay (`credit`: the stall it was credited at the time the report was handled). */
+  late?: { frame: string; at: number; credit: number };
+  /** The times of EVERY earlier press in this window that never got its report and was within REPORT_MS plus the credit's cap
+   *  when this one came (oldest first, at most OPEN_MAX): a report that comes later can't be told from theirs, whether or not
+   *  their own report window has closed and whether or not a later press in between was reported. Judged when a write takes this
+   *  press (`judgeClick`), not here: it matters once the machine has stalled since the oldest of them, or when this press's
+   *  report came late. */
+  open?: number[];
   spent?: boolean;
 }
+
+/** What the press record asks of the stall watch (`@waifucave/moss-app-release/stall-watch`): the main process's own unscheduled
+ *  time. Absent in the sealed path's tests: every bound is then exactly its number. */
+export interface Stalls {
+  arm(forMs: number): void;
+  credit(from: number, to?: number): number;
+}
+
+/** What a person's write is judged by: the press's own bound and the credit's cap, so how long to watch after a press. */
+export const WATCH_MS = PRESS_MS + STALL_CREDIT_MAX_MS + 500;
+
+/** The outcome of `takeWrite`: taken, or refused with which check refused and by how many ms. */
+export type WriteTake =
+  | { ok: true; how: "click" | "key"; /** The stall counted in the press's age (0 when the machine kept up). */ stalledMs: number }
+  | { ok: false; check: WriteCheck; /** How far past its bound it was (ms), for a timing check. */ overMs?: number; stalledMs?: number; /** A press from this frame was seen, and only its timing failed. */ late?: true };
+export type WriteCheck =
+  | "no press seen"
+  | "the press was already used"
+  | "no pointerdown report from this page"
+  | "the press landed in another frame"
+  | "two presses close together on a stalled machine"
+  | "the page's report came too late"
+  | "the write came too late";
 
 /** MOSS's press record: what its main process saw come to its window, and which frame's document took the press. */
 export class PressRecord {
   private readonly downs = new Map<number, Down>();
   private readonly keys = new Map<number, Down>();
 
-  constructor(private readonly now: () => number = Date.now) {}
+  constructor(private readonly now: () => number = Date.now, private readonly stalls?: Stalls) {}
+
+  /** The main process's own unscheduled time in [from, now], never more than the cap (0 without a stall watch). */
+  private stalled(from: number, to: number = this.now()): number {
+    return this.stalls === undefined ? 0 : Math.min(STALL_CREDIT_MAX_MS, this.stalls.credit(from, to));
+  }
 
   /** A mouse down main saw in a window (`before-mouse-event`), and where it landed in the window's content. */
   mouseDown(windowId: number, point?: { x: number; y: number }): void {
-    this.downs.set(windowId, { at: this.now(), ...(point !== undefined ? { point } : {}) });
+    const at = this.now();
+    const was = this.downs.get(windowId);
+    // Every earlier press that never got its report and is still young enough for a report to be taken as its (the one just
+    // before this one, and those it already listed, whether or not a press between them was reported): a report that comes
+    // later could be any of theirs. Whether that matters is judged when a write takes this press.
+    const open = [...(was?.open ?? []), ...(was !== undefined && was.frame === undefined && was.late === undefined ? [was.at] : [])].filter((t) => at - t <= OPEN_MS).slice(0, OPEN_MAX);
+    this.downs.set(windowId, { at, ...(point !== undefined ? { point } : {}), ...(open.length > 0 ? { open } : {}) });
+    this.stalls?.arm(WATCH_MS);
   }
 
   /** Where the window's latest mouse down landed, while it is recent (the overlap check's press point). */
@@ -67,14 +116,19 @@ export class PressRecord {
    *  names where main's latest mouse down landed, if it is recent and not yet claimed. First report wins. */
   frameSaw(windowId: number, frame: string): void {
     const d = this.downs.get(windowId);
-    if (d === undefined || d.frame !== undefined || this.now() - d.at > REPORT_MS) return;
-    d.frame = frame;
+    if (d === undefined || d.frame !== undefined || d.late !== undefined) return;
+    const now = this.now();
+    if (now - d.at <= REPORT_MS) { d.frame = frame; return; }
+    // After REPORT_MS: the sealed path never takes it (`take` reads `frame`); a person's write may, when the machine's own
+    // stall (and not the page) was the delay (`takeWrite`). First report wins here too.
+    d.late = { frame, at: now, credit: this.stalled(d.at, now) };
   }
 
   /** A key down main saw in a window, with the frame that had the focus (`before-input-event`; repeats are no press). */
   keyDown(windowId: number, focusedFrame: string | undefined): void {
     if (focusedFrame === undefined) return;
     this.keys.set(windowId, { at: this.now(), frame: focusedFrame });
+    this.stalls?.arm(WATCH_MS);
   }
 
   /** Takes the press for an answer from `frame`: a recent click whose own trusted pointerdown landed in that frame, or a
@@ -94,10 +148,97 @@ export class PressRecord {
     return undefined;
   }
 
+  /** Takes the press for a PERSON'S WRITE from `frame` (a send, a new bot, a setting): the same press and the same frame as
+   *  `take` requires, and one write per press, but a press's age and its report's delay are counted without the time the main
+   *  process itself was not running (`stalls`): on an overloaded machine the mouse down, the page's report and the write can be
+   *  handled seconds apart though they were one press. The credit is the process's own measured wait (never the page's word),
+   *  at most STALL_CREDIT_MAX_MS, so with no stall the bounds are exactly PRESS_MS and REPORT_MS. A refusal says which check
+   *  refused and by how many ms. The sealed buttons' `take` is not this: its fresh reading has its own limit. */
+  takeWrite(windowId: number, frame: string): WriteTake {
+    const now = this.now();
+    const d = this.downs.get(windowId);
+    const k = this.keys.get(windowId);
+    const click = d !== undefined && !d.spent ? this.judgeClick(d, frame, now) : undefined;
+    if (click?.ok === true) { d!.spent = true; return click; }
+    const key = k !== undefined && !k.spent ? this.judgeKey(k, frame, now) : undefined;
+    if (key?.ok === true) { k!.spent = true; return key; }
+    // Neither took it: say why for the newer press that could have.
+    const used = (d !== undefined && d.spent === true) || (k !== undefined && k.spent === true);
+    if (click !== undefined && key !== undefined) return d!.at >= k!.at ? click : key;
+    return click ?? key ?? { ok: false, check: used ? "the press was already used" : "no press seen" };
+  }
+
+  /** Why `take` (the sealed buttons' strict bounds) found no press for `frame`, for the log line only (it spends nothing and
+   *  never changes what is refused): which check, and by how many ms. */
+  explainTake(windowId: number, frame: string): string {
+    const now = this.now();
+    const d = this.downs.get(windowId);
+    const k = this.keys.get(windowId);
+    if (d === undefined && k === undefined) return "main saw no mouse down or key down in this window";
+    const why = (x: Down | undefined, kind: string): string | undefined => {
+      if (x === undefined) return undefined;
+      if (x.spent === true) return `the ${kind} was already used`;
+      const age = now - x.at;
+      if (kind === "click" && x.frame === undefined) return `no report from the page named a frame; the mouse down was ${age} ms ago${x.late !== undefined ? `; a report came ${x.late.at - x.at} ms after it, limit ${REPORT_MS}` : ""}`;
+      if (x.frame !== frame) return `the ${kind} landed in another frame`;
+      if (age > PRESS_MS) return `the answer came ${age - PRESS_MS} ms past the bound of ${PRESS_MS}`;
+      return undefined;
+    };
+    const click = why(d, "click");
+    const key = why(k, "key");
+    if (click !== undefined && key !== undefined) return d!.at >= k!.at ? click : key;
+    return click ?? key ?? "no press found";
+  }
+
+  private judgeClick(d: Down, frame: string, now: number): WriteTake {
+    if (now < d.at) return { ok: false, check: "no press seen" };
+    const stalledMs = this.stalled(d.at, now);
+    // An earlier press (any of them) had no report when this one came, and the machine has stalled since it: the report this
+    // press holds may be that press's, so no write takes it when
+    //   - that press was still young when this one came (its own report could still have been due: its age less the stall since
+    //     is within REPORT_MS), or
+    //   - this press needs the stall's credit at all (its report came after REPORT_MS, or the write after PRESS_MS): then a
+    //     page's own delay could be paid for with the machine's stall, however long ago the earlier press was (up to the cap).
+    // A press that needs no credit, after a stall that ended well before it, is judged as it always was.
+    if (d.open !== undefined) {
+      const needsCredit = d.late !== undefined || now - d.at > PRESS_MS;
+      for (const p of d.open) {
+        if (this.stalled(p, now) <= 0) continue;
+        const young = d.at - p - this.stalled(p, d.at) <= REPORT_MS;
+        if (young || needsCredit) return { ok: false, check: "two presses close together on a stalled machine", stalledMs };
+      }
+    }
+    const reported = d.frame ?? d.late?.frame;
+    if (reported === undefined) return { ok: false, check: "no pointerdown report from this page", stalledMs, ...(now - d.at - stalledMs > PRESS_MS ? { overMs: now - d.at - stalledMs - PRESS_MS } : {}) };
+    if (reported !== frame) return { ok: false, check: "the press landed in another frame", stalledMs };
+    if (d.frame === undefined && d.late !== undefined) {
+      const over = d.late.at - d.at - d.late.credit - REPORT_MS;
+      if (over > 0) return { ok: false, check: "the page's report came too late", overMs: over, stalledMs: d.late.credit, late: true };
+    }
+    const over = now - d.at - stalledMs - PRESS_MS;
+    if (over > 0) return { ok: false, check: "the write came too late", overMs: over, stalledMs, late: true };
+    return { ok: true, how: "click", stalledMs };
+  }
+
+  private judgeKey(k: Down, frame: string, now: number): WriteTake {
+    if (now < k.at) return { ok: false, check: "no press seen" };
+    if (k.frame !== frame) return { ok: false, check: "the press landed in another frame" };
+    const stalledMs = this.stalled(k.at, now);
+    const over = now - k.at - stalledMs - PRESS_MS;
+    if (over > 0) return { ok: false, check: "the write came too late", overMs: over, stalledMs, late: true };
+    return { ok: true, how: "key", stalledMs };
+  }
+
   forget(windowId: number): void {
     this.downs.delete(windowId);
     this.keys.delete(windowId);
   }
+}
+
+/** What to tell the person when a write was refused: a press that was theirs and only late is a busy machine, with their text kept. */
+export function writeRefusalWords(r: { check: WriteCheck; late?: true }): string {
+  if (r.late === true || r.check === "two presses close together on a stalled machine") return "Your computer was too busy to confirm that press in time. Nothing was lost: press again.";
+  return "Words go only right after your own key press or click.";
 }
 
 export interface WindowStanding {
@@ -156,7 +297,7 @@ export async function answerPress(d: PressDeps, a: { token: string; option: stri
   if (fresh !== "ok") return refuse(fresh === "covered" ? "the button was covered or not shown at the press" : "no visibility reading came with the press", fresh === "covered" ? "the button wasn't fully showing when it was pressed" : "the press wasn't checked just now");
   // 3. The press record.
   const how = d.record.take(a.windowId, a.frame);
-  if (how === undefined) return refuse("MOSS saw no press of its own land in this button", "the press didn't come to this button");
+  if (how === undefined) return refuse(`MOSS saw no press of its own land in this button (${d.record.explainTake(a.windowId, a.frame)})`, "the press didn't come to this button");
   // 4. The stacking rule.
   const w = d.standing(a.windowId);
   const stacked = w === undefined ? "not MOSS's window" : stackingRule(d.placementOf(cardId), w);

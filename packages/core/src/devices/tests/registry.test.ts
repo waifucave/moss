@@ -1,10 +1,11 @@
 // The real device registry: B's conformance suite, then what lane H adds (the file, the answer key, pairs, the
 // group and the rotation list).
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isContractError } from "../../contracts/common";
+import { mayStartSessions } from "../../contracts/device-registry";
 import { runDeviceRegistryConformance } from "../../contracts/conformance/device-registry";
 import { FakeClock } from "../../contracts/fakes/clock";
 import { MemorySecretStore } from "../../contracts/fakes/secret-store";
@@ -52,6 +53,47 @@ async function peer(name = "Laptop") {
   const key = await DeviceKey.fromKey(generateEd25519());
   return { key, record: { id: key.id, name, kind: "desktop" as const, runsCore: true, computer: name, publicKey: key.publicKeyBase64 } };
 }
+
+describe("one rule for a device's name (`names.ts`) at every door of the registry", () => {
+  const hostile = ["Pi\u200Bxel", "Pixel\u202Etrusted", "\u3164", "x".repeat(64), "e\u0301\u0302\u0303\u0304\u0305", "a\nb"];
+  test("add, rename and a peer's shared update refuse what the rule refuses and take what it takes (quotes, a joiner between emoji)", async () => {
+    const { registry, clock } = await open();
+    for (const name of hostile) {
+      const p = await peer("Other");
+      expect([name, isContractError(await registry.add({ ...p.record, name, computer: "Other" }, { via: "terminal" }).catch((e: unknown) => e), "invalid")]).toEqual([name, true]);
+      expect([name, isContractError(await registry.rename(registry.self().id, name).catch((e: unknown) => e), "invalid")]).toEqual([name, true]);
+    }
+    const p = await peer("Laptop");
+    await registry.add(p.record, { via: "terminal" });
+    let at = clock.now();
+    for (const name of hostile) {
+      const u = { name, at: ++at };
+      expect([name, await registry.applyPeerUpdate(p.key.id, u, p.key.sign(peerUpdateStatement(p.key.id, u)))]).toEqual([name, false]);
+    }
+    expect(registry.get(p.key.id)?.name).toBe("Laptop");
+    for (const name of ["MacBook \"Pro\"", "Someone\u2019s MacBook Pro", "Mac \u{1F468}\u200D\u{1F469}\u200D\u{1F467}"]) {
+      const u = { name, at: ++at };
+      expect(await registry.applyPeerUpdate(p.key.id, u, p.key.sign(peerUpdateStatement(p.key.id, u)))).toBe(true);
+      await registry.rename(registry.self().id, name);
+      expect([registry.get(p.key.id)?.name, registry.self().name]).toEqual([name, name]);
+    }
+  });
+
+  test("a registry written before the rule, with a name every other device would now turn away for itself, is opened with the name made safe and saved so", async () => {
+    const { dir, store, clock } = await open();
+    const file = join(dir, "devices", "registry.json");
+    const state = JSON.parse(readFileSync(file, "utf8")) as { devices: { name: string }[] };
+    state.devices[0]!.name = "Stu\u200Bdio\u202E \u3164";
+    writeFileSync(file, JSON.stringify(state));
+    const again = await FileDeviceRegistry.open({ home: dir, key: await DeviceKey.loadOrCreate(store), clock, self: { name: "Studio", os: "macos" } });
+    expect(again.self().name).toBe("Studio");
+    expect(readFileSync(file, "utf8")).not.toContain("u200b");
+    expect(JSON.parse(readFileSync(file, "utf8")).devices[0].name).toBe("Studio");
+    // A name that was fine is left alone, and nothing is written for it.
+    const third = await FileDeviceRegistry.open({ home: dir, key: await DeviceKey.loadOrCreate(store), clock, self: { name: "Studio", os: "macos" } });
+    expect(third.self().name).toBe("Studio");
+  });
+});
 
 describe("FileDeviceRegistry", () => {
   test("survives a restart, keeps no secret, and is readable by the user only", async () => {
@@ -179,6 +221,77 @@ describe("FileDeviceRegistry", () => {
     expect(registry.get(phone.id)?.answerKey).toEqual({ publicKey: next.pub, held: "secure-enclave", alg: "p256" } as never);
     expect(await registry.verifyAnswer(phone.id, data, next.sign(data))).toBe(true);
     expect(await registry.verifyAnswer(phone.id, data, first.sign(data))).toBe(false);
+  });
+
+  describe("a phone's app", () => {
+    const phoneRecord = async (extra: Record<string, unknown> = {}) => {
+      const key = await DeviceKey.fromKey(generateEd25519());
+      return { key, record: { id: key.id, name: "Phone", kind: "phone" as const, runsCore: false, os: "ios" as const, publicKey: key.publicKeyBase64, ...extra } };
+    };
+
+    test("is kept from the pairing, survives a restart and a rename, and no peer update or reopened registry changes it", async () => {
+      const { registry, dir, key, clock, store } = await open();
+      const p = await phoneRecord({ app: "code" });
+      await registry.add(p.record as never, { via: "code", card: "card_1" });
+      expect(registry.get(p.key.id)?.app).toBe("code");
+      await registry.rename(p.key.id, "Renamed");
+      const u = { name: "Again", at: clock.now() + 1 };
+      expect(await registry.applyPeerUpdate(p.key.id, u, p.key.sign(peerUpdateStatement(p.key.id, u)))).toBe(true);
+      const again = await FileDeviceRegistry.open({ home: dir, key: await DeviceKey.loadOrCreate(store), clock, self: { name: "Studio", os: "macos" } });
+      expect(again.get(p.key.id)).toMatchObject({ name: "Again", app: "code" });
+      expect(key.id).toBe(again.self().id);
+      // Written into the file only as the record's own field; no secret beside it.
+      expect(readFileSync(join(dir, "devices", "registry.json"), "utf8")).toContain("\"app\": \"code\"");
+    });
+
+    test("mayStartSessions reads the registry's record now: a paired phone with an answer key, and not a revoked one, a keyless one, a desktop or an unknown id", async () => {
+      const { registry } = await open();
+      const keyed = await phoneRecord({ answerKey: { publicKey: toBase64(generateEd25519().publicKey), held: "keychain" } });
+      const keyless = await phoneRecord();
+      await registry.add(keyed.record as never, { via: "terminal" });
+      await registry.add(keyless.record as never, { via: "terminal" });
+      const lap = await peer("Lap");
+      await registry.add(lap.record, { via: "terminal" });
+      expect([keyed, keyless].map((p) => mayStartSessions(registry.get(p.key.id)))).toEqual([true, false]);
+      expect([mayStartSessions(registry.get(lap.key.id)), mayStartSessions(registry.get("u".repeat(32))), mayStartSessions(undefined)]).toEqual([false, false, false]);
+      // A revocation is seen at the next call: the same record read again says no.
+      await registry.revoke(keyed.key.id, "lost");
+      expect(mayStartSessions(registry.get(keyed.key.id))).toBe(false);
+    });
+
+    test("add takes an app of the two on a phone only; a device with none records none", async () => {
+      const { registry } = await open();
+      const bad = [["a desktop", { ...(await peer("Lap")).record, app: "moss" }], ["an unknown app", (await phoneRecord({ app: "host" })).record], ["a number", (await phoneRecord({ app: 1 })).record]] as const;
+      for (const [what, record] of bad) {
+        const err = await registry.add(record as never, { via: "terminal" }).catch((e: unknown) => e);
+        expect([what, isContractError(err, "invalid")]).toEqual([what, true]);
+      }
+      const none = await phoneRecord();
+      await registry.add(none.record, { via: "terminal" });
+      expect(registry.get(none.key.id)?.app).toBeUndefined();
+      expect(registry.list().filter((d) => d.app !== undefined)).toEqual([]);
+    });
+
+    test("an account's device list carries none: a phone it adds records no app", async () => {
+      const { registry } = await open();
+      const p = await phoneRecord();
+      await registry.add(p.record, { via: "account", account: "acct" });
+      expect(registry.get(p.key.id)).toMatchObject({ kind: "phone", addedBy: "account" });
+      expect(registry.get(p.key.id)?.app).toBeUndefined();
+    });
+
+    test("this device's own app is written once, when its registry is made, and only a phone has one", async () => {
+      const dir = home();
+      const clock = new FakeClock();
+      const store = new MemorySecretStore();
+      const key = await DeviceKey.loadOrCreate(store);
+      const first = await FileDeviceRegistry.open({ home: dir, key, clock, self: { name: "Pixel", kind: "phone", os: "android", app: "moss" } });
+      expect(first.self()).toMatchObject({ kind: "phone", os: "android", app: "moss" });
+      const reopened = await FileDeviceRegistry.open({ home: dir, key, clock, self: { name: "Pixel", kind: "phone", os: "android", app: "code" } });
+      expect(reopened.self().app).toBe("moss");
+      const err = await FileDeviceRegistry.open({ home: home(), key, clock, self: { name: "Studio", app: "moss" } }).catch((e: unknown) => e);
+      expect(isContractError(err, "invalid")).toBe(true);
+    });
   });
 
   test("removing a peer's answer key takes only its link key, and then no new first key is taken", async () => {

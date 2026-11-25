@@ -2,11 +2,15 @@
 // which the plugins' own output can't reach the daemon through), it runs `HostMux` over that pipe until the daemon
 // closes it. Its own console and stdout carry nothing the daemon reads.
 import { HostMux, bunWorker } from "./mux";
-import { fdLink, LINK_LINE_MAX, streamPeer } from "./link";
+import { connectSocketLink, fdLink, LINK_LINE_MAX, streamPeer } from "./link";
 import { parseRunCheckArgs } from "./run-file";
 
 const LINK_FD = 3;
-const link = fdLink(LINK_FD);
+// Windows: the link is the named pipe the daemon names in MOSS_HOST_LINK (see `spawnHostProcess`); deleted at once, so no
+// worker inherits it. Everywhere else it is descriptor 3.
+const pipeName = process.env.MOSS_HOST_LINK;
+delete process.env.MOSS_HOST_LINK;
+const link = pipeName !== undefined && pipeName !== "" ? await connectSocketLink(pipeName) : fdLink(LINK_FD);
 // Every line it writes is held to what the daemon reads (`LINK_LINE_MAX`), measured on the line: a plugin's oversized
 // message fails or is dropped by itself and never ends the link for the process's other plugins.
 const peer = streamPeer(link.lines, (line) => link.write(`${line}\n`), { maxSend: LINK_LINE_MAX, dropped: (why) => process.stderr.write(`[plugin-host] dropped: ${why}\n`) });

@@ -1,0 +1,6 @@
+# Built in CI: the generated Kotlin, the core's .so files and Gradle's output.
+/build
+/.gradle
+/src/main/kotlin/generated
+/src/main/jniLibs
+/local.properties

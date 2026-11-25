@@ -680,7 +680,14 @@ export function nameScan(assets: readonly string[], apps: readonly string[], opt
     function openWith(): boolean {
       switch (how) {
         case "dmg": {
-          const attached = shWhy(["hdiutil", "attach", "-readonly", "-nobrowse", "-noautoopen", "-mountpoint", into, file]);
+          // The disk-image service answers "Resource temporarily unavailable" (or busy) while it serves another mount: that is the runner's
+          // service for a moment, not this image, so the attach is asked again after a short wait (1, 2, 4 s). Any other refusal is said at once.
+          let attached = shWhy(["hdiutil", "attach", "-readonly", "-nobrowse", "-noautoopen", "-mountpoint", into, file]);
+          for (const wait of [1_000, 2_000, 4_000]) {
+            if (attached.ok || !/temporarily unavailable|resource busy|EAGAIN/i.test(attached.why)) break;
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait);
+            attached = shWhy(["hdiutil", "attach", "-readonly", "-nobrowse", "-noautoopen", "-mountpoint", into, file]);
+          }
           if (!attached.ok) { openFailure = attached.why; return false; }
           dmgRoots.add(into);
           // A mount that doesn't let go is said, never ignored: the next image's mount is the one that would fail for it.

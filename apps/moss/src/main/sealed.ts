@@ -77,7 +77,7 @@ export type SealedValue = {
   items: readonly string[];
 } | {
   type: "rows";
-  rows: readonly { label: string; value: string }[];
+  rows: readonly { label: string; value: string; /** A human name (a device's, a bot's, a person's): its joiners may draw (`sealedEscape`). */ name?: true }[];
 };
 
 /** The first seal frame's channel, and each's own binding. `parent`: the document frame that asked for the part's

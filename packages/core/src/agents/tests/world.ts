@@ -54,6 +54,10 @@ export function fakeAdmissions(sandbox: "protected" | "none", modeFloor?: (level
 export interface WorldOptions {
   /** The manager's log lines. */
   log?: (line: string) => void;
+  /** `AgentManagerOptions.bundledPlugin`: which plugin ids are of the bundled tree (default none, so every card title is the fixed one). */
+  bundledPlugin?: (pluginId: string) => boolean;
+  /** The manager's `warmStart` (default on). */
+  warmStart?: boolean;
   /** Each session's turn as it starts (`AgentManagerOptions.turnStarted`). */
   turnStarted?: AgentManagerOptions["turnStarted"];
   /** The plugins' turn hooks, as the manager reads them (`AgentManagerOptions.hooks`). */
@@ -78,6 +82,8 @@ export interface WorldOptions {
   /** The scripted agent's sandbox: admitted by default, or one MOSS can't count on (so it needs the OK). */
   sandbox?: "protected" | "none";
   oks?: AgentOks;
+  /** How the broker checks a device's signed answer (a phone's), as `deviceProofVerifier` over a registry. None: no signed answer passes. */
+  verify?: ConstructorParameters<typeof FakeApprovalBroker>[0]["verify"];
   /** The plugins' parts for every session, and the backend's placement of them (Claude Code's). */
   pluginParts?: PluginPartsSource;
   place?: AcpBackendOptions["place"];
@@ -170,7 +176,7 @@ export class World {
     this.fence = new FakeFence({ home: this.userHome, mossHome: this.mossHome, temp: fenceTemp });
     const others = Object.fromEntries(Object.entries(o.otherComputers ?? {}).map(([name, home]) => [name, { home }]));
     this.tree = new FakeTree({ clock: this.clock, computers: { ...others, [this.computer]: { home: this.userHome } }, botComputer: () => "Studio" });
-    this.approvals = new FakeApprovalBroker({ clock: this.clock, levels: () => this.level, fence: () => this.fence });
+    this.approvals = new FakeApprovalBroker({ clock: this.clock, levels: () => this.level, fence: () => this.fence, ...(o.verify ? { verify: o.verify } : {}) });
     this.host = new FakeSessionHost({ clock: this.clock, approvals: this.approvals });
     this.host.open({ id: "s_alpha", kind: "bot", bot: "alpha", computer: "Studio" }, this.parentDriver);
     this.tokens = new BridgeTokens({ ...(o.table ? { table: o.table } : {}), ...(o.tokenTtlMs ? { ttlMs: o.tokenTtlMs, now: () => this.clock.now() } : {}) });
@@ -197,12 +203,14 @@ export class World {
       home: this.mossHome, userHome: this.userHome, computer: this.computer, host: this.host, approvals: this.approvals, tree: this.tree, fence: this.fence,
       backends: () => [this.backend, ...extra], tokens: this.tokens, bridge: { ...bridgeCommand(), socketPath: sock, ...(o.bridgeServerName ? { serverName: o.bridgeServerName } : {}) }, watchdog: this.watchdog, clock: this.clock,
       ...(o.depths ? { depths: o.depths } : {}),
+      ...(o.bundledPlugin ? { bundledPlugin: o.bundledPlugin } : {}),
       ...(o.noApprovals ? {} : { pluginTools: o.pluginTools ?? ALLOWS_SENDS }),
       ...(o.watchTools ? { watchTools: o.watchTools } : {}),
       ...(o.oks ? { oks: o.oks } : {}),
       ...(o.pluginParts ? { pluginParts: o.pluginParts } : {}),
       ...(o.glossary ? { glossary: o.glossary } : {}),
       ...(o.log ? { log: o.log } : {}),
+      ...(o.warmStart === undefined ? {} : { warmStart: o.warmStart }),
       ...(o.turnStarted ? { turnStarted: o.turnStarted } : {}),
       ...(o.hooks ? { hooks: o.hooks } : {}),
       ...(o.childCommandsHeld === undefined ? {} : { childCommandsHeld: o.childCommandsHeld }),

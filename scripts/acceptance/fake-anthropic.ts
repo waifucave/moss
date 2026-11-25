@@ -62,6 +62,8 @@ export interface FakeRequest {
   model?: string;
   stream: boolean;
   tools: string[];
+  /** The `model` and `model_id` properties of the offered Agent tool's input schema (what the model is told it takes), when Agent was offered. */
+  agentModel?: unknown;
   lastUserText: string;
   /** The last tool result's text, whether it was an error, and how many images came with it (an `image` block). */
   toolResult?: { text: string; isError: boolean; images?: number };
@@ -273,6 +275,7 @@ export function startFakeAnthropic(o: { key: string; writePath: string; writeCon
       record.beta = req.headers.get("anthropic-beta");
       record.stream = body.stream === true;
       record.tools = (body.tools ?? []).map((t) => String(t.name ?? ""));
+      { const props = ((body.tools ?? []).find((t) => t.name === "Agent") as { input_schema?: { properties?: Record<string, unknown> } } | undefined)?.input_schema?.properties; record.agentModel = props === undefined ? undefined : { model: props.model, model_id: props.model_id }; }
       const messages = body.messages ?? [];
       // Tools added mid-conversation (a plugin installed after the first turn) come as `tool_addition` blocks in a
       // `role: "system"` message, by definition or by reference to a deferred `tools` entry, not in `tools` (the cached
@@ -295,7 +298,14 @@ export function startFakeAnthropic(o: { key: string; writePath: string; writeCon
       // A user turn that carries results AND a new message with a directive (the runtime's own results for calls a stop
       // cut off, sent with the next message): the message is what this request asks, not the results.
       const lastSaid = last?.role === "user" ? textOf(lastBlocks.filter((b) => b.type === "text")) : "";
-      const carriesMessage = DIRECTIVE.test(withoutNotifications(lastSaid));
+      // Text after the results: a result for a call a stop cut off, then the person's new message, in one user turn, is a new message to act on,
+      // as a real model does, whatever its words (the runtime's own reminders don't count).
+      const lastResultAt = lastBlocks.reduce((at, b, i) => (b.type === "tool_result" ? i : at), -1);
+      const textAfterResults = lastResultAt < 0 ? "" : withoutNotifications(textOf(lastBlocks.slice(lastResultAt + 1).filter((b) => b.type === "text"))).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
+      // Only after a stop: the runtime closes a call a stop cut off with the result "[interrupted]". Any text after other results is the runtime's
+      // own (a loaded tool's note, a reminder) and the turn stays a continuation, as every other row expects.
+      const cutOff = lastBlocks.some((b) => b.type === "tool_result" && textOf(b.content).trim() === "[interrupted]");
+      const carriesMessage = DIRECTIVE.test(withoutNotifications(lastSaid)) || (cutOff && textAfterResults !== "");
       const result = carriesMessage ? undefined : lastBlocks.find((b) => b.type === "tool_result");
       if (result !== undefined) {
         const images = Array.isArray(result.content) ? (result.content as Block[]).filter((b) => b.type === "image").length : 0;

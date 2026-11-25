@@ -3,11 +3,12 @@
 // to its browsers. It never receives content: there is none to receive.
 //
 //   GET    /v1/vapid                                   -> { publicKey }            for browsers to subscribe
-//   PUT    /v1/targets/self  ApnsTarget | WebPushTarget -> 204                     a phone or browser registers itself
+//   PUT    /v1/targets/self  ApnsTarget | FcmTarget | WebPushTarget -> 204         a phone or browser registers itself
+//                            (a phone names its app, `moss` or `code`: its APNs topic; FCM is refused, `not_configured`, until it has credentials)
 //   DELETE /v1/targets/:id                             -> 204                     stops pushes to that target
 //   GET    /v1/targets                                 -> { targets }
 //   DELETE /v1/devices/:id                             -> 204                     revokes a device (any id, 24 h 10 min)
-//   POST   /v1/notify        { badge, urgent? }        -> { sent, removed, failed }
+//   POST   /v1/notify        { badge, urgent?, phones? } -> { sent, removed, failed }   phones: device ids of the phones to wake first
 //
 // All but /v1/vapid take the device's waifucave account token.
 
@@ -16,6 +17,7 @@ import { verifyAccountTokenFrom } from "../../shared/jwks";
 import { b64u, fromB64u, sha256, utf8 } from "../../shared/encoding";
 import { errorResponse, json, readJsonObject } from "../../shared/http";
 import { APNS_TOKEN_RE } from "./apns";
+import { FCM_TOKEN_RE, fcmConfig } from "./fcm";
 import type { Caller, PushDO, Target } from "./push-do";
 import type { Env } from "./env";
 import { allowedEndpoint, usableSubscriptionKey, vapidPublicKey } from "./webpush";
@@ -70,7 +72,9 @@ async function authenticated(request: Request, env: Env, path: string[]): Promis
       const body = await readJsonObject(request);
       const badge = body?.badge;
       if (typeof badge !== "number" || !Number.isInteger(badge) || badge < 0 || badge > 99_999) return errorResponse(400, "bad_request");
-      const result = await stub.notify(caller, { badge, urgent: body?.urgent === true });
+      const phones = parsePhones(body?.phones);
+      if (phones === null) return errorResponse(400, "bad_request");
+      const result = await stub.notify(caller, { badge, urgent: body?.urgent === true, ...(phones ? { phones } : {}) });
       if (!result.ok) return errorResponse(result.status, result.error);
       return json({ sent: result.sent, removed: result.removed, failed: result.failed });
     }
@@ -80,6 +84,8 @@ async function authenticated(request: Request, env: Env, path: string[]): Promis
       if (!success) return errorResponse(429, "rate_limited", {}, { "retry-after": "60" });
       const target = await parseTarget(await readJsonObject(request), env);
       if (!target) return errorResponse(400, "bad_target");
+      // No FCM credentials exist yet: a well-formed Android target is refused as what it is, never stored.
+      if (target.kind === "fcm" && fcmConfig(env) === null) return errorResponse(503, "not_configured");
       const result = await stub.putTarget(caller, identity.device, target);
       return result.ok ? new Response(null, { status: 204 }) : errorResponse(result.status, result.error);
     }
@@ -106,8 +112,17 @@ async function authenticated(request: Request, env: Env, path: string[]): Promis
   }
 }
 
+/** `phones` on a notify: absent (no preference), or a short list of device ids; null when it is anything else. */
+function parsePhones(value: unknown): string[] | undefined | null {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > 64) return null;
+  for (const id of value) if (typeof id !== "string" || !TARGET_ID_RE.test(id)) return null;
+  return value as string[];
+}
+
 /**
- * A phone's APNs token, or a browser's Web Push subscription; anything else, a push host not listed, or a key
+ * A phone's APNs token or FCM registration token (each with the phone app it belongs to, `moss` or `code`), or a
+ * browser's Web Push subscription; anything else, a push host not listed, or a key
  * that is not on P-256 (which would fail every notify) is refused.
  */
 async function parseTarget(body: Record<string, unknown> | null, env: Env): Promise<Target | null> {
@@ -116,7 +131,14 @@ async function parseTarget(body: Record<string, unknown> | null, env: Env): Prom
     const token = typeof body.token === "string" ? body.token.toLowerCase() : "";
     if (!APNS_TOKEN_RE.test(token)) return null;
     if (body.env !== "production" && body.env !== "sandbox") return null;
-    return { kind: "apns", token, env: body.env };
+    if (body.app !== "moss" && body.app !== "code") return null;
+    return { kind: "apns", token, env: body.env, app: body.app };
+  }
+  if (body.kind === "fcm") {
+    const token = typeof body.token === "string" ? body.token : "";
+    if (!FCM_TOKEN_RE.test(token)) return null;
+    if (body.app !== "moss" && body.app !== "code") return null;
+    return { kind: "fcm", token, app: body.app };
   }
   if (body.kind === "webpush") {
     const endpoint = typeof body.endpoint === "string" ? body.endpoint : "";

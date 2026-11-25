@@ -98,7 +98,7 @@ export type CloudCard =
   | { kind: "cloud-delete"; name: string; provider: string; why: "folder-removed" | "asked" }
   | { kind: "cloud-repair"; name: string; provider: string; why: "token-expired" | "main-changed"; image?: string }
   | { kind: "cloud-make-main"; name: string }
-  | { kind: "cloud-provider-removal"; provider: string; machines: string[] };
+  | { kind: "cloud-provider-removal"; provider: string; machines: string[]; action?: "switch-off" };
 
 /** A VM's own state, as this main last saw it: a cache, settled from the provider. */
 export interface CloudVm {
@@ -130,6 +130,15 @@ export interface CloudStateStore {
   save(state: CloudState): void;
 }
 
+/** How long a removal question's answer, given after the wait ended, is still the person's answer for the next try. Ten
+ *  minutes: long enough for "answer the card, then remove the plugin again" (the person walks to the card, answers, goes
+ *  back), short enough that a "Delete them" never waits for a removal attempted hours or days later, for which the only
+ *  card would be the plain plugin-removal card. */
+export const REMOVAL_ANSWER_MAX_AGE_MS = 10 * 60_000;
+
+/** The longest image name a folder may name: the create card shows it whole, so one it could not show is refused. */
+export const CLOUD_IMAGE_MAX = 512;
+
 /** What a VM of a custom image (not MOSS's own) is handed: nothing of MOSS's, no join ticket and no install. The person
  *  pairs it themselves, with the four words; MOSS never confirms such a pairing for them. */
 export const CUSTOM_IMAGE_USER_DATA = "#cloud-config\n{}\n";
@@ -140,16 +149,42 @@ const EMPTY: CloudState = { vms: [], kept: [], tokens: [] };
  *  or a token. */
 export class FileCloudStateStore implements CloudStateStore {
   readonly #path: string;
-  constructor(mossHome: string) {
+  readonly #log: ((line: string) => void) | undefined;
+  constructor(mossHome: string, log?: (line: string) => void) {
     this.#path = join(mossHome, "computers", "cloud.json");
+    this.#log = log;
   }
   load(): CloudState {
     try {
-      const v = JSON.parse(readFileSync(this.#path, "utf8")) as Partial<CloudState>;
-      return { vms: Array.isArray(v.vms) ? v.vms : [], kept: Array.isArray(v.kept) ? v.kept : [], tokens: Array.isArray(v.tokens) ? v.tokens : [] };
+      return this.#read();
     } catch {
       return structuredClone(EMPTY);
     }
+  }
+  /** `load`, but only a file that isn't there is an empty state: a file that can't be read, isn't JSON or has the wrong
+   *  shape throws, so a check that must know whether machines are listed never reads damage as "none". */
+  loadStrict(): CloudState {
+    try {
+      return this.#read(true);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException)?.code === "ENOENT") return structuredClone(EMPTY);
+      throw e;
+    }
+  }
+  #read(strict = false): CloudState {
+    const v = JSON.parse(readFileSync(this.#path, "utf8")) as Partial<CloudState>;
+    if (strict && (v === null || typeof v !== "object" || !Array.isArray(v.vms) || (v.kept !== undefined && !Array.isArray(v.kept)) || (v.tokens !== undefined && !Array.isArray(v.tokens)))) {
+      throw new Error("cloud.json isn't the shape MOSS writes");
+    }
+    // A name is shown in the engine's own sentences (the removal question and its note): a hand-edited file can't put text in them.
+    // A dropped record is logged by its position, never by the text that failed.
+    const all = Array.isArray(v.vms) ? v.vms : [];
+    const vms = all.filter((m, i) => {
+      const ok = typeof m?.name === "string" && COMPUTER_NAME_RE.test(m.name);
+      if (!ok) this.#log?.(`cloud.json: machine record ${i + 1} dropped (its name isn't a computer name)`);
+      return ok;
+    });
+    return { vms, kept: Array.isArray(v.kept) ? v.kept : [], tokens: Array.isArray(v.tokens) ? v.tokens : [] };
   }
   save(state: CloudState): void {
     mkdirSync(dirname(this.#path), { recursive: true, mode: 0o700 });
@@ -258,6 +293,12 @@ export interface CloudComputersOptions {
   makeMain?: (name: string) => Promise<void>;
   /** How long a `creating` entry waits for its provider before it is looked up again (default 15 minutes). */
   createWaitMs?: number;
+  /** How long removing a provider plugin waits for the person's answer about its machines before it stops with "answer
+   *  the card, then remove it again" (default 2 minutes). The card stays open, and the answer is used on the next try. */
+  removalWaitMs?: number;
+  /** How long an answer to that question, given AFTER the wait ended, may still be used by the next try (default
+   *  `REMOVAL_ANSWER_MAX_AGE_MS`). */
+  removalAnswerMaxAgeMs?: number;
   log?: (line: string) => void;
 }
 
@@ -280,6 +321,9 @@ export class CloudComputers {
   readonly pairing: PairingTokens;
   /** The state as last read or written (JSON), to write only a change. */
   #saved: string;
+  /** The removal questions asked and not yet used, by the machines they name: a card answered after the wait ended is
+   *  not asked again. */
+  readonly #removalAsks = new Map<string, { ask: Promise<CloudAnswer>; answeredAt?: number }>();
   /** One change per computer at a time. */
   readonly #busy = new Set<string>();
 
@@ -342,6 +386,8 @@ export class CloudComputers {
       seen.add(label);
       await attempt(f.name, async () => {
         if (!COMPUTER_NAME_RE.test(f.name)) throw new ContractError("invalid", `${f.name} isn't a computer name`);
+        // The card shows the whole image name (the yes is bound to it); a name too long to show whole is refused, never cut.
+        if (f.image !== undefined && Array.from(f.image).length > CLOUD_IMAGE_MAX) throw new ContractError("invalid", `${f.name}'s image name is longer than ${CLOUD_IMAGE_MAX} characters`);
         const why = unreachable.get(f.provider);
         if (why) throw new ContractError("not_installed", why);
         const other = this.#state.vms.find((v) => v.name === f.name && v.label !== label);
@@ -392,6 +438,8 @@ export class CloudComputers {
     for (const v of [...this.#state.vms]) {
       if (unreachable.has(v.provider) || seen.has(v.label) || found.has(v.label)) continue;
       this.#drop(v.name);
+      // The machine is gone: its join pairing (open for its hour) and its token go with it.
+      this.#unmint(v.name);
     }
     // Machines whose provider isn't there (its plugin is off or gone): MOSS can't manage them, and they may still bill.
     // Said plainly on every pass, never silently (the controller's ruling: never leave machines billing unannounced).
@@ -415,6 +463,7 @@ export class CloudComputers {
     const there = (await p.list({ label: vm.label })).find((x) => x.label === vm.label && x.state !== "gone");
     if (!there) {
       this.#drop(name);
+      this.#unmint(name);
       this.#save();
       return true;
     }
@@ -604,6 +653,7 @@ export class CloudComputers {
       await p.delete({ serverId: t.serverId, label: t.label, region: t.region });
       this.#state.vms = this.#state.vms.filter((v) => v.label !== t.label);
       this.#unkeep(t.label);
+      this.#unmint(t.name);
       this.#save();
       return "yes";
     });
@@ -665,34 +715,82 @@ export class CloudComputers {
     this.#saved = now;
   }
 
-  /** A provider plugin is about to be removed (or its folder deleted): while it still has machines, the person is asked
-   *  first, with a card naming them: delete them now (this card is their yes, the provider is still here to do it), or
-   *  keep them and keep paying (they are remembered as kept, and every later pass says plainly that MOSS can no longer
-   *  manage them). A card nobody answered refuses the removal: machines are never left billing without the person's
-   *  word. Resolves to what happened; throws when the removal must not go on. */
-  async retireProvider(providerIds: readonly string[]): Promise<"none" | "deleted" | "kept"> {
+  /** A provider plugin is about to be removed: while it still has machines, the person is asked FIRST, on a card naming
+   *  them: delete them, or keep them and keep paying. NOTHING is done by the answer itself: it returns what to do once
+   *  the removal itself is confirmed (`commit`), so a "Delete them" followed by a declined removal deletes nothing. A card
+   *  nobody answers refuses the removal ("answer the card, then remove it again": the card stays open and its answer is
+   *  used on the next try); machines are never left billing without the person's word. `undefined`: nothing to ask.
+   *  Machines are looked up and deleted through THEIR OWN provider (a plugin may provide several); one whose provider
+   *  isn't there is never dropped from the state, the commit stops and says so. */
+  async askRetire(providerIds: readonly string[], action: "remove" | "switch-off" = "remove"): Promise<{ commit: () => Promise<"deleted" | "kept">; note: string } | undefined> {
     const tenure = this.#o.authority.tenure();
-    if (!this.#o.authority.canAct() || tenure === undefined) return "none";
-    const mine = this.#state.vms.filter((v) => providerIds.includes(v.provider) && v.state !== "deleting");
-    if (mine.length === 0) return "none";
-    const provider = mine[0]!.provider;
-    const answer = await this.#o.confirm({ kind: "cloud-provider-removal", provider, machines: mine.map((v) => v.name) });
-    if (answer === "unanswered") throw new ContractError("refused", `not removed: ${mine.map((v) => v.name).join(", ")} would be left running and billing, and the question about them wasn't answered`);
+    if (!this.#o.authority.canAct() || tenure === undefined) return undefined;
+    const mine = () => this.#state.vms.filter((v) => providerIds.includes(v.provider) && v.state !== "deleting");
+    const machines = mine();
+    if (machines.length === 0) return undefined;
+    const names = machines.map((v) => v.name);
+    const key = JSON.stringify([action, [...names].sort()]);
+    let entry = this.#removalAsks.get(key);
+    // An answer given after the wait ended is the person's for the next try only while it is recent; an older one is
+    // dropped and the question asked again, so a "Delete them" never rides on a removal attempted much later.
+    if (entry?.answeredAt !== undefined && this.#o.clock.now() - entry.answeredAt > (this.#o.removalAnswerMaxAgeMs ?? REMOVAL_ANSWER_MAX_AGE_MS)) {
+      this.#removalAsks.delete(key);
+      entry = undefined;
+    }
+    const reused = entry !== undefined;
+    if (entry === undefined) {
+      const made: { ask: Promise<CloudAnswer>; answeredAt?: number } = {
+        ask: this.#o.confirm({ kind: "cloud-provider-removal", provider: [...new Set(machines.map((v) => v.provider))].join(", "), machines: names, ...(action === "switch-off" ? { action } : {}) }),
+      };
+      void made.ask.then(() => { made.answeredAt = this.#o.clock.now(); }, () => undefined);
+      this.#removalAsks.set(key, made);
+      entry = made;
+    }
+    const ask = entry.ask;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const waited = new Promise<"waiting">((resolve) => { timer = setTimeout(() => resolve("waiting"), this.#o.removalWaitMs ?? 120_000); });
+    const answer = await Promise.race([ask, waited]).finally(() => clearTimeout(timer));
+    if (answer === "waiting") throw new ContractError("refused", `not removed: the question about ${names.join(", ")} is still waiting for your answer; answer its card, then remove the plugin again`);
+    this.#removalAsks.delete(key);
+    if (answer === "unanswered") throw new ContractError("refused", `not removed: ${names.join(", ")} would be left running and billing, and the question about them wasn't answered; remove the plugin again to be asked again`);
     if (answer !== true) {
-      for (const v of mine) this.#keep(v.label);
-      this.#save();
-      this.#o.log?.(`cloud computers ${mine.map((v) => v.name).join(", ")}: kept; once ${provider} is removed MOSS can no longer manage them and they keep billing until you delete them in the provider's own console`);
-      return "kept";
+      return {
+        note: `${names.join(", ")} ${names.length === 1 ? "is" : "are"} kept, and keep billing until you delete ${names.length === 1 ? "it" : "them"} in the provider's own console.`,
+        commit: async () => {
+          // Keeping on a switch-off is doing nothing: the machines are marked kept only when their provider goes for good. A
+          // kept mark made now would outlast switching it on again and hide a machine whose folder was removed meanwhile.
+          if (action === "remove") for (const v of mine()) this.#keep(v.label);
+          this.#save();
+          this.#o.log?.(`cloud computers ${names.join(", ")}: kept; once the provider is removed MOSS can no longer manage them and they keep billing until you delete them in the provider's own console`);
+          return "kept" as const;
+        },
+      };
     }
-    const p = this.#provider(provider);
-    for (const v of mine) {
-      this.#guard(tenure);
-      const there = (await p.list({ label: v.label })).find((x) => x.label === v.label && x.state !== "gone");
-      if (there) await p.delete({ serverId: there.serverId, label: v.label, region: there.region });
-      this.#state.vms = this.#state.vms.filter((x) => x.label !== v.label);
-      this.#unkeep(v.label);
-      this.#save();
-    }
-    return "deleted";
+    return {
+      // Said on the removal's own card whenever the machines will be deleted by it, and that an earlier answer is being
+      // used when this question wasn't asked in this call.
+      note: reused
+        ? `Your earlier answer is being used: ${names.join(", ")} will be deleted when you confirm this.`
+        : `${names.join(", ")} will be deleted when you confirm this, as you answered.`,
+      commit: async () => {
+        for (const v of mine()) {
+          this.#guard(tenure);
+          const p = this.#provider(v.provider);
+          const there = (await p.list({ label: v.label })).find((x) => x.label === v.label && x.state !== "gone");
+          if (there) await p.delete({ serverId: there.serverId, label: v.label, region: there.region });
+          this.#state.vms = this.#state.vms.filter((x) => x.label !== v.label);
+          this.#unkeep(v.label);
+          this.#unmint(v.name);
+          this.#save();
+        }
+        return "deleted" as const;
+      },
+    };
+  }
+
+  /** `askRetire` and its commit in one step (for a caller with no later confirmation of its own). */
+  async retireProvider(providerIds: readonly string[], action: "remove" | "switch-off" = "remove"): Promise<"none" | "deleted" | "kept"> {
+    const r = await this.askRetire(providerIds, action);
+    return r === undefined ? "none" : r.commit();
   }
 }

@@ -14,7 +14,10 @@
 //                      OS store is answered "locked", never a quiet new empty store (no secret in it)
 //   run/<name>.<pid>.<id>.tmp      the half-made copy of any of these while a write is under way: always in the run
 //                      folder, never beside the file under a name a deny list does not know
-// macOS keeps its secrets in the Keychain and has none of these.
+//   credentials/index.json, index.json.bak, index.made, run/secrets-index.lock   the contract store's index (names,
+//                      generations and times, never a value), its second copy, the note that one was made, its lock
+//                      (every OS, macOS included)
+// macOS keeps its secrets in the Keychain and has none of these but the index's.
 
 /** The encrypted secrets file's name, in the MOSS home. */
 export const SECRETS_FILE_NAME = "secrets.enc";
@@ -38,3 +41,14 @@ export const SECRETS_BACKUP_SEGMENTS: readonly string[] = ["credentials", "secre
 export const SECRETS_MADE_SEGMENTS: readonly string[] = ["credentials", "secrets-file.made"];
 /** The folder the half-made copies are made in, relative to the MOSS home. */
 export const SECRETS_TMP_DIR_SEGMENTS: readonly string[] = ["run"];
+
+// The contract store's index (`MossSecretStore`, every OS): each item's owner, name, generation and time, never a value.
+// All of it in the credentials folder and the run folder, which every fence read-denies.
+/** The index, relative to the MOSS home. */
+export const SECRETS_INDEX_SEGMENTS: readonly string[] = ["credentials", "index.json"];
+/** Its second whole copy, written after it, read when it is damaged or gone. */
+export const SECRETS_INDEX_COPY_SEGMENTS: readonly string[] = ["credentials", "index.json.bak"];
+/** The note that an index was made here: with both copies gone, the list is `locked`, never a quiet empty one. */
+export const SECRETS_INDEX_MADE_SEGMENTS: readonly string[] = ["credentials", "index.made"];
+/** The lock a write of the index (and its item) holds, across this user's processes. Taken before the file's own lock. */
+export const SECRETS_INDEX_LOCK_SEGMENTS: readonly string[] = ["run", "secrets-index.lock"];

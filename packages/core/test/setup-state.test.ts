@@ -8,15 +8,16 @@ const catalog = loadCatalog();
 
 // The world a boot sees: keychain slots (one may throw), and the plugins (absent until they open; their sign-ins and
 // keyless providers once the model plugins have started). The service reads it the daemon's way (`readProviders`).
-function world(start: { stored?: string; present?: string[]; failRead?: boolean; plugins?: "closed" | "opening" | "started"; pluginSignedIn?: string[]; keyless?: string[]; failedSlots?: number } = {}) {
+function world(start: { stored?: string; present?: string[]; failRead?: boolean; plugins?: "closed" | "opening" | "started"; pluginSignedIn?: string[]; keyless?: string[]; unsignable?: string[]; failedSlots?: number } = {}) {
   const s = {
     effort: undefined as string | undefined, stored: start.stored, present: new Set(start.present ?? []), dismissed: false, failRead: start.failRead === true,
-    plugins: start.plugins ?? "started", pluginSignedIn: new Set(start.pluginSignedIn ?? []), keyless: new Set(start.keyless ?? []), failedSlots: start.failedSlots ?? 0,
+    plugins: start.plugins ?? "started", pluginSignedIn: new Set(start.pluginSignedIn ?? []), keyless: new Set(start.keyless ?? []), unsignable: new Set(start.unsignable ?? []), failedSlots: start.failedSlots ?? 0,
     writes: [] as string[], clears: 0, events: [] as SetupState[], logs: [] as string[],
   };
   const auth = {
     signedInProviders: async () => new Set(s.pluginSignedIn),
     keylessProviders: () => new Set(s.keyless),
+    unsignableProviders: () => new Set(s.unsignable),
     modelPluginsReady: () => s.plugins === "started",
   };
   const service = new SetupService({
@@ -122,6 +123,27 @@ describe("SetupService", () => {
     s.pluginSignedIn.add("acme");
     expect(await service.refresh()).toMatchObject({ ready: true, default: { model: "acme/acme-large", source: "chosen" } });
     expect(s.writes).toEqual([]);
+  });
+
+  test("(a2) a default named on a remote provider that takes no key and isn't keyless (uncloseai), in a home with no provider: the guide asks for a provider, never a dead model (2026-11-24)", async () => {
+    const { s, service } = world({ stored: "uncloseai/turboderp/Qwen3.8-27B-exl3" });
+    const st = await service.refresh();
+    expect(st).toMatchObject({ ready: false, missing: ["provider", "model"], signedOut: "uncloseai/turboderp/Qwen3.8-27B-exl3" });
+    expect(service.defaultModel()).toBeUndefined();
+    expect(s.writes).toEqual([]);
+  });
+
+  test("(a3) a stale default on a provider nobody can add (uncloseai): alone, it is cleared and the guide asks for a provider; once a real provider is added, its recommended model replaces it (2026-11-24)", async () => {
+    const alone = world({ stored: "uncloseai/turboderp/Qwen3.8-27B-exl3", unsignable: ["uncloseai"] });
+    const st = await alone.service.refresh();
+    expect(st).toMatchObject({ ready: false, missing: ["provider", "model"] });
+    expect(st.signedOut).toBeUndefined();
+    expect(alone.s.stored).toBeUndefined();
+    expect(alone.s.clears).toBe(1);
+    const added = world({ stored: "uncloseai/turboderp/Qwen3.8-27B-exl3", unsignable: ["uncloseai"], present: ["anthropic"] });
+    const st2 = await added.service.refresh();
+    expect(st2).toMatchObject({ ready: true, missing: [], default: { model: "anthropic/claude-opus-5-5" } });
+    expect(added.s.stored).toBe("anthropic/claude-opus-5-5");
   });
 
   test("(b) a default on a keyless local provider with no keys: ready, no guide, nothing written", async () => {

@@ -75,11 +75,29 @@ async function pair(a: Daemon, b: Daemon): Promise<void> {
   await waitFor(() => a.links.transport.links().some((l) => l.peer === b.links.key.id && l.up));
 }
 
+const DEVICE_NAMES = ["Studio", "Laptop", "Server", "Mini"];
+type SealedField = { type: "text"; text: string } | { type: "list"; items: string[] } | { type: "rows"; rows: { label: string; value: string }[] } | { type: "code"; code: string } | undefined;
+/** Every group card's own words (the title, the sentence, and a detail that is a list), which never hold a device's name: a name is the
+ *  value of a row, or a checkbox's whole label (the add card's rule, `devices/rpc.ts`). */
+function engineWords(card: { fields: Readonly<Record<string, unknown>> }): string {
+  const f = card.fields as Record<string, SealedField>;
+  return ["title", "what", "detail"].map((k) => {
+    const v = f[k];
+    return v?.type === "text" ? v.text : v?.type === "list" ? v.items.join("\n") : "";
+  }).join("\n");
+}
+const rowsOf = (card: { fields: Readonly<Record<string, unknown>> }): { label: string; value: string }[] => {
+  const v = (card.fields as Record<string, SealedField>).detail;
+  return v?.type === "rows" ? v.rows.map((r) => ({ label: r.label, value: r.value })) : [];
+};
+
 /** Answers the card of that change on `d`; `check` picks the children to check by their labels (and returns them, for
- *  the test to look at). */
+ *  the test to look at). Every card it answers must keep device names out of the engine's own words. */
 async function answer(d: Daemon, change: string, allow: boolean, check?: (labels: string[]) => string[]): Promise<string[]> {
   await waitFor(() => d.broker.cards().some((c) => c.change === change));
   const card = d.broker.cards().find((c) => c.change === change)!;
+  const words = engineWords(card);
+  for (const name of DEVICE_NAMES) expect(words).not.toContain(name);
   const channel = d.broker.frameChannel(card.id)!;
   const text = (l: string | { en: string }) => (typeof l === "string" ? l : l.en);
   const labels = (card.children ?? []).map((c) => text(c.label));
@@ -111,6 +129,11 @@ describe("merging two groups (R18)", () => {
     await waitFor(() => groupOf(c) === g1);
     // The mini follows only once its own user agrees.
     expect(groupOf(d)).toBe(g2);
+    // Its card: the computer that asks is the value of a row, never a word in the title.
+    await waitFor(() => d.broker.cards().some((c) => c.change === "device-add"));
+    const move = d.broker.cards().find((c) => c.change === "device-add")!;
+    expect((move.fields.title as { text: string }).text).toBe("Move this computer into a new group?");
+    expect(rowsOf(move)).toEqual([{ label: "The device asking", value: "Server" }]);
     await answer(d, "device-add", true, (labels) => labels);
     await waitFor(() => groupOf(d) === g1);
     await waitFor(() => hs.groups.get(g1)?.members.size === 4 && !hs.groups.has(g2));
@@ -247,6 +270,35 @@ describe("a join the service didn't take (I's review)", () => {
 });
 
 describe("voters and the quorum (lane I's proposal)", () => {
+  test("a name the asker gives for a device this computer doesn't know is drawn only if the name rule takes it; every name row is marked as a name", async () => {
+    const hs = service({ voteAfterMs: 0 });
+    const net = new MemoryNetwork();
+    const [a, b] = [await daemon(net, hs, "Studio"), await daemon(net, hs, "Laptop")];
+    await pair(a, b);
+    const g = groupOf(a)!;
+    await waitFor(() => hs.groups.get(g)?.members.size === 2);
+    const link = await a.links.transport.connect(b.links.key.id);
+    const { generateEd25519 } = await import("../../identity/keys");
+    const { GROUP_LINK } = await import("../group");
+    // An unknown key, named by the asker. A name with a joiner beside an ASCII letter, a control, nothing that shows, or past the length is not taken
+    // ("a device this computer doesn't know"); the name rule (`cleanName`) takes "Spare" and a family emoji.
+    const seen: string[] = [];
+    for (const name of [`exam\u200Dple`, "a\u202Eb", "\u200B", "x".repeat(200), "Spare", "MacBook \u{1F468}\u200D\u{1F469}"]) {
+      const key = toBase64Url(generateEd25519().publicKey);
+      const before = b.broker.cards().length;
+      const asked = link.request(GROUP_LINK.cosign, { group: g, key, t: Date.now(), keeps: [], name }).catch((e: unknown) => e);
+      await waitFor(() => b.broker.cards().length > before);
+      const card = b.broker.cards().filter((c) => c.change === "device-revoke").at(-1)!;
+      const rows = rowsOf(card);
+      expect(rows.map((r) => r.label)).toEqual(["The device to remove", "Asked by"]);
+      for (const f of Object.values(card.fields as Record<string, { type: string; rows?: { name?: true }[] } | undefined>)) if (f?.type === "rows") for (const r of f.rows ?? []) expect(r.name).toBe(true);
+      seen.push(rows[0]!.value);
+      await answer(b, "device-revoke", false);
+      expect(isContractError(await asked, "refused")).toBe(true);
+    }
+    expect(seen).toEqual(["a device this computer doesn't know", "a device this computer doesn't know", "a device this computer doesn't know", "a device this computer doesn't know", "Spare", "MacBook \u{1F468}\u200D\u{1F469}"]);
+  }, 40_000);
+
   test("removing a member asks the other voters, each by its card: one declines, one agrees, and that's a quorum", async () => {
     const hs = service({ voteAfterMs: 0 });
     const net = new MemoryNetwork();
@@ -259,6 +311,11 @@ describe("voters and the quorum (lane I's proposal)", () => {
     const dKey = d.links.registry.group()!.ownKey;
     // Three voters besides the mini: two must agree. The studio is one; it asks the laptop and the server.
     const out = revokeDevice(a.links.revokeOptions(), d.links.key.id);
+    // Each voter's card: the engine's own words, then the target and the asker as the values of rows; neither name is in a sentence.
+    await waitFor(() => b.broker.cards().some((c) => c.change === "device-revoke"));
+    const vote = b.broker.cards().find((c) => c.change === "device-revoke")!;
+    expect((vote.fields.title as { text: string }).text).toBe("Remove this device from your devices?");
+    expect(rowsOf(vote)).toEqual([{ label: "The device to remove", value: "Mini" }, { label: "Asked by", value: "Studio" }]);
     await answer(b, "device-revoke", false);
     await answer(c, "device-revoke", true);
     const steps = (await out).steps;
@@ -339,9 +396,14 @@ describe("voters and the quorum (lane I's proposal)", () => {
     // The studio revokes the laptop. It's the only voter left besides the keys the laptop let in, so it's a quorum
     // alone; its card asks which of those to keep. The studio never linked to them, so it names them by date.
     const out = revokeDevice(a.links.revokeOptions(), b.links.key.id, "lost");
+    await waitFor(() => a.broker.cards().some((c) => c.change === "device-revoke"));
+    const keepCard = a.broker.cards().find((c) => c.change === "device-revoke")!;
+    expect((keepCard.fields.title as { text: string }).text).toBe("Remove this device from your devices' group?");
+    expect(rowsOf(keepCard)).toEqual([{ label: "The device to remove", value: "Laptop" }]);
     const labels = await answer(a, "device-revoke", true, (l) => [l[0]!]);
     expect(labels).toHaveLength(2);
-    expect(labels.every((l) => l.startsWith("Keep a device that joined on "))).toBe(true);
+    // A checkbox is the device alone (no "Keep" around a name): these two the studio never linked to, so each is named by its date.
+    expect(labels.every((l) => l.startsWith("a device that joined on "))).toBe(true);
     expect((await out).steps.find((s) => s.step === "handshake-group")).toMatchObject({ ok: true });
     const members = hs.groups.get(g)!.members;
     expect(members.has(b.links.registry.group()!.ownKey)).toBe(false);

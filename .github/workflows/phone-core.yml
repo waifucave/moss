@@ -1,0 +1,221 @@
+name: phone core
+
+# The phone apps' shared core (native/phone-core, lane PC): its Rust tests against a real engine, the Android proof
+# in an emulator, and the iPhone build. Not part of CI's gate (like the Linux acceptance jobs): it runs only when the
+# core, or what it is checked against, changes.
+on:
+  push:
+    branches: ["lane/pc*", "lane/pc*/**", "lane-int/**"]
+    paths:
+      - native/phone-core/**
+      - native/link/**
+      # What the vectors and the engine harness are checked against: the engine's pairing, keys, devices, link and
+      # client door, its approvals, and the protocol (approvals, sessions, devices, the remote allowlist).
+      - packages/core/src/links/**
+      - packages/core/src/identity/**
+      - packages/core/src/devices/**
+      - packages/core/src/approvals/**
+      - packages/core/src/contracts/device-registry.ts
+      - packages/core/src/contracts/approval-broker.ts
+      - packages/core/src/ipc/device-links.ts
+      - packages/core/src/ipc/link-clients.ts
+      - packages/core/src/daemon.ts
+      - packages/core/src/daemon-parts.ts
+      - packages/protocol/src/**
+      - packages/protocol/generated/moss/allowlists.json
+      - .github/workflows/phone-core.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  RUST_TOOLCHAIN: 1.99.1
+  CARGO_TERM_COLOR: never
+
+jobs:
+  # Proof A: the core's unit tests, the byte-for-byte vectors against the engine's own functions, and the core
+  # pairing with, calling, hearing and answering cards on a real engine (from source, temp home, the real sidecar on
+  # loopback, no relay).
+  rust:
+    name: phone core · rust · engine
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch; the version is RUST_TOOLCHAIN
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            native/link -> target
+            native/phone-core -> target
+      - name: Build moss-link
+        run: cargo build --release --locked --manifest-path native/link/Cargo.toml
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: The phone core's tests
+        env:
+          MOSS_PC_ENGINE_TESTS: "1"
+          MOSS_LINK_BIN: ${{ github.workspace }}/native/link/target/release/moss-link
+        run: |
+          export MOSS_PC_BUN="$(command -v bun)"
+          cargo test --locked --features test-hooks --manifest-path native/phone-core/Cargo.toml -- --nocapture --test-threads 1
+
+  # Proof B: the core built for Android, its Kotlin bindings generated from the same definition, and an instrumented
+  # test in an x86_64 emulator: the async calls complete, and it pairs with an engine running on this runner.
+  android:
+    name: phone core · android · emulator
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch; the version is RUST_TOOLCHAIN
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: x86_64-linux-android,aarch64-linux-android,armv7-linux-androideabi
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            native/link -> target
+            native/phone-core -> target
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          gradle-version: "8.10.2"
+      - name: Build the core for Android (every phone ABI; the emulator runs x86_64)
+        run: |
+          cargo install cargo-ndk --version 3.5.4 --locked
+          cd native/phone-core
+          cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -o android/src/main/jniLibs build --release --locked --lib
+          ls -la android/src/main/jniLibs/*
+      - name: Generate the Kotlin bindings
+        run: |
+          cd native/phone-core
+          cargo build --release --locked --lib
+          cargo run --release --locked --features bindgen --bin uniffi-bindgen -- generate --library target/release/libmoss_phone_core.so --language kotlin --out-dir android/src/main/kotlin/generated
+          find android/src/main/kotlin/generated -name '*.kt'
+      - name: Build moss-link
+        run: cargo build --release --locked --manifest-path native/link/Cargo.toml
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Start the engine
+        env:
+          MOSS_LINK_BIN: ${{ github.workspace }}/native/link/target/release/moss-link
+        run: |
+          nohup bun --preload ./packages/core/test/preload.ts native/phone-core/tests/harness/engine.ts --auto --advertise 10.0.2.2 --qr-port 8787 --words-port 8788 > "$RUNNER_TEMP/engine.log" 2>&1 &
+          for i in $(seq 1 120); do grep -q "QR ready" "$RUNNER_TEMP/engine.log" && break; sleep 1; done
+          cat "$RUNNER_TEMP/engine.log"
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: The instrumented test in an emulator
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: cd native/phone-core/android && gradle --no-daemon connectedAndroidTest ; status=$? ; adb logcat -d -s MossPhoneCoreTest:V TestRunner:V AndroidRuntime:E '*:F' > "$RUNNER_TEMP/logcat.txt" ; exit $status
+      - name: Logs
+        if: always()
+        run: |
+          echo "--- engine"; cat "$RUNNER_TEMP/engine.log" || true
+          echo "--- logcat"; cat "$RUNNER_TEMP/logcat.txt" || true
+          find native/phone-core/android/build -path '*androidTest-results*' -name '*.xml' -exec cat {} \; 2>/dev/null | head -400 || true
+
+  # Proof C: the core as an XCFramework (the iPhone, its simulator, macOS) with its Swift package, and a Swift test in
+  # the iPhone simulator that pairs with an engine running on this runner through the binding.
+  ios:
+    name: phone core · iphone · simulator
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch; the version is RUST_TOOLCHAIN
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            native/link -> target
+            native/phone-core -> target
+      - name: Build the XCFramework and the Swift bindings
+        run: |
+          cd native/phone-core
+          for t in aarch64-apple-ios aarch64-apple-ios-sim; do cargo build --release --locked --lib --target $t; done
+          cargo build --release --locked --lib
+          cargo run --release --locked --features bindgen --bin uniffi-bindgen -- generate --library target/release/libmoss_phone_core.dylib --language swift --out-dir "$RUNNER_TEMP/swift"
+          mkdir -p "$RUNNER_TEMP/headers"
+          cp "$RUNNER_TEMP/swift/MossPhoneCoreFFI.h" "$RUNNER_TEMP/headers/"
+          cp "$RUNNER_TEMP/swift/MossPhoneCoreFFI.modulemap" "$RUNNER_TEMP/headers/module.modulemap"
+          mkdir -p apple/Sources/MossPhoneCore
+          cp "$RUNNER_TEMP/swift/MossPhoneCore.swift" apple/Sources/MossPhoneCore/
+          xcodebuild -create-xcframework \
+            -library target/aarch64-apple-ios/release/libmoss_phone_core.a -headers "$RUNNER_TEMP/headers" \
+            -library target/aarch64-apple-ios-sim/release/libmoss_phone_core.a -headers "$RUNNER_TEMP/headers" \
+            -library target/release/libmoss_phone_core.a -headers "$RUNNER_TEMP/headers" \
+            -output apple/MossPhoneCoreFFI.xcframework
+      - name: Build moss-link
+        run: cargo build --release --locked --manifest-path native/link/Cargo.toml
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Start the engine
+        env:
+          MOSS_LINK_BIN: ${{ github.workspace }}/native/link/target/release/moss-link
+        run: |
+          nohup bun --preload ./packages/core/test/preload.ts native/phone-core/tests/harness/engine.ts --auto --qr-port 8787 --words-port 8788 > "$RUNNER_TEMP/engine.log" 2>&1 &
+          for i in $(seq 1 120); do grep -q "QR ready" "$RUNNER_TEMP/engine.log" && break; sleep 1; done
+          cat "$RUNNER_TEMP/engine.log"
+      - name: The Swift test in the iPhone simulator
+        env:
+          TEST_RUNNER_MOSS_PC_ENGINE: "1"
+        run: |
+          cd native/phone-core/apple
+          sim=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for k,v in d.items() if "iOS" in k for x in v if x["name"].startswith("iPhone")))')
+          xcodebuild test -scheme MossPhoneCore -destination "id=$sim" -skipPackagePluginValidation
+      - name: The Keychain test in a host app with a Keychain entitlement (the iPhone real-store proof)
+        run: |
+          # xcodegen at a fixed release, from its own GitHub release (not Homebrew's moving formula).
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" https://github.com/yonaskolb/XcodeGen/releases/download/2.47.0/xcodegen.zip
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP/xcodegen"
+          export PATH="$RUNNER_TEMP/xcodegen/xcodegen/bin:$PATH"
+          xcodegen --version
+          cd native/phone-core/apple/KeychainHost
+          xcodegen generate
+          sim=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for k,v in d.items() if "iOS" in k for x in v if x["name"].startswith("iPhone")))')
+          xcodebuild test -project KeychainHost.xcodeproj -scheme KeychainHost -destination "id=$sim" -skipPackagePluginValidation
+      - name: Logs
+        if: always()
+        run: |
+          echo "--- engine"; cat "$RUNNER_TEMP/engine.log" || true

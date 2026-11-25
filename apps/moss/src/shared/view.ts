@@ -67,15 +67,26 @@ export interface MossView {
 export interface RelayRow {
   mode: "n0" | "off" | "custom";
   url?: string;
+  /** The relay plugins installed (listed by what they bring, never by name): shown and not offered, as the links take none yet. Only `relay()` fills it. */
+  plugins?: { id: string; name: string; why?: string }[];
 }
 
-/** A pairing of this computer with another device (spec §8.1): the code this computer shows, or the four words both show. */
+/** A pairing of this computer with another device (spec §8.1): the code this computer shows (and the text a phone scans) with the time
+ *  it stops working, then the step the engine's add card is at. The four words are never here: the engine draws them on its sealed
+ *  card, and no part of the window is given them. */
 export interface PairingRow {
-  /** The code to enter on the other device (the short code when the engine has one, else the longer pairing code). */
+  /** The short code to enter on the other device, when the engine has one. */
   code?: string;
-  words?: string[];
-  /** The words were confirmed here: the engine's card waits for the person. */
-  confirming?: boolean;
+  /** The pairing's text: what the picture a phone scans holds, and what is typed or pasted on a computer when there is no short code. */
+  qr?: string;
+  /** When the code stops working, in ms. */
+  expiresAt?: number;
+  /** Another device is in: the engine's add card is up (or on its way) and holds the four words. */
+  checking?: boolean;
+  /** The name the other device gave itself, once known. */
+  peerName?: string;
+  /** While the code waits: a device tried to join and was turned away, said in the engine's words (never the other device's own text). */
+  note?: string;
   /** It ended: said in words (a device added, a failure, an expired code). */
   ended?: string;
 }
@@ -109,10 +120,35 @@ export interface Attachment {
   kind: "file" | "image";
 }
 
+/** One question a bot asked (`AskUserQuestion`): its words and its options, as plain data. */
+export interface QuestionView {
+  question: string;
+  /** A short chip (12 characters at most). */
+  header?: string;
+  /** None: answered by typing; two to four: a menu, always with a free-text box beside it. */
+  options: { label: string; description?: string; preview?: string }[];
+  multiSelect: boolean;
+  placeholder?: string;
+}
+
+/** A bot's question in its conversation: pending while it waits for the person, then answered (with what was chosen),
+ *  expired (no answer in time) or withdrawn (its turn ended). */
+export interface QuestionState {
+  callId: string;
+  questions: QuestionView[];
+  state: "pending" | "answered" | "expired" | "withdrawn";
+  /** Keyed by the question's text. */
+  answers?: Record<string, string>;
+  notes?: Record<string, string>;
+}
+
 export interface Message {
   id: string;
-  from: "user" | "bot" | "note";
-  /** Plain text: the window shows it as text, never as markup. */
+  from: "user" | "bot" | "note" | "question";
+  /** A bot's question, when `from` is `question` (its text is empty). The same id again is the same question, changed. */
+  question?: QuestionState;
+  /** The person's and a note's words are drawn as text; the bot's reply as Markdown (bold, lists, code, links), never as
+   *  HTML: nothing a model wrote reaches the page as markup. */
   text: string;
   at: number;
   files?: Attachment[];
@@ -202,7 +238,7 @@ export interface SettingsView {
   signIns: { pluginId: string; name: string; index: number; method: "api-key" | "oauth-pkce" | "custom" | "core"; state: string; account?: string }[] | "waiting";
   /** The approval level of each computer (this one first). */
   computers: { name: string; level: string }[] | "waiting";
-  devices: { id: string; name: string; kind: string; here?: boolean }[] | "waiting";
+  devices: { id: string; name: string; kind: string; here?: boolean; online?: boolean; lastSeen?: number }[] | "waiting";
 }
 
 /** One of a plugin's declared bot-scoped settings (a voice plugin's voice for this bot), drawn generically from its schema. */
@@ -311,12 +347,11 @@ export interface MossBridge {
   setBotSetting(bot: string, pluginId: string, key: string, value: unknown): Promise<boolean>;
   /** A computer's approval level: the engine raises a sealed card (a sensitive change), which the router places here. */
   setLevel(computer: string, level: string): Promise<boolean>;
-  /** Pairing another device (spec §8.1), each the person's own press: show a code here, or enter the other device's; the four
-   *  words come back in the view's `pairing`; confirming them and removing a device are each the engine's sealed card, which
-   *  the router places here. The engine's why on a refusal. */
+  /** Pairing another device (spec §8.1), each the person's own press: show a code here, or enter the other device's. The window is
+   *  never given the four words, and has no call that confirms: adding the device and removing one are each the engine's sealed card,
+   *  which the router places here. The engine's why on a refusal. */
   pairBegin(): Promise<{ ok: true } | { ok: false; why: string }>;
   pairJoin(code: string): Promise<{ ok: true } | { ok: false; why: string }>;
-  pairConfirm(): Promise<{ ok: true } | { ok: false; why: string }>;
   pairCancel(): Promise<boolean>;
   removeDevice(id: string): Promise<boolean>;
   /** A tool's permission (always allow / ask / always block), the person's own, after their press. */
@@ -339,6 +374,14 @@ export interface MossBridge {
   /** Try again on the bot's failed latest turn (`session.resend`): the engine sends the same words once more, after the
    *  person's own press. */
   retry(bot: string): Promise<{ ok: true } | { ok: false; why: string }>;
+  /** Answers the bot's waiting question (`session.answer`), after the person's own press: the answers are keyed by the
+   *  question's text, and a question that no longer waits is refused in plain words. */
+  answer(bot: string, callId: string, answers: Record<string, string>, notes?: Record<string, string>): Promise<{ ok: true } | { ok: false; why: string }>;
+  /** Stops the bot's turn now (`session.interrupt`, background tasks keep running), after the person's own press; a question
+   *  waiting in it is withdrawn. */
+  stop(bot: string): Promise<{ ok: true } | { ok: false; why: string }>;
+  /** Opens a link of a bot's reply in the person's browser: http, https or mailto, after the person's own click. */
+  openLink(url: string): Promise<boolean>;
   /** The person tried to act on a bot's screen (a click, a key, a scroll): it is watch only, and main says so. */
   pictureInput(kind: "pointer" | "key" | "wheel"): void;
   models(): Promise<ModelRow[] | { waiting: true }>;

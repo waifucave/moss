@@ -282,7 +282,8 @@ describe("moss rules — what renames, what the app takes its own name for, and 
       .toBe("com.waifucave.moss.code com.waifucave.moss.code.dev com.waifucave.moss.code.dev.desktop com.waifucave.moss.code.ShipIt");
     expect(mw("com.waifucave.clover.core com.waifucave.clover.core.dev com.waifucave.clover.core.test-isolated com.waifucave.clover.core.scratch com.waifucave.clover.plugin-bun").out)
       .toBe("com.waifucave.moss.core com.waifucave.moss.core.dev com.waifucave.moss.core.test-isolated com.waifucave.moss.core.scratch com.waifucave.moss.core.plugin-bun");
-    expect(mw("com.waifucave.clover.ios com.waifucave.clover.ios.test").out).toBe("com.waifucave.clover.ios com.waifucave.clover.ios.test"); // the iOS app's own, kept
+    // The iOS app's old bundle id is no longer kept: nothing in the repo holds it (the push service's APNs topics are configuration).
+    expect(mw("com.waifucave.clover.ios com.waifucave.clover.ios.test").out).toBe("com.waifucave.moss.ios com.waifucave.moss.ios.test");
     for (const id of ["com.waifucave.clover", "com.waifucave.clover.dev", "com.waifucave.clover.core", "com.waifucave.clover.helper"]) {
       expect(mw(id).out).not.toMatch(/com\.waifucave\.moss(?![.\w])/);
     }

@@ -84,13 +84,13 @@ async function hkdf(ikm: Uint8Array, salt: Uint8Array, info: string, length = 32
   return new Uint8Array(await crypto.subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt: salt as Uint8Array<ArrayBuffer>, info: utf8(info) }, key, length * 8));
 }
 
-// Keeps its old spelling on purpose: the owner's deployed services verify against this value, so it stays until they move.
+// Keeps its old spelling on purpose: data already on disk (paired devices, sealed boxes, signed records) was made under this value, so it stays. No service is deployed.
 /** The invite key B0, which both ends can sign with (the computer when it registers P1, the page on P1). */
 export async function inviteSigner(invite: Pick<Invite, "pair" | "secret">): Promise<Signer> {
   return signerFromSeed(await hkdf(invite.secret, fromB64u(invite.pair), "clover web invite key"));
 }
 
-// Keeps its old spelling on purpose: the owner's deployed services verify against this value, so it stays until they move.
+// Keeps its old spelling on purpose: data already on disk (paired devices, sealed boxes, signed records) was made under this value, so it stays. No service is deployed.
 /** P1's pair secret, for its boxes. */
 export function invitePairSecret(invite: Pick<Invite, "pair" | "secret">): Promise<Uint8Array> {
   return hkdf(invite.secret, fromB64u(invite.pair), "clover web invite secret");
@@ -157,7 +157,7 @@ export interface Transcript {
   code: string;
 }
 
-// Keeps its old spelling on purpose: the owner's deployed services verify against this value, so it stays until they move.
+// Keeps its old spelling on purpose: data already on disk (paired devices, sealed boxes, signed records) was made under this value, so it stays. No service is deployed.
 function transcriptBytes(t: Transcript): Uint8Array {
   return utf8(["clover web pairing v1", t.invitePair, t.pair, t.computerKey, t.browserKey, t.computerX25519, t.browserX25519, t.code].join("\n"));
 }
@@ -167,7 +167,7 @@ export async function generateX25519(): Promise<{ publicKey: string; privateKey:
   return { publicKey: b64u(new Uint8Array((await crypto.subtle.exportKey("raw", pair.publicKey)) as ArrayBuffer)), privateKey: pair.privateKey };
 }
 
-// Keeps its old spelling on purpose: the owner's deployed services verify against this value, so it stays until they move.
+// Keeps its old spelling on purpose: data already on disk (paired devices, sealed boxes, signed records) was made under this value, so it stays. No service is deployed.
 /**
  * The lasting pair's secret and the four words, from this end's X25519 private key and the other end's public key.
  * Both ends get the same values from the same transcript.

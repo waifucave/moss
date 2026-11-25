@@ -219,7 +219,7 @@ describe("what a plugin leaves when its folder goes by hand", () => {
       let answer: "refuse" | "ok" = "refuse";
       const m = pluginRegistryMethods({
         opened: w.opened, host: { restart: async () => {} }, home: w.home, indexes: w.opened.indexes!,
-        beforeRemove: async (id) => { asked.push(id); if (answer === "refuse") throw new Error("its cloud computers weren't answered"); },
+        beforeRemove: async (id) => { asked.push(id); if (answer === "refuse") throw new Error("its cloud computers weren't answered"); return undefined; },
       });
       await expect(m["plugin.remove"]!({ id: "tarot" }, APP)).rejects.toThrow("weren't answered");
       expect(existsSync(w.dir)).toBe(true);
@@ -227,6 +227,53 @@ describe("what a plugin leaves when its folder goes by hand", () => {
       await m["plugin.remove"]!({ id: "tarot" }, APP);
       expect(asked).toEqual(["tarot", "tarot"]);
       expect(existsSync(w.dir)).toBe(false);
+    } finally {
+      w.opened.close();
+    }
+  });
+
+  test("what beforeRemove returns runs only once the removal is confirmed: a declined removal runs nothing; a failing one stops the removal", async () => {
+    const w = await world();
+    try {
+      await w.opened.registry.approve("tarot", (await w.install(source("one"))).treeHash);
+      const ran: string[] = [];
+      let decline = true;
+      const m = pluginRegistryMethods({
+        opened: w.opened, host: { restart: async () => {} }, home: w.home, indexes: w.opened.indexes!,
+        openCard: async () => ({ allowed: Promise.resolve(!decline) }),
+        beforeRemove: async () => ({ note: "Cloud1 will be deleted when you confirm this.", commit: async () => { ran.push("commit"); if (ran.length > 1) throw new Error("a machine couldn't be deleted"); } }),
+      });
+      // The person declines the removal's own card: the machines' answer is never carried out.
+      await expect(m["plugin.remove"]!({ id: "tarot", card: true }, APP)).rejects.toThrow();
+      expect(ran).toEqual([]);
+      expect(existsSync(w.dir)).toBe(true);
+      // Confirmed: it runs, before the folder goes.
+      decline = false;
+      await m["plugin.remove"]!({ id: "tarot", card: true }, APP);
+      expect(ran).toEqual(["commit"]);
+      expect(existsSync(w.dir)).toBe(false);
+    } finally {
+      w.opened.close();
+    }
+  });
+
+  test("the removal card says what the earlier question decided, and switching a plugin off asks first and carries the answer out before it goes off", async () => {
+    const w = await world();
+    try {
+      await w.opened.registry.approve("tarot", (await w.install(source("one"))).treeHash);
+      const cards: unknown[] = [];
+      const ran: string[] = [];
+      const m = pluginRegistryMethods({
+        opened: w.opened, host: { restart: async () => {} }, home: w.home, indexes: w.opened.indexes!,
+        openCard: async (c) => { cards.push(c); return { allowed: Promise.resolve(true) }; },
+        beforeRemove: async () => ({ note: "Cloud1 will be deleted when you confirm this.", commit: async () => { ran.push("remove"); } }),
+        beforeDisable: async () => ({ note: "x", commit: async () => { ran.push(`off:${w.opened.registry.get("tarot")!.enabled}`); } }),
+      });
+      await m["plugin.setEnabled"]!({ id: "tarot", enabled: false }, APP);
+      expect(ran).toEqual(["off:true"]);
+      expect(w.opened.registry.get("tarot")!.enabled).toBe(false);
+      await m["plugin.remove"]!({ id: "tarot", card: true }, APP);
+      expect(JSON.stringify(cards)).toContain("Cloud1 will be deleted when you confirm this.");
     } finally {
       w.opened.close();
     }

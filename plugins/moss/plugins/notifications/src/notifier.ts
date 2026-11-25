@@ -21,6 +21,8 @@ export interface NotifierUpdate {
   unseen: number;
   bot?: string;
   session?: string;
+  /** The kind of session the update is about (the core's own updates). */
+  sessionKind?: "bot" | "side-thread" | "agent" | "coding";
   at: number;
   notification?: { title: string; body?: string };
   /** Who sent it: the plugin whose `notify.send` asked for a `notification`, or `moss` for the core's own updates
@@ -167,6 +169,9 @@ export class DesktopNotifier {
   async notify(update: NotifierUpdate): Promise<void> {
     if (update.seq <= this.lastSeq) return;
     this.lastSeq = update.seq;
+    // A coding session's or an agent's update is for the phone (MOSS Code's push): on this computer the app's own marks and the
+    // island say it, and a banner here would have no name to show (it names a bot, and these name none).
+    if (update.sessionKind === "coding" || update.sessionKind === "agent") return;
     const prefs = this.options.prefs?.() ?? DEFAULT_PREFS;
     if (!wanted(update, prefs)) return;
     const id = noticeId(update);

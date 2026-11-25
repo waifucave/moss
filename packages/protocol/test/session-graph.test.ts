@@ -118,10 +118,10 @@ describe("who may reach whom (§9.5)", () => {
     expect("error" in resolveSessionTo("s_z", reach)).toBe(true);
   });
 
-  test("the tools' methods: the bridge lists what it may reach; agent.options and agent.recent are the person's clients'", () => {
+  test("the tools' methods: the bridge lists what it may reach; agent.options and agent.recent are the person's clients' (the app's, the terminal's and a paired phone's)", () => {
     expect(MOSS_METHODS.get("bridge.listSessions")!.roles).toEqual(["bridge"]);
     expect(MOSS_METHODS.get("bridge.sendMessage")!.params.safeParse({ text: "hi", to: "Docs pass" }).success).toBe(true);
-    for (const m of ["agent.options", "agent.recent"]) expect(MOSS_METHODS.get(m)!.roles).toEqual(["app", "cli"]);
+    for (const m of ["agent.options", "agent.recent"]) expect(MOSS_METHODS.get(m)!.roles).toEqual(["app", "cli", "remote"]);
     expect(MOSS_METHODS.get("app.openIn")!.params.safeParse({ program: "host", what: { kind: "window" } }).success).toBe(false);
     expect(MOSS_METHODS.get("app.openIn")!.params.safeParse({ program: "moss", what: { kind: "bot", bot: "moss" } }).success).toBe(true);
   });

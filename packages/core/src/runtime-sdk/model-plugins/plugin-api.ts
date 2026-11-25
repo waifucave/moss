@@ -17,7 +17,7 @@ import { ipAddressClass } from "../../agent/tools/web";
 import { originOf } from "./user-endpoint";
 import { maskError, maskResponse, noteKeys } from "./key-redaction";
 import { publicFetch } from "./public-fetch";
-import { reachesPublicNetwork } from "@waifucave/moss-plugin-sdk";
+import { mayUseWaifucaveAuth, reachesPublicNetwork, WAIFUCAVE_AUTH, type WaifucaveTarget } from "@waifucave/moss-plugin-sdk";
 import { hostAllowed, hostRules } from "../../plugin-host/net-proxy";
 
 /** Whether a URL's host is on the plugin's declared `network:` list (the keyed fetch's hosts), read as B's gate and the
@@ -34,7 +34,7 @@ function declaredHost(record: Pick<PluginRecord, "capabilities">, raw: string): 
 }
 import { ContractError } from "../../contracts/common";
 import type { PluginRecord, PluginRegistry } from "../../contracts/plugin-registry";
-import { secretTokenSource, type SecretStore } from "../../contracts/secret-store";
+import { secretTokenSource, type KeyedTokenSource as AccountTokenSource, type SecretStore } from "../../contracts/secret-store";
 import { clampKeyedIdleTimeoutMs, createKeyedFetch, isLoopbackHost, type KeyedFetch, type KeyedFetchInit, type KeyedFetchOptions, type KeyedTokenSource, type KeyPlacement } from "@waifucave/clover-provider-runtime";
 
 export interface ModelPluginApiOptions {
@@ -63,6 +63,18 @@ export interface ModelPluginApiOptions {
   /** The platform fetch to a user's own endpoint: by default the pinned fetch, reaching that one host even at a
    *  loopback or private address. A test passes its own. */
   userFetch?: (origin: string) => (url: string, init: RequestInit) => Promise<Response>;
+  /** This computer's waifucave account tokens, one per audience (`mintedTokenSource` over the account session), read at
+   *  each call: absent while no account is set up here. What `auth: "waifucave"` adds (`accountFetch`). */
+  accountTokens?: () => AccountTokenSource | undefined;
+  /** Where the account token may go: the waifucave.com domain's https hosts unless the core's own development setting
+   *  names its emulators (`WaifucaveTarget`); never a plugin's choice. */
+  waifucaveTarget?: () => WaifucaveTarget | undefined;
+}
+
+/** The error `net.fetch` with `auth: "waifucave"` fails with while no account is signed in here: the keyed fetch's
+ *  `no_account`, which the plugin reads as its `code` and waits on, rather than retrying on a timer. */
+export function noAccount(): Error & { code: "no_account" } {
+  return Object.assign(new Error("no waifucave account is signed in on this computer"), { code: "no_account" as const });
 }
 
 /** The pinned fetch to one origin the user set: its host may be at a loopback or private address, and every hop
@@ -213,6 +225,40 @@ export function modelPluginApiHandlers(opts: ModelPluginApiOptions): ApiHandlers
     "net.fetch": async (ctx, args) => {
       const [url, init, fetchOpts] = args as [string, RequestInit | undefined, KeyedFetchOptions | undefined];
       const keys = keysOf(ctx.record.id);
+      // The waifucave account token (spec §5.4, item 84; the SDK's `WAIFUCAVE_AUTH` rules): only MOSS's own plugins, only
+      // from the `moss` process (B's gate refuses it from any other first), only to an https waifucave.com host on the
+      // plugin's `network:` list, a token minted for that host alone, which the plugin never sees.
+      if ((fetchOpts as { auth?: unknown } | undefined)?.auth === WAIFUCAVE_AUTH) {
+        if (!mayUseWaifucaveAuth(ctx.record.id, url, ctx.process, opts.waifucaveTarget?.() ?? undefined)) {
+          throw new ContractError("refused", "the waifucave account token goes only with MOSS's own plugins' requests to https waifucave.com hosts");
+        }
+        // The manifest's own hosts first: nothing is minted for a waifucave host the plugin doesn't list.
+        if (!declaredHost(ctx.record, url)) throw Object.assign(new Error("that host isn't on the plugin's network list"), { code: "host_not_declared" });
+        const audience = new URL(url).hostname.toLowerCase().replace(/\.$/, "");
+        const source = opts.accountTokens?.();
+        const first = source === undefined ? null : await source.current(audience);
+        if (source === undefined || first === null) throw noAccount();
+        // Masked in what this request hands back: the plugin's own keys and the tokens this request sent, never kept past it
+        // (a token lives at most five minutes; holding each one for the plugin's life would grow without end).
+        const masked = new Set(keys);
+        const tokens = noteKeys({
+          current: async () => ({ value: first.value.reveal(), generation: first.generation }),
+          newer: async (generation) => {
+            const t = await source.newer(generation, audience);
+            return t === null ? null : { value: t.value.reveal(), generation: t.generation };
+          },
+        }, masked);
+        const accountFetch = createKeyedFetch({
+          hosts: networkHostsOf(ctx.record), auth: { [WAIFUCAVE_AUTH]: { source: tokens } },
+          fetch: withThisComputer(ctx.record, opts.fetch ?? pinnedFetch(), opts.loopbackFetch ?? LOOPBACK_FETCH),
+          ...(opts.idleTimeoutMs !== undefined ? { idleTimeoutMs: clampKeyedIdleTimeoutMs(opts.idleTimeoutMs) } : {}),
+        });
+        try {
+          return maskResponse(await accountFetch(url, keyedInit(init), { ...fetchOpts, auth: WAIFUCAVE_AUTH }), masked);
+        } catch (err) {
+          throw maskError(err, masked);
+        }
+      }
       // The user pointed this plugin's provider at an endpoint of their own: a request to that origin (the provider's API
       // calls, which carry its key) goes there; every other request keeps the plugin's declared hosts (a token
       // exchange, discovery), below.

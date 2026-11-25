@@ -1,11 +1,11 @@
 // The Linux repositories (scripts/release/linux-repo.ts): the key, the signatures, the layout and the docs' lines,
 // with a throwaway key; nothing reaches the Keychain, a bucket or the network.
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  archOf, generateRepoKey, installLines, KEYRING_FILE, MIN_DAYS_LEFT, ownerOnly, parseAptDate, refreshRelease, refreshTree, releaseConfig, releaseDateProblems, releaseFields, RELEASE_VALID_DAYS, REPO_BASE_URL, REPO_KEY_ITEM, repoSigningKey,
+  archOf, generateRepoKey, keyringProblem, installLines, KEYRING_FILE, MIN_DAYS_LEFT, ownerOnly, parseAptDate, refreshRelease, refreshTree, releaseConfig, releaseDateProblems, releaseFields, RELEASE_VALID_DAYS, REPO_BASE_URL, REPO_KEY_ITEM, repoSigningKey,
   signRelease, signTree, stampRelease, suiteFor, uploadArgs, uploadPlan, verifyDetached, verifyInRelease, verifyTree, type RepoKeyStore,
 } from "./linux-repo";
 
@@ -173,5 +173,39 @@ describe("the Linux repositories", () => {
     expect(src).toContain('if (!rest.includes("--yes"))');
     expect(src).not.toMatch(/writeFileSync\([^)]*privateKey/);
     expect(KEYRING_FILE).toBe("packaging/linux/moss-archive-keyring.asc");
+  });
+});
+
+describe("the committed keyring (lane RL)", () => {
+  const dirs: string[] = [];
+  afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
+  function root(keyring?: string): string {
+    const d = mkdtempSync(join(tmpdir(), "moss-keyring-"));
+    dirs.push(d);
+    if (keyring !== undefined) { mkdirSync(join(d, "packaging", "linux"), { recursive: true }); writeFileSync(join(d, KEYRING_FILE), keyring); }
+    return d;
+  }
+  test("absent: says plainly that the owner makes it, with the command and where the file goes", () => {
+    const p = keyringProblem(root())!;
+    expect(p).toContain(KEYRING_FILE);
+    expect(p).toContain("key --generate");
+    expect(p).toContain("commits the file");
+  });
+  test("a file that is no armored public key is refused; one that is, is fine", () => {
+    expect(keyringProblem(root("hello"))).toContain("not an armored OpenPGP public key");
+    expect(keyringProblem(root("-----BEGIN PGP PUBLIC KEY BLOCK-----\nxx\n-----END PGP PUBLIC KEY BLOCK-----\n"))).toBeUndefined();
+  });
+  test("build-packages --require-keyring stops before any build when it is absent, and without the flag only says so", async () => {
+    const { main } = await import("../build-packages");
+    const lines: string[] = [];
+    const log = console.log, err = console.error;
+    console.log = (l: string) => lines.push(String(l)); console.error = (l: string) => lines.push(String(l));
+    try {
+      expect(await main(["--arch", process.arch === "arm64" ? "arm64" : "x64", "--require-keyring"], root())).toBe(1);
+      expect(lines.join("\n")).toContain("has not been made");
+      lines.length = 0;
+      await main(["--bogus"], root()); // parse fails first (2): the note comes only after a good parse
+      expect(lines.join("\n")).not.toContain("NOTE");
+    } finally { console.log = log; console.error = err; }
   });
 });

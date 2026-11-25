@@ -11,7 +11,7 @@ import { hostServedProviderAdapter, type ProviderEvent } from "@waifucave/clover
 import { bedrockFake, codexFake, geminiFake, openaiResponsesFake, startFake, type FakeServer } from "@waifucave/clover-provider-conformance/fakes";
 import { catalogPointDecl } from "../../../../plugin-sdk/src/catalogs/index";
 import { pluginFromFolder, removeTemps, tempDir } from "../../../src/bots/tests/fixtures";
-import { FakeClock } from "../../../src/contracts/fakes/clock";
+import { FakeClock, advanceAndSettle } from "../../../src/contracts/fakes/clock";
 import { FakePluginHost } from "../../../src/contracts/fakes/plugin-host";
 import { FakePluginRegistry, type FakePluginInput } from "../../../src/contracts/fakes/plugin-registry";
 import { MemorySecretStore } from "../../../src/contracts/fakes/secret-store";
@@ -405,3 +405,71 @@ async function until(ok: () => boolean | Promise<boolean>): Promise<void> {
   for (let i = 0; i < 200 && !(await ok()); i++) await new Promise((r) => setTimeout(r, 25));
   expect(await ok()).toBe(true);
 }
+
+describe("a slow start after an install costs no provider", () => {
+  /** Google's plugin, whose worker takes `startMs` on the fake clock to come up (a cold start of the new bundled tree). */
+  async function slowGoogle(startMs: number, opts: { describeLimitMs?: number } = {}) {
+    const clock = new FakeClock();
+    const keep = new Set(["moss", modelPluginId("google"), modelPluginId("groq")]);
+    const registry = new FakePluginRegistry({ catalog: catalogPointDecl, plugins: bundled.filter((i) => keep.has(i.id)) });
+    const host = new FakePluginHost({ clock });
+    const record = registry.get(modelPluginId("google"))!;
+    const real = (await import(join(record.folder, record.manifest!.host!.entry))) as HostModule;
+    host.define(record.id, { ...real, start: async (api) => { await new Promise<void>((r) => clock.setTimeout(r, startMs)); await real.start?.(api); } } as HostModule, { source: "bundled", runtime: "bun" });
+    const serve = serveApiHandlers(host, registry);
+    serve.addApiHandlers(modelPluginApiHandlers({ registry, ...secretStoreCredentials(new MemorySecretStore()) }));
+    const log: string[] = [];
+    const plugins = new ModelPlugins({ registry, host, home: tempDir("moss-en-slow-"), clock, log: (l) => log.push(l), ...opts });
+    return { clock, plugins, log };
+  }
+
+  test("a worker that takes 25 s to come up (past the host's 10 s call limit) is served at the first build", async () => {
+    const { clock, plugins, log } = await slowGoogle(25_000);
+    try {
+      const first = plugins.start();
+      await advanceAndSettle(clock, 30_000, 1_000);
+      const snap = await first;
+      expect(snap.served.has("winter.google-generate-content")).toBe(true);
+      expect(snap.refused).toEqual([]);
+      expect(log.some((l) => l.includes("left out"))).toBe(false);
+      expect(log.some((l) => /described its adapter in \d+ ms/.test(l))).toBe(true);
+    } finally {
+      plugins.stop();
+    }
+  });
+
+  test("an adapter left out because it did not answer in time is asked again later and comes back, with no restart", async () => {
+    const { clock, plugins, log } = await slowGoogle(40_000, { describeLimitMs: 10_000 });
+    try {
+      const first = plugins.start();
+      await advanceAndSettle(clock, 11_000, 1_000);
+      const snap = await first;
+      expect(snap.refused.some((r) => r.provider === "google" && r.code === "adapter-unavailable" && r.retryable === true)).toBe(true);
+      expect(snap.served.has("winter.google-generate-content")).toBe(false);
+      // Left out: the provider stays on the compiled path meanwhile.
+      expect(plugins.catalog!.providers.some((p) => p.id === "google")).toBe(true);
+      // The worker comes up at 40 s; the second ask (15 s after the first build) is still cold, the third one is not.
+      await advanceAndSettle(clock, 15_000, 1_000);
+      await advanceAndSettle(clock, 80_000, 1_000);
+      expect(plugins.snapshot!.served.has("winter.google-generate-content")).toBe(true);
+      expect(plugins.snapshot!.refused).toEqual([]);
+      expect(log.some((l) => l.includes("asking the adapters left out again"))).toBe(true);
+    } finally {
+      plugins.stop();
+    }
+  });
+
+  test("when every adapter answers, no retry is armed", async () => {
+    const { clock, plugins } = await slowGoogle(0);
+    try {
+      const first = plugins.start();
+      await advanceAndSettle(clock, 1_000, 500);
+      const snap = await first;
+      expect(snap.refused).toEqual([]);
+      // No retry armed once everything is served.
+      expect(clock.pending()).toBe(0);
+    } finally {
+      plugins.stop();
+    }
+  });
+});

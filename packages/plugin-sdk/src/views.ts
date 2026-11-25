@@ -114,10 +114,11 @@ export type DeviceView = {
   id: string;
   name: string;
   kind: "desktop" | "server" | "cloud" | "phone" | "browser";
-  os?: "macos" | "windows" | "linux" | "ios";
+  os?: "macos" | "windows" | "linux" | "ios" | "android";
   runsCore: boolean;
   computer?: string;
   hasDisplay?: boolean;
+  app?: "moss" | "code";
   online: boolean;
   link?: {
     peer: string;

@@ -171,6 +171,55 @@ export function statusArgs(launcher: string, sublayer: string): readonly string[
   return [launcher, "status", "--sublayer-guid", sublayer];
 }
 
+/** `sandbox remove`'s first step for an account (the WS4 reviewer's item 1): every process running as that pool
+ *  account ended, elevated, by exact `<computer>\<name>`, so no command of it keeps a token past the removal of its
+ *  network filter. The name is checked first (a pool name, never a pattern). Exit 0 whether or not one ran; prints
+ *  how many were ended. */
+export function endAccountProcessesArgs(principal: string): readonly string[] {
+  if (!/^moss-sb-[0-9a-f]{6}-(?:[1-9][0-9]?|e)$/.test(principal)) throw new Error(`not a pool account: ${principal}`);
+  return psEncodedArgs([
+    // The machine's name from .NET, never `$env:COMPUTERNAME`: moss-core runs its children with a minimal
+    // environment, where that variable isn't set.
+    `$who = [Environment]::MachineName + "\\${principal}"`,
+    `$ps = @(Get-Process -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -eq $who })`,
+    `foreach ($p in $ps) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }`,
+    `$left = @(Get-Process -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -eq $who })`,
+    `"ended $($ps.Count), left $($left.Count)"`,
+    `if ($left.Count -gt 0) { exit 4 }; exit 0`,
+  ].join("; "));
+}
+
+/** `sandbox remove`'s check that an account's processes are all ended (the WS5 reviewer's should-fix 1): the ending
+ *  script run up to `tries` times, `pauseMs` apart, until it exits 0; it exits 4 while a process of the account still
+ *  runs after its `Stop-Process` (one outside the launcher's kill-on-close job, or one started between its scan and its
+ *  kill), and any other failure counts as not ended too. False: a process still lives, and the account must not be
+ *  removed. Each try's output goes to `say`. */
+export async function endAccountUntilGone(
+  run: (argv: readonly string[]) => Promise<{ code: number; out: string }>, principal: string,
+  o: { tries?: number; pauseMs?: number; sleep?: (ms: number) => Promise<void>; say?: (line: string) => void } = {},
+): Promise<boolean> {
+  const tries = o.tries ?? 3;
+  for (let i = 0; i < tries; i++) {
+    const ended = await run(endAccountProcessesArgs(principal));
+    o.say?.(`${principal}: ${ended.code === 0 ? "" : "its processes couldn't all be ended: "}${ended.out.trim().slice(0, 300)}`);
+    if (ended.code === 0) return true;
+    if (i + 1 < tries) await (o.sleep ?? ((ms) => new Promise<void>((r) => setTimeout(r, ms))))(o.pauseMs ?? 1_000);
+  }
+  return false;
+}
+
+/** `srt-win uninstall`'s exit while a sandbox session or command of this machine is live (its holders listed on stdout):
+ *  nothing was changed. */
+export const SRT_SESSIONS_RUNNING_EXIT = 22;
+
+/** What `net user <name>` says of an account: `gone` only for Windows' "user name could not be found" (NERR_UserNotFound,
+ *  2221), `present` on exit 0, and `unknown` for any other failure (the reset then leaves the account for its next pass
+ *  instead of calling it gone: the WS4 reviewer's nit). */
+export function netUserState(code: number, out: string): "present" | "gone" | "unknown" {
+  if (code === 0) return "present";
+  return /\b2221\b|user name could not be found/i.test(out) ? "gone" : "unknown";
+}
+
 /** `srt-win user status`: the principal's provisioning state, one object of JSON; never elevates. */
 export const USER_STATUS_ARGS: readonly string[] = ["user", "status"];
 

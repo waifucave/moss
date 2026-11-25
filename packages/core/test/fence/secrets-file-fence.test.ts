@@ -10,6 +10,7 @@ import { MossFence } from "../../src/fence/fence";
 import { LEFT_OUT_TOP } from "../../src/migration/old-home/copy";
 import { homeNamedDenials } from "../../src/runtime-sdk/turn-loop/home-deny";
 import { fileSecretsBackend } from "../../src/secrets/file-backend";
+import { SECRETS_INDEX_COPY_SEGMENTS, SECRETS_INDEX_LOCK_SEGMENTS, SECRETS_INDEX_MADE_SEGMENTS, SECRETS_INDEX_SEGMENTS } from "../../src/secrets/secret-files";
 import { SECRET_FILE_NAMES, SECRETS_BACKUP_SEGMENTS, SECRETS_FILE_NAME, SECRETS_KEY_FILE_NAME, SECRETS_MADE_SEGMENTS, SECRETS_SEALED_KEY_FILE_NAME, SECRETS_TMP_DIR_SEGMENTS } from "../../src/secrets/secret-files";
 
 // The secrets file and its key material are hidden from every tool runner (spec §9.1; lane SF): one list of names
@@ -22,6 +23,9 @@ describe("one list of names for the secrets file and its key", () => {
     expect(SECRETS_BACKUP_SEGMENTS[0]).toBe("credentials");
     expect(SECRETS_MADE_SEGMENTS[0]).toBe("credentials");
     expect(SECRETS_TMP_DIR_SEGMENTS).toEqual(["run"]);
+    // The contract store's index, its second copy, its note and its lock (lane SE): in the same two folders.
+    for (const segs of [SECRETS_INDEX_SEGMENTS, SECRETS_INDEX_COPY_SEGMENTS, SECRETS_INDEX_MADE_SEGMENTS]) expect(segs[0]).toBe("credentials");
+    expect(SECRETS_INDEX_LOCK_SEGMENTS[0]).toBe("run");
     for (const dir of ["credentials", "run"]) {
       if (dir === "credentials") expect(BOT_READ_DENIED.some((rel) => rel.length === 1 && rel[0] === dir)).toBe(true); // `run` is the fence's run-folder kind
       expect([dir, homeNamedDenials("/h/.moss", "linux").includes(join(resolve("/h/.moss"), dir))]).toEqual([dir, true]);

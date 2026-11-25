@@ -97,11 +97,29 @@ describe("the host half", () => {
         },
       },
       settings: { get: async <T>() => "https://r.example" as T, watch: () => () => {}, set: async () => {} },
-      device: { id: "laptop" },
+      plugin: { id: "moss/relay-cloudflare", namespace: "moss", version: "0.0.0", computer: "Laptop", device: "laptop" },
     });
     expect(await relay.endpoints()).toEqual({ endpoints: [{ kind: "websocket", url: "wss://r/v1/rooms?ticket=t" }] });
     expect(auths).toEqual(["relay-key"]);
     stop();
     await expect(relay.endpoints()).rejects.toThrow("not running");
+  });
+});
+
+describe("whose mail", () => {
+  test("only the core names another device's mailbox; any other caller reads and acks this device's own, whatever it names", async () => {
+    const urls: string[] = [];
+    start({
+      net: { fetch: async (url) => (urls.push(url), json({ mail: [] })) },
+      settings: { get: async <T>() => "https://r.example" as T, watch: () => () => {}, set: async () => {} },
+      plugin: { id: "moss/relay-cloudflare", namespace: "moss", version: "0.0.0", computer: "Laptop", device: "laptop" },
+    });
+    await relay.takeMail({ device: "phone" }, { caller: { kind: "core" } });
+    await relay.takeMail({ device: "phone" }, { caller: { kind: "plugin" } });
+    await relay.takeMail({ device: "phone" });
+    await relay.ackMail({ device: "phone", ids: ["m1"] }, { caller: { kind: "user" } });
+    await relay.ackMail({ device: "phone", ids: ["m2"] }, { caller: { kind: "core" } });
+    expect(urls.map((u) => new URL(u).pathname)).toEqual(["/v1/mail/phone", "/v1/mail/laptop", "/v1/mail/laptop", "/v1/mail/laptop/ack", "/v1/mail/phone/ack"]);
+    stop();
   });
 });
