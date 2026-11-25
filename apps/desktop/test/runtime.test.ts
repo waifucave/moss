@@ -19,10 +19,10 @@ function frame(url: string, parent: FrameRef | null = null, osPid = ++pid): Fram
   return { processId: osPid, routingId: ++pid, url, osPid, parent };
 }
 
-function setup(extra: UiPlugin[] = [], opts: { safeMode?: boolean; now?: () => number; log?: (line: string) => void; render?: boolean; windowChanged?: (windowId: number, closed: boolean) => void } = {}) {
+function setup(extra: UiPlugin[] = [], opts: { safeMode?: boolean; now?: () => number; log?: (line: string) => void; render?: boolean; windowChanged?: (windowId: number, closed: boolean) => void; later?: (fn: () => void, ms: number) => void } = {}) {
   const sent: { to: string; m: LayerMessage }[] = [];
   let n = 0;
-  const rt = new UiRuntime({ os: "macos", platform: "darwin", ...(opts.safeMode ? { safeMode: true } : {}), ...(opts.now ? { now: opts.now } : {}), ...(opts.log ? { log: opts.log } : {}), ...(opts.windowChanged ? { windowChanged: opts.windowChanged } : {}), token: () => `t${++n}`, send: (f, m) => sent.push({ to: `${f.processId}:${f.routingId}`, m }) });
+  const rt = new UiRuntime({ os: "macos", platform: "darwin", ...(opts.safeMode ? { safeMode: true } : {}), ...(opts.now ? { now: opts.now } : {}), ...(opts.log ? { log: opts.log } : {}), ...(opts.windowChanged ? { windowChanged: opts.windowChanged } : {}), ...(opts.later ? { later: opts.later } : {}), token: () => `t${++n}`, send: (f, m) => sent.push({ to: `${f.processId}:${f.routingId}`, m }) });
   const plugins = [...readUiPlugins([...mossViews(), alphaView()] as never), ...extra];
   rt.setRegistry(plugins);
   rt.openWindow(WIN, { material: "vibrancy", ...(opts.render ? { render: true } : {}) });
@@ -567,7 +567,7 @@ describe("what a conversation's inner spots need is the data's own kind (spec re
 });
 
 describe("sleeping frames, surfaces, and the brokers' part of the runtime", () => {
-  function withFixtureFrame(o: { now?: () => number; windowChanged?: (windowId: number, closed: boolean) => void } = {}) {
+  function withFixtureFrame(o: { now?: () => number; windowChanged?: (windowId: number, closed: boolean) => void; later?: (fn: () => void, ms: number) => void } = {}) {
     const s = setup(composerFixture(), o);
     const shell = mountShell(s);
     const tab = s.rt.resolve(shell.shellFrame, shell.info.mount, "main", "agent").items[0]!;
@@ -687,6 +687,48 @@ describe("sleeping frames, surfaces, and the brokers' part of the runtime", () =
     expect(told).toEqual([[WIN, false]]);
     s.rt.closeWindow(WIN);
     expect(told).toEqual([[WIN, false], [WIN, true]]);
+  });
+
+  test("a frame that loads its CURRENT address a second time (the first document is replaced by the refused one) is sent a fresh address when the second is over, not left blank; a few times at most", () => {
+    let t = 2_000_000;
+    const later: { fn: () => void; ms: number }[] = [];
+    const { s } = withFixtureFrame({ now: () => t, later: (fn, ms) => later.push({ fn, ms }) });
+    s.sent.length = 0;
+    const built = composerFixture().map((p) => ({ ...p, clientEntry: undefined, clientBuild: { base: "/x", file: "index.js", sha256: "cd".repeat(32) } }));
+    s.rt.setRegistry([...readUiPlugins([...mossViews(), alphaView()] as never), ...built]);
+    const reload = () => s.sent.filter((x) => x.m.type === "child-reload");
+    let round = 0;
+    const loadTwice = () => {
+      const url = (reload().at(-1)!.m as { url: string }).url;
+      const token = new URL(url).searchParams.get("mount")!;
+      expect(s.rt.serveDocument("fixture-composer", token)).toBeDefined(); // the first load draws
+      t += 100;
+      expect(s.rt.serveDocument("fixture-composer", token)).toBeUndefined(); // the second, refused, replaces it
+      round++;
+    };
+    loadTwice();
+    // Nothing is sent inside the second; a wait is set for its end.
+    expect(reload()).toHaveLength(1);
+    expect(later).toHaveLength(1);
+    expect(later[0]!.ms).toBeGreaterThan(800);
+    t += 1_100;
+    later.shift()!.fn();
+    expect(reload()).toHaveLength(2);
+    // The new address is not the old one.
+    expect((reload()[1]!.m as { url: string }).url).not.toBe((reload()[0]!.m as { url: string }).url);
+    loadTwice();
+    t += 1_100;
+    later.shift()!.fn();
+    expect(reload()).toHaveLength(3);
+    loadTwice();
+    t += 1_100;
+    later.shift()!.fn();
+    expect(reload()).toHaveLength(4);
+    // A fourth time in 30 s: no more chances, no loop.
+    loadTwice();
+    expect(later).toHaveLength(0);
+    expect(round).toBe(4);
+    expect(reload()).toHaveLength(4);
   });
 
   test("the microphone follows the capability for a frame already open: the plugin stays listed, its live frame loads again with the new policy (withdrawn and given)", () => {

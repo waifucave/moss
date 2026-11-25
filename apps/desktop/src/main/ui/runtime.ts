@@ -135,6 +135,8 @@ export interface RuntimeOptions {
   /** A window's documents are gone (it closed), or one of its documents is loaded again (a layer or module changed): what its
    *  frames last said (a card's buttons showing) no longer holds. The app places a pending card again. */
   windowChanged?: (windowId: number, closed: boolean, document?: { processId: number; routingId: number }) => void;
+  /** Runs `fn` after `ms` (a test's own clock); a timer that doesn't hold the process open by default. */
+  later?: (fn: () => void, ms: number) => void;
   /** The most children one part may hold (`MAX_PART_CHILDREN` by default; a test lowers it). */
   maxPartChildren?: number;
   /** Delivers a message to a bound document. */
@@ -194,6 +196,10 @@ export class UiRuntime {
   private readonly spentTokens = new Map<string, string>();
   /** When each mount's frame was last sent a fresh address for a load it couldn't get (one per second at most). */
   private readonly reloadedAt = new Map<string, number>();
+  /** Mounts with a fresh address waiting for the end of the second (a refused load of their current address), and how many such
+   *  waits each has had lately: a frame that loads every address twice is given a few chances, never a loop. */
+  private readonly retrying = new Set<string>();
+  private readonly retries = new Map<string, number[]>();
   private readonly byFrame = new Map<string, string>();
   private readonly windows = new Map<number, WindowInfo>();
   private appearance: Appearance = "light";
@@ -613,17 +619,21 @@ export class UiRuntime {
       this.log(`layers: refused a document load (an address no mount holds)`);
       return;
     }
-    if (m.token === token) this.sendFreshAddress(m, "its frame loaded its address again");
+    if (m.token === token) this.sendFreshAddress(m, "its frame loaded its address again", true, true);
     else if (m.tokenState === "issued") this.sendFreshAddress(m, "its frame loaded an address it had replaced", false);
     else this.log(`layers: ${m.id} (${m.plugin?.id ?? "core"}): refused a load of an address it replaced (its frame has the newer one)`);
   }
 
   /** Sends a mount's parent the address to load now: a new one (`fresh`), or the current unspent one again. At most once a second
    *  per mount, so a parent that can't load it is never sent one in a loop. */
-  private sendFreshAddress(m: Mount, why: string, fresh = true): void {
+  private sendFreshAddress(m: Mount, why: string, fresh = true, current = false): void {
     const at = this.reloadedAt.get(m.id);
     if (at !== undefined && this.now() - at < 1_000) {
       this.log(`layers: ${m.id} (${m.plugin?.id ?? "core"}): refused a document load (${why}; a fresh address went less than a second ago)`);
+      // The load that was refused is the frame's CURRENT address loaded a second time: it replaced the document the first load
+      // drew, so the frame now shows a refused page and nothing else is coming (a blank window). Its parent is sent a fresh
+      // address once the second is over (a few times at most), so the frame is never left without a document.
+      if (current) this.retryAfterGuard(m, 1_000 - (this.now() - at) + 25, why);
       return;
     }
     this.reloadedAt.set(m.id, this.now());
@@ -639,6 +649,28 @@ export class UiRuntime {
     this.log(`layers: ${m.id} loads again (${why})`);
     this.opts.windowChanged?.(m.windowId, false, m.frame);
     this.post(parentDoc.id, { type: "child-reload", child: m.id, url: this.frameUrl(m), ...this.frameFlags(m) });
+  }
+
+  private retryAfterGuard(m: Mount, ms: number, why: string): void {
+    if (this.retrying.has(m.id)) return;
+    const recent = (this.retries.get(m.id) ?? []).filter((t) => this.now() - t < 30_000);
+    if (recent.length >= 3) {
+      this.log(`layers: ${m.id} (${m.plugin?.id ?? "core"}): not sent another address (its frame has loaded its address twice three times in 30 s)`);
+      return;
+    }
+    this.retrying.add(m.id);
+    const token = m.token;
+    const run = () => {
+      this.retrying.delete(m.id);
+      // The mount may have been dropped, or given a newer address meanwhile by something else: nothing to add then.
+      if (this.mounts.get(m.id) !== m || m.token !== token) return;
+      recent.push(this.now());
+      this.retries.set(m.id, recent);
+      if (this.retries.size > 1024) this.retries.delete(this.retries.keys().next().value!);
+      this.sendFreshAddress(m, `${why}, and its document was replaced by the second load`);
+    };
+    if (this.opts.later !== undefined) this.opts.later(run, ms);
+    else { const t = setTimeout(run, ms); t.unref?.(); }
   }
 
   /** Every layer the registry has, by its origin label: what a document served now may frame. */
