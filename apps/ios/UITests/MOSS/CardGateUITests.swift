@@ -4,11 +4,27 @@ import XCTest
 /// opened in place and read to its end, the heading has been in sight below the bars, and a list that grows when opened
 /// grows where the person is reading, not out of sight behind the buttons.
 final class CardGateUITests: XCTestCase {
+    private var running: XCUIApplication?
     private func launch(_ args: [String]) -> XCUIApplication {
         let app = XCUIApplication(bundleIdentifier: "com.waifucave.moss.ios")
         app.launchArguments = args
         app.launch()
+        running = app
         return app
+    }
+    /// On a failure the run keeps what was on screen: a screenshot and the view hierarchy, in the result bundle the
+    /// workflow uploads.
+    override func record(_ issue: XCTIssue) {
+        var issue = issue
+        let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        shot.name = "screen at failure"; shot.lifetime = .keepAlways
+        issue.add(shot)
+        if let app = running, app.state == .runningForeground {
+            let tree = XCTAttachment(string: app.debugDescription)
+            tree.name = "view hierarchy at failure"; tree.lifetime = .keepAlways
+            issue.add(tree)
+        }
+        super.record(issue)
     }
     /// Swipes a little at a time (up: towards the end) until `done`, failing if `guardrail` breaks first.
     private func scroll(_ app: XCUIApplication, up: Bool, tries: Int = 25, guardrail: () -> Void = {}, until done: () -> Bool) {
