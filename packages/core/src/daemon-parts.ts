@@ -30,6 +30,7 @@ import type { CanUseTool, Options, SandboxSettingsConfig, SpawnClaudeCodeProcess
 import type { AgentDefView, Caller } from "@waifucave/moss-protocol";
 import { fencedSpawner } from "./fence/fenced-process";
 import { peerFence } from "./fence/peer-floor";
+import { sweepPeerFolders } from "./computers/fenced-executor";
 import { agentShellTools } from "./fence/win-shell-tools";
 import { browserAppHandlers } from "./browser/app-port";
 import { browserRpcHandlers } from "./browser/rpc-handlers";
@@ -385,6 +386,8 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
       // (`cardRecord: (id) => approvals?.get(id)`; no broker, no card raises), and its safety reviewer for another computer's calls at "ask for risky
       // actions" (the daemon's `BashReviewer`; it fails closed), and its Bash on lane C's fenced process when the daemon
       // hands over its spawner (`input.spawner`; none, no executor). The fence, MCP and askUser/answers are not here: the node options below carry what the daemon passes. A test's own node options win.
+      // A stopped daemon's peer folders (fenced-executor.ts), gone before any peer call runs here.
+      if (input.spawner !== false) sweepPeerFolders(fence.temp, input.mossHome);
       const own = nodeParts({
         computer: () => node?.registry.self().name ?? nodeLinks.self.name,
         // The broker below, bound late: it needs the node's own registry for each computer's level.

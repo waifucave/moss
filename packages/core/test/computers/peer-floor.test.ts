@@ -6,13 +6,13 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpath
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Caller } from "@waifucave/moss-protocol";
-import { fencedExecutor } from "../../src/computers/fenced-executor";
+import { fencedExecutor, peerFolderParent, sweepPeerFolders } from "../../src/computers/fenced-executor";
 import { MossFence } from "../../src/fence/fence";
 import { fencedSpawner } from "../../src/fence/fenced-process";
 import { peerFence, peerReadRefusal, peerWriteRefusal } from "../../src/fence/peer-floor";
 import { LocalHolder } from "../../src/tree/holder";
 import { hostOs } from "../../src/tree/names";
-import { darwinDescribe } from "../helpers/darwin-only";
+import { darwinDescribe, darwinTest } from "../helpers/darwin-only";
 import { Cluster } from "../tree/cluster-support";
 
 const temps: string[] = [];
@@ -92,11 +92,14 @@ darwinDescribe("a peer's Bash on the real fenced process (Seatbelt)", () => {
     expect(own.isError).toBe(false);
     const out = (own.output as { stdout: string }).stdout.split("\n");
     expect(out[0]).toBe("mine");
-    expect(out[1]!.startsWith(join(tmp, "peer-"))).toBe(true);
+    expect(out[1]!.startsWith(join(peerFolderParent(tmp, moss), "peer-"))).toBe(true);
     expect(out[2]).toBe("notes");
     expect(existsSync(out[1]!)).toBe(false);
-    // Two calls never share a folder.
-    expect(readdirSync(tmp).filter((n) => n.startsWith("peer-"))).toEqual([]);
+    // None left behind; a stopped daemon's are swept at start.
+    expect(readdirSync(peerFolderParent(tmp, moss)).filter((n) => n.startsWith("peer-"))).toEqual([]);
+    mkdirSync(join(peerFolderParent(tmp, moss), "peer-stale"));
+    sweepPeerFolders(tmp, moss);
+    expect(readdirSync(peerFolderParent(tmp, moss))).toEqual([]);
   }, 60_000);
 
   test("without a peer spawner a peer's command is refused, never run on the wider one", async () => {
@@ -173,4 +176,54 @@ describe("a peer's file calls through the tree (LocalHolder): the same floor", (
     const rd = await h.read("home/Beta/.ssh/id_ed25519", { ...call, encoding: "utf8" }).then(() => undefined, (e: unknown) => e);
     expect((rd as { code?: string } | undefined)?.code).toBe("fenced");
   });
+});
+
+// The reader's item 2: what a peer READS of this computer's MOSS home (`runLaterByName` is false inside it, so the
+// fence's own MOSS-home rules decide): what a bot here reads, never more; the run folder's token and the secrets file
+// never, through the tree or through Bash.
+describe("a peer's reads in this computer's MOSS home", () => {
+  function homeWorld() {
+    const w = world();
+    const files: Record<string, string> = {
+      other: join(w.moss, "bots", "sol", "bot.md"),
+      memory: join(w.moss, "bots", "sol", "memory", "notes.md"),
+      settings: join(w.moss, "settings", "app.json"),
+      token: join(w.moss, "run", "app.token"),
+      secrets: join(w.moss, "secrets.enc"),
+    };
+    for (const [k, p] of Object.entries(files)) { mkdirSync(join(p, ".."), { recursive: true }); writeFileSync(p, `PROBE-${k.toUpperCase()}`); }
+    return { ...w, files };
+  }
+
+  test("through the tree: the token and the secrets file refused; what a bot here may read, readable", async () => {
+    const { home, moss, tmp, files } = homeWorld();
+    const fence = new MossFence({ os: hostOs(), home, mossHome: moss, temp: tmp });
+    const h = new LocalHolder({ clock: { now: () => Date.now() }, name: () => "Beta", home, mossHome: moss, os: hostOs(), fence, level: () => "automatic" });
+    const bot: Caller = { kind: "session", sessionId: "b_luna", sessionKind: "bot", bot: "luna" };
+    const read = async (as: Caller, p: string) => h.read(`home/Beta/${p.slice(home.length + 1)}`, { as, level: "automatic", encoding: "utf8" }).then(() => "read", (e: { code?: string }) => e.code ?? "error");
+    const seen: Record<string, [string, string]> = {};
+    for (const [k, p] of Object.entries(files)) seen[k] = [await read(PEER, p), await read(bot, p)];
+    // Never more than a bot here.
+    for (const [k, [peer, b]] of Object.entries(seen)) if (b !== "read") expect([k, peer]).not.toEqual([k, "read"]);
+    expect(seen.token![0]).not.toBe("read");
+    expect(seen.secrets![0]).not.toBe("read");
+    console.log("peer MOSS-home reads through the tree (peer, bot here):", JSON.stringify(seen));
+  });
+
+  darwinTest("through Bash on the real fenced process: the token and the secrets file unread", async () => {
+    const { home, moss, tmp, files } = homeWorld();
+    const fence = new MossFence({ os: hostOs(), home, mossHome: moss, temp: tmp });
+    const exec = fencedExecutor({
+      spawner: fencedSpawner({ fence }), home, temp: tmp, mossHome: moss, os: hostOs(),
+      peerSpawner: (root) => fencedSpawner({ fence: peerFence(fence, root, { userHome: home, mossHome: moss, os: hostOs() }) }),
+    });
+    const seen: Record<string, boolean> = {};
+    for (const [k, p] of Object.entries(files)) {
+      const r = await exec.run("Bash", { command: `cat ${JSON.stringify(p)}` }, { as: PEER, session: "b_luna", callId: `c-${k}`, cwd: home, treeCwd: "home/Beta", signal: new AbortController().signal, output: () => {} });
+      seen[k] = JSON.stringify(r.output).includes(`PROBE-${k.toUpperCase()}`);
+    }
+    expect(seen.token).toBe(false);
+    expect(seen.secrets).toBe(false);
+    console.log("peer MOSS-home reads through Bash (visible):", JSON.stringify(seen));
+  }, 60_000);
 });

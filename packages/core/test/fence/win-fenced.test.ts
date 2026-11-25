@@ -8,7 +8,7 @@ import type { Caller, Level } from "@waifucave/moss-protocol";
 import { MossFence } from "../../src/fence/fence";
 import { endWindowsBackgroundOf, endWindowsBackgroundOn, escapedSandbox, stopWindowsBackground, windowsBackgroundOf, windowsShellTools, WIN_SHELL_BACKGROUND_ENGINE, WIN_SHELL_BACKGROUND_PER_SESSION } from "../../src/fence/win-shell-tools";
 import {
-  existingDenies, existingDeniesOf, grantsConflict, parsePersistentRoots, parseProfileExclusions, strayRoots, treeWithin, planFromSettings, profileExcludeCandidates, quarantineWin, shellArgv, winChainIsClean, winChildEnv, winExecArgv, lateFenceStep, watchedReadDenies, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
+  existingDenies, existingDeniesOf, grantsConflict, parsePersistentRoots, parseProfileExclusions, strayRoots, treeWithin, planFromPolicy, planFromSettings, profileExcludeCandidates, quarantineWin, shellArgv, winChainIsClean, winChildEnv, winExecArgv, lateFenceStep, watchedReadDenies, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
   type WinFencedDeps,
 } from "../../src/fence/win-fenced";
 import { formatInstallMarker, poolStateFiles, type LeaseStore } from "../../src/fence/win-sandbox";
@@ -48,6 +48,24 @@ describe("the plan", () => {
     // Above the temp folder but not the home (AppData, AppData\Local): never a root.
     expect(windowsRoots(["C:\\Users\\me\\AppData", "C:\\Users\\me\\AppData\\Local"], o)).toEqual([]);
     expect(windowsRoots(["C:\\Users\\me\\AppData\\Local\\Temp\\mine"], o)).toEqual(["C:\\Users\\me\\AppData\\Local\\Temp\\mine"]);
+  });
+
+  test("another computer's call (lane XC): its one write root is its own folder, never the shared temp folder or its working folder", () => {
+    const temp = "C:\\Users\\me\\AppData\\Local\\Temp\\moss";
+    const peerRoot = `${temp}\\peer-abc`;
+    const fence = {
+      mossHome: "C:\\Users\\me\\.moss", temp,
+      policy: () => ({ allowWrite: [peerRoot], denyWrite: ["C:\\Users\\me\\.moss"], denyRead: ["C:\\Users\\me\\.moss\\run"] }),
+      contextFor: undefined,
+    } as unknown as Parameters<typeof planFromPolicy>[0];
+    const peer = planFromPolicy(fence, { kind: "peer", device: "d_alpha" } as Caller, "C:\\Users\\me\\project");
+    expect(peer.writeRoots).toEqual([peerRoot]);
+    expect(peer.writeRoots.some((r) => r.toLowerCase() === temp.toLowerCase())).toBe(false);
+    // Mapped for srt-win, the peer's folder stays itself (a folder in the temp folder, not the session's shared one).
+    expect(windowsRoots(peer.writeRoots, { home: "C:\\Users\\me", temp, sessionTemp: `${temp}\\moss-shared`, homeFolders: () => [] })).toEqual([peerRoot]);
+    // Another caller still gets the fence's temp folder, as before.
+    const bot = planFromPolicy(fence, { kind: "session", sessionId: "s", sessionKind: "coding" }, "C:\\Users\\me\\project");
+    expect(bot.writeRoots).toContain(temp);
   });
 
   test("a deny is stamped only where something exists; a glob is expanded over what exists, case-insensitively", () => {

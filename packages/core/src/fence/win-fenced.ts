@@ -128,6 +128,12 @@ export function planFromPolicy(fence: Pick<MossFence, "policy" | "mossHome" | "t
   const policy = fence.policy(ctx);
   const plan = winLaunchPlan({ policy, mossHome: fence.mossHome, caller, bots: o.bots ?? [], ...(o.entries ? { entries: o.entries } : {}) });
   const denied = (p: string) => plan.denyWrite.some((d) => winUnder(p, d) && !plan.grantWrite.some((g) => winUnder(p, g)));
+  // Another computer's call (lane XC): its write roots are the narrowed policy's alone (`peerFence`: its own folder for
+  // the call), never the shared temp folder every other caller writes, nor its working folder.
+  if (caller.kind === "peer") {
+    const roots = uniq(policy.allowWrite);
+    return { writeRoots: roots, readGrants: uniq(plan.grantRead), denyRead: plan.denyRead, denyWrite: plan.denyWrite, denyReadExcept: uniq([...roots, ...plan.grantRead]) };
+  }
   const cwdRoot = policy.allowWrite.some((a) => winUnder(cwd, a)) && !denied(cwd) ? [cwd] : [];
   const roots = uniq([...plan.grantWrite, fence.temp, ...cwdRoot]);
   return { writeRoots: roots, readGrants: uniq(plan.grantRead), denyRead: plan.denyRead, denyWrite: plan.denyWrite, denyReadExcept: uniq([...roots, ...plan.grantRead]) };

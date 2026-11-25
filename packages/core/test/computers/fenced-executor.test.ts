@@ -8,7 +8,7 @@ import { join } from "node:path";
 import type { Caller } from "@waifucave/moss-protocol";
 import { SystemClock } from "../../src/clock/system-clock";
 import { FakePluginRegistry } from "../../src/contracts/fakes/plugin-registry";
-import { BASH_DEFAULT_TIMEOUT_MS, BASH_MAX_TIMEOUT_MS, fencedExecutor, fencedPath } from "../../src/computers/fenced-executor";
+import { BASH_DEFAULT_TIMEOUT_MS, BASH_MAX_TIMEOUT_MS, fencedExecutor, fencedPath, peerFolderParent } from "../../src/computers/fenced-executor";
 import { nodeParts } from "../../src/computers/node-parts";
 import { startDaemonParts } from "../../src/daemon-parts";
 import { MossFence } from "../../src/fence/fence";
@@ -76,7 +76,7 @@ describe("fencedExecutor over a spawner", () => {
     // Lane XC: a peer's own folder under the fence's temp folder, its one write root, made for the call and gone after.
     await exec.run("Bash", { command: "true" }, ctx({ as: PEER }));
     expect(s.runs[2]!.env.TMPDIR).toBe(peerRoots[0]);
-    expect(peerRoots[0]!.startsWith(join(shared, "peer-"))).toBe(true);
+    expect(peerRoots[0]!.startsWith(join(peerFolderParent(shared, moss), "peer-"))).toBe(true);
     expect(existsSync(peerRoots[0]!)).toBe(false);
     // A link where a bot's scratch folder should be: never followed, the fence's temp folder instead.
     symlinkSync(temp("lane-j-exec-elsewhere-"), join(moss, "scratch", "alpha"));

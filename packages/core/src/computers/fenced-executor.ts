@@ -10,7 +10,8 @@
 // closed doors and network rule as for anyone. The child's environment is built here, whole: a fixed PATH, the user's
 // home and a temp folder (TMPDIR: a bot's own scratch folder for its own runs, the peer's own folder for a peer's,
 // the fence's temp folder for the rest), nothing inherited from the daemon (no keys, no tokens).
-import { lstatSync, mkdtempSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { lstatSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Caller, Os } from "@waifucave/moss-protocol";
 import { fenceContextFor, ownFoldersOf } from "../contracts/fence";
@@ -40,6 +41,21 @@ export interface FencedExecutorOptions {
    *  one write root (`peerFence`, fence/peer-floor.ts). The folder is made under `temp` for the call and removed
    *  after it. Without it, a peer's command is refused here. */
   peerSpawner?: (root: string) => FencedSpawner;
+}
+
+/** Where another computer's calls get their own folders: one parent per MOSS home (`moss-peer-<hash>` in the fence's
+ *  temp folder), so a daemon on another home never sweeps them, and this daemon sweeps what a crash left
+ *  (`sweepPeerFolders`). A local runner that may write the temp folder can reach them: it gains nothing it can't do
+ *  already (a peer's folder holds only what that peer wrote for its call, and the peer is held to less than it). */
+export function peerFolderParent(temp: string, mossHome?: string): string {
+  return mossHome === undefined ? temp : join(temp, `moss-peer-${createHash("sha256").update(mossHome).digest("hex").slice(0, 12)}`);
+}
+
+/** Removes the peer folders a stopped daemon left behind (at start: no peer call runs yet). */
+export function sweepPeerFolders(temp: string, mossHome: string): void {
+  const parent = peerFolderParent(temp, mossHome);
+  try { if (!lstatSync(parent).isDirectory()) return; } catch { return; }
+  for (const name of readdirSync(parent)) if (name.startsWith("peer-")) rmSync(join(parent, name), { recursive: true, force: true });
 }
 
 /** The PATH a fenced Bash call sees: the system's standard places, never the daemon's own PATH. */
@@ -78,8 +94,9 @@ export function fencedExecutor(o: FencedExecutorOptions): ToolExecutor {
         let tmp: string | undefined;
         if (ctx.as.kind === "peer") {
           if (o.peerSpawner === undefined || o.temp === undefined) return { output: { error: "refused: this computer runs no commands for other computers" }, isError: true };
-          mkdirNoLinks(o.temp);
-          peerRoot = mkdtempSync(join(o.temp, "peer-"));
+          const parent = peerFolderParent(o.temp, o.mossHome);
+          mkdirNoLinks(parent);
+          peerRoot = mkdtempSync(join(parent, "peer-"));
           spawner = o.peerSpawner(peerRoot);
           tmp = peerRoot;
         } else tmp = tempFor(ctx.as);

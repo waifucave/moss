@@ -540,6 +540,14 @@ export function serveTransfer(o: TransferOptions): { receiveHere: (p: ReceivePar
       // into a peer's reach is refused whole, as a peer's write of that one file is (fence/peer-floor.ts).
       await landingsAllowed(o.holder, call, staging, dst.real);
       await placeInto(staging, dst.real, p.to, dst.root);
+      // Again where it landed: an entry a local runner slipped into the staging folder after the check above is
+      // judged too, and a refused one takes back the whole placement (what this call made, which wasn't there before).
+      try {
+        await landingsAllowed(o.holder, call, dst.real, dst.real);
+      } catch (e) {
+        await fsp.rm(dst.real, { recursive: true, force: true });
+        throw e;
+      }
       o.holder.changedAt(dst.real);
     } catch (e) {
       await cleanUp(staging, above);
@@ -670,12 +678,14 @@ export async function transferAsking(o: {
   as: Caller;
   /** What started the caller's turn, for the card (`AskContext`). */
   origin?: TurnOrigin;
+  /** Run after the user's answer, before the operation goes with it (`AskContext.afterAnswer`). */
+  afterAnswer?: () => Promise<void>;
   ask?: AnswerAsker;
   /** This computer's fencing token, on the `tree.judge` and `tree.receive` it asks. */
   fence?: ActFence;
 }): Promise<TransferResult> {
   const p: ReceiveParams = { ...o.params, ...fenceParam(o.fence) };
-  const askCtx = { as: o.as, ...(o.origin === undefined ? {} : { origin: o.origin }) };
+  const askCtx = { as: o.as, ...(o.origin === undefined ? {} : { origin: o.origin }), ...(o.afterAnswer === undefined ? {} : { afterAnswer: o.afterAnswer }) };
   // One card for the whole operation, whichever holders ask: the same signed answer goes to both.
   const put = (answer: SignedCardAnswer) => {
     p.answer = answer;
@@ -698,6 +708,7 @@ export async function transferAsking(o: {
     if (need) {
       const answer = await o.ask(need, askCtx);
       if (!answer) throw new ContractError("refused", "the user didn't approve this");
+      await askCtx.afterAnswer?.();
       put(answer);
     }
   }
@@ -709,6 +720,7 @@ export async function transferAsking(o: {
       if (!need || !o.ask || attempt >= 1) throw e;
       const answer = await o.ask(need, askCtx);
       if (!answer) throw e;
+      await askCtx.afterAnswer?.();
       put(answer);
     }
   }
