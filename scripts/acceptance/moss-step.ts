@@ -1330,8 +1330,11 @@ async function editorRow(s: UnitState): Promise<string> {
   const shown = await s.w.waitFor<{ name: string; model: string; instructions: string }>("the page opened again with what was kept", `(() => {
     const page = document.querySelector(${JSON.stringify(`[data-bot-page="${id}"]`)});
     const ins = document.querySelector('[data-instructions-text]');
-    if (!page || !ins || ins.disabled) return null;
-    return { name: page.querySelector('.ma2-name')?.value ?? '', model: document.querySelector('[data-model-picker]')?.value ?? '', instructions: ins.value };
+    // The model picker is drawn only once the page's own read of the models has come back (it is absent, not empty, until then):
+    // waiting for it is the page's shape, not a retry (row 108 read "" off a page whose picker had not arrived on a slow runner).
+    const picker = document.querySelector('[data-model-picker]');
+    if (!page || !ins || ins.disabled || !picker) return null;
+    return { name: page.querySelector('.ma2-name')?.value ?? '', model: picker.value, instructions: ins.value };
   })()`, 20_000);
   if (shown.name !== name) s.x.fail(`the page opened again shows the name "${shown.name}", not "${name}"`);
   if (shown.instructions !== text) s.x.fail("the page opened again doesn't show the edited instructions");
