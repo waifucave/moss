@@ -172,6 +172,9 @@ class CoreEngineClient(
     /** The card a view draws: its JSON as the core checked it, its owner as the core read it. */
     private fun cardOf(v: CardView): Card? = Decode.card(v.cardJson(), v.hash(), clean)?.copy(bot = v.bot(), session = v.session())
 
+    /** What the screens are given for a card the core issued: the card, or one to answer on the computer. */
+    private fun shownOf(v: CardView): Card = cardOf(v) ?: Decode.unreadable(v.id(), v.hash(), v.bot(), v.session())
+
     private fun handle(e: ConnEvent) {
         when (e) {
             is ConnEvent.Up -> {
@@ -193,11 +196,11 @@ class CoreEngineClient(
                     issued.clear(); issued.putAll(now)
                 }
                 for (id in gone) events.tryEmit(EngineEvent.CardResolved(id))
-                for (v in fresh) cardOf(v)?.let { events.tryEmit(EngineEvent.CardRequested(it)) }
+                for (v in fresh) events.tryEmit(EngineEvent.CardRequested(shownOf(v)))
             }
             is ConnEvent.CardRequested -> {
                 synchronized(this) { issued[e.card.id()] = e.card }
-                cardOf(e.card)?.let { events.tryEmit(EngineEvent.CardRequested(it)) }
+                events.tryEmit(EngineEvent.CardRequested(shownOf(e.card)))
             }
             is ConnEvent.CardResolved -> {
                 synchronized(this) { issued.remove(e.id) }
@@ -401,8 +404,11 @@ class CoreEngineClient(
         // The card the screen drew must be exactly what this view draws: same hash, same content, the option one of its own.
         if (view.hash() != card.hash || cardOf(view) != card) throw IllegalStateException("the card on screen isn't the one the core issued")
         if (option.id !in view.options() || card.options.none { it == option }) throw IllegalArgumentException("not one of the card's options")
-        // A card holding something this phone can't draw is answered on the computer (the screen shows it with no buttons).
-        if (!card.drawable()) throw IllegalStateException("this card is answered on the computer")
+        // Drawn whole, judged here on the card this client read from the core's view (not on what the screen says): a card
+        // holding a field this phone can't draw, too much to show, or children (checkboxes this phone doesn't draw) is
+        // answered on the computer.
+        val issuedCard = cardOf(view) ?: throw IllegalStateException("this card is answered on the computer")
+        if (!issuedCard.drawable()) throw IllegalStateException("this card is answered on the computer")
         if (!view.pending()) throw CardAnswerException(if (view.outcome() == "expired") CardAnswerError.expired else CardAnswerError.answeredElsewhere)
         val outcome = try {
             c.answerCard(view, option.id, emptyList())
@@ -413,13 +419,13 @@ class CoreEngineClient(
             // The core checks the card it reads back; the option that won is read from the same door (`card.get`).
             val won = try { calls.cardResolvedOption(card.id) } catch (x: CancellationException) { throw x } catch (x: Exception) { null }
             when (ReadBack.answer(back.pending(), back.outcome(), option, won)) {
-                ReadBack.Answer.accepted -> { resolvedHere(card.id); return@io }
+                ReadBack.Answer.accepted -> { resolvedHere(card.id, card.hash); return@io }
                 ReadBack.Answer.stillPending -> throw e
                 ReadBack.Answer.expired -> throw CardAnswerException(CardAnswerError.expired)
                 ReadBack.Answer.answeredElsewhere -> throw CardAnswerException(CardAnswerError.answeredElsewhere)
             }
         }
-        if (outcome.accepted) { resolvedHere(card.id); return@io }
+        if (outcome.accepted) { resolvedHere(card.id, card.hash); return@io }
         val why = outcome.computersReason?.lowercase() ?: ""
         throw when {
             "time ran out" in why || "expired" in why -> CardAnswerException(CardAnswerError.expired)
@@ -431,9 +437,10 @@ class CoreEngineClient(
     /** Stands for "no stored record": never a model anyone asks for. */
     private val NO_RECORD = "\u0000no record"
 
-    private fun resolvedHere(id: String) {
-        synchronized(this) { issued.remove(id) }
-        events.tryEmit(EngineEvent.CardResolved(id))
+    /** The card this phone answered goes; one re-issued under the same id meanwhile (another hash) stays, unanswered. */
+    private fun resolvedHere(id: String, hash: String) {
+        val gone = synchronized(this) { if (issued[id]?.hash() == hash) { issued.remove(id); true } else false }
+        if (gone) events.tryEmit(EngineEvent.CardResolved(id))
     }
 
     /** A failure that doesn't say whether the computer got the call: a timeout, or the link dropping while it was in flight. */

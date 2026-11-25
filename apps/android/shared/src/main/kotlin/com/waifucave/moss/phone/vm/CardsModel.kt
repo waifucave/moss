@@ -5,6 +5,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.waifucave.moss.phone.client.EngineClient
 import com.waifucave.moss.phone.model.*
+import com.waifucave.moss.phone.ui.cutFields
+import com.waifucave.moss.phone.ui.drawable
 import kotlinx.coroutines.CancellationException
 
 /** Why a card on the screen can no longer be answered. */
@@ -34,6 +36,15 @@ class CardsModel(
      */
     var armedAt by mutableStateOf<Map<String, Long>>(emptyMap())
         private set
+
+    /** The cut fields the person opened on each card (by id and hash: a re-issued card starts again). */
+    var opened by mutableStateOf<Map<String, Set<String>>>(emptyMap())
+        private set
+    fun open(card: Card, field: String) {
+        val key = card.id + "#" + card.hash
+        opened = opened + (key to ((opened[key] ?: emptySet()) + field))
+    }
+    private fun openedOn(card: Card): Set<String> = opened[card.id + "#" + card.hash] ?: emptySet()
 
     /** Milliseconds until `card` takes a press (0: it does now). */
     fun waitLeft(card: Card): Long = maxOf(0L, (armedAt[card.id] ?: 0L) - tick())
@@ -110,11 +121,17 @@ class CardsModel(
         if (card.id in answering || note(card) != null) return
         // Inside the wait: refused, whatever the screen drew (a second tap after the card above it went).
         if (waitLeft(card) > 0) return
+        // A card this phone can't show whole (a field it can't draw, children, too much) is answered on the computer; one
+        // with a part still cut short waits until each was opened.
+        if (!card.drawable() || (card.cutFields() - openedOn(card)).isNotEmpty()) return
+        // Only the card as it stands now: one re-issued meanwhile (another hash) is answered from what is shown now.
+        if (cards.none { it.id == card.id && it.hash == card.hash }) return
         answering = answering + card.id
         try {
             answeredHere.add(card.id)
             client.answer(card, option)
-            show(cards.filter { it.id != card.id })
+            // The card answered goes; one re-issued under its id while the answer was in flight stays.
+            show(cards.filter { !(it.id == card.id && it.hash == card.hash) })
             notes = notes - card.id
         } catch (e: CardAnswerException) {
             answeredHere.remove(card.id)

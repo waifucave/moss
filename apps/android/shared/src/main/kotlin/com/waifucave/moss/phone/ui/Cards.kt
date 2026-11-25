@@ -92,13 +92,50 @@ const val VALUE_LINES = 6
 val FIELDS_MAX = 360.dp
 
 /** Whether this build can draw all of a card: every field one it knows, every value of a kind it draws. */
-fun Card.drawable(): Boolean = fields.all { (name, v) -> name in CARD_FIELDS && v !is SealedValue.Unsupported }
+fun Card.drawable(): Boolean =
+    !hasChildren && options.isNotEmpty() && fields.all { (name, v) -> name in CARD_FIELDS && v !is SealedValue.Unsupported } && size() <= MAX_DRAWN_CHARS
+
+/** A card larger than this, in characters over all its values, is answered on the computer: too much to read on a phone. */
+const val MAX_DRAWN_CHARS = 60_000
+private const val LIST_SHOWN = 8
+private const val ITEM_LINES = 2
+private const val ITEM_CHARS = 300
+private const val ROW_LINES = 3
+private const val ROW_CHARS = 300
+
+private fun Card.size(): Int = fields.values.sumOf { v ->
+    when (v) {
+        is SealedValue.Text -> v.text.length
+        is SealedValue.Code -> v.code.length
+        is SealedValue.ListOf -> v.items.sumOf { it.length }
+        is SealedValue.Rows -> v.rows.sumOf { it.label.length + it.value.length }
+        SealedValue.Unsupported -> 0
+    }
+}
+
+/**
+ * The fields a card shows cut (some lines, characters or items left out until "Show all" is pressed). Its buttons take no
+ * answer until each of them has been opened once (`CardsModel.answer` refuses until then): what the person approves is
+ * what they could read.
+ */
+fun Card.cutFields(): Set<String> = fields.filter { (name, v) ->
+    if (headedBy(name) || (name == "computer" && footerComputer() != null)) return@filter false
+    when (v) {
+        is SealedValue.Text -> Sealed.cutLines(v.text, TEXT_CHARS, VALUE_LINES).let { it.hiddenLines > 0 || it.hiddenChars > 0 }
+        is SealedValue.Code -> Sealed.cutLines(v.code, CODE_CHARS, VALUE_LINES).let { it.hiddenLines > 0 || it.hiddenChars > 0 }
+        is SealedValue.ListOf -> v.items.size > LIST_SHOWN || v.items.any { i -> Sealed.cutLines(i, ITEM_CHARS, ITEM_LINES).let { it.hiddenLines > 0 || it.hiddenChars > 0 } }
+        is SealedValue.Rows -> v.rows.any { r -> Sealed.cutLines(r.value, ROW_CHARS, ROW_LINES).let { it.hiddenLines > 0 || it.hiddenChars > 0 } || Sealed.cutLines(r.label, 120, 1).let { it.hiddenLines > 0 || it.hiddenChars > 0 } }
+        SealedValue.Unsupported -> false
+    }
+}.keys
+private const val TEXT_CHARS = 600
+private const val CODE_CHARS = 800
 
 /** What heads the card: its title and what it asks, when they are plain text (anything else is drawn as a labelled field). */
-private fun Card.headedBy(name: String): Boolean = (name == "title" || name == "what") && fields[name] is SealedValue.Text
+internal fun Card.headedBy(name: String): Boolean = (name == "title" || name == "what") && fields[name] is SealedValue.Text
 
 /** The computer goes in the footer when it is plain text. */
-private fun Card.footerComputer(): SealedValue.Text? = fields["computer"] as? SealedValue.Text
+internal fun Card.footerComputer(): SealedValue.Text? = fields["computer"] as? SealedValue.Text
 
 /** A pending card: small, never raw JSON. Its title, what it asks, the command or paths it covers, and its sealed buttons. */
 @Composable
@@ -108,11 +145,16 @@ fun CardView(
     /** The model's wait for this card (`CardsModel.waitLeft`) and what keys it (`CardsModel.armedAt`): the model refuses a
      *  press inside it; the buttons show it. */
     wait: Long = 0L, waitKey: Any? = null,
+    /** Told each field the person opens (`CardsModel.opened`), so the model knows too. */
+    onOpen: (String) -> Unit = {},
 ) {
     val c = MossTheme.colors
     val now = nowMs()
     val large = largeText()
-    var expanded by remember(card.id) { mutableStateOf(setOf<String>()) }
+    var expanded by remember(card.id, card.hash) { mutableStateOf(setOf<String>()) }
+    val openField: (String) -> Unit = { name -> if (name !in expanded) { expanded = expanded + name; onOpen(name) } }
+    val cut = remember(card) { card.cutFields() }
+    val unopened = cut - expanded
     // A card new to the screen, or whose content just changed, takes no press for a moment: a tap meant for what was
     // there before never answers it.
     var armed by remember(card.id, card.hash) { mutableStateOf(false) }
@@ -143,19 +185,22 @@ fun CardView(
                 // Each value in a visible box of its own: a line in a value can never read as one of the app's labels.
                 Box(Modifier.fillMaxWidth().background(c.code, RoundedCornerShape(10.dp)).padding(10.dp).testTag("card-value:$name")) {
                 when (value) {
-                    is SealedValue.Text -> CutText(value.text, 600, expanded.contains(name), { expanded = expanded + name }, MossType.body)
-                    is SealedValue.Code -> CutText(value.code, 800, expanded.contains(name), { expanded = expanded + name }, MossType.footnote.copy(fontFamily = FontFamily.Monospace))
+                    is SealedValue.Text -> CutText(value.text, TEXT_CHARS, expanded.contains(name), { openField(name) }, MossType.body)
+                    is SealedValue.Code -> CutText(value.code, CODE_CHARS, expanded.contains(name), { openField(name) }, MossType.footnote.copy(fontFamily = FontFamily.Monospace))
                     is SealedValue.ListOf -> Column {
-                        val shown = if (expanded.contains(name)) value.items else value.items.take(8)
-                        shown.forEach { Text(Sealed.cutLines(it, 300, 2).shown, style = MossType.footnote.copy(fontFamily = FontFamily.Monospace), color = c.text) }
-                        if (shown.size < value.items.size) TextButton(onClick = { expanded = expanded + name }, contentPadding = PaddingValues(0.dp)) {
-                            Text("and ${value.items.size - shown.size} more. Show all", style = MossType.footnote.copy(textDecoration = TextDecoration.Underline), color = c.secondary)
+                        val open = expanded.contains(name)
+                        val shown = if (open) value.items else value.items.take(LIST_SHOWN)
+                        shown.forEach { Text(if (open) Sealed.visible(it) else Sealed.cutLines(it, ITEM_CHARS, ITEM_LINES).shown, style = MossType.footnote.copy(fontFamily = FontFamily.Monospace), color = c.text) }
+                        if (!open && name in cut) TextButton(onClick = { openField(name) }, contentPadding = PaddingValues(0.dp)) {
+                            val more = value.items.size - shown.size
+                            Text(if (more > 0) "and $more more. Show all ${value.items.size}" else "Cut short. Show all", style = MossType.footnote.copy(textDecoration = TextDecoration.Underline), color = c.secondary)
                         }
                     }
                     is SealedValue.Rows -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        val open = expanded.contains(name)
                         value.rows.forEach { r ->
-                            val label = Sealed.cutLines(r.label, 120, 1).shown
-                            val v = Sealed.cutLines(r.value, 300, 3).shown
+                            val label = if (open) Sealed.visible(r.label) else Sealed.cutLines(r.label, 120, 1).shown
+                            val v = if (open) Sealed.visible(r.value) else Sealed.cutLines(r.value, ROW_CHARS, ROW_LINES).shown
                             if (large) Column {
                                 Text(label, style = MossType.body, color = c.secondary)
                                 Text(v, style = MossType.body, color = c.text)
@@ -164,6 +209,9 @@ fun CardView(
                                 Spacer(Modifier.width(12.dp).weight(1f))
                                 Text(v, style = MossType.body, color = c.text)
                             }
+                        }
+                        if (!open && name in cut) TextButton(onClick = { openField(name) }, contentPadding = PaddingValues(0.dp)) {
+                            Text("Cut short. Show all", style = MossType.footnote.copy(textDecoration = TextDecoration.Underline), color = c.secondary)
                         }
                     }
                     SealedValue.Unsupported -> Text("Can't be shown on the phone", style = MossType.footnote, color = c.secondary)
@@ -191,7 +239,12 @@ fun CardView(
             // A field this build can't draw: the person would approve less than what they were asked. No buttons.
             Text("Answer this one on your computer: it holds something this phone can't show.", style = MossType.footnote, color = c.secondary,
                 modifier = Modifier.semantics { contentDescription = "Answer this one on your computer" })
-        } else if (note != null) {
+        } else if (note == null && unopened.isNotEmpty()) {
+            Text("Some of this card is cut short. Open each \"Show all\" above to answer.", style = MossType.footnote, color = c.secondary,
+                modifier = Modifier.semantics { contentDescription = "Open each cut part to answer" })
+        }
+        if (!card.drawable()) Unit
+        else if (note != null) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(if (note == CardNote.failed) Icons.Outlined.ErrorOutline else Icons.Outlined.TimerOff, null, tint = c.secondary, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
@@ -202,7 +255,7 @@ fun CardView(
             val buttons: @Composable (CardOption, Modifier) -> Unit = { option, m ->
                 val approve = option.kind == CardOption.Kind.approve
                 FilledTonalButton(
-                    onClick = { if (armed) onAnswer(option) }, enabled = !busy && armed, modifier = m.semantics {
+                    onClick = { if (armed && unopened.isEmpty()) onAnswer(option) }, enabled = !busy && armed && unopened.isEmpty(), modifier = m.semantics {
                         contentDescription = if (option.rememberAlways) "${option.label}, and remember" else option.label
                         stateDescription = if (approve) "Approves this request" else "Refuses this request"
                     },
@@ -276,7 +329,7 @@ fun NeedsYouScreen(model: CardsModel, who: (Card) -> String, onBack: () -> Unit)
                             CardView(card, card.id in model.answering, model.note(card),
                                 onAnswer = { o -> scope.launch { model.answer(card, o) } },
                                 onSettle = { if (model.note(card) == CardNote.failed) model.clearFailure(card) else model.dismiss(card) },
-                                changed = card.id in model.changed, wait = model.waitLeft(card), waitKey = model.armedAt[card.id])
+                                changed = card.id in model.changed, wait = model.waitLeft(card), waitKey = model.armedAt[card.id], onOpen = { f -> model.open(card, f) })
                         }
                     }
                 }

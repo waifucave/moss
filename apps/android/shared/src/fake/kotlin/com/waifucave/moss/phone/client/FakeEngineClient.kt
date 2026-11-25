@@ -285,7 +285,11 @@ class FakeEngineClient(
     // Cards
 
     override suspend fun cards(): List<Card> { maybeFail(); return cardList.toList() }
+    /** Runs while an answer is in flight (a test re-issues the card then). */
+    var beforeAnswer: suspend () -> Unit = {}
+
     override suspend fun answer(card: Card, option: CardOption) {
+        beforeAnswer()
         maybeFail()
         if (card.id in answeredElsewhereIDs) { cardList.removeAll { it.id == card.id }; throw CardAnswerException(CardAnswerError.answeredElsewhere) }
         if (card.expiresAt <= clock()) throw CardAnswerException(CardAnswerError.expired)

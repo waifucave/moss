@@ -3,6 +3,9 @@ package com.waifucave.moss.phone
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Box
@@ -19,6 +22,7 @@ import com.waifucave.moss.phone.ui.CARD_FIELD_LABELS
 import com.waifucave.moss.phone.ui.CardView
 import com.waifucave.moss.phone.ui.MossTheme
 import com.waifucave.moss.phone.ui.drawable
+import com.waifucave.moss.phone.ui.cutFields
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Column
@@ -124,5 +128,30 @@ class CardFieldsTest {
         compose.onNodeWithContentDescription("No").assertIsDisplayed()
         assertTrue(compose.onAllNodes(hasText("Show all", substring = true)).fetchSemanticsNodes().isNotEmpty())
         assertTrue("line 7 is cut", compose.onAllNodes(hasText("line 7", substring = true)).fetchSemanticsNodes().isEmpty())
+    }
+
+    /** Nine paths, the ninth the dangerous one: the buttons take no answer until "Show all 9" was pressed and it shows. */
+    @Test fun aCutListMustBeOpenedBeforeTheButtonsWork() {
+        val paths = (1..8).map { "src/file$it.ts" } + "/etc/sudoers"
+        val c = card(mapOf("title" to SealedValue.Text("Delete these?"), "paths" to SealedValue.ListOf(paths)))
+        assertEquals(setOf("paths"), c.cutFields())
+        var pressed: CardOption? = null
+        compose.setContent { MossTheme(false) { CardView(c, busy = false, note = null, onAnswer = { pressed = it }, onSettle = {}) } }
+        compose.mainClock.advanceTimeBy(1_000)
+        compose.waitForIdle()
+        assertTrue("the ninth is hidden", compose.onAllNodes(hasText("/etc/sudoers")).fetchSemanticsNodes().isEmpty())
+        compose.onNodeWithContentDescription("Yes").assertIsNotEnabled()
+        compose.onNodeWithText("and 1 more. Show all 9").performClick()
+        compose.waitForIdle()
+        assertTrue("the ninth shows", compose.onAllNodes(hasText("/etc/sudoers")).fetchSemanticsNodes().isNotEmpty())
+        compose.onNodeWithContentDescription("Yes").assertIsEnabled().performClick()
+        assertEquals(c.options[1], pressed)
+    }
+
+    /** A plugin's OK card with checkboxes (children) and one too large to read are answered on the computer. */
+    @Test fun childrenOrTooMuchMeansTheComputer() {
+        assertFalse(card(mapOf("title" to SealedValue.Text("T"))).copy(hasChildren = true).drawable())
+        assertFalse(card(mapOf("title" to SealedValue.Text("T"), "detail" to SealedValue.Code("x".repeat(70_000)))).drawable())
+        assertTrue(card(mapOf("title" to SealedValue.Text("T"))).drawable())
     }
 }

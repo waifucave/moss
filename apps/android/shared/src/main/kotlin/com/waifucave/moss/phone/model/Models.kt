@@ -120,6 +120,8 @@ data class Card(
     val hash: String,
     val fields: Map<String, SealedValue>,
     val options: List<CardOption>,
+    /** The card carries `children` (a plugin's OK card with a checkbox per child): this phone draws no checkboxes yet. */
+    val hasChildren: Boolean = false,
 ) {
     val title: String get() = text("title") ?: "Needs your answer"
     val what: String? get() = text("what")

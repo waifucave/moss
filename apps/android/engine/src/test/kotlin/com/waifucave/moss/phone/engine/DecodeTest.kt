@@ -69,4 +69,15 @@ class DecodeTest {
         assertEquals("image/png", CoreEngineClient.mediaType(byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D)))
         assertEquals("image/jpeg", CoreEngineClient.mediaType(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0)))
     }
+
+    @Test
+    fun childrenAreReadAndAnUnreadableCardIsShownForTheComputer() {
+        val withChildren = """{"id":"card_123456","kind":"plugin-ok","issuedAt":1,"fields":{"title":{"type":"text","text":"T"}},"options":[{"id":"a","kind":"approve","label":"A"}],"children":[{"id":"c1","label":"Child","checked":true}]}"""
+        val c = Decode.card(withChildren, "h")!!
+        assertTrue(c.hasChildren)
+        assertTrue(!c.drawable())
+        val u = Decode.unreadable("card_123456", "h", "luna", null)
+        assertTrue(!u.drawable())
+        assertTrue(u.options.isEmpty())
+    }
 }

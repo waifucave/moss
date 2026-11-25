@@ -66,8 +66,19 @@ object Decode {
         return Card(
             id = id, kind = kind, computer = o["computer"].str()?.let(clean), session = o["session"].str(), bot = o["bot"].str(), origin = o["origin"].str(),
             issuedAt = o["issuedAt"].long() ?: 0, expiresAt = o["expiresAt"].long() ?: Long.MAX_VALUE, hash = hash, fields = fields, options = options,
+            hasChildren = o["children"].arr().isNotEmpty(),
         )
     }
+
+    /**
+     * A card the core issued that this phone can't read at all (`card` gave null): shown, never hidden, as one to answer on
+     * the computer: no option, one field of a kind this build can't draw, so it has no buttons and the client refuses it.
+     * It replaces an earlier card of the same id, so stale text never keeps live buttons.
+     */
+    fun unreadable(id: String, hash: String, bot: String?, session: String?): Card = Card(
+        id = id, kind = "unreadable", session = session, bot = bot, issuedAt = 0, expiresAt = Long.MAX_VALUE, hash = hash,
+        fields = mapOf("title" to SealedValue.Text("A request this phone can't show"), "detail" to SealedValue.Unsupported), options = emptyList(),
+    )
 
     data class Device(val id: String, val name: String, val phone: Boolean, val app: PhoneApp?)
 

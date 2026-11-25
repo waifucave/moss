@@ -177,4 +177,27 @@ class RulesTest {
         m.answer(b, b.options.first())
         assertFalse("now it is answered", m.cards.any { it.id == b.id })
     }
+
+    /** A card re-issued under its id while an answer to it is in flight stays on screen, as re-issued; a cut one waits. */
+    @Test fun anAnswerInFlightLeavesAReissuedCardAndACutCardWaitsUntilOpened() = runTest {
+        val c = FakeEngineClient()
+        c.setOtherAppInstalled(false)
+        val m = CardsModel(c, PhoneApp.moss, { SampleData.now }, steppingClock())
+        m.load()
+        val a = m.cards.first { m.note(it) == null }
+        val reissued = a.copy(hash = "9".repeat(64), fields = a.fields + ("reason" to SealedValue.Text("changed")))
+        c.beforeAnswer = { m.apply(EngineEvent.CardRequested(reissued)) }
+        m.answer(a, a.options.first())
+        assertEquals("the re-issued card stays", reissued, m.cards.firstOrNull { it.id == a.id })
+        // A card with a cut list: refused until the list was opened.
+        val long = a.copy(id = "card_cut000001", hash = "8".repeat(64), fields = a.fields + ("paths" to SealedValue.ListOf((1..9).map { "f$it" })))
+        c.raise(long)
+        m.apply(EngineEvent.CardRequested(long))
+        c.beforeAnswer = {}
+        m.answer(long, long.options.first())
+        assertTrue("refused while cut", m.cards.any { it.id == long.id })
+        m.open(long, "paths")
+        m.answer(long, long.options.first())
+        assertFalse("answered once opened", m.cards.any { it.id == long.id })
+    }
 }
