@@ -369,6 +369,20 @@ describe("a read-only command of the fenced Bash on Windows (lane WS9): no card,
       expect([command, isReadOnlyShellCommand(command)]).toEqual([command, readOnly]);
     }
   });
+  // Lane WS11 (the reviewer's should-fix): a WebDAV share, which the WebClient redirector opens and the SMB guard does not
+  // hold, is a visible share in each of its spellings: `@<port>`, `@SSL`, `@SSL@<port>`, quoted, after `=`, as a device path.
+  test("a WebDAV share's `@<port>` form is a visible share: no allowance, a card at ask, refused at read-only", async () => {
+    for (const command of ["ls //127.0.0.1@8080/x", "cat \"//host@80/x\"", "ls '\\\\\\\\127.0.0.1@63118\\\\x'", "grep x --file=//host@8080/x", "ls -la //?/UNC/host@8080/x"]) {
+      expect([command, namesNetworkPath(withoutLineJoins(command)), fencedReadOnlyCommand("Bash", { command })]).toEqual([command, true, false]);
+      expect([command, await judged("Bash", command, "ask", "up"), await judged("Bash", command, "read-only", "up")]).toEqual([command, "card", "deny"]);
+    }
+  });
+  test("a WebDAV share's `@SSL` form is a visible share: no allowance, a card at ask, refused at read-only", async () => {
+    for (const command of ["cat '\\\\\\\\host@SSL\\\\x'", "ls //host@SSL/x", "ls //host@SSL@443/DavWWWRoot", "cat \\\\\\\\host@SSL@8443\\\\x", "ls a,//host@SSL/x"]) {
+      expect([command, namesNetworkPath(withoutLineJoins(command)), fencedReadOnlyCommand("Bash", { command })]).toEqual([command, true, false]);
+      expect([command, await judged("Bash", command, "ask", "up"), await judged("Bash", command, "read-only", "up")]).toEqual([command, "card", "deny"]);
+    }
+  });
   test("a backslash-newline is joined outside single quotes only (inside them it is literal)", () => {
     expect(withoutLineJoins("cat $\\\nx")).toBe("cat $x");
     expect(withoutLineJoins("echo 'a\\\nb'")).toBe("echo 'a\\\nb'");

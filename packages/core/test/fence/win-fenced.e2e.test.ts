@@ -634,8 +634,9 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
   // needed), and WHY the name never resolves (refused before the SMB redirector, or no network logon for the pool account:
   // the same reason would cover the address). Seen by Windows' packet monitor's own counters (`pktmon counters`, not its
   // text log) filtered on 192.0.2.1 (TEST-NET-1, routed nowhere), each window fenced and unfenced; a control whose window
-  // shows no packet makes the probe BLIND, and nothing is concluded. The error each `ls` and `Get-ChildItem` prints, fenced
-  // against unfenced, says where the open stops. Dummies only. Recorded, never asserted. Elevated on CI only.
+  // shows no packet makes the probe BLIND: it is captured once more, and blind twice FAILS. The error each `ls` and
+  // `Get-ChildItem` prints, fenced against unfenced, says where the open stops. Dummies only. The guard (lane WS11) asserts
+  // the local refusal and, with a seen control, no fenced packet. Elevated on CI only.
   test("MEASURE (lane WS10): a fenced command's share by IP address, by packet counts, and why a share name never resolves", async () => {
     const elevated = Bun.spawnSync(["net", "session"]).exitCode === 0;
     if (!elevated || process.env.CI === undefined) { console.log(`[e2e] MEASURE: SKIPPED (elevated ${elevated}, CI ${process.env.CI !== undefined}): pktmon needs an administrator on CI's own runner`); return; }
@@ -680,11 +681,19 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
       pk("filter", "remove");
       const added = pk("filter", "add", "WS10IP", "-i", "192.0.2.1");
       console.log(`[e2e] MEASURE pktmon filter: ${added.code} (${added.out.split(/\r?\n/)[0]?.slice(0, 120)})`);
-      const quiet = await windowOf("quiet", () => Bun.sleep(3_000));
-      const fencedIp = await windowOf("ip fenced (the bot's Bash)", () => call(tools.Bash!, { command: "ls //192.0.2.1/x >/dev/null 2>&1; echo done", timeout: 90_000 }));
-      const controlIp = await windowOf("ip unfenced (the control)", () => unfenced("ls //192.0.2.1/x >/dev/null 2>&1; echo done", "bash"));
-      const blind = controlIp <= quiet;
-      console.log(`[e2e] MEASURE ip summary: ${blind ? `BLIND (the control's window showed ${controlIp} packet(s) against ${quiet} quiet)` : `fenced ${fencedIp} packet(s), control ${controlIp}, quiet ${quiet}`}`);
+      const capture = async (round: number) => {
+        const quiet = await windowOf(`quiet (round ${round})`, () => Bun.sleep(3_000));
+        const fenced = await windowOf(`ip fenced (the bot's Bash, round ${round})`, () => call(tools.Bash!, { command: "ls //192.0.2.1/x >/dev/null 2>&1; echo done", timeout: 90_000 }));
+        const control = await windowOf(`ip unfenced (the control, round ${round})`, () => unfenced("ls //192.0.2.1/x >/dev/null 2>&1; echo done", "bash"));
+        const blind = control <= quiet;
+        console.log(`[e2e] MEASURE ip summary (round ${round}): ${blind ? `BLIND (the control's window showed ${control} packet(s) against ${quiet} quiet)` : `fenced ${fenced} packet(s), control ${control}, quiet ${quiet}`}`);
+        return { quiet, fenced, control, blind };
+      };
+      // A blind count never passes silently (the reviewer's should-fix, lane WS11): it is captured once more, and a second
+      // blind one FAILS here (this test runs on CI, elevated, only).
+      let ip = await capture(1);
+      if (ip.blind) ip = await capture(2);
+      const { fenced: fencedIp, blind } = ip;
       // Why a share stops: what each shell says, fenced against unfenced (a name, an address, and a local path as the control
       // that the fenced shell runs at all).
       for (const [what, target] of [["name", `//ws10-why-${process.pid}.invalid/x`], ["address", "//192.0.2.1/x"]] as const) {
@@ -702,8 +711,7 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
       }
       // The GUARD (lane WS11): with a control that sees its packets, a fenced command's share by address sends none. A
       // later change to the launcher's token or the pool accounts that opened shares to a fenced command fails here.
-      if (blind) console.log("[e2e] MEASURE guard: BLIND, so the packet count is not judged on this run");
-      else expect(fencedIp).toBe(0);
+      // (Judged at the end, after the token facts are printed: the refusal assertions above stand on their own.)
       // The layer, for the docs and the next reviewer (lane WS11; recorded, no assertion): the pool account's token under
       // the launcher, as the fenced PowerShell itself reads it (its groups and their attributes, whether the token is a
       // restricted one, whether the process is in a job), and the local logon rights that name that account.
@@ -724,10 +732,43 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
         rmSync(inf, { force: true });
         console.log(`[e2e] TOKEN logon rights naming the pool account ${sid}: ${rights.length === 0 ? "none by its own SID (it holds what its groups hold)" : rights.join(", ")}`);
       }
+      // The packet guard: a twice-blind count fails (the guard counted nothing), and a seen one must show no fenced packet.
+      expect(["the unfenced control's packets seen (twice blind: the guard counted nothing)", !blind]).toEqual(["the unfenced control's packets seen (twice blind: the guard counted nothing)", true]);
+      expect(fencedIp).toBe(0);
     } finally {
       pk("stop"); pk("filter", "remove");
     }
   }, 900_000);
+
+  // Lane WS11 (the reviewer's should-fix): a WebDAV share (`//host@<port>/x`, `\\host@SSL\x`) is opened by the WebClient
+  // redirector, not SMB, so the guard above does not hold it. A fenced `ls` and `Get-ChildItem` of one at the test's own
+  // listener on 127.0.0.1 must be refused, and the listener must see NO connection. Whether the WebClient service exists on
+  // this runner is printed: absent, the case still asserts "refused, no connection" and says the service is absent.
+  test("a WebDAV share (//127.0.0.1@<port>/x): the fenced Bash and PowerShell are refused and the test's own listener sees no connection", async () => {
+    const sc = Bun.spawnSync(["sc.exe", "query", "WebClient"], { stdin: "ignore", timeout: 30_000 });
+    const scText = `${sc.stdout.toString()}${sc.stderr.toString()}`;
+    const webClient = sc.exitCode === 0 ? (/STATE\s*:\s*\d+\s+(\w+)/.exec(scText)?.[1] ?? "present") : "absent";
+    console.log(`[e2e] WEBDAV the WebClient service on this runner: ${webClient}${webClient === "absent" ? " (the case still asserts: refused, no connection)" : ""}`);
+    let connections = 0;
+    const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { open() { connections += 1; }, data() {} } });
+    try {
+      const target = `//127.0.0.1@${listener.port}/x`;
+      const fb = await call(tools.Bash!, { command: `ls '${target}'; echo "exit $?"`, timeout: 90_000 });
+      const fp = await call(tools.PowerShell!, { command: `try { Get-ChildItem -LiteralPath '${target.replace(/\//g, "\\")}' -ErrorAction Stop | Out-Null; 'ok' } catch { $_.Exception.GetType().Name + ': ' + $_.Exception.Message }`, timeout: 90_000 });
+      await Bun.sleep(2_000); // a late connect is still counted
+      const fenced = connections;
+      // The control, recorded: the test's own shell, unfenced (it reaches the listener only when WebClient runs).
+      const shells = windowsShells();
+      const ctl = Bun.spawnSync([shells.bash ?? "bash.exe", "-c", `ls '${target}'; echo "exit $?"`], { stdin: "ignore", timeout: 90_000 });
+      await Bun.sleep(2_000);
+      console.log(`[e2e] WEBDAV fenced connections ${fenced}; unfenced control: ${connections - fenced} connection(s), ${`${ctl.stdout.toString()}${ctl.stderr.toString()}`.replace(/\s+/g, " ").trim().slice(0, 200)}`);
+      expect(fb.text).toMatch(/exit [1-9]/);
+      expect(fp.text).not.toMatch(/(^|\s)ok\s*$/);
+      expect(fenced).toBe(0);
+    } finally {
+      listener.stop(true);
+    }
+  }, 300_000);
 
   test("a share back to this computer (lane WS8, the reviewer's finding): whether Windows opens it for this user, and both file tools refuse it", () => {
     let opened = false;
