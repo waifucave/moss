@@ -24,6 +24,8 @@ public final class ConversationModel {
     public private(set) var staged: [StagedImage] = []
     public private(set) var stagedFiles: [StagedFile] = []
     public private(set) var isInterrupting = false
+    /// The first page has been read (or failed to be): the conversation is drawn only then, so it opens where it should.
+    public private(set) var loaded = false
     public var kind: ConversationKind { if case .bot = source { return .bot } else { return .codingSession } }
 
     @ObservationIgnored private let client: EngineClient
@@ -71,6 +73,7 @@ public final class ConversationModel {
         } catch {
             errorText = "Can't reach your computer."
         }
+        loaded = true
     }
 
     public func loadEarlier() async {

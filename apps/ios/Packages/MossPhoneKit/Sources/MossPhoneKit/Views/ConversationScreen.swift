@@ -23,6 +23,12 @@ public struct ConversationScreen: View {
 
     public var body: some View {
         ScrollViewReader { proxy in
+          // Drawn once the first page and the waiting cards are both in, so it opens at its real bottom: a card that
+          // arrived after the scroll view took its first position would sit below the fold, heading first.
+          Group {
+            if !(model.loaded && cards.loaded) {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 4) {
                     if model.hasEarlier {
@@ -55,6 +61,8 @@ public struct ConversationScreen: View {
                 .padding(.horizontal, 16).padding(.top, 8)
                 .cardContent()
             }
+            }
+          }
             .scrollDismissesKeyboard(.interactively)
             // Messages pass under the bars as the system does it: the top and bottom scroll edge effects blur what is beneath the title and the composer.
             .scrollEdgeEffectStyle(.hard, for: .top)
