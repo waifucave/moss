@@ -40,8 +40,9 @@ const MEMORY = args.includes("--memory");
 const log = (line: string) => process.stderr.write(`[iw-engine] ${line}\n`);
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "moss-iw-engine-")));
-const home = join(root, "home");
+// The home inside the user's home folder, as a real install keeps it (`~/.moss`): the folder tree names a phone's files there.
 const userHome = join(root, "user");
+const home = join(userHome, ".moss");
 const project = join(userHome, "project1");
 mkdirSync(project, { recursive: true });
 
