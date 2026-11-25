@@ -5,6 +5,10 @@ import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -202,7 +206,11 @@ class MossEndToEndTest {
             val allow = drawn.options.first { it.kind == CardOption.Kind.approve && !it.rememberAlways }
             compose.waitUntil(60_000) { compose.onAllNodes(hasContentDescription(allow.label)).fetchSemanticsNodes().isNotEmpty() }
             delay(1_500) // past the moment a card new to the screen takes no press
-            compose.onAllNodes(hasContentDescription(allow.label))[0].performClick()
+            // The button's own click (its semantics action): the card can sit under the floating composer, where a tap at
+            // the button's centre would land on the composer instead.
+            val button = compose.onAllNodes(hasContentDescription(allow.label) and hasClickAction())[0]
+            button.assertIsEnabled()
+            button.performSemanticsAction(SemanticsActions.OnClick)
             val drawnDecision = Runner.json("/decision?card=$drawnId").getJSONObject("decision")
             assertTrue("the drawn button approved: $drawnDecision", drawnDecision.getBoolean("allowed"))
             Log.i(TAG, "the drawn button answered the card")
