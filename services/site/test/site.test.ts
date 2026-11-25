@@ -11,6 +11,7 @@ import { allInstallerNames, releaseUrl } from "../src/downloads";
 import { pendingMarks, PENDING_KINDS, renderDoc } from "../src/markdown";
 import { templateFiles } from "../../../packages/plugin-sdk/src/templates/index";
 import { runCodeCommand } from "../../../packages/cli/src/code-cli";
+import { parseRoutine } from "../../../packages/core/src/routines/file";
 import { MOSS_PLUGIN_VERBS, runPluginCommand, runPluginDev, runPluginList } from "../../../packages/cli/src/moss-plugin-cli";
 
 const root = mkdtempSync(join(tmpdir(), "moss-site-test-"));
@@ -254,6 +255,23 @@ describe("the commands the docs print", () => {
     }
     // No printed plugin command is a bare verb missing what it acts on.
     for (const c of commands) expect([c, /^moss plugin (enable|disable|install|remove|dev|info|logs)\s*$/.test(c)]).toEqual([c, false]);
+  });
+
+  test("every routine file and schedule the docs print is one MOSS reads", () => {
+    const page = readFileSync(docFile("routines"), "utf8");
+    const files = [...page.matchAll(/```markdown\n([\s\S]*?)```/g)].map((m) => m[1]!);
+    expect(files.length).toBeGreaterThan(0);
+    for (const f of files) {
+      const r = parseRoutine(f, "example");
+      expect([f.slice(0, 40), r.ok ? "ok" : (r as { reason: string }).reason]).toEqual([f.slice(0, 40), "ok"]);
+    }
+    // Each schedule in the page's table, as a routine's only trigger.
+    const schedules = [...page.matchAll(/^\| `([^`]+)` \|/gm)].map((m) => m[1]!);
+    expect(schedules.length).toBeGreaterThan(1);
+    for (const s of schedules) {
+      const r = parseRoutine(`---\nname: T\ntriggers:\n  - schedule: "${s}"\n---\nDo it.\n`, "t");
+      expect([s, r.ok]).toEqual([s, true]);
+    }
   });
 
   test("no page tells anyone to make a bot plugin, a format bots no longer use", () => {

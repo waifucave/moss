@@ -57,7 +57,7 @@ When you pair your computers and phones:
 - **A WaifuCave service** helps them find each other, with or without an account. When you pair by code it holds a sealed pairing slot for up to 10 minutes. For each pair it keeps the devices' public keys and sealed address records, and holds sealed messages for a device that is briefly away, for up to two minutes. Sealed means only your devices can open it.
 - **Public STUN servers** at Cloudflare and Google tell each device its own network address, and see its IP address.
 - **n0's address lookup** helps devices without an account find each other.
-- **A relay** carries the traffic of two devices that can't connect directly: n0's public relays unless you choose a relay server of your own, or none, in Settings under **Relay**. What your devices say to each other is encrypted end to end, so a relay can't read it. It does see their IP addresses, which of them are online, which talk to each other, and how much they send.
+- **A relay** carries the traffic of two devices that can't connect directly: n0's public relays unless you choose a relay server of your own, or none, in Settings under **Relay** ([Relays](/docs/relays/)). What your devices say to each other is encrypted end to end, so a relay can't read it. It does see their IP addresses, which of them are online, which talk to each other, and how much they send.
 - **Public time servers** at Cloudflare and Google keep your devices' clocks in step while they are linked.
 - **Phone notifications** say only how many things are waiting, never what they are. The [phone apps](/docs/phones/) are being built.
 

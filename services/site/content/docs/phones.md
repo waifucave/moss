@@ -16,7 +16,7 @@ The iPhone apps are built with Apple's own components and the Android apps with 
 
 ## Pairing
 
-Each phone app pairs with your computer on its own, so a phone with both apps counts as two devices. You pair the way you pair two computers: scan the code your computer shows, then check that the same four words show on both screens.
+Each phone app pairs with your computer on its own, so a phone with both apps counts as two devices. You pair the way you [pair two computers](/docs/pairing/): scan the code your computer shows, then check that the same four words show on both screens.
 
 The phone and the computer then talk over one encrypted link. When they can't connect directly, a relay carries the traffic, still encrypted end to end. [What leaves your computer](/docs/privacy/#paired-devices) says what a relay can see.
 

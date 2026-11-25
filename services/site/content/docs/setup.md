@@ -34,7 +34,7 @@ Your bots use this model unless you pick another for one of them in its settings
 
 ### Step 3: you're set up
 
-The last step says which model answers MOSS's first message. **Talk to MOSS** closes the guide on your conversation with MOSS, the first bot. **Connect your other devices** sets how your computers and phone reach each other when they can't connect directly: n0's public relays (the default), a relay server of your own, or no relay. The same choice is in Settings, under **Relay**.
+The last step says which model answers MOSS's first message. **Talk to MOSS** closes the guide on your conversation with MOSS, the first bot. **Connect your other devices** sets how your computers and phone reach each other when they can't connect directly: n0's public relays (the default), a relay server of your own, or no relay. The same choice is in Settings, under **Relay**; [Relays](/docs/relays/) says what each means.
 
 ## Adding or changing a provider later
 

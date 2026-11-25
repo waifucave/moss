@@ -15,12 +15,12 @@
       "pages": [
         { "slug": "conversation", "title": "Talking to a bot", "summary": "One conversation per bot: interrupting, attaching files, the status line, and what a bot shows and keeps to itself.", "sources": ["docs/moss-spec.md §6.3, §6.4", "apps/moss/src/window/conversation/Conversation.tsx", "apps/moss/src/shared/status-line.ts"] },
         { "slug": "faces", "title": "Faces and moods", "summary": "How a name makes a face, the eight moods, and pinning a face's shape, colour, eyes and temper.", "sources": ["docs/moss-spec.md §6.9", "packages/plugin-sdk/src/ui/faces/living-bots.js", "apps/moss/src/window/settings/SettingsPage.tsx"] },
-        { "slug": "memory", "title": "Memory", "summary": "A bot's memory folder and its MEMORY.md, and reading what a bot keeps.", "sources": ["docs/moss-spec.md §6.5", "apps/moss/src/window/settings/SettingsPage.tsx"] },
-        { "slug": "routines", "title": "Routines", "summary": "Routines as files: schedules and webhooks, side threads, pausing, running now.", "sources": ["docs/moss-spec.md §7", "packages/core/src/routines", "plugins/moss/plugins/trigger-schedule", "plugins/moss/plugins/trigger-webhook"] },
+        { "slug": "memory", "title": "Memory", "summary": "A bot's memory folder and its MEMORY.md, and reading what a bot keeps.", "sources": ["docs/moss-spec.md §6.5", "apps/moss/src/window/settings/SettingsPage.tsx", "packages/core/src/bots/records.ts", "packages/core/src/agent/dreamer.ts", "packages/core/src/agent/memory.ts"] },
+        { "slug": "routines", "title": "Routines", "summary": "Routines as files: schedules and webhooks, side threads, pausing, running now.", "sources": ["docs/moss-spec.md §7", "packages/core/src/routines/file.ts", "plugins/moss/plugins/trigger-schedule/src/spec.ts", "plugins/moss/plugins/trigger-webhook", "apps/moss/src/window/panel/SidePanel.tsx"] },
         { "slug": "side-panel", "title": "The side panel", "summary": "A bot's screen, watch only, and its routines.", "sources": ["docs/moss-spec.md §3.6, §6.10", "apps/moss/src/window/panel/SidePanel.tsx"] },
         { "slug": "voice", "title": "Voice", "summary": "Spoken replies and push to talk through a voice plugin, with your own key for its provider.", "sources": ["docs/moss-spec.md §6.6", "plugins/moss/plugins/voice", "plugins/moss/plugins/fish-audio"] },
         { "slug": "bots-together", "title": "Bots that work together", "summary": "Bots messaging each other, and handing coding work to an agent.", "sources": ["docs/moss-spec.md §6.7, §9.3, §9.5"] },
-        { "slug": "archiving", "title": "Archiving a bot", "summary": "Putting a bot away and bringing it back with its conversation, memory and routines.", "sources": ["apps/moss/src/window/settings/SettingsPage.tsx"] }
+        { "slug": "archiving", "title": "Archiving a bot", "summary": "Putting a bot away and bringing it back with its conversation, memory and routines.", "sources": ["apps/moss/src/window/settings/SettingsPage.tsx", "packages/core/src/bots/records.ts"] }
       ]
     },
     {
@@ -28,7 +28,7 @@
       "pages": [
         { "slug": "approvals", "title": "Approval cards and levels", "summary": "What a card is, what each level lets a bot do alone, and what always asks.", "sources": ["docs/moss-spec.md §3.5, §5.5, §9.1", "packages/core/src/contracts/approval-broker.ts", "apps/moss/src/window/settings/SettingsPage.tsx", "packages/protocol/src/common.ts"] },
         { "slug": "sandbox", "title": "The command sandbox", "summary": "What a bot's commands can and cannot touch on each system, and asking for a folder.", "sources": ["docs/moss-spec.md §4, §9.1"] },
-        { "slug": "where-cards-show", "title": "Where cards show", "summary": "The window, the island at the top of the screen, a phone: how MOSS decides where a card appears.", "sources": ["docs/moss-spec.md §3.5, §10", "plugins/moss/plugins/island"] },
+        { "slug": "where-cards-show", "title": "Where cards show", "summary": "The window, the island at the top of the screen, a phone: how MOSS decides where a card appears.", "sources": ["docs/moss-spec.md §3.5, §10", "plugins/moss/plugins/island", "apps/desktop/src/main/overlap.ts", "apps/desktop/src/main/sealed-pages.ts"] },
         { "slug": "privacy", "title": "What leaves your computer", "summary": "Every connection MOSS makes, to whom, and what each one carries.", "sources": ["docs/moss-spec.md §8", "plugins/moss/plugins/web/moss.json", "packages/app-release/src/updater.ts", "apps/moss/electron-builder.yml", "apps/moss/src/window/setup/SetupGuide.tsx", "packages/core/src/devices/relay.ts", "native/link-sidecar/src/stun.rs", "packages/core/src/clock/shared-clock.ts", "packages/core/src/sessions/cleaner.ts", "packages/core/src/agent/dreamer.ts", "docs/secrets-file.md", "packages/core/src/routines/webhooks.ts", "plugins/moss/plugins/trigger-webhook/moss.json"] }
       ]
     },
@@ -44,9 +44,9 @@
     {
       "title": "Devices",
       "pages": [
-        { "slug": "pairing", "title": "Pairing your devices", "summary": "A code or a QR code, then four words compared on both screens; removing a device.", "sources": ["docs/moss-spec.md §8.1", "apps/moss/src/window/settings/SettingsPage.tsx", "native/phone-core/README.md"] },
+        { "slug": "pairing", "title": "Pairing your devices", "summary": "A code or a QR code, then four words compared on both screens; removing a device.", "sources": ["docs/moss-spec.md §8.1", "apps/moss/src/window/settings/SettingsPage.tsx", "native/phone-core/README.md", "packages/core/src/links/handshake-rendezvous.ts"] },
         { "slug": "computers", "title": "Working across computers", "summary": "One folder tree across your computers, the main computer, and what happens when one is off.", "sources": ["docs/moss-spec.md §6.4, §9.1"] },
-        { "slug": "relays", "title": "Relays", "summary": "Direct links first, and the relay that carries the rest: n0's, your own, or none.", "sources": ["docs/moss-spec.md §8.3", "apps/moss/src/window/setup/SetupGuide.tsx"] },
+        { "slug": "relays", "title": "Relays", "summary": "Direct links first, and the relay that carries the rest: n0's, your own, or none.", "sources": ["docs/moss-spec.md §8.3", "apps/moss/src/window/setup/SetupGuide.tsx", "apps/moss/src/window/settings/SettingsPage.tsx"] },
         { "slug": "phones", "title": "The phone apps", "summary": "MOSS and MOSS Code for iPhone and Android: what they will do. Being built.", "sources": ["docs/moss-spec.md §10", "apps/ios", "native/phone-core", "native/phone-core/android", "packages/protocol/generated/moss/allowlists.json", "apps/moss/src/window/settings/SettingsPage.tsx"] }
       ]
     },
