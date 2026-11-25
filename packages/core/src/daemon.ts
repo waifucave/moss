@@ -316,7 +316,7 @@ export interface BrowserHostInjection {
 }
 import { makeDaemonRoutineRunner } from "./routines/runner";
 import { makeRoutineScheduler } from "./routines/scheduler";
-import type { Level, NewSessionEvent, PluginProvenance, TurnOrigin } from "@waifucave/moss-protocol";
+import type { Caller, Level, NewSessionEvent, PluginProvenance, TurnOrigin } from "@waifucave/moss-protocol";
 import type { TurnInput } from "./contracts/session-host";
 import { AppRenderResult, BUNDLED_ROOT_PLUGIN, topPluginIdOf, dataKindOfSession } from "@waifucave/moss-protocol";
 import { CORE_VERSION } from "./version";
@@ -5000,6 +5000,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
         ...(node ? {
           holds: node.holds, terminals: node.terminals,
           computers: () => node.registry.list().map((c) => ({ name: c.name, os: c.os, online: c.state === "online", main: c.isMain })),
+          // Lane XC: a bot's own calls on tree paths (`home/<this computer>/…`, `home/memory/…`) run on the real paths.
+          tree: { directory: node.peers.directory(), resolve: (path: string, as: Caller) => node.tree.resolve(path, as) },
         } : {}),
         log: (line) => console.error(`[bots] ${line}`),
         });

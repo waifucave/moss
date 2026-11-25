@@ -67,6 +67,7 @@ import { MISPLACED_SANDBOX_FLAG_REFUSAL, misplacedSandboxFlag, outsideSandboxFla
 import { BOT_KEY_PATHS, RUNTIME_STATE_STORES, RUNTIME_STATE_SUFFIXES, fenceSearchOutput, fileToolFenceRefusal, type FileFence } from "./file-fence";
 import { secretReadPlaces, type Fence } from "../../contracts/fence";
 import { runtimeDenyForms } from "../../fence/runtime-deny-forms";
+import { TreeRouter, type TreeRoute, type TreeRouteDeps } from "../../tree/route";
 
 /** The runtime's built-in tools a bot's session is offered (spec §6.7). The runtime's own `SendMessage`, `ListAgents`,
  *  `TaskStop` and `Agent` are not: the core's take those names. Nor are `Skill` and `ToolSearch` (retired for
@@ -236,6 +237,9 @@ export interface BotDriverDeps {
   holds?: { releaseSession(session: string): Promise<number> | number };
   /** Lane J's terminals (`ComputerNode.terminals`): the session's close at its end. */
   terminals?: { closeSession(session: string): Promise<number> | number };
+  /** The folder tree (lane XC, `tree/route.ts`): a call on a tree path this computer holds runs on its real path; one
+   *  on another computer's goes there. Without it every call is the runtime's own, as before. */
+  tree?: TreeRouteDeps;
   /** The plugin registry, for `Glossary`'s skills, agent definitions, plugins and points. */
   registry?: GlossaryDeps["registry"];
   /** The plugins' hooks (`pluginHooks`); none without it. */
@@ -441,6 +445,8 @@ export class BotSessionDriver implements SessionDriver {
   readonly canFold = true;
   readonly #ctx: BotSessionContext;
   readonly #fileFence: FileFence | undefined;
+  /** The session's tree router (lane XC), with Bash's folder on another computer. */
+  readonly #router: TreeRouter | undefined;
   readonly #d: BotDriverDeps;
   readonly #log: (line: string) => void;
   readonly #statePath: string;
@@ -494,6 +500,7 @@ export class BotSessionDriver implements SessionDriver {
     this.#ctx = ctx;
     this.#d = deps;
     this.#fileFence = deps.fileFence?.(ctx);
+    this.#router = deps.tree === undefined ? undefined : new TreeRouter(deps.tree, ctx.caller);
     this.#log = deps.log ?? (() => {});
     this.#statePath = join(deps.home, "sessions-runtime", `${ctx.sessionId.replace(/[^A-Za-z0-9._-]/g, "_")}.json`);
   }
@@ -684,6 +691,19 @@ export class BotSessionDriver implements SessionDriver {
     return { ...(f?.userHome === undefined ? {} : { userHome: f.userHome }), ...(f?.os === undefined ? {} : { os: f.os }) };
   }
 
+  /** Where a call runs (`TreeRouter`): local without a tree. A Bash call that runs on this computer clears its folder
+   *  on another one. A router that throws never lets the call through untouched: it is refused. */
+  #route(name: string, toolInput: unknown): TreeRoute {
+    if (this.#router === undefined) return { kind: "local" };
+    try {
+      const route = this.#router.route(name, toolInput);
+      if (name === "Bash" && route.kind !== "other" && route.kind !== "refused") this.#router.settled(route);
+      return route;
+    } catch (e) {
+      return { kind: "refused", reason: `MOSS couldn't tell which computer this call runs on: ${e instanceof Error ? e.message : String(e)}` };
+    }
+  }
+
   #fileFenceRefusal(input: ToolUseInput): string | undefined {
     if (this.#fileFence === undefined) return undefined;
     return fileToolFenceRefusal(input.tool_name ?? "", input.tool_input, this.#fileFence, this.#ctx.paths.scratch);
@@ -714,12 +734,21 @@ export class BotSessionDriver implements SessionDriver {
     this.#dropsBefore(name, callId);
     const stop = await this.#gate(signal);
     if (stop !== undefined) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: stop } };
-    const r = await this.#hooks.toolBefore(this.#hookSession, { name, callId }, input.tool_input, signal);
+    let r = await this.#hooks.toolBefore(this.#hookSession, { name, callId }, input.tool_input, signal);
     if (r.deny !== undefined) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: r.deny } };
     // The plugins' hooks take time: the pause may have come on, or the lease gone, meanwhile. A call that asks no
     // one (a read-only tool) has no later check (`#gatedCanUseTool`), so the gate is asked again here.
     const after = await this.#gate(signal);
     if (after !== undefined) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: after } };
+    // The folder tree (lane XC): a tree path this computer holds becomes its real path, judged below as any local path;
+    // one on another computer doesn't run here. A call that names no tree path is untouched.
+    const route = this.#route(name, r.input !== input.tool_input && r.input !== null && typeof r.input === "object" && !Array.isArray(r.input) ? r.input : input.tool_input);
+    if (route.kind === "refused") return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: route.reason } };
+    if (route.kind === "other") {
+      const why = route.online ? `${route.computer} holds that path, and a tool call on another computer doesn't run from here yet` : `computer offline: ${route.computer} is offline`;
+      return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: why } };
+    }
+    if (route.kind === "here") r = { ...r, input: route.input };
     // The MOSS home's default-deny for the session's own file tools, on the input a plugin's hook may have changed.
     const changedInput = r.input !== input.tool_input && r.input !== null && typeof r.input === "object" && !Array.isArray(r.input);
     // Windows (lane WS9): judged in the very spelling the tool will be given (`windowsFileToolInput`, below), so the fence
