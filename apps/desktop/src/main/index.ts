@@ -14,7 +14,7 @@ import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { themeSourceOf } from "./theme-source";
-import { SEALED_SCHEME_ASK, isCardFrame, schemeOf, tellCardPages } from "./sealed-scheme";
+import { tellCardPages } from "./sealed-scheme";
 import { captureOne, captureWindows, surfaceName as captureName, type CaptureDeps, type WindowLike } from "./capture";
 import { openWindow, OPEN_TARGETS } from "./open";
 import { RENDER_CONSOLE_MAX, RenderQueue, renderPlace, type RenderConsoleLine, type RenderHandle } from "./render";
@@ -366,6 +366,11 @@ if (!app.requestSingleInstanceLock()) {
     if (!isBrowserContents(contents) && !isWebViewContents(contents)) guardContents(contents, log);
     // A part's sealed button page that never says it shows gets its frame's visibility changed (watchSealedDraw).
     contents.on("did-frame-finish-load", (_e, isMainFrame, processId, routingId) => { if (!isMainFrame) watchSealedDraw(processId, routingId); });
+    // A card page is told the scheme as soon as its frame has loaded (it never asks): shown or not, the main frame of a fallback window too.
+    contents.on("did-frame-finish-load", (_e, _isMainFrame, processId, routingId) => {
+      const f = webFrameMain.fromId(processId, routingId);
+      if (f !== undefined && f !== null && !f.detached) tellCardPages([{ url: f.url, send: (channel, scheme) => f.send(channel, scheme) }], nativeTheme.shouldUseDarkColors);
+    });
   });
   app.on("before-quit", (event) => {
     if (leaving || shuttingDown) return;
@@ -978,9 +983,6 @@ async function ready(): Promise<void> {
   nativeTheme.on("updated", syncAppearance);
   // A card page's scheme is the app's word, told to every card page, shown or not (sealed-scheme.ts): a hidden or offscreen frame does
   // not re-read `prefers-color-scheme` when the Theme changes.
-  ipcMain.on(SEALED_SCHEME_ASK, (event) => {
-    event.returnValue = isCardFrame(event.senderFrame?.url ?? "") ? schemeOf(nativeTheme.shouldUseDarkColors) : "";
-  });
   nativeTheme.on("updated", () => {
     for (const wc of webContents.getAllWebContents()) {
       if (wc.isDestroyed()) continue;

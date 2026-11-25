@@ -920,15 +920,17 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     // A card page draws in the scheme the app tells it (`data-scheme` on its root, sealed-scheme.ts), the media query only before that;
     // any other page reads its media query.
     const darkOf = async (session: string) => (await cdp.evaluate(session, "(() => { const s = document.documentElement.getAttribute('data-scheme'); return s === 'dark' || s === 'light' ? s === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches; })()").catch(() => undefined)) as boolean | undefined;
-    const schemes = async (cardId: string): Promise<{ main?: boolean; seen: { what: string; dark: boolean; url?: string }[] }> => {
-      const seen: { what: string; dark: boolean; url?: string }[] = [];
+    const schemes = async (cardId: string): Promise<{ main?: boolean; seen: { what: string; dark: boolean; url?: string; drawnDark?: boolean }[] }> => {
+      const seen: { what: string; dark: boolean; url?: string; drawnDark?: boolean }[] = [];
       let main: boolean | undefined;
       for (const d of await cdp.documents()) {
         const what = d.url.startsWith(`moss-sealed://card/${encodeURIComponent(cardId)}/`) ? "card page" : /[?&]surface=(island|pill)/.test(d.url) ? `${/surface=island/.test(d.url) ? "island" : "pill"} page` : d.url.startsWith("moss-plugin://moss/") ? "main window" : d.url.startsWith("moss-core://") ? "core page" : undefined;
         if (what === undefined) continue;
         const dark = await darkOf(d.session);
         if (dark === undefined) continue;
-        seen.push({ what, dark, ...(what === "card page" ? { url: d.url.replace(/[?#].*/, "").replace(/se_[0-9a-f]+/g, "se_").slice(0, 90) } : {}) });
+        // What a person sees on a card page: the colour its text is DRAWN in (the page's body), light text on a dark card and dark on a light one.
+        const drawn = what === "card page" ? await cdp.evaluate(d.session, "(() => { const m = /rgba?\\((\\d+), (\\d+), (\\d+)/.exec(getComputedStyle(document.body).color); return m ? (0.2126 * +m[1] + 0.7152 * +m[2] + 0.0722 * +m[3]) / 255 > 0.5 : null; })()").catch(() => undefined) : undefined;
+        seen.push({ what, dark, ...(what === "card page" ? { url: d.url.replace(/[?#].*/, "").replace(/se_[0-9a-f]+/g, "se_").slice(0, 90) } : {}), ...(typeof drawn === "boolean" ? { drawnDark: drawn } : {}) });
         if (what === "main window") main = dark;
       }
       return { ...(main === undefined ? {} : { main }), seen };
@@ -981,7 +983,8 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
           const r = await schemes(card.id);
           return r.seen.some((x) => x.what === "card page") ? r : undefined;
         });
-        const wrong = got.seen.filter((x) => x.dark !== dark);
+        // The value that arrived AND the colours drawn: a card page whose text is drawn in the other scheme's colour is wrong whatever it was told.
+        const wrong = got.seen.filter((x) => x.dark !== dark || (x.drawnDark !== undefined && x.drawnDark !== dark));
         if (wrong.length > 0) fail(`with ${word} chosen, ${wrong.map((x) => x.what).join(", ")} read ${dark ? "light" : "dark"} (${JSON.stringify(got.seen)})`);
         note = `${got.seen.filter((x) => x.what === "card page").length} card page doc(s)`;
       });

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { SEALED_SCHEME_CHANNEL, isCardFrame, schemeOf, tellCardPages, type SchemeFrame } from "../src/main/sealed-scheme";
+import { cardPageScheme, SEALED_SCHEME_CHANNEL, isCardFrame, schemeOf, tellCardPages, type SchemeFrame } from "../src/main/sealed-scheme";
 
 const frame = (url: string, sent: string[], throws = false): SchemeFrame => ({ url, send: (c, s) => { if (throws) throw new Error("gone"); sent.push(`${url} ${c} ${s}`); } });
 
@@ -33,5 +33,45 @@ describe("a card page's scheme is told by the app", () => {
     expect(css).toContain(":root:not([data-scheme]) { --seal-surface");
     expect(css).not.toMatch(/@media \(prefers-color-scheme: dark\) \{\s*:root \{/);
     expect(css).toContain(':root[data-scheme="dark"] .own-head .shield');
+  });
+});
+
+describe("a card page never waits for the scheme", () => {
+  const rootOf = () => { const attrs: Record<string, string> = {}; return { attrs, root: { setAttribute: (n: string, v: string) => { attrs[n] = v; } } }; };
+  test("a page that is never told still has a root with no data-scheme, so it draws by the media query", () => {
+    const { attrs, root } = rootOf();
+    const page = cardPageScheme(() => root);
+    page.apply();
+    page.hear("not a scheme"); page.hear(undefined);
+    expect(attrs).toEqual({});
+  });
+  test("a late message switches it, a change switches it again, and one that came before the root existed is applied when the root is there", () => {
+    const { attrs, root } = rootOf();
+    let have = false;
+    const page = cardPageScheme(() => (have ? root : null));
+    page.hear("dark");
+    expect(attrs).toEqual({});
+    have = true;
+    page.apply();
+    expect(attrs["data-scheme"]).toBe("dark");
+    page.hear("light");
+    expect(attrs["data-scheme"]).toBe("light");
+    page.hear("dark");
+    expect(attrs["data-scheme"]).toBe("dark");
+  });
+  test("the preload never asks and never blocks: no sendSync for the scheme, the app pushes it when a card frame has loaded and at each change", () => {
+    const pre = readFileSync(new URL("../src/main/preload.ts", import.meta.url), "utf8");
+    expect(pre).not.toContain('sendSync("moss:sealed-scheme")');
+    const main = readFileSync(new URL("../src/main/index.ts", import.meta.url), "utf8");
+    expect(main).toContain("tellCardPages([{ url: f.url");
+    expect(main).not.toContain("SEALED_SCHEME_ASK");
+  });
+  test("a card pending while the theme changes is told on the change, and one whose frame loads later is told on load", () => {
+    const sent: string[] = [];
+    const early = frame("moss-sealed://card/c1/button:approve?token=a", sent);
+    expect(tellCardPages([early], true)).toBe(1); // the change
+    const late = frame("moss-sealed://card/c1/button:deny?token=b", sent);
+    expect(tellCardPages([late], false)).toBe(1); // its load, under the new scheme
+    expect(sent.map((l) => l.split(" ").pop())).toEqual(["dark", "light"]);
   });
 });

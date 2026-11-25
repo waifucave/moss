@@ -4,6 +4,7 @@
 // to the frame it came from, so the bridge carries no authority of its own beyond the mount token in the URL.
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { LayerBridge, LayerMessage } from "@waifucave/moss-plugin-sdk/ui/bridge";
+import { cardPageScheme } from "./sealed-scheme";
 
 const where = location.protocol;
 const isRoot = where === "moss-core:" && location.host === "app" && window.top === window;
@@ -115,14 +116,12 @@ if (isRoot || isLayer) {
   // A sealed frame's page: the token is its own (a single-use channel the store minted), and its answer goes back
   // through the main process's own path — signed there with the answer key, never a plugin's connection's.
   const token = new URLSearchParams(location.search).get("token") ?? "";
-  // The scheme the app says (sealed-scheme.ts): on the root as `data-scheme`, which the page's CSS follows; asked once for at the start
-  // and told again at every change, to a hidden or offscreen frame as to a shown one.
-  const setScheme = (scheme: unknown) => {
-    if ((scheme === "dark" || scheme === "light") && document.documentElement) document.documentElement.setAttribute("data-scheme", scheme);
-  };
-  try { setScheme(ipcRenderer.sendSync("moss:sealed-scheme")); } catch { /* the page keeps prefers-color-scheme */ }
-  document.addEventListener("DOMContentLoaded", () => { try { setScheme(ipcRenderer.sendSync("moss:sealed-scheme")); } catch { /* as above */ } });
-  ipcRenderer.on("moss:scheme", (_event, scheme: unknown) => setScheme(scheme));
+  // The scheme the app says (sealed-scheme.ts): on the root as `data-scheme`, which the page's CSS follows. The app PUSHES it (when this
+  // frame has loaded and at each Theme change); the page never asks and never waits for it: until it comes, the page draws by
+  // `prefers-color-scheme`, then switches, so a card's page never depends on the main process answering in time.
+  const page = cardPageScheme(() => document.documentElement);
+  ipcRenderer.on("moss:scheme", (_event, scheme: unknown) => page.hear(scheme));
+  document.addEventListener("DOMContentLoaded", () => page.apply());
   contextBridge.exposeInMainWorld("mossSealed", {
     answer: (option: string, children?: readonly string[]) => ipcRenderer.invoke("moss:sealed-answer", { token, option, children }),
     visible: (visible: boolean) => void ipcRenderer.send("moss:sealed-visible", { token, visible }),

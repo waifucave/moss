@@ -5,9 +5,8 @@
 // starting guess before the value arrives.
 export type Scheme = "dark" | "light";
 
-/** The channel the app tells a card page its scheme on (and answers the page's first ask). */
+/** The channel the app tells a card page its scheme on . */
 export const SEALED_SCHEME_CHANNEL = "moss:scheme";
-export const SEALED_SCHEME_ASK = "moss:sealed-scheme";
 
 export const schemeOf = (dark: boolean): Scheme => (dark ? "dark" : "light");
 
@@ -25,4 +24,16 @@ export function tellCardPages(frames: Iterable<SchemeFrame>, dark: boolean): num
     try { f.send(SEALED_SCHEME_CHANNEL, schemeOf(dark)); n++; } catch { /* a frame that went away */ }
   }
   return n;
+}
+
+/** The card page's side (the preload's): the scheme the app last told it, set on the page's root as `data-scheme` whenever there is a
+ *  root. Nothing here waits for the app: a page that is never told keeps no `data-scheme` and draws by `prefers-color-scheme`. */
+export function cardPageScheme(root: () => { setAttribute(name: string, value: string): void } | null | undefined): { hear(scheme: unknown): void; apply(): void; readonly told: Scheme | undefined } {
+  let told: Scheme | undefined;
+  const apply = () => { const r = root(); if (told !== undefined && r) r.setAttribute("data-scheme", told); };
+  return {
+    hear(scheme: unknown) { if (scheme === "dark" || scheme === "light") { told = scheme; apply(); } },
+    apply,
+    get told() { return told; },
+  };
 }
