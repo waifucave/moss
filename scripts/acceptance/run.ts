@@ -4000,6 +4000,9 @@ async function computersRun(): Promise<void> {
   let beta: { proc: ChildProcess; log: string } | undefined;
   const done = new Set<string>();
   const put = (name: string, status: Status, detail: string) => { done.add(name); record(row(name), status, detail); };
+  // No app runs in this unit: its cards are answered over RPC as the app's sealed frame answers them (`approve`).
+  const wasAppless = appless;
+  appless = true;
   try {
     // ── the two engines ──
     await startDaemonProc({ ...linkEnv, MOSS_ACCEPTANCE_COMPUTER_NAME: "Alpha" });
@@ -4039,15 +4042,18 @@ async function computersRun(): Promise<void> {
 
     // ── pairing, through the product's own path ──
     try {
-      // Begun and joined in each user's own terminal, so each confirms there with the words it shows (a pairing an app
-      // began is confirmed on its sealed card instead).
-      const begun = await ta.t.request<{ pairingId: string; qr: string }>("device.pair.begin", {});
-      const joined = await tb.t.request<{ pairingId: string }>("device.pair.join", { code: begun.qr });
+      // As a person pairs today (in the apps): Alpha's app begins, Beta's joins with the QR, the engine raises its own add
+      // card on each side with the four words, and each is answered as the app's sealed frame answers it. The terminals
+      // only listen: the same four words on both.
+      const begun = await c.request<{ pairingId: string; qr: string }>("device.pair.begin", {});
+      await betaApp.request<{ pairingId: string }>("device.pair.join", { code: begun.qr });
       const wa = await until("Alpha's terminal hearing the four words", 60_000, () => ta.words[0]);
       const wb = await until("Beta's terminal hearing the four words", 60_000, () => tb.words[0]);
       if (wa.join(" ") !== wb.join(" ")) fail(`the two terminals heard different words (${wa.length} and ${wb.length} words)`);
-      await ta.t.request("device.pair.confirm", { pairingId: begun.pairingId, words: wa });
-      await tb.t.request("device.pair.confirm", { pairingId: joined.pairingId, words: wb });
+      for (const [cl, who] of [[c, "Alpha"], [betaApp, "Beta"]] as const) {
+        const card = await until(`${who}'s add card with the four words`, 60_000, async () => (await cards(cl)).find((k) => JSON.stringify(k).includes(wa.join(" "))));
+        await approve(cl, card);
+      }
       const listed = async (cl: MossClient) => (await cl.request<{ devices: { name: string }[] }>("device.list", {})).devices.map((d) => d.name).sort().join(",");
       await until("both engines listing Alpha and Beta", 60_000, async () => ((await listed(c)) === "Alpha,Beta" && (await listed(betaApp)) === "Alpha,Beta" ? true : undefined));
       // Beta reachable from Alpha's tree, at fully automatic (its own terminal sets it), for the rows that ask nothing.
@@ -4056,7 +4062,7 @@ async function computersRun(): Promise<void> {
         const got = await c.request<{ computer: { online?: boolean; state?: string; level?: string } }>("computer.get", { name: "Beta" }).catch(() => undefined);
         return got !== undefined && (got.computer.online === true || got.computer.state === "online") && got.computer.level === "automatic" ? true : undefined;
       });
-      put(COMPUTERS_PAIR_STEP, "PASS", "paired over the two sidecars on loopback (begun and joined with the QR in each user's terminal, the four words heard and confirmed there); both list Alpha and Beta; Beta online on Alpha");
+      put(COMPUTERS_PAIR_STEP, "PASS", "paired over the two sidecars on loopback as a person does in the apps (Alpha's QR, Beta's join, the engine's add card on each side with the four words, each answered); each terminal heard the same words; both list Alpha and Beta; Beta online on Alpha");
     } catch (err) {
       put(COMPUTERS_PAIR_STEP, statusOf(err), why(err));
       throw err;
@@ -4150,6 +4156,7 @@ async function computersRun(): Promise<void> {
   } catch (err) {
     for (const s of COMPUTERS_STEPS) if (!done.has(s)) record(row(s), statusOf(err), `the computers unit's setup: ${why(err)}`);
   } finally {
+    appless = wasAppless;
     for (const cl of opened) cl.close();
     if (beta !== undefined && alive(beta.proc)) beta.proc.kill("SIGTERM");
   }

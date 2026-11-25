@@ -1,11 +1,12 @@
 // The `computers` unit (lane XC, across computers): two engines, Alpha and Beta, each its own acceptance daemon on its own
 // throwaway home, each with its own link sidecar (the built `moss-link`) on loopback with no relay and no lookup (the
-// acceptance daemon's MOSS_ACCEPTANCE_LINK_BIN switch). They pair through the product's own path: Alpha's
-// `device.pair.begin`, Beta's `device.pair.join` with its QR, the four words read from each daemon's own terminal (the CLI
-// role) and `device.pair.confirm` there. Then a bot on Alpha works on Beta's files in real turns on the fake provider.
+// acceptance daemon's MOSS_ACCEPTANCE_LINK_BIN switch). They pair as a person does in the apps: Alpha's app begins
+// (`device.pair.begin`), Beta's joins with its QR, the engine raises its own add card on each side with the four words,
+// and each is answered as the app's sealed frame answers it; each daemon's terminal (the CLI role) only listens, and
+// both must show the same words. Then a bot on Alpha works on Beta's files in real turns on the fake provider.
 // Each row's check reads the disks and what the model was given; nothing here starts or reaches anything outside the run.
 
-export const COMPUTERS_PAIR_STEP = "computers: two engines, each with its own link sidecar on loopback (no relay, no lookup), pair through the product's own path (the QR, the four words in each user's terminal, the confirm there)";
+export const COMPUTERS_PAIR_STEP = "computers: two engines, each with its own link sidecar on loopback (no relay, no lookup), pair as a person does in the apps (the QR, the engine's add card on each side with the four words, each answered)";
 export const COMPUTERS_READ_STEP = "computers: a bot on Alpha reads a file on Beta (home/Beta/…): the text only Beta's disk holds";
 export const COMPUTERS_WRITE_STEP = "computers: a bot on Alpha writes a file on Beta: it lands on Beta's disk, nothing in the bot's own folder";
 export const COMPUTERS_BASH_STEP = "computers: a bot on Alpha runs a command in a folder on Beta: its output names Beta's real folder and reads Beta's file";

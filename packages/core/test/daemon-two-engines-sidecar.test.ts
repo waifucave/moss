@@ -1,6 +1,6 @@
 // Lane XC, step 4's host-level proof: two real daemons on two temp homes, each with its own link sidecar (the built
-// `moss-link`) on loopback with no relay and no lookup, pair through the product's own path (A's QR, B's join, the four
-// words in each user's terminal, the terminals' confirm) and then A reads a file on B's disk through the tree. Run by
+// `moss-link`) on loopback with no relay and no lookup, pair as a person does in the apps (A's QR, B's join, the engine's
+// own add card on each side with the four words, each pressed) and then A reads a file on B's disk through the tree. Run by
 // the link job, which builds the sidecar (`MOSS_LINK_REQUIRE_BINARY=1`); skipped where it isn't built, and on Windows.
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
@@ -110,15 +110,18 @@ describe.skipIf(!built || process.platform === "win32")("two engines over the re
     const a = await engine(root, "Alpha");
     const b = await engine(root, "Beta");
     try {
-      // Begun and joined in each user's own terminal, so each confirms there with the words it shows (a pairing an app
-      // began is confirmed on its sealed card instead).
-      const begun = await ok<{ pairingId: string; qr: string }>(a.terminal, "device.pair.begin", {});
-      const joined = await ok<{ pairingId: string }>(b.terminal, "device.pair.join", { code: begun.qr });
+      // As a person pairs today (in the apps): Alpha's app begins, Beta's joins with the QR, the engine raises its own add
+      // card on each side with the four words, and each is pressed. The terminals only listen: the same four words on both.
+      const begun = await ok<{ pairingId: string; qr: string }>(a.app, "device.pair.begin", {});
+      await ok(b.app, "device.pair.join", { code: begun.qr });
       const wa = await until("Alpha's terminal hearing the words", () => wordsHeard(a.terminal));
       const wb = await until("Beta's terminal hearing the words", () => wordsHeard(b.terminal));
       expect(wa).toEqual(wb);
-      await ok(a.terminal, "device.pair.confirm", { pairingId: begun.pairingId, words: wa });
-      await ok(b.terminal, "device.pair.confirm", { pairingId: joined.pairingId, words: wb });
+      for (const e of [a, b]) {
+        const broker = e.daemon.mossParts.broker()!;
+        const card = await until("the add card", () => broker.cards().find((k) => JSON.stringify(k).includes(wa.join(" "))));
+        expect(await broker.answer(card.id, { optionId: "approve", hash: card.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card.id)!, input: "click", at: Date.now() } }, { role: "app" })).toBe("accepted");
+      }
       const names = async (c: Conn) => (await ok<{ devices: { name: string }[] }>(c, "device.list", {})).devices.map((d) => d.name).sort();
       await until("both listing Alpha and Beta", async () => ((await names(a.app)).join() === "Alpha,Beta" && (await names(b.app)).join() === "Alpha,Beta" ? true : undefined));
       // A file only Beta's disk holds, read from Alpha through the tree.
