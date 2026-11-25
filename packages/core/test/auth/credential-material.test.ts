@@ -237,7 +237,9 @@ describe("child-parser contract (clover-sdk coerceMaterial)", () => {
     // v0.0.85 -- packages/runtime/src/provider/keychain-store.ts` EMPTY; the mirror stands.
     // 0.0.85 → 0.0.86 (host tools under a built-in's name lose its approvals; the thinking control per row): `git diff v0.0.85
     // v0.0.86 -- packages/runtime/src/provider/keychain-store.ts` EMPTY; the mirror stands.
-    expect(pkg.version).toBe("0.0.86");
+    // 0.0.86 → 0.0.87 (a host's PreToolUse hook may answer a call itself): `git diff v0.0.86 v0.0.87 --
+    // packages/runtime/src/provider/keychain-store.ts` EMPTY; the mirror stands.
+    expect(pkg.version).toBe("0.0.87");
   });
 
 

@@ -183,7 +183,7 @@ jobs:
         working-directory: packages/core
         run: bun test --timeout 60000 src/plugin-host/tests/process.test.ts src/plugin-host/tests/windows-link.test.ts src/registry/tests/plugin-guard-windows.test.ts src/secrets/tests/windows-store.test.ts test/platform/win-acl.test.ts
 
-      - name: Core · a bot session on the embedded runtime, the fenced shell tools swapped in (agent SDK 0.0.86)
+      - name: Core · a bot session on the embedded runtime, the fenced shell tools swapped in (agent SDK 0.0.87)
         working-directory: packages/core
         run: |
           $env:MOSS_WIN_RUNTIME_E2E = "1"
