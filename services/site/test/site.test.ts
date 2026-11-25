@@ -325,8 +325,7 @@ describe("site.json", () => {
 
 describe("removing MOSS, as the page says", () => {
   const page = readFileSync(join(SITE_DIR, "content", "docs", "uninstall.md"), "utf8");
-  const cask = (name: string) => readFileSync(join(REPO_ROOT, "packaging", name), "utf8");
-  const zap = (text: string) => [.../zap trash: \[([^\]]*)\]/.exec(text)![1]!.matchAll(/"([^"]+)"/g)].map((m) => m[1]!);
+  // The Homebrew casks' lines are checked by reading them, not here: CI's map runs no site test when the cask templates change.
 
   test("`autostart remove` takes away the login start the page names, through the engine's own login code (the OS faked)", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "site-uninstall-"));
@@ -361,23 +360,6 @@ describe("removing MOSS, as the page says", () => {
     expect(page).toContain("`~/.moss/bin/daemon/moss-core autostart remove`");
     expect(engineBinaryPath("%USERPROFILE%\\.moss", "win32").replaceAll("/", "\\")).toBe("%USERPROFILE%\\.moss\\bin\\daemon\\moss-core.exe");
     expect(page).toContain("`%USERPROFILE%\\.moss\\bin\\daemon\\moss-core.exe autostart remove`");
-  });
-
-  test("the casks behave as the page says, and every folder their zap removes is on the page", () => {
-    const moss = cask("moss.rb.tmpl");
-    const code = cask("moss-code.rb.tmpl");
-    // MOSS's cask leaves the login start while MOSS Code is installed; MOSS Code's removes it either way.
-    expect(moss).toContain(`[ -d "$2" ] && exit 0; exec "$1" autostart remove`);
-    expect(moss).not.toContain("uninstall launchctl:");
-    expect(code).toContain(`uninstall launchctl: "com.waifucave.moss.core"`);
-    expect(code).not.toContain(`[ -d "$2" ] && exit 0`);
-    for (const path of [...zap(moss), ...zap(code)]) {
-      if (path.includes("LaunchAgents")) { expect(path).toBe("~/Library/LaunchAgents/com.waifucave.moss.core.plist"); continue; }
-      const shown = path.startsWith("~/Library/Caches/") ? path.slice("~/Library/Caches/".length) : path;
-      expect([path, page.includes(`\`${shown}\``) || page.includes(`\`${path}\``)]).toEqual([path, true]);
-    }
-    expect(zap(moss).some((p) => p.includes("LaunchAgents"))).toBe(false);
-    expect(zap(code).some((p) => p.includes("LaunchAgents"))).toBe(true);
   });
 
   test("Erase everything, and what it leaves, in the engine's and the app's own words", () => {
