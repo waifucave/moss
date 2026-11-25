@@ -14,8 +14,11 @@ import com.waifucave.moss.phonecore.RelayChoice
 object Engines {
     @Volatile private var client: CoreEngineClient? = null
 
-    /** The app's client, made on first use. `relay` is read only then: `Disabled` for tests that dial the engine directly. */
-    fun client(context: Context, app: PhoneApp, relay: RelayChoice = RelayChoice.Default): CoreEngineClient {
+    /**
+     * The app's client, made on first use. `relay` and `callTimeoutMs` are read only then: `Disabled` for tests that dial
+     * the engine directly, and a shorter wait for one that holds the engine's replies to see a call time out.
+     */
+    fun client(context: Context, app: PhoneApp, relay: RelayChoice = RelayChoice.Default, callTimeoutMs: Long = 30_000): CoreEngineClient {
         client?.let { return it }
         synchronized(this) {
             client?.let { return it }
@@ -26,6 +29,7 @@ object Engines {
                 CoreEngineClient.Config(
                     deviceName = name, relay = relay, storeAlias = "moss-phone-core",
                     clientName = if (app == PhoneApp.moss) "MOSS for Android" else "MOSS Code for Android",
+                    callTimeoutMs = callTimeoutMs,
                 ),
             )
             client = made

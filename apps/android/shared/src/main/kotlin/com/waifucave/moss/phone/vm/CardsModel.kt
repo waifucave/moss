@@ -29,6 +29,10 @@ class CardsModel(private val client: EngineClient, private val app: PhoneApp, pr
     private val answeredHere = mutableSetOf<String>()
     private val listener = Listener()
 
+    /** Cards whose content changed while shown (the same id, a new hash): the screen says so. */
+    var changed by mutableStateOf(setOf<String>())
+        private set
+
     /** Cards still waiting for an answer (not expired, not answered elsewhere). */
     val waitingCount: Int get() = cards.count { note(it) == null }
 
@@ -52,7 +56,20 @@ class CardsModel(private val client: EngineClient, private val app: PhoneApp, pr
 
     suspend fun apply(event: EngineEvent) {
         when (event) {
-            is EngineEvent.CardRequested -> if (client.shows(event.card, app) && cards.none { it.id == event.card.id }) cards = cards + event.card
+            is EngineEvent.CardRequested -> if (client.shows(event.card, app)) {
+                val old = cards.firstOrNull { it.id == event.card.id }
+                when {
+                    // New: at the end, so nothing the person is looking at moves.
+                    old == null -> cards = cards + event.card
+                    // The same card with other content: replaced where it stands, said so, and its buttons wait a moment
+                    // (the card's view holds them back while it is new to the screen); an answer to the old one is refused.
+                    old.hash != event.card.hash -> {
+                        cards = cards.map { if (it.id == event.card.id) event.card else it }
+                        notes = notes - event.card.id
+                        changed = changed + event.card.id
+                    }
+                }
+            }
             is EngineEvent.CardResolved -> {
                 if (event.id in answeredHere) cards = cards.filter { it.id != event.id }
                 else if (cards.any { it.id == event.id }) notes = notes + (event.id to CardNote.answeredElsewhere)

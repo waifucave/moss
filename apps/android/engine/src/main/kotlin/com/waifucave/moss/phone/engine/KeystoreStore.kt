@@ -138,7 +138,9 @@ class KeystoreStore(context: Context, private val alias: String) : SecretStorage
     }
 
     /** How many items the store holds (the unpair proof: none). */
-    fun itemCount(): Int = synchronized(lock) { dir.listFiles()?.count { !it.name.endsWith(".new") } ?: 0 }
+    /** Every file the store holds, a half-written `.new` one too: "nothing left" means no file at all. */
+    /** Locked (before the first unlock after a boot) the folder can't be read: that is `NotAvailable`, never "empty". */
+    fun itemCount(): Int = synchronized(lock) { checkUnlocked(); dir.listFiles()?.size ?: 0 }
 
     /** Whether the Keystore still holds the store's key. */
     fun hasKey(): Boolean = try { keyStore().containsAlias(alias) } catch (e: Exception) { false }

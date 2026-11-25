@@ -51,6 +51,11 @@ const val PNG_1PX = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mN
 /** What another app puts in the extras: never on the real build's screen. */
 const val INJECTED = "INJECTED BY ANOTHER APP"
 
+/** The call timeout this test's client uses, and how long the runner holds the computer's replies (under the link's idle
+ *  limit of 20 s, so the link stays up and only the call times out). */
+const val CALL_TIMEOUT_MS = 8_000L
+const val HOLD_MS = 14_000L
+
 /** Polls until `cond` holds, or fails naming what it waited for. */
 suspend fun eventually(what: String, ms: Long = 60_000, cond: suspend () -> Boolean) {
     val end = System.currentTimeMillis() + ms
@@ -74,7 +79,7 @@ class MossEndToEndTest {
     fun pairsTalksAnswersSurvivesARestartAndUnpairs(): Unit = runBlocking {
         withTimeout(900_000) {
             val ctx = InstrumentationRegistry.getInstrumentation().targetContext
-            val client = Engines.client(ctx, PhoneApp.moss, RelayChoice.Disabled)
+            val client = Engines.client(ctx, PhoneApp.moss, RelayChoice.Disabled, callTimeoutMs = CALL_TIMEOUT_MS)
             client.unpair()
             // Pairing, as the pairing screen drives it: the code the computer shows, the four words compared with the ones the
             // engine's person read on its add card, then confirmed.
@@ -130,6 +135,18 @@ class MossEndToEndTest {
             eventually("the new bot in the list") { list.load(); list.rows.any { it.id == hazel.id } }
             Log.i(TAG, "made a bot")
 
+            // A bot made while the computer's reply is held past the call's timeout: the phone reads the bots back, finds
+            // the one it asked for (in the core's form of its name), and counts it as made. The computer holds it once.
+            val botsBefore = Runner.json("/counts").getInt("bots")
+            Runner.text("/hold?ms=$HOLD_MS")
+            val t1 = System.currentTimeMillis()
+            val heldBot = client.createBot("Juniper", null)
+            assertTrue("the call timed out first", System.currentTimeMillis() - t1 >= CALL_TIMEOUT_MS)
+            assertEquals("Juniper", heldBot.name)
+            delay(HOLD_MS)
+            assertEquals("one bot made", botsBefore + 1, Runner.json("/counts").getInt("bots"))
+            Log.i(TAG, "a bot whose reply was held was read back as made")
+
             // A card the engine raises, answered from the card the model holds (the one the screen draws).
             val cards = CardsModel(client, PhoneApp.moss)
             val cardsListening = launch(Dispatchers.Default) { cards.run() }
@@ -142,6 +159,24 @@ class MossEndToEndTest {
             val decision = Runner.json("/decision?card=$cardId").getJSONObject("decision")
             assertTrue("approved: $decision", decision.getBoolean("allowed"))
             Log.i(TAG, "the card was answered: $decision")
+
+            // A card changed on the phone (other content than the core issued) is refused, and nothing reaches the computer.
+            val heldId = Runner.json("/card?bot=$botId").getString("cardId")
+            eventually("the second card shown") { cards.cards.any { it.id == heldId } }
+            val heldCard = cards.cards.first { it.id == heldId }
+            val once = heldCard.options.first { it.kind == CardOption.Kind.approve && !it.rememberAlways }
+            val forged = heldCard.copy(fields = heldCard.fields + ("title" to SealedValue.Text("Something else")))
+            assertTrue("a changed card is refused", runCatching { client.answer(forged, once) }.isFailure)
+            assertTrue("still waiting on the computer", client.cards().any { it.id == heldId })
+            // The computer takes the answer but its reply is held past the call's timeout: the phone reads the card back
+            // (card.get), finds it answered with this very option, and counts the answer as given. Nothing is sent twice.
+            Runner.text("/hold?ms=$HOLD_MS")
+            val t0 = System.currentTimeMillis()
+            client.answer(heldCard, once)
+            assertTrue("the call timed out first", System.currentTimeMillis() - t0 >= CALL_TIMEOUT_MS)
+            val heldDecision = Runner.json("/decision?card=$heldId").getJSONObject("decision")
+            assertTrue("approved after the read-back: $heldDecision", heldDecision.getBoolean("allowed"))
+            Log.i(TAG, "an answer whose reply was held was read back as given")
 
             // Another app starts the real build's activity with every extra the fake build reads (a scenario that sends on
             // open, a draft, a file to stage, a session to start, a screen, a pairing code): the real build reads none of them.
@@ -160,6 +195,18 @@ class MossEndToEndTest {
             assertTrue("no injected draft", compose.onAllNodes(hasText(INJECTED, substring = true)).fetchSemanticsNodes().isEmpty())
             assertTrue("no sample file", compose.onAllNodes(hasText("Quarterly", substring = true)).fetchSemanticsNodes().isEmpty())
             assertEquals("nothing reached the engine", before, Runner.text("/counts"))
+
+            // A card the bot raises now shows in the open conversation; the person presses its drawn button.
+            val drawnId = Runner.json("/card?bot=$botId").getString("cardId")
+            eventually("the drawn card known") { client.cards().any { it.id == drawnId } }
+            val drawn = client.cards().first { it.id == drawnId }
+            val allow = drawn.options.first { it.kind == CardOption.Kind.approve && !it.rememberAlways }
+            compose.waitUntil(60_000) { compose.onAllNodes(hasContentDescription(allow.label)).fetchSemanticsNodes().isNotEmpty() }
+            delay(1_500) // past the moment a card new to the screen takes no press
+            compose.onAllNodes(hasContentDescription(allow.label))[0].performClick()
+            val drawnDecision = Runner.json("/decision?card=$drawnId").getJSONObject("decision")
+            assertTrue("the drawn button approved: $drawnDecision", drawnDecision.getBoolean("allowed"))
+            Log.i(TAG, "the drawn button answered the card")
             scenario.close()
             Log.i(TAG, "the app's screen shows the bot, and no extra reached the engine")
 

@@ -97,6 +97,10 @@ class EngineCalls(private val call: suspend (method: String, params: JsonObject)
     suspend fun sessionAttach(id: String, since: Long?) { call("session.attach", p("id" to id, "since" to since)) }
     suspend fun sessionDetach(id: String) { call("session.detach", p("id" to id)) }
     suspend fun devices(): List<Decode.Device> = Decode.devices(call("device.list", p()), clean)
+    /** The option that resolved a card (`card.get`'s `option`), when the engine names one: an id, never drawn. */
+    suspend fun cardResolvedOption(id: String): String? =
+        call("card.get", p("id" to id))["option"].str()?.takeIf { it.length <= 64 && it.all { c -> c.isLetterOrDigit() || c == '_' || c == '-' || c == '.' } }
+
     suspend fun selfComputerName(): String? =
         call("computer.list", p())["computers"].arr().firstOrNull { it["link"].str() == "self" }?.get("name").str()?.let(clean)
 }

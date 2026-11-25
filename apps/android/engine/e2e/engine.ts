@@ -20,6 +20,8 @@
 //   /decision?card=ID            the card's outcome once answered: {decision}
 //   /restart                     stop the engine and start it again on the same home
 //   /phones                      the phones the engine has paired: [{id, app}]
+//   /hold?ms=N                   hold the computer's replies to the phone for N ms (a call it took times out there)
+//   /counts                      the person's messages in the test bot's and coding session, the sessions, the bots
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -43,6 +45,44 @@ const BIN = process.env.MOSS_LINK_BIN ?? join(repo, "native/link/target/release/
 const LINK_PORT = Number(opt("--link-port") ?? 47123);
 const CONTROL_PORT = Number(opt("--control-port") ?? 8790);
 const ADVERTISE = "10.0.2.2";
+// The phone dials a proxy in front of the sidecar, so a test can hold the computer's replies for a while (`/hold`): a call
+// the computer took then times out on the phone, and the phone must read the computer back before it tries again.
+const PROXY_PORT = Number(opt("--proxy-port") ?? 47124);
+let holdUntil = 0;
+// The link is QUIC over UDP: one upstream socket per phone address, datagrams passed both ways, the computer's to the
+// phone kept back (in order) while a hold lasts.
+type Peer = { up?: { send(b: Uint8Array, port: number, host: string): boolean }; early: Uint8Array[]; held: Uint8Array[] };
+const peers = new Map<string, Peer>();
+const front = await Bun.udpSocket({
+  hostname: "0.0.0.0", port: PROXY_PORT,
+  socket: {
+    data(_sock, buf, port, addr) {
+      const key = `${addr}:${port}`;
+      let peer = peers.get(key);
+      if (!peer) {
+        const made: Peer = { early: [], held: [] };
+        peer = made;
+        peers.set(key, made);
+        const toPhone = (b: Uint8Array) => {
+          if (Date.now() >= holdUntil && made.held.length === 0) return void front.send(b, port, addr);
+          made.held.push(new Uint8Array(b));
+          if (made.held.length === 1) {
+            const flush = () => {
+              if (Date.now() < holdUntil) return void setTimeout(flush, 50);
+              for (const h of made.held.splice(0)) front.send(h, port, addr);
+            };
+            setTimeout(flush, Math.max(0, holdUntil - Date.now()));
+          }
+        };
+        void Bun.udpSocket({ socket: { data(_u, b) { toPhone(b); } } }).then((up) => {
+          made.up = up;
+          for (const b of made.early.splice(0)) up.send(b, LINK_PORT, "127.0.0.1");
+        });
+      }
+      if (peer.up) peer.up.send(buf, LINK_PORT, "127.0.0.1"); else peer.early.push(new Uint8Array(buf));
+    },
+  },
+});
 const log = (line: string) => process.stderr.write(`[engine] ${line}\n`);
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "moss-aw-engine-")));
@@ -162,7 +202,8 @@ const advertise = (qr: string): string => {
   const port = (a: string) => a.slice(a.lastIndexOf(":") + 1);
   const all = [...(v[4] as string[]), ...(v[5] as string[])];
   v[4] = [];
-  v[5] = [...new Set(all.map((a) => `${ADVERTISE}:${port(a)}`))];
+  void port;
+  v[5] = [...new Set(all.map(() => `${ADVERTISE}:${PROXY_PORT}`))];
   return prefix + Buffer.from(encode(v)).toString("base64url");
 };
 
@@ -268,6 +309,11 @@ Bun.serve({
           return json({ decision: await Promise.race([d, Bun.sleep(60_000).then(() => "timeout")]) });
         }
         case "/restart": await restart(); return json({ ok: true });
+        case "/hold": {
+          // Hold every reply the computer sends the phone for `ms` (the phone's calls still reach it).
+          holdUntil = Date.now() + Math.min(Number(u.searchParams.get("ms") ?? 0), 120_000);
+          return json({ ok: true });
+        }
         case "/counts": {
           // What a phone could have changed on this computer: the person's messages in the test bot's conversation and
           // the coding session, the sessions, the bots, and files a phone staged (its uploads' folders).

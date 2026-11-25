@@ -38,12 +38,28 @@ internal object ReadBack {
      */
     fun startedSession(before: Set<String>, now: List<SessionRow>, request: StartRequest, calledAt: Long): String? =
         now.filter {
-            it.id !in before && it.kind == "coding" && it.backend == request.backend && it.root == request.root && it.startedAt >= calledAt - SKEW_MS
+            it.id !in before && it.kind == "coding" && it.backend == request.backend && sameFolder(it.root, request.root) && it.startedAt >= calledAt - SKEW_MS
         }.singleOrNull()?.id
 
-    /** The bot a create made, read back: one that wasn't there before the call, with the name asked for. */
-    fun madeBot(before: Set<String>, now: List<Bot>, name: String): Bot? =
-        now.filter { it.id !in before && it.name == name.trim() }.singleOrNull()
+    /** A folder as the engine echoes it: the same path less trailing separators (`/a/b/` is `/a/b`; `/` stays `/`). */
+    fun sameFolder(echoed: String?, asked: String): Boolean {
+        fun n(p: String) = p.trim().trimEnd('/').ifEmpty { "/" }
+        return echoed != null && n(echoed) == n(asked)
+    }
+
+    /**
+     * The bot a create made, read back: the one bot that wasn't there before the call, whose name is the one asked for in
+     * the form the core hands names back (`clean`: the visible-text rule; the engine may also cut a long name, so a name
+     * that is the asked one's start, of [NAME_CUT] characters or more, counts too).
+     */
+    fun madeBot(before: Set<String>, now: List<Bot>, name: String, clean: (String) -> String = { it }): Bot? {
+        val asked = clean(name.trim())
+        return now.filter { it.id !in before }.filter { b ->
+            val got = b.name.trim()
+            got == asked || (got.length >= NAME_CUT && asked.startsWith(got.removeSuffix("…")))
+        }.singleOrNull()
+    }
+    const val NAME_CUT = 32
 
     /**
      * The message text as the engine takes it with attachments: each picture and file is named in the text by its number
@@ -63,13 +79,13 @@ internal object ReadBack {
 
     /**
      * A card's state read back after an uncertain answer. Still pending: nothing was taken (the person may answer again;
-     * the first answer wins). Resolved the way this option answers it: taken, ours or another device's same answer, whose
-     * effect is the same. Expired, or resolved another way: as the screens say it.
+     * the first answer wins). Resolved by this very option (`card.get`'s `option`): taken. Expired: expired. Resolved by
+     * another option, or with no option named: answered elsewhere, as the screens say it.
      */
-    fun answer(pending: Boolean, outcome: String?, option: CardOption): Answer = when {
+    fun answer(pending: Boolean, outcome: String?, option: CardOption, resolvedOption: String?): Answer = when {
         pending -> Answer.stillPending
-        outcome == "approved" && option.kind == CardOption.Kind.approve -> Answer.accepted
-        outcome == "denied" && option.kind == CardOption.Kind.deny -> Answer.accepted
+        // Taken only when it was this option (an "always" is not a "once"): the engine names the option that won.
+        (outcome == "approved" || outcome == "denied") && resolvedOption == option.id -> Answer.accepted
         outcome == "expired" -> Answer.expired
         else -> Answer.answeredElsewhere
     }

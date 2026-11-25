@@ -67,6 +67,9 @@ class CardFieldsTest {
             assertTrue("$name's value drawn", compose.onAllNodes(hasText("value-of-$name")).fetchSemanticsNodes().isNotEmpty())
             assertTrue("$name's label drawn", compose.onAllNodes(hasText(CARD_FIELD_LABELS.getValue(name))).fetchSemanticsNodes().isNotEmpty())
         }
+        // Past the card's first moment on screen (when it takes no press), the drawn button answers with its own option.
+        compose.mainClock.advanceTimeBy(1_000)
+        compose.waitForIdle()
         compose.onNodeWithContentDescription("Yes").performScrollTo().performClick()
         assertEquals(c.options[1], pressed)
     }

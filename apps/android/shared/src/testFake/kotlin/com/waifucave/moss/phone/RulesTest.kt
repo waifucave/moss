@@ -125,4 +125,24 @@ class RulesTest {
             }
         }
     }
+
+    /** A new card comes in at the end; the same card with new content replaces the old where it stands, marked changed. */
+    @Test fun aNewCardGoesLastAndAChangedOneIsReplacedInPlace() = runTest {
+        val c = FakeEngineClient()
+        c.setOtherAppInstalled(false)
+        val m = CardsModel(c, PhoneApp.moss) { SampleData.now }
+        m.load()
+        val first = m.cards.map { it.id }
+        val fresh = SampleData.cards[0].copy(id = "card_ffff0000", issuedAt = SampleData.now + 1, hash = "f".repeat(64))
+        m.apply(EngineEvent.CardRequested(fresh))
+        assertEquals(first + fresh.id, m.cards.map { it.id })
+        val changed = fresh.copy(hash = "e".repeat(64), fields = fresh.fields + ("title" to SealedValue.Text("Something else")))
+        m.apply(EngineEvent.CardRequested(changed))
+        assertEquals(first + fresh.id, m.cards.map { it.id })
+        assertEquals(changed, m.cards.last())
+        assertTrue(fresh.id in m.changed)
+        // The same content again changes nothing.
+        m.apply(EngineEvent.CardRequested(changed))
+        assertEquals(1, m.cards.count { it.id == fresh.id })
+    }
 }

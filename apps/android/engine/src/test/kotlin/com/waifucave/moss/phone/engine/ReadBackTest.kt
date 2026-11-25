@@ -58,6 +58,8 @@ class ReadBackTest {
         // Two that match is not knowing which: none is taken.
         assertNull(ReadBack.startedSession(before, listOf(row("x"), row("y")), request, 1_000_000))
         assertEquals("x", ReadBack.startedSession(before, others + row("x"), request, 1_000_000))
+        // The folder as the engine echoes it, less a trailing separator.
+        assertEquals("t", ReadBack.startedSession(before, listOf(row("t", root = request.root + "/")), request, 1_000_000))
     }
 
     @Test
@@ -68,18 +70,29 @@ class ReadBackTest {
         assertEquals("hazel", made.id)
         assertNull(ReadBack.madeBot(setOf("alpha", "hazel"), listOf(bot("alpha", "Alpha"), bot("hazel", "Hazel")), "Hazel"))
         assertNull(ReadBack.madeBot(emptySet(), listOf(bot("a", "Hazel"), bot("b", "Hazel")), "Hazel"))
+        // The name in the core's form: escaped as the core escapes it, and cut when long.
+        val escape = { t: String -> t.replace("\u202E", "\\u{202E}") }
+        assertEquals("e", ReadBack.madeBot(emptySet(), listOf(bot("e", "Ha\\u{202E}zel")), "Ha\u202Ezel", escape)?.id)
+        val long = "A".repeat(80)
+        assertEquals("l", ReadBack.madeBot(emptySet(), listOf(bot("l", "A".repeat(64))), long)?.id)
+        assertNull(ReadBack.madeBot(emptySet(), listOf(bot("s", "A".repeat(10))), long))
     }
 
     @Test
     fun aCardReadBackSaysWhetherTheAnswerWasTaken() {
         val approve = CardOption("approve", CardOption.Kind.approve, "Approve")
         val deny = CardOption("deny", CardOption.Kind.deny, "Deny")
-        assertEquals(ReadBack.Answer.stillPending, ReadBack.answer(pending = true, outcome = null, option = approve))
-        assertEquals(ReadBack.Answer.accepted, ReadBack.answer(false, "approved", approve))
-        assertEquals(ReadBack.Answer.accepted, ReadBack.answer(false, "denied", deny))
-        assertEquals(ReadBack.Answer.answeredElsewhere, ReadBack.answer(false, "denied", approve))
-        assertEquals(ReadBack.Answer.answeredElsewhere, ReadBack.answer(false, "withdrawn", approve))
-        assertEquals(ReadBack.Answer.expired, ReadBack.answer(false, "expired", approve))
+        val always = CardOption("allow_always", CardOption.Kind.approve, "Always allow", rememberAlways = true)
+        assertEquals(ReadBack.Answer.stillPending, ReadBack.answer(pending = true, outcome = null, option = approve, resolvedOption = null))
+        assertEquals(ReadBack.Answer.accepted, ReadBack.answer(false, "approved", approve, approve.id))
+        assertEquals(ReadBack.Answer.accepted, ReadBack.answer(false, "denied", deny, deny.id))
+        // An "always" that won is not this "once", and an outcome with no option named is not known to be ours.
+        assertEquals(ReadBack.Answer.answeredElsewhere, ReadBack.answer(false, "approved", approve, always.id))
+        assertEquals(ReadBack.Answer.answeredElsewhere, ReadBack.answer(false, "approved", always, approve.id))
+        assertEquals(ReadBack.Answer.answeredElsewhere, ReadBack.answer(false, "approved", approve, null))
+        assertEquals(ReadBack.Answer.answeredElsewhere, ReadBack.answer(false, "denied", approve, deny.id))
+        assertEquals(ReadBack.Answer.answeredElsewhere, ReadBack.answer(false, "withdrawn", approve, null))
+        assertEquals(ReadBack.Answer.expired, ReadBack.answer(false, "expired", approve, null))
     }
 
     @Test

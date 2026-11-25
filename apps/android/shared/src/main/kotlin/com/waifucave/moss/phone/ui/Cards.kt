@@ -29,6 +29,7 @@ import com.waifucave.moss.phone.model.CardOption
 import com.waifucave.moss.phone.model.SealedValue
 import com.waifucave.moss.phone.vm.CardNote
 import com.waifucave.moss.phone.vm.CardsModel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -69,6 +70,9 @@ val CARD_FIELD_LABELS = mapOf(
     "source" to "From", "host" to "Site", "paths" to "Files", "detail" to "Everything it sends", "expires" to "Expires", "rule" to "Rule",
 )
 
+/** How long a card new to the screen holds its buttons back. */
+const val ARM_MS = 600L
+
 /** Whether this build can draw all of a card: every field one it knows, every value of a kind it draws. */
 fun Card.drawable(): Boolean = fields.all { (name, v) -> name in CARD_FIELDS && v !is SealedValue.Unsupported }
 
@@ -80,11 +84,15 @@ private fun Card.footerComputer(): SealedValue.Text? = fields["computer"] as? Se
 
 /** A pending card: small, never raw JSON. Its title, what it asks, the command or paths it covers, and its sealed buttons. */
 @Composable
-fun CardView(card: Card, busy: Boolean, note: CardNote?, onAnswer: (CardOption) -> Unit, onSettle: () -> Unit, modifier: Modifier = Modifier) {
+fun CardView(card: Card, busy: Boolean, note: CardNote?, onAnswer: (CardOption) -> Unit, onSettle: () -> Unit, modifier: Modifier = Modifier, changed: Boolean = false) {
     val c = MossTheme.colors
     val now = nowMs()
     val large = largeText()
     var expanded by remember(card.id) { mutableStateOf(setOf<String>()) }
+    // A card new to the screen, or whose content just changed, takes no press for a moment: a tap meant for what was
+    // there before never answers it.
+    var armed by remember(card.id, card.hash) { mutableStateOf(false) }
+    LaunchedEffect(card.id, card.hash) { delay(ARM_MS); armed = true }
     Column(
         modifier.fillMaxWidth().cardSurface(c).padding(14.dp).alpha(if (note == null || note == CardNote.failed) 1f else 0.75f),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -136,6 +144,7 @@ fun CardView(card: Card, busy: Boolean, note: CardNote?, onAnswer: (CardOption) 
             val left = (card.expiresAt - now) / 1000
             if (left > 0) Text("Expires in ${left / 60} min", style = MossType.caption, color = c.secondary)
         }
+        if (changed) Text("This card changed while it was shown. Read it again before you answer.", style = MossType.footnote, color = c.secondary)
         if (!card.drawable()) {
             // A field this build can't draw: the person would approve less than what they were asked. No buttons.
             Text("Answer this one on your computer: it holds something this phone can't show.", style = MossType.footnote, color = c.secondary,
@@ -151,7 +160,7 @@ fun CardView(card: Card, busy: Boolean, note: CardNote?, onAnswer: (CardOption) 
             val buttons: @Composable (CardOption, Modifier) -> Unit = { option, m ->
                 val approve = option.kind == CardOption.Kind.approve
                 FilledTonalButton(
-                    onClick = { onAnswer(option) }, enabled = !busy, modifier = m.semantics {
+                    onClick = { if (armed) onAnswer(option) }, enabled = !busy && armed, modifier = m.semantics {
                         contentDescription = if (option.rememberAlways) "${option.label}, and remember" else option.label
                         stateDescription = if (approve) "Approves this request" else "Refuses this request"
                     },
@@ -218,12 +227,13 @@ fun NeedsYouScreen(model: CardsModel, who: (Card) -> String, onBack: () -> Unit)
                     if (model.loadFailed) item {
                         UnreachableNotice(null, null, { scope.launch { model.load() } }, Modifier.cardSurface(c).padding(14.dp))
                     }
-                    items(model.cards.sortedByDescending { it.issuedAt }, key = { it.id }) { card ->
+                    items(model.cards, key = { it.id }) { card -> // in arrival order: a new card comes in at the end
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             GroupHeading(who(card), Modifier.padding(start = 6.dp))
                             CardView(card, card.id in model.answering, model.note(card),
                                 onAnswer = { o -> scope.launch { model.answer(card, o) } },
-                                onSettle = { if (model.note(card) == CardNote.failed) model.clearFailure(card) else model.dismiss(card) })
+                                onSettle = { if (model.note(card) == CardNote.failed) model.clearFailure(card) else model.dismiss(card) },
+                                changed = card.id in model.changed)
                         }
                     }
                 }

@@ -188,7 +188,8 @@ class CoreEngineClient(
                 val fresh: List<CardView>
                 synchronized(this) {
                     gone = issued.keys.filter { it !in now }
-                    fresh = e.cards.filter { it.id() !in issued }
+                    // New, or the same id with other content (a new hash): either is shown afresh.
+                    fresh = e.cards.filter { v -> issued[v.id()]?.hash() != v.hash() }
                     issued.clear(); issued.putAll(now)
                 }
                 for (id in gone) events.tryEmit(EngineEvent.CardResolved(id))
@@ -405,7 +406,9 @@ class CoreEngineClient(
             if (!uncertain(e)) throw e
             // The answer may have reached the computer: read the card back before anything is tried again.
             val back = try { c.fetchCard(card.id) } catch (x: CancellationException) { throw x } catch (x: Exception) { throw e }
-            when (ReadBack.answer(back.pending(), back.outcome(), option)) {
+            // The core checks the card it reads back; the option that won is read from the same door (`card.get`).
+            val won = try { calls.cardResolvedOption(card.id) } catch (x: CancellationException) { throw x } catch (x: Exception) { null }
+            when (ReadBack.answer(back.pending(), back.outcome(), option, won)) {
                 ReadBack.Answer.accepted -> { resolvedHere(card.id); return@io }
                 ReadBack.Answer.stillPending -> throw e
                 ReadBack.Answer.expired -> throw CardAnswerException(CardAnswerError.expired)
@@ -503,7 +506,7 @@ class CoreEngineClient(
     override suspend fun stageImage(session: String, data: ByteArray): String = io {
         if (offersOf(session)?.pictures != true) throw EngineRefusal("This conversation doesn't take pictures from the phone.")
         try { c().stageImage(session, mediaType(data), data) } catch (e: CoreException) {
-            Log.w(tag, "a picture wasn't staged: ${e.javaClass.simpleName}: ${e.message}")
+            Log.w(tag, "a picture wasn't staged: ${e.javaClass.simpleName}") // never the core's words: they may name a file
             throw e
         }
     }
@@ -515,7 +518,7 @@ class CoreEngineClient(
         if (data.size > limit) throw FileTooLarge(limit)
         val f = try { c().stageFile(session, name, data) } catch (e: CoreException) {
             // The core's words, cleaned (never a key or a path of the phone's): what the screens say only as "couldn't be added".
-            Log.w(tag, "a file wasn't staged: ${e.javaClass.simpleName}: ${e.message}")
+            Log.w(tag, "a file wasn't staged: ${e.javaClass.simpleName}")
             throw e
         }
         StagedFile(f.path, visibleText(f.computersName, true), data.size.toLong())
@@ -529,7 +532,7 @@ class CoreEngineClient(
         try {
             val before = c.bots().map { it.id }.toSet()
             // A bot may have been made though the answer never came: read the bots back before anyone makes it again.
-            ReadBack.afterUncertain({ Typed.bot(c.createBot(name, model)) }, ::uncertain) { ReadBack.madeBot(before, c.bots().map(Typed::bot), name) }
+            ReadBack.afterUncertain({ Typed.bot(c.createBot(name, model)) }, ::uncertain) { ReadBack.madeBot(before, c.bots().map(Typed::bot), name) { visibleText(it, false) } }
                 .also(::remember)
         } catch (e: CoreException.Rpc) {
             if (e.code == -32601L || e.code == -32010L) throw EngineRefusal("Making a bot from the phone isn't available on this computer yet.")
