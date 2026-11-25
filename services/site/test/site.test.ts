@@ -179,6 +179,9 @@ describe("the commands the docs print", () => {
   const commands = [
     ...[...readdirSync(join(SITE_DIR, "content", "docs"))].flatMap((f) =>
       [...readFileSync(join(SITE_DIR, "content", "docs", f), "utf8").matchAll(/`(moss [^`]+)`|^(moss .+)$/gm)].map((m) => (m[1] ?? m[2])!.trim())),
+    // The engine's own binary inside an app, run by its path (`…/moss-core autostart remove`): the same command line.
+    ...[...readdirSync(join(SITE_DIR, "content", "docs"))].flatMap((f) =>
+      [...readFileSync(join(SITE_DIR, "content", "docs", f), "utf8").matchAll(/`\S*\/moss-core ([^`]+)`/g)].map((m) => `moss ${m[1]!.trim()}`)),
     // The landing page's own: in <code>, or a line of its developers' block.
     ...[...readFileSync(join(SITE_DIR, "src", "landing.ts"), "utf8").matchAll(/<code>(moss [^<]+)<\/code>|^(moss plugin .+?)(?:<\/code><\/pre>)?$/gm)].map((m) => (m[1] ?? m[2])!.trim()),
   ];
@@ -201,7 +204,8 @@ describe("the commands the docs print", () => {
   });
 
   test("every `moss code` line runs as printed, in a shell with no MOSS_COMPUTER", async () => {
-    const lines = commands.filter((c) => c.startsWith("moss code "));
+    // A line with <placeholders> or [optional parts] is a command's form, checked by the test above, not run.
+    const lines = commands.filter((c) => c.startsWith("moss code ") && !/[<[]/.test(c));
     expect(lines.length).toBeGreaterThan(0);
     const home = "/Users/someone";
     for (const line of lines) {
@@ -220,15 +224,25 @@ describe("the commands the docs print", () => {
   test("every printed command is one the moss command has", () => {
     const top = new Set([...readFileSync(join(REPO_ROOT, "packages", "cli", "src", "main.ts"), "utf8").matchAll(/^  case "([a-z-]+)":/gm)].map((m) => m[1]!));
     const pluginVerbs = new Set<string>(["list", "dev", "logs", "new", "validate", ...MOSS_PLUGIN_VERBS]);
+    // `moss autostart`'s subcommands, from its own usage line (the command acts on the OS, so it is read, never run, here).
+    const usage = /const AUTOSTART_USAGE = "usage: moss autostart ([^"]+)"/.exec(readFileSync(join(REPO_ROOT, "packages", "cli", "src", "main.ts"), "utf8"))![1]!;
+    const autostartSubs = new Set(usage.replace(/\[[^\]]*\]/g, "").split(/[\s|]+/).filter((w) => /^[a-z]+$/.test(w)));
+    expect([...autostartSubs].sort()).toEqual(["disable", "enable", "remove", "start", "status", "stop"]);
+    const engineText = readFileSync(join(REPO_ROOT, "packages", "core", "src", "update", "engine-install-command.ts"), "utf8");
+    const engineSubs = new Set([...engineText.matchAll(/usage: moss-core engine ([a-z]+)/g)].map((m) => m[1]!));
+    expect([...engineSubs].sort()).toEqual(["install", "reset"]);
+    expect(autostartSubs.has("remove")).toBe(true);
     for (const c of commands) {
       const [, word, verb] = c.split(/\s+/);
       expect([c, top.has(word!)]).toEqual([c, true]);
       if (word === "plugin") expect([c, pluginVerbs.has(verb!)]).toEqual([c, true]);
+      if (word === "autostart") expect([c, autostartSubs.has(verb!)]).toEqual([c, true]);
+      if (word === "engine") expect([c, engineSubs.has(verb!)]).toEqual([c, true]);
     }
   });
 
   test("every printed plugin command runs as printed through the CLI's own code", async () => {
-    const lines = commands.filter((c) => c.startsWith("moss plugin "));
+    const lines = commands.filter((c) => c.startsWith("moss plugin ") && !/[<[]/.test(c));
     expect(lines.length).toBeGreaterThan(5);
     // The folders the pages make with `moss plugin new`, made here the same way, for the commands that name them.
     const work = mkdtempSync(join(root, "plugin-commands-"));
@@ -252,7 +266,7 @@ describe("the commands the docs print", () => {
       else { mkdirSync(dirname(at), { recursive: true }); writeFileSync(at, kind === "mcp-config" ? '{ "mcpServers": {} }' : "---\nname: x\n---\n"); }
     }
     const answers: Record<string, unknown> = {
-      "plugin.list": { plugins: [] }, "plugin.setEnabled": { applied: true }, "plugin.install": { id: "x", state: "found" },
+      "plugin.list": { plugins: [] }, "plugin.index.list": { indexes: [] }, "plugin.setEnabled": { applied: true }, "plugin.install": { id: "x", state: "found" },
       "plugin.dev.add": { applied: false }, "plugin.dev.renew": { expiresAt: Date.now() + 86_400_000 },
     };
     for (const line of lines) {

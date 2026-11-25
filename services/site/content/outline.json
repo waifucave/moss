@@ -64,10 +64,10 @@
     {
       "title": "Reference",
       "pages": [
-        { "slug": "cli", "title": "The moss command", "summary": "Every command of the moss command line.", "sources": ["packages/cli/src/main.ts", "packages/cli/src/moss-plugin-cli.ts"] },
+        { "slug": "cli", "title": "The moss command", "summary": "Every command of the moss command line.", "sources": ["packages/cli/src/main.ts", "packages/cli/src/moss-plugin-cli.ts", "packages/cli/src/code-cli.ts", "packages/core/src/update/engine-install-command.ts"] },
         { "slug": "home-folder", "title": "The home folder", "summary": "What is in ~/.moss, and what to back up.", "sources": ["docs/moss-spec.md §2, §6.5, §9.1", "packages/core/src/moss-dir.ts", "packages/core/src/bots/paths.ts", "packages/core/src/bots/records.ts", "docs/secrets-file.md"] },
         { "slug": "systems", "title": "Systems", "summary": "What each system needs and what differs between them.", "sources": ["docs/moss-spec.md §4", "docs/secrets-file.md", "packaging/installer-hooks.ts"] },
-        { "slug": "uninstall", "title": "Removing MOSS", "summary": "Removing one app or both, and what stays.", "sources": ["packaging/moss.rb.tmpl", "packaging/installer-hooks.ts", "docs/moss-spec.md §3.1"] },
+        { "slug": "uninstall", "title": "Removing MOSS", "summary": "Removing one app or both, and what stays.", "sources": ["packaging/moss.rb.tmpl", "packaging/moss-code.rb.tmpl", "packaging/installer-hooks.ts", "packaging/linux/after-install.sh", "packaging/windows/installer-moss.nsh", "packages/cli/src/main.ts", "docs/secrets-file.md", "docs/moss-spec.md §3.1"] },
         { "slug": "from-source", "title": "Building from source", "summary": "Getting the repository running for development.", "sources": ["CONTRIBUTING.md", "docs/moss-layout.md"] },
         { "slug": "security", "title": "Reporting a security problem", "summary": "Where to send it, and what happens next.", "sources": ["SECURITY.md"] }
       ]
