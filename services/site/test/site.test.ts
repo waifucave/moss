@@ -192,6 +192,14 @@ describe("the commands the docs print", () => {
     expect(plugin).toContain("moss plugin new tool hello-tool");
   });
 
+  test("the model provider page's manifest is what `moss plugin new model my-provider` writes, word for word", () => {
+    const page = readFileSync(docFile("model-plugin"), "utf8");
+    const made = templateFiles("model", { id: "my-provider", name: "My provider" });
+    if ("error" in made) throw new Error(made.error);
+    expect(page).toContain("moss plugin new model my-provider");
+    expect(JSON.parse(page.match(/```json\n([\s\S]*?)```/)![1]!)).toEqual(JSON.parse(made.files["moss.json"]!));
+  });
+
   test("every `moss code` line runs as printed, in a shell with no MOSS_COMPUTER", async () => {
     const lines = commands.filter((c) => c.startsWith("moss code "));
     expect(lines.length).toBeGreaterThan(0);
@@ -235,6 +243,14 @@ describe("the commands the docs print", () => {
         writeFileSync(join(work, folder!, file), text);
       }
     }
+    // What a printed `wrap` names: a folder for a skill or a Claude Code plugin, a file for an agent or an MCP configuration.
+    for (const line of lines) {
+      const [, , verb, kind, value] = line.split(/\s+/);
+      if (verb !== "wrap" || kind === "mcp-url" || value === undefined) continue;
+      const at = join(work, value!);
+      if (kind === "skill-folder" || kind === "claude-plugin") mkdirSync(at, { recursive: true });
+      else { mkdirSync(dirname(at), { recursive: true }); writeFileSync(at, kind === "mcp-config" ? '{ "mcpServers": {} }' : "---\nname: x\n---\n"); }
+    }
     const answers: Record<string, unknown> = {
       "plugin.list": { plugins: [] }, "plugin.setEnabled": { applied: true }, "plugin.install": { id: "x", state: "found" },
       "plugin.dev.add": { applied: false }, "plugin.dev.renew": { expiresAt: Date.now() + 86_400_000 },
@@ -254,7 +270,7 @@ describe("the commands the docs print", () => {
       expect([line, r.code, calls.length > 0]).toEqual([line, 0, true]);
     }
     // No printed plugin command is a bare verb missing what it acts on.
-    for (const c of commands) expect([c, /^moss plugin (enable|disable|install|remove|dev|info|logs)\s*$/.test(c)]).toEqual([c, false]);
+    for (const c of commands) expect([c, /^moss plugin (enable|disable|install|remove|dev|info|logs|wrap)\s*$/.test(c)]).toEqual([c, false]);
   });
 
   test("every routine file and schedule the docs print is one MOSS reads", () => {
