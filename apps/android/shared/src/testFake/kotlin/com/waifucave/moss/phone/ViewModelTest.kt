@@ -94,7 +94,7 @@ class ViewModelTest {
         bots.load(); code.load()
         assertEquals(3, bots.cards.size); assertEquals(3, code.cards.size)
         val card = bots.cards.first { it.id == "card_0a1b2c3d" }
-        bots.answer(card, card.options[0])
+        bots.answerShown(card, card.options[0])
         assertFalse(bots.cards.any { it.id == card.id })
         assertEquals(card.id to card.options[0].id, c.answered.first())
     }
@@ -105,7 +105,7 @@ class ViewModelTest {
         m.load()
         val card = m.cards[0]
         c.failNext = FakeEngineClient.Failure("down")
-        m.answer(card, card.options[0])
+        m.answerShown(card, card.options[0])
         assertEquals(2, m.cards.size); assertEquals(CardNote.failed, m.note(card))
         m.clearFailure(card)
         assertNull(m.note(card))
@@ -117,7 +117,7 @@ class ViewModelTest {
         m.load()
         val expired = m.cards.first { it.id == "card_0a1b2c3d" }
         assertEquals(CardNote.expired, m.note(expired))
-        m.answer(expired, expired.options[0])          // refused here, never sent
+        m.answerShown(expired, expired.options[0])          // refused here, never sent
         assertTrue(c.answered.isEmpty())
         m.apply(EngineEvent.CardResolved("card_55aa66bb"))   // another device answered it
         assertEquals(CardNote.answeredElsewhere, m.note(m.cards.first { it.id == "card_55aa66bb" }))
@@ -131,7 +131,7 @@ class ViewModelTest {
         val m = CardsModel(c, PhoneApp.moss, { SampleData.now }, steppingClock())
         m.load()
         val card = m.cards.first { it.id == "card_55aa66bb" }
-        m.answer(card, card.options[0])
+        m.answerShown(card, card.options[0])
         assertEquals(CardNote.answeredElsewhere, m.note(card))
     }
 
@@ -343,7 +343,7 @@ class ViewModelTest {
         val m = CardsModel(c, PhoneApp.moss, { SampleData.now }, steppingClock())
         m.load()
         val drawn = m.cards.first()
-        m.answer(drawn, drawn.options.first())
+        m.answerShown(drawn, drawn.options.first())
         assertEquals(drawn.id to drawn.options.first().id, c.answered.single())
     }
 

@@ -108,6 +108,8 @@ class CodeEndToEndTest {
             eventually("the card shown") { cards.cards.any { it.id == cardId } }
             val card = cards.cards.first { it.id == cardId }
             eventually("past the new card's wait") { cards.waitLeft(card) == 0L }
+            // This model has no screen: it is told what a screen would say, that the card's values fit (shown whole).
+            cards.scrolled(card, overflows = false, reachedEnd = false)
             cards.answer(card, card.options.first { it.kind == CardOption.Kind.approve })
             assertNull("no note: ${cards.notes[cardId]}", cards.notes[cardId])
             val decision = Runner.json("/decision?card=$cardId").getJSONObject("decision")

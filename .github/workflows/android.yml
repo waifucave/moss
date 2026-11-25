@@ -63,19 +63,23 @@ jobs:
           set -euo pipefail
           dir="$HOME/.m2/repository/org/robolectric/android-all-instrumented/$ANDROID_ALL"
           mkdir -p "$dir"
-          path="org/robolectric/android-all-instrumented/$ANDROID_ALL/android-all-instrumented-$ANDROID_ALL"
+          path="org/robolectric/android-all-instrumented/$ANDROID_ALL/android-all-instrumented-$ANDROID_ALL.jar"
           # Google's mirror of Maven Central first (Central throttles the shared runners' addresses with 429), then Central.
-          fetched=0
           for repo in https://maven-central.storage-download.googleapis.com/maven2 https://repo1.maven.org/maven2; do
-            ok=1
-            for ext in jar jar.sha1; do
-              curl -fsSL --retry 3 --retry-delay 20 --retry-all-errors --max-time 600 -o "$dir/android-all-instrumented-$ANDROID_ALL.$ext" "$repo/$path.$ext" || ok=0
-            done
-            if [ $ok = 1 ]; then fetched=1; echo "fetched from $repo"; break; fi
+            if curl -fsSL --retry 3 --retry-delay 20 --retry-all-errors --max-time 600 -o "$dir/android-all-instrumented-$ANDROID_ALL.jar" "$repo/$path"; then
+              echo "fetched from $repo"; break
+            fi
+            rm -f "$dir/android-all-instrumented-$ANDROID_ALL.jar"
           done
-          test $fetched = 1
-          # The jar is the one Maven Central lists.
-          echo "$(cat "$dir/android-all-instrumented-$ANDROID_ALL.jar.sha1")  $dir/android-all-instrumented-$ANDROID_ALL.jar" | sha1sum -c -
+      - name: Robolectric's Android jar is the pinned one (every run, cache hit or not)
+        env:
+          ANDROID_ALL: 15-robolectric-12650502-i7
+          # Pinned in the repo, read once from Maven Central and Google's mirror (they agreed), never fetched at run time.
+          ANDROID_ALL_SHA256: 33c2d7cc4186d4605269d5d411fa1818972c5b30a9f70bfbbd3d430b076af52f
+        run: |
+          set -euo pipefail
+          jar="$HOME/.m2/repository/org/robolectric/android-all-instrumented/$ANDROID_ALL/android-all-instrumented-$ANDROID_ALL.jar"
+          echo "$ANDROID_ALL_SHA256  $jar" | sha256sum -c -
       - name: Build both apps
         # The fake variants: the real ones need the shared core's native library and binding, built by android-engine.yml.
         run: gradle --no-daemon --stacktrace :moss:assembleFakeDebug :code:assembleFakeDebug

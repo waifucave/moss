@@ -147,6 +147,7 @@ class CardFieldsTest {
         compose.waitForIdle()
         assertTrue("the ninth is hidden", compose.onAllNodes(hasText("/etc/sudoers")).fetchSemanticsNodes().isEmpty())
         compose.onNodeWithContentDescription("Yes").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("No").assertIsEnabled() // saying no never waits to be read
         compose.onNodeWithText("and 1 more. Show all 9").performClick()
         compose.waitForIdle()
         assertTrue("the ninth shows", compose.onAllNodes(hasText("/etc/sudoers")).fetchSemanticsNodes().isNotEmpty())
@@ -186,6 +187,7 @@ class CardFieldsTest {
         compose.onNodeWithContentDescription("Yes").assertIsNotEnabled()
         assertTrue("a cue says there is more", compose.onAllNodes(hasContentDescription("More below", substring = true)).fetchSemanticsNodes().isNotEmpty())
         compose.onNodeWithTag("card-value:rule").assertIsNotDisplayed()
+        compose.onNodeWithContentDescription("No").assertIsEnabled() // saying no never waits to be read
         scrollValuesToEnd()
         compose.onNodeWithTag("card-value:rule").assertIsDisplayed()
         compose.onNodeWithContentDescription("Yes").assertIsEnabled()

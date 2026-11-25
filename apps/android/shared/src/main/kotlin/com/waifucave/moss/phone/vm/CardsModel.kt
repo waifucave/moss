@@ -49,12 +49,15 @@ class CardsModel(
     }
     private fun openedOn(card: Card): Set<String> = opened[card.id + "#" + card.hash] ?: emptySet()
 
-    /** Cards whose values area overflows and hasn't been scrolled to its end yet (by id and hash). */
-    private var unscrolled by mutableStateOf<Set<String>>(emptySet())
+    /**
+     * Cards (by id and hash) the screen has shown whole: their values fit their area, or were scrolled to its end once.
+     * An approval is refused until the screen said so; before any report it is refused, never taken.
+     */
+    private var seenWhole by mutableStateOf<Set<String>>(emptySet())
     /** The screen says whether a card's values overflow its area and whether they were scrolled to the end once. */
     fun scrolled(card: Card, overflows: Boolean, reachedEnd: Boolean) {
         val key = card.id + "#" + card.hash
-        unscrolled = if (overflows && !reachedEnd && END !in openedOn(card)) unscrolled + key else unscrolled - key
+        if (!overflows || reachedEnd) seenWhole = seenWhole + key
         if (reachedEnd) open(card, END)
     }
 
@@ -142,12 +145,14 @@ class CardsModel(
         fun refuse(why: String) { refusals = refusals + (card.id to why) }
         // Inside the wait: refused, whatever the screen drew (a second tap after the card above it went).
         if (waitLeft(card) > 0) return refuse("Wait a moment: this card just moved.")
-        // A card this phone can't show whole (a field it can't draw, children, too much) is answered on the computer; one
-        // with a part still cut short waits until each was opened, and one whose values overflow until they were scrolled
-        // to the end.
+        // A card this phone can't show whole (a field it can't draw, children, too much) is answered on the computer.
         if (!card.drawable()) return refuse("Answer this one on your computer.")
-        if ((card.cutFields() - openedOn(card)).isNotEmpty()) return refuse("Open the rest first: some of this card is cut short.")
-        if (card.id + "#" + card.hash in unscrolled) return refuse("Scroll to the end of the card first.")
+        // A refusal never waits to be read (only the moment above): saying no must always be possible. An approval waits
+        // until every cut part was opened and the screen has shown the values whole.
+        if (option.kind == CardOption.Kind.approve) {
+            if ((card.cutFields() - openedOn(card)).isNotEmpty()) return refuse("Open the rest first: some of this card is cut short.")
+            if (card.id + "#" + card.hash !in seenWhole) return refuse("Scroll to the end of the card first.")
+        }
         // Only the card as it stands now: one re-issued meanwhile (another hash) is answered from what is shown now.
         if (cards.none { it.id == card.id && it.hash == card.hash }) return
         answering = answering + card.id

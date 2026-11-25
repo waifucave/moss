@@ -9,9 +9,12 @@ dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
         google()
-        // Google's mirror of Maven Central (the same artifacts and checksums), before Central itself: Central throttles the
-        // shared CI runners' addresses with 429. Central stays as the fallback.
-        maven("https://maven-central.storage-download.googleapis.com/maven2") { name = "MavenCentralMirror" }
+        // Google's mirror of Maven Central, for Robolectric's artifacts only (the ones Central throttled on CI with 429):
+        // every other group comes from Google's and Central's own repositories. Central stays as Robolectric's fallback.
+        maven("https://maven-central.storage-download.googleapis.com/maven2") {
+            name = "MavenCentralMirror"
+            content { includeGroup("org.robolectric") }
+        }
         mavenCentral()
     }
 }

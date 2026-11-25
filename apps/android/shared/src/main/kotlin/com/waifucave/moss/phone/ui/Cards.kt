@@ -258,7 +258,7 @@ fun CardView(
             modifier = Modifier.semantics(mergeDescendants = true) { contentDescription = "More below: scroll the card to read it all" }) {
             Icon(Icons.Filled.KeyboardArrowDown, null, tint = c.secondary, modifier = Modifier.size(16.dp))
             Spacer(Modifier.width(4.dp))
-            Text(if (reachedEnd) "More below" else "More below. Scroll to the end to answer.", style = MossType.footnote, color = c.secondary)
+            Text(if (reachedEnd) "More below" else "More below. Scroll to the end to allow.", style = MossType.footnote, color = c.secondary)
         }
         refusal?.let { Text(it, style = MossType.footnote, color = c.secondary, modifier = Modifier.semantics { contentDescription = it }) }
         if (changed) Text("This card changed while it was shown. Read it again before you answer.", style = MossType.footnote, color = c.secondary)
@@ -267,8 +267,8 @@ fun CardView(
             Text("Answer this one on your computer: it holds something this phone can't show.", style = MossType.footnote, color = c.secondary,
                 modifier = Modifier.semantics { contentDescription = "Answer this one on your computer" })
         } else if (note == null && unopened.isNotEmpty()) {
-            Text("Some of this card is cut short. Open each \"Show all\" above to answer.", style = MossType.footnote, color = c.secondary,
-                modifier = Modifier.semantics { contentDescription = "Open each cut part to answer" })
+            Text("Some of this card is cut short. Open each \"Show all\" above to allow.", style = MossType.footnote, color = c.secondary,
+                modifier = Modifier.semantics { contentDescription = "Open each cut part to allow" })
         }
         if (!card.drawable()) Unit
         else if (note != null) {
@@ -279,10 +279,13 @@ fun CardView(
             }
             OutlinedButton(onClick = onSettle, modifier = Modifier.fillMaxWidth()) { Text(if (note == CardNote.failed) "Try again" else "Dismiss", color = c.secondary) }
         } else {
+            // Deny waits only the moment a card new to the screen holds back; an approval also waits for every cut part
+            // to be opened and the values to have been shown whole.
+            val ready: (CardOption) -> Boolean = { o -> armed && (o.kind == CardOption.Kind.deny || (unopened.isEmpty() && scrolledEnough)) }
             val buttons: @Composable (CardOption, Modifier) -> Unit = { option, m ->
                 val approve = option.kind == CardOption.Kind.approve
                 FilledTonalButton(
-                    onClick = { if (armed && unopened.isEmpty() && scrolledEnough) onAnswer(option) }, enabled = !busy && armed && unopened.isEmpty() && scrolledEnough, modifier = m.semantics {
+                    onClick = { if (ready(option)) onAnswer(option) }, enabled = !busy && ready(option), modifier = m.semantics {
                         contentDescription = if (option.rememberAlways) "${option.label}, and remember" else option.label
                         stateDescription = if (approve) "Approves this request" else "Refuses this request"
                     },

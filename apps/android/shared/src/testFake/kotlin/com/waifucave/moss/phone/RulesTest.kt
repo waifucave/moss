@@ -21,6 +21,9 @@ import kotlin.random.Random
 /** A clock a second further on at every read: a card's wait (CardsModel.ARM_MS) is always over by the next look. */
 fun steppingClock(): () -> Long { var t = 0L; return { t += 1_000; t } }
 
+/** Answers as a screen would after showing the card whole (its values fit): the model takes no approval before that. */
+suspend fun CardsModel.answerShown(card: Card, option: CardOption) { scrolled(card, overflows = false, reachedEnd = false); answer(card, option) }
+
 class RulesTest {
     @Test fun composerPrimarySlot() {
         assertEquals(ComposerRules.Primary.stop, ComposerRules.primary(running = true, draft = "text"))
@@ -120,7 +123,7 @@ class RulesTest {
                 when (rnd.nextInt(4)) {
                     0 -> m.apply(EngineEvent.CardRequested(card))
                     1 -> m.apply(EngineEvent.CardResolved(card.id))
-                    2 -> m.cards.firstOrNull { it.id == card.id }?.let { m.answer(it, it.options.last()) }
+                    2 -> m.cards.firstOrNull { it.id == card.id }?.let { m.answerShown(it, it.options.last()) }
                     else -> m.cards.firstOrNull { it.id == card.id }?.let { m.dismiss(it) }
                 }
                 val ids = m.cards.map { it.id }
@@ -166,15 +169,15 @@ class RulesTest {
         val a = waiting[0]
         val b = m.cards[m.cards.indexOf(a) + 1]
         assertEquals(0L, m.waitLeft(a))
-        m.answer(a, a.options.first())
+        m.answerShown(a, a.options.first())
         assertFalse(m.cards.any { it.id == a.id })
         assertTrue("b moved up and waits", m.waitLeft(b) > 0)
-        m.answer(b, b.options.first())
+        m.answerShown(b, b.options.first())
         assertTrue("the impatient tap was refused", m.cards.any { it.id == b.id })
         assertNull(m.notes[b.id])
         t += ARM_MS
         assertEquals(0L, m.waitLeft(b))
-        m.answer(b, b.options.first())
+        m.answerShown(b, b.options.first())
         assertFalse("now it is answered", m.cards.any { it.id == b.id })
     }
 
@@ -187,17 +190,17 @@ class RulesTest {
         val a = m.cards.first { m.note(it) == null }
         val reissued = a.copy(hash = "9".repeat(64), fields = a.fields + ("reason" to SealedValue.Text("changed")))
         c.beforeAnswer = { m.apply(EngineEvent.CardRequested(reissued)) }
-        m.answer(a, a.options.first())
+        m.answerShown(a, a.options.first())
         assertEquals("the re-issued card stays", reissued, m.cards.firstOrNull { it.id == a.id })
         // A card with a cut list: refused until the list was opened.
         val long = a.copy(id = "card_cut000001", hash = "8".repeat(64), fields = a.fields + ("paths" to SealedValue.ListOf((1..9).map { "f$it" })))
         c.raise(long)
         m.apply(EngineEvent.CardRequested(long))
         c.beforeAnswer = {}
-        m.answer(long, long.options.first())
+        m.answerShown(long, long.options.first())
         assertTrue("refused while cut", m.cards.any { it.id == long.id })
         m.open(long, "paths")
-        m.answer(long, long.options.first())
+        m.answerShown(long, long.options.first())
         assertFalse("answered once opened", m.cards.any { it.id == long.id })
     }
 
@@ -215,5 +218,32 @@ class RulesTest {
         m.scrolled(a, overflows = true, reachedEnd = true)
         m.answer(a, a.options.first())
         assertFalse(m.cards.any { it.id == a.id })
+    }
+
+    /** Deny is never held by the reading gates (only the moment a card moved); an approval is refused until shown whole. */
+    @Test fun denyNeverWaitsToBeReadButAllowIsRefusedUntilShownWhole() = runTest {
+        val c = FakeEngineClient()
+        c.setOtherAppInstalled(false)
+        val m = CardsModel(c, PhoneApp.moss, { SampleData.now }, steppingClock())
+        m.load()
+        val base = m.cards.first { m.note(it) == null }
+        // A cut card (9 paths), never reported by a screen: Allow is refused, Deny is taken.
+        val cut = base.copy(id = "card_deny00001", hash = "7".repeat(64), fields = base.fields + ("paths" to SealedValue.ListOf((1..9).map { "f$it" })),
+            options = listOf(CardOption("deny", CardOption.Kind.deny, "Deny"), CardOption("allow", CardOption.Kind.approve, "Allow")))
+        c.raise(cut); m.apply(EngineEvent.CardRequested(cut))
+        m.answer(cut, cut.options[1])
+        assertTrue("allow refused", m.cards.any { it.id == cut.id })
+        assertNotNull(m.refusals[cut.id])
+        m.answer(cut, cut.options[0])
+        assertFalse("deny taken", m.cards.any { it.id == cut.id })
+        // Before any report from a screen, an approval of a card that fits is refused too; after "fits", taken.
+        val plain = base.copy(id = "card_deny00002", hash = "6".repeat(64),
+            options = listOf(CardOption("deny", CardOption.Kind.deny, "Deny"), CardOption("allow", CardOption.Kind.approve, "Allow")))
+        c.raise(plain); m.apply(EngineEvent.CardRequested(plain))
+        m.answer(plain, plain.options[1])
+        assertEquals("Scroll to the end of the card first.", m.refusals[plain.id])
+        m.scrolled(plain, overflows = false, reachedEnd = false)
+        m.answer(plain, plain.options[1])
+        assertFalse(m.cards.any { it.id == plain.id })
     }
 }
