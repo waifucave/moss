@@ -109,6 +109,44 @@ describeWithEmbeddedRuntime("a bot's file tools on home/memory/ (lane XC)", (spa
     }
   }, 60_000);
 
+  darwinTest("with the tree: an Edit of an existing memory file changes it; Glob and Grep under home/memory/ search the memory folder", async () => {
+    const { ctx, driver } = setup(true);
+    writeFileSync(join(ctx.paths.memory, "people.md"), "Ada runs the lab.\n");
+    writeFileSync(join(ctx.paths.scratch, "decoy.md"), "who is who in scratch\n");
+    try {
+      const r = results(await driver.turn(user([
+        `CALL Read ${JSON.stringify({ file_path: "home/memory/people.md" })}`,
+        `CALL Edit ${JSON.stringify({ file_path: "home/memory/people.md", old_string: "the lab", new_string: "the observatory" })}`,
+        `CALL Glossary ${JSON.stringify({ load: ["Glob", "Grep"] })}`,
+        `CALL Glob ${JSON.stringify({ pattern: "*.md", path: "home/memory" })}`,
+        `CALL Grep ${JSON.stringify({ pattern: "who is who", path: "home/memory", output_mode: "files_with_matches" })}`,
+      ].join("\n")), control()));
+      expect(r.find((x) => x.name === "Edit")?.isError).toBe(false);
+      expect(readFileSync(join(ctx.paths.memory, "people.md"), "utf8")).toBe("Ada runs the observatory.\n");
+      const glob = r.find((x) => x.name === "Glob")?.content ?? "";
+      expect(glob).toContain("MEMORY.md");
+      expect(glob).toContain("people.md");
+      expect(glob).not.toContain("decoy.md");
+      const grep = r.find((x) => x.name === "Grep")?.content ?? "";
+      expect(grep).toContain("MEMORY.md");
+      expect(grep).not.toContain("decoy.md");
+    } finally {
+      await driver.stop();
+    }
+  }, 60_000);
+
+  darwinTest("with the tree: a real home/ folder in the working folder that names no computer keeps working, as before", async () => {
+    const { ctx, driver } = setup(true);
+    mkdirSync(join(ctx.paths.scratch, "home", "Projects"), { recursive: true });
+    writeFileSync(join(ctx.paths.scratch, "home", "Projects", "plan.txt"), "local plan");
+    try {
+      const r = results(await driver.turn(user(`CALL Read ${JSON.stringify({ file_path: "home/Projects/plan.txt" })}`), control()));
+      expect(r[0]?.content).toContain("local plan");
+    } finally {
+      await driver.stop();
+    }
+  }, 60_000);
+
   darwinTest("with the tree: a dotted tree path is refused, never resolved", async () => {
     const { driver } = setup(true);
     try {
