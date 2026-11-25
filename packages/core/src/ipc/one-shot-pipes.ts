@@ -76,7 +76,7 @@ export class OneShotPipes<D = unknown> {
         // a client that connected, wrote and left must not make the end that remains look like this connection's.
         const pid = ends !== null && ends.used === 1 && ends.pids.length === 1 ? ends.pids[0]! : null;
         // And the client is this user's: the access list is locked just after the listener opens, and in that moment another account could connect.
-        const mine = pid !== null && (d.userOf ?? ((p: number) => processIdentity(p)?.userSid ?? null))(pid)?.toUpperCase() === sid.toUpperCase();
+        const mine = pid !== null && sameUserSid((d.userOf ?? ((p: number) => processIdentity(p)?.userSid ?? null))(pid), sid);
         if (!first || pid === null || !mine) { d.handlers.open(socket); d.closeAtOnce(socket); return; } // refused: unnamed, ambiguous or not this user's
         d.adopt(socket, pid, at);
         d.handlers.open(socket);
@@ -96,4 +96,9 @@ export class OneShotPipes<D = unknown> {
     (timer as { unref?: () => void }).unref?.();
     return { pipe: path, ttlMs };
   }
+}
+
+/** Whether a process's user (a SID string, null when it could not be read) is this user. Fails closed on null. */
+export function sameUserSid(theirs: string | null, ours: string): boolean {
+  return theirs !== null && theirs.toUpperCase() === ours.toUpperCase();
 }

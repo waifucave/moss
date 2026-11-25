@@ -30,6 +30,7 @@ import { planFromSettings, profileExcludeCandidates, QUARANTINE_COPY_LIMITS, qua
 import { fencedExecutor } from "../../src/computers/fenced-executor";
 import { resolveEndpoint } from "../../src/platform/transport";
 import { currentUserSid, lockPipeDacl } from "../../src/platform/win-pipe";
+import { OneShotPipes, sameUserSid } from "../../src/ipc/one-shot-pipes";
 import type { CoreToolDef } from "../../src/runtime-sdk/turn-loop/servers";
 import { createThrowawaySecretStore } from "@waifucave/moss-test-harness";
 import { encryptedFileStatus } from "../../src/contracts/secret-store";
@@ -256,6 +257,38 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
       expect(r.text).toContain("PIPE-REFUSED");
     }
     server.stop(true);
+  }, 900_000);
+
+  test("the engine's one-shot pipe and its well-known pipe: a pool principal can't open either, and its user is not this user's (the reviewer's fix 2)", async () => {
+    const endpoint = resolveEndpoint(mkdtempSync(join(tmpdir(), "moss-e2e-oneshot-"))).path;
+    const well = Bun.listen({ unix: endpoint, socket: { data() {} } });
+    expect(lockPipeDacl(endpoint, currentUserSid()!)).toBeGreaterThan(0);
+    const adopted: number[] = [];
+    const pipes = new OneShotPipes({
+      endpoint, handlers: { open() {}, close() {}, data() {} } as never, adopt: (_s, pid) => { adopted.push(pid); },
+      closeAtOnce: (s) => { (s as { terminate(): void }).terminate(); }, userSid: currentUserSid,
+    });
+    const oneShot = pipes.issue().pipe;
+    const open = (name: string) => `try { $c = New-Object System.IO.Pipes.NamedPipeClientStream('.', '${name}', [System.IO.Pipes.PipeDirection]::InOut); $c.Connect(3000); 'PIPE-OPEN' } catch { 'PIPE-REFUSED ' + $_.Exception.GetType().Name }`;
+    for (const path of [oneShot, endpoint]) {
+      const r = await call(tools.PowerShell!, { command: open(path.replace(/^\\\\\.\\pipe\\/, "")) });
+      console.log(`[e2e] pool principal on ${path}: ${r.text.trim()}`);
+      expect(r.text).toContain("PIPE-REFUSED");
+    }
+    expect(adopted).toEqual([]); // nothing was named: the one-shot still waits for its client
+    // Its user, as the engine reads it from a process (processIdentity): not this user's, so `adopt` would refuse it even where the access list let it in.
+    const sid = await call(tools.PowerShell!, { command: "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value" });
+    const poolSid = sid.text.trim().split(/\s+/).pop()!;
+    expect(poolSid).toMatch(/^S-1-5-/);
+    expect(sameUserSid(poolSid, currentUserSid()!)).toBe(false);
+    expect(sameUserSid(currentUserSid(), currentUserSid()!.toLowerCase())).toBe(true);
+    expect(sameUserSid(null, currentUserSid()!)).toBe(false);
+    // The control: this user opens the one-shot and is named.
+    const mine = await Bun.connect({ unix: oneShot, socket: { data() {} } });
+    for (let i = 0; i < 200 && adopted.length === 0; i++) await Bun.sleep(10);
+    expect(adopted).toEqual([process.pid]);
+    mine.end();
+    well.stop(true);
   }, 900_000);
 
   test("a timeout ends everything the command started: a delayed grandchild never writes its marker", async () => {
