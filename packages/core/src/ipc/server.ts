@@ -5,6 +5,13 @@ import { CoworkError } from "../cowork/types";
 import type { CoworkSessionDoor, CoworkSessionDrivers } from "../cowork/session-ports";
 import { chmodSync, realpathSync, statSync } from "node:fs";
 import { isPipe } from "../platform/transport";
+
+/** Closes a connection the engine is done with and owes nothing to: on a Windows pipe `terminate()`, never the graceful `end()`, which leaves the server end of the
+ *  pipe connected until the client lets go: an end no socket owns is one more candidate for the next connection's client, and while it lingers the scan
+ *  cannot name that connection (the MOSS app, refused 225 times behind one). */
+function closeAtOnce(socket: { end(): unknown; terminate?(): void }): void {
+  if (process.platform === "win32" && typeof socket.terminate === "function") socket.terminate(); else socket.end();
+}
 import { currentUserSid, lockPipeDacl } from "../platform/win-pipe";
 import { ComputerUseControlError, type ComputerUseControl } from "../computer-use/wiring";
 import { BrowserLinkRpcError, type BrowserLink } from "../computer-use/browser/cef-link/rpc";
@@ -2049,7 +2056,7 @@ export function startIpcServer(opts: IpcServerOptions): IpcServer {
           // Bun requires socket.data to be assigned before close() fires.
           // Set a sentinel so the close() guard can detect the capped case.
           (socket as any).data = null;
-          socket.end();
+          closeAtOnce(socket);
           return;
         }
         connections++;
@@ -2060,15 +2067,16 @@ export function startIpcServer(opts: IpcServerOptions): IpcServer {
           clientName: "",
           hubClient: null,
           tty: null,
-          helloTimer: setTimeout(() => socket.end(), helloTimeoutMs),
+          helloTimer: setTimeout(() => closeAtOnce(socket), helloTimeoutMs),
           writer: new ConnWriter(socket as unknown as WritableSocket),
           pluginId: null,
           seenCommands: new Map(),
           moss: null,
         };
         // Windows: a connection made before the pipe's DACL was locked down came in under the default
-        // DACL (Everyone may read); nothing is sent before a hello, but it is closed all the same (review M3).
-        if (opts.mossConnections?.opened(socket)) socket.end();
+        // DACL (Everyone may read); nothing is sent before a hello, but it is closed all the same (review M3). A connection whose
+        // client the scan could not name is closed here too.
+        if (opts.mossConnections?.opened(socket)) closeAtOnce(socket);
       },
       drain(socket) {
         socket.data?.writer?.onDrain();
@@ -2116,7 +2124,7 @@ export function startIpcServer(opts: IpcServerOptions): IpcServer {
       async data(socket, chunk) {
         let lines: string[];
         try { lines = socket.data.decoder.push(chunk); }
-        catch { socket.end(); return; } // oversized line: hostile or broken peer
+        catch { closeAtOnce(socket); return; } // oversized line: hostile or broken peer
 
         for (const line of lines) {
           let id: number | string | null = null;

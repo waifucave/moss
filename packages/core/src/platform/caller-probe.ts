@@ -355,6 +355,9 @@ export class WindowsPipePeers {
     this.early = new Set(handles === null ? [] : connectedServerEnds(handles.filter((h) => (h.access & WRITE_DAC) !== 0), this.name).keys());
   }
 
+  /** Why the last `opened` named no pid (for the daemon's log: a connection closed unnamed is refused, and this says what the scan saw). */
+  why = "";
+
   /** Whether this socket's connection was made before the DACL was locked down. */
   isEarly(socket: object): boolean {
     const e = this.bySocket.get(socket);
@@ -364,11 +367,17 @@ export class WindowsPipePeers {
   /** The listener's `open(socket)`: the client pid of this connection, or null. */
   opened(socket: object): number | null {
     const handles = ownHandles();
-    if (handles === null) return null;
+    if (handles === null) { this.why = "the daemon's handle list could not be read"; return null; }
     const ends = connectedServerEnds(handles.filter((h) => (h.access & WRITE_DAC) !== 0), this.name);
     for (const h of [...this.owner.keys()]) if (!ends.has(h)) this.owner.delete(h);
+    // A connected end that is no socket's own is a candidate like any other: never left out, so one that lingers (a client that has not let go of a
+    // connection the engine closed) makes the scan ambiguous and the connection is refused, never named by what is left.
+    for (const h of [...this.early]) if (!ends.has(h)) this.early.delete(h);
     const fresh = [...ends].filter(([h]) => !this.owner.has(h)).sort((a, b) => (a[0] < b[0] ? -1 : 1));
-    if (fresh.length === 0 || new Set(fresh.map(([, e]) => e.pid)).size !== 1) return null;
+    if (fresh.length === 0 || new Set(fresh.map(([, e]) => e.pid)).size !== 1) {
+      this.why = `${handles.length} handles, ${ends.size} connected ends of this pipe [${[...ends].map(([h, e]) => `${h.toString(16)}:${e.pid}${this.owner.has(h) ? "*" : ""}`).join(" ")}], ${fresh.length} not owned by an open socket, by ${new Set(fresh.map(([, e]) => e.pid)).size} process(es)`;
+      return null;
+    }
     const [handle, end] = fresh[0]!;
     this.owner.set(handle, socket);
     this.bySocket.set(socket, { handle, pid: end.pid });
@@ -378,7 +387,7 @@ export class WindowsPipePeers {
   /** The listener's `close(socket)`. */
   closed(socket: object): void {
     const e = this.bySocket.get(socket);
-    if (e && this.owner.get(e.handle) === socket) this.owner.delete(e.handle);
+    if (e && this.owner.get(e.handle) === socket) { this.owner.delete(e.handle); this.early.delete(e.handle); }
     this.bySocket.delete(socket);
   }
 

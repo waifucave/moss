@@ -82,6 +82,72 @@ describe("the caller check's OS probe", () => {
     a.kill(); b.kill(); server.stop(true); other.stop(true);
   });
 
+  const LONG = (path: string) => CLIENT(path).replace("4000", "30000");
+  const spawnClient = (path: string) => Bun.spawn([process.execPath, "-e", LONG(path)], { stdout: "ignore", stderr: "ignore", windowsHide: true });
+  const RECONNECT = (path: string) => `for (let i = 0; i < 3; i++) { const s = await Bun.connect({ unix: ${JSON.stringify(path)}, socket: { data() {} } }); await Bun.sleep(400); s.end(); await Bun.sleep(150); } await Bun.sleep(1000);`;
+
+  test.skipIf(process.platform !== "win32")("Windows: an end that outlives its socket is a candidate, so another program's connection is refused behind it, never named by elimination", async () => {
+    const path = resolveEndpoint(mkdtempSync(join(tmpdir(), "moss-peer-"))).path;
+    const peers = new WindowsPipePeers(path);
+    const sockets: object[] = [];
+    const server = Bun.listen({ unix: path, socket: { open(s) { sockets.push(s); }, close(s) { peers.closed(s); }, data() {} } });
+    const until = async (n: number) => { for (let i = 0; i < 300 && sockets.length < n; i++) await Bun.sleep(10); };
+    const x = spawnClient(path);
+    await until(1);
+    expect(peers.opened(sockets[0]!)).toBe(x.pid);
+    (sockets[0] as { end(): void }).end(); // graceful: x's end stays connected while x lives
+    await Bun.sleep(300);
+    peers.closed(sockets[0]!); // (the close event, as the engine sees it)
+    const a = spawnClient(path); // another program, arriving behind x's lingering end
+    await until(2);
+    await Bun.sleep(300);
+    expect(peers.opened(sockets[1]!)).toBeNull(); // two programs' ends are candidates: refused
+    expect(peers.why).toContain("not owned by an open socket");
+    x.kill(); a.kill(); server.stop(true);
+  });
+
+  test.skipIf(process.platform !== "win32")("Windows: a connection is never named by what another connection left over (two arrive together, a third before the first is opened)", async () => {
+    const path = resolveEndpoint(mkdtempSync(join(tmpdir(), "moss-peer-"))).path;
+    const peers = new WindowsPipePeers(path);
+    const sockets: object[] = [];
+    const server = Bun.listen({ unix: path, socket: { open(s) { sockets.push(s); }, close(s) { peers.closed(s); }, data() {} } });
+    const until = async (n: number) => { for (let i = 0; i < 300 && sockets.length < n; i++) await Bun.sleep(10); };
+    const x = spawnClient(path), y = spawnClient(path);
+    await until(2);
+    await Bun.sleep(300);
+    expect(peers.opened(sockets[1]!)).toBeNull();
+    const a = spawnClient(path);
+    await until(3);
+    await Bun.sleep(300);
+    expect(peers.opened(sockets[0]!)).toBeNull();
+    expect(peers.opened(sockets[2]!)).toBeNull();
+    expect(peers.pidOf(sockets[0]!)).toBeNull();
+    x.kill(); y.kill(); a.kill(); server.stop(true);
+  });
+
+  test.skipIf(process.platform !== "win32")("Windows: the same program closing and reconnecting, handle numbers reused, is named as itself each time, and a refused pair's terminated ends leave", async () => {
+    const path = resolveEndpoint(mkdtempSync(join(tmpdir(), "moss-peer-"))).path;
+    const peers = new WindowsPipePeers(path);
+    const named: Array<number | null> = [];
+    const server = Bun.listen({ unix: path, socket: {
+      open(s) { const pid = peers.opened(s); named.push(pid); if (pid === null) s.terminate(); },
+      close(s) { peers.closed(s); },
+      data() {},
+    } });
+    const until = async (n: number) => { for (let i = 0; i < 400 && named.length < n; i++) await Bun.sleep(10); };
+    const c = Bun.spawn([process.execPath, "-e", RECONNECT(path)], { stdout: "ignore", stderr: "ignore", windowsHide: true });
+    await until(3);
+    expect(named).toEqual([c.pid, c.pid, c.pid]);
+    // A pair of programs arriving together is refused and terminated; the next one alone is named as itself.
+    const x = spawnClient(path), y = spawnClient(path);
+    await until(5);
+    await Bun.sleep(500);
+    const a = spawnClient(path);
+    await until(6);
+    expect(named[5]).toBe(a.pid);
+    c.kill(); x.kill(); y.kill(); a.kill(); server.stop(true);
+  });
+
   test.skipIf(process.platform === "win32")("a client in this process: its pid, outside every floor", async () => {
     const l = listenOnce();
     const c = await Bun.connect({ unix: l.path, socket: { data() {} } });

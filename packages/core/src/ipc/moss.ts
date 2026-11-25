@@ -696,6 +696,7 @@ export function createMossServer(deps: MossServerDeps): MossServer {
     opened(socket) {
       if (!pipePeers) { if (!deps.probe) handleOf(socket); return false; }
       const pid = pipePeers.opened(socket);
+      if (pid === null) deps.log?.(`[moss] a connection's client was not named, so it is closed: ${pipePeers.why}`);
       if (pid !== null && !deps.probe) handleOf(socket);
       // A connection whose client the handle scan could not name (two arrived before either was seen) is closed, as its comment on
       // WindowsPipePeers says ("the client connects again"): left open, its server end stays unowned and makes every later connection
