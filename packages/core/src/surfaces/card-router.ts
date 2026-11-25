@@ -50,7 +50,10 @@ export class EngineCardRouter implements CardRouter {
   #front = false;
   // lane HS: end
 
-  constructor(opts: { clock: Clock; ttlMs?: number; hostLive?: boolean }) {
+  readonly #log: ((line: string) => void) | undefined;
+
+  constructor(opts: { clock: Clock; ttlMs?: number; hostLive?: boolean; log?: (line: string) => void }) {
+    this.#log = opts.log;
     this.#clock = opts.clock;
     this.#ttlMs = opts.ttlMs ?? PRESENCE_TTL_MS;
     this.#host = opts.hostLive ?? true;
@@ -61,6 +64,8 @@ export class EngineCardRouter implements CardRouter {
     if (old) this.#clock.clearTimeout(old.timer);
     const timer = this.#clock.setTimeout(() => this.dropped(from.connId), this.#ttlMs);
     this.#reports.set(from.connId, { program: from.program, report: structuredClone(report), timer, seq: ++this.#seq });
+    // What moved a card is one of these (a report, a connection's report dropped or expired): numbers and words only.
+    this.#log?.(`[router] report from connection ${from.connId} (${from.program}): ${report.windows.length} window(s), ${report.windows.filter((w) => w.focused && w.visible).length} focused and visible; ${this.#reports.size} report(s) held`);
     this.#place();
     return { ttlMs: this.#ttlMs };
   }
@@ -70,6 +75,7 @@ export class EngineCardRouter implements CardRouter {
     if (!old) return;
     this.#clock.clearTimeout(old.timer);
     this.#reports.delete(connId);
+    this.#log?.(`[router] connection ${connId}'s report dropped (its connection closed or the report expired); ${this.#reports.size} report(s) held`);
     this.#place();
   }
 

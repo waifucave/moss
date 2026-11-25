@@ -314,7 +314,7 @@ export function createMossServer(deps: MossServerDeps): MossServer {
   /** Whether a background host owns the screen now (the last `hostScreen`): MOSS's Quit stops the engine only with none. */
   let hostOwns = false;
   // lane HS: end
-  const router = new EngineCardRouter({ clock: deps.clock ?? new SystemClock(), hostLive: false });
+  const router = new EngineCardRouter({ clock: deps.clock ?? new SystemClock(), hostLive: false, log: (line) => deps.log?.(line) });
   const undoor = door.watch(() => router.hostLive(door.islandLive()));
   const closedHooks = new Set<(conn: MossConn) => void>();
   // Each card that moved, or was first placed, to the `app` connections subscribed to `surfaces` (`card_placed`).
