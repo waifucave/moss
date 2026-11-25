@@ -85,6 +85,7 @@ final class ViewModelTests: XCTestCase {
         await bots.load(); await code.load()
         XCTAssertEqual(bots.cards.count, 3); XCTAssertEqual(code.cards.count, 3)
         let card = bots.cards.first { $0.id == "card_0a1b2c3d" }!
+        bots.sighted(card)   // the view's report: the card was on screen from its heading
         await bots.answer(card, with: card.options[0])
         XCTAssertFalse(bots.cards.contains { $0.id == card.id })
         let a = await c.answered
@@ -96,6 +97,7 @@ final class ViewModelTests: XCTestCase {
         let m = CardsModel(client: c, app: .moss, now: { SampleData.now })
         await m.load()
         let card = m.cards[0]
+        m.sighted(card)
         await c.setFail(.init("down"))
         await m.answer(card, with: card.options[0])
         XCTAssertEqual(m.cards.count, 2); XCTAssertEqual(m.note(for: card), .failed)
@@ -124,6 +126,7 @@ final class ViewModelTests: XCTestCase {
         let m = CardsModel(client: c, app: .moss, now: { SampleData.now })
         await m.load()
         let card = m.cards.first { $0.id == "card_55aa66bb" }!
+        m.sighted(card)
         await m.answer(card, with: card.options[0])
         XCTAssertEqual(m.note(for: card), .answeredElsewhere)
     }

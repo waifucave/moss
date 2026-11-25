@@ -7,8 +7,8 @@ public struct CardView: View {
     let note: CardNote?
     let onAnswer: (CardOption) -> Void
     let onSettle: () -> Void
-    /// Whether the buttons answer now (the model's word: not inside its wait, every cut field opened).
-    let ready: Bool
+    /// Whether each option answers now (the model's word): an approve waits until read; a deny only the moment after a change.
+    let ready: (CardOption) -> Bool
     /// The cut fields opened, and opening one (kept in the model, which refuses an answer until all are open).
     let opened: Set<String>
     let onOpen: (String) -> Void
@@ -19,7 +19,7 @@ public struct CardView: View {
     @Environment(\.dynamicTypeSize) private var typeSize
 
     /// `note` says why the card can't be answered (expired, answered elsewhere, failed); `onSettle` then dismisses it (or, after a failure, lets the person try again).
-    public init(card: Card, busy: Bool = false, note: CardNote? = nil, ready: Bool = true, opened: Set<String> = [], onOpen: @escaping (String) -> Void = { _ in },
+    public init(card: Card, busy: Bool = false, note: CardNote? = nil, ready: @escaping (CardOption) -> Bool = { _ in true }, opened: Set<String> = [], onOpen: @escaping (String) -> Void = { _ in },
                 waitReason: String? = nil, onSighted: @escaping () -> Void = {},
                 onAnswer: @escaping (CardOption) -> Void, onSettle: @escaping () -> Void = {}) {
         self.card = card; self.busy = busy; self.note = note; self.ready = ready; self.opened = opened; self.onOpen = onOpen
@@ -28,7 +28,7 @@ public struct CardView: View {
     }
     /// A convenience for the cards a `CardsModel` holds: its gates, its opened fields, its answer.
     public init(card: Card, in model: CardsModel) {
-        self.init(card: card, busy: model.answering.contains(card.id), note: model.note(for: card), ready: model.mayAnswer(card) || model.note(for: card) != nil,
+        self.init(card: card, busy: model.answering.contains(card.id), note: model.note(for: card), ready: { model.mayAnswer(card, with: $0) },
                   opened: model.opened[card.id] ?? [], onOpen: { model.open($0, of: card) },
                   waitReason: model.waitReason(card), onSighted: { model.sighted(card) },
                   onAnswer: { o in Task { await model.answer(card, with: o) } },
@@ -72,7 +72,7 @@ public struct CardView: View {
                         .buttonStyle(.bordered)
                         .tint(option.kind == .approve ? Theme.accent : .secondary)
                         .controlSize(.regular)
-                        .disabled(busy || !ready || unopened > 0)
+                        .disabled(busy || !ready(option) || (option.kind == .approve && unopened > 0))
                         .accessibilityLabel(option.rememberAlways ? "\(option.label), and remember" : option.label)
                         .accessibilityHint(option.kind == .approve ? "Approves this request" : "Refuses this request")
                     }

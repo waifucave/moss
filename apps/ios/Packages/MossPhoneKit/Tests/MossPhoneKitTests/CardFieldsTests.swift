@@ -44,7 +44,10 @@ final class CardFieldsTests: XCTestCase {
         await model.load()
         let card = SampleData.manyPathsCard
         XCTAssertEqual(card.cutFields, ["paths", "reason"], "nine paths and a long reason are both cut")
+        XCTAssertFalse(model.mayAnswer(card), "refused by default: the view hasn't reported the card on screen")
+        model.sighted(card)
         XCTAssertFalse(model.mayAnswer(card))
+        XCTAssertTrue(model.mayAnswer(card, with: card.options[1]), "Deny never waits to be read")
         await model.answer(card, with: card.options[0])
         let none = await fake.answered
         XCTAssertTrue(none.isEmpty, "Allow does nothing while the ninth path is hidden")
@@ -63,24 +66,30 @@ final class CardFieldsTests: XCTestCase {
         let model = CardsModel(client: fake, app: .moss, now: { SampleData.now }, settleWait: .milliseconds(400))
         await model.load()
         let first = try XCTUnwrap(model.cards.first)
-        XCTAssertTrue(model.mayAnswer(first), "the list as opened answers at once")
+        model.sighted(first)
+        XCTAssertTrue(model.mayAnswer(first), "the list as opened answers once seen")
         // A card that arrives now waits; the model refuses an answer inside the wait whatever the view shows.
         var arriving = SampleData.providerConsentCard; arriving.id = "card_arrive01"
         await model.apply(.cardRequested(arriving))
+        model.sighted(arriving)
         XCTAssertFalse(model.mayAnswer(arriving))
+        XCTAssertFalse(model.mayAnswer(arriving, with: arriving.options[1]), "Deny waits out the moment after a card shows too")
         await model.answer(arriving, with: arriving.options[0])
         let early = await fake.answered
         XCTAssertTrue(early.isEmpty)
         // Changed again at once: the wait starts over (it is never cut short by the first one's end).
         try await Task.sleep(for: .milliseconds(250))
         arriving.fields["what"] = .text("Changed words")
+        arriving.hash = String(repeating: "f", count: 64)
         await model.apply(.cardRequested(arriving))
+        model.sighted(arriving)
         try await Task.sleep(for: .milliseconds(250))
         XCTAssertFalse(model.mayAnswer(arriving), "a second change restarts the wait")
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertTrue(model.mayAnswer(arriving))
         // A card that moves because one above it left waits too.
         let second = model.cards[1]
+        model.sighted(second)
         model.dismiss(first)
         XCTAssertFalse(model.mayAnswer(second))
     }
@@ -101,17 +110,18 @@ final class CardFieldsTests: XCTestCase {
         XCTAssertTrue(tall.drawnWhole)
         XCTAssertTrue(tall.cutFields.isEmpty, "nothing in it is cut: it is the scrolling that hides host and rule")
         let fake = FakeEngineClient(scenario: .quiet)
-        let model = CardsModel(client: fake, app: .moss, now: { SampleData.now }, settleWait: .zero, requiresSighting: true)
+        let model = CardsModel(client: fake, app: .moss, now: { SampleData.now }, settleWait: .zero)
         await model.load()
         await model.apply(.cardRequested(tall))
         try? await Task.sleep(for: .milliseconds(50))
         XCTAssertFalse(model.mayAnswer(tall))
         XCTAssertNotNil(model.waitReason(tall), "a refused press says why in one line")
+        XCTAssertTrue(model.mayAnswer(tall, with: tall.options[1]), "Deny is never held back by reading")
         model.sighted(tall)
         XCTAssertTrue(model.mayAnswer(tall))
         XCTAssertNil(model.waitReason(tall))
         // The same card with new content must be seen again from its top.
-        var changed = tall; changed.fields["host"] = .code("other.example", language: nil)
+        var changed = tall; changed.fields["host"] = .code("other.example", language: nil); changed.hash = String(repeating: "9", count: 64)
         await model.apply(.cardRequested(changed))
         try? await Task.sleep(for: .milliseconds(50))
         XCTAssertFalse(model.mayAnswer(changed))

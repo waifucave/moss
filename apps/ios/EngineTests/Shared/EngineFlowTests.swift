@@ -103,6 +103,8 @@ class EngineFlowTests: XCTestCase {
         XCTAssertEqual(rich.cutFields, ["paths", "reason"])
         for f in ["what", "command", "reason", "source", "host", "paths", "detail"] { XCTAssertNotNil(rich.fields[f], "the engine's card carries \(f)") }
         try await eventually("the new card's wait over") { !cards.settling.contains(afterConnect) }
+        XCTAssertFalse(cards.mayAnswer(rich), "refused by default before the view's report")
+        cards.sighted(rich)
         XCTAssertFalse(cards.mayAnswer(rich))
         await cards.answer(rich, with: rich.options.first { $0.kind == .approve }!)
         XCTAssertTrue(cards.cards.contains { $0.id == afterConnect }, "nothing was answered while a part was cut")
@@ -110,6 +112,7 @@ class EngineFlowTests: XCTestCase {
         for id in [atConnect, afterConnect] {
             let shown = cards.cards.first { $0.id == id }!
             let approve = shown.options.first { $0.kind == .approve }!
+            cards.sighted(shown)
             try await eventually("\(id) answerable") { cards.mayAnswer(shown) }
             await cards.answer(shown, with: approve)
             XCTAssertNil(cards.notes[id], "the answer to \(id) was taken")
