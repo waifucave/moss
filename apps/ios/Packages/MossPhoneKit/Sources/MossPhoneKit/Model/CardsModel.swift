@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import Observation
 
 /// Why a card on the screen can no longer be answered.
@@ -52,57 +53,115 @@ public final class CardsModel {
     // MARK: What counts as on screen
     //
     // A report counts only if it was made on a surface (one screen holding cards) the person is looking at in its
-    // settled place, and that surface stayed so until the next frame was presented:
-    //  (a) a surface is not presented until it has been placed at its opening position and a frame has been presented
-    //      after that (the view says so);
-    //  (b) nothing counts while the app is not active, or while the surface is covered (a sheet over it);
-    //  (c) a change of the content's size unpresents the surface until the next presented frame, and drops what was
-    //      reported in the same pass: each report carries the surface's generation, and a size change moves it on.
+    // settled place, and the surface stayed so until a frame was presented after it:
+    //  (a) a surface is settled only once its content size AND its visible rect have held unchanged through a presented
+    //      frame (so the conversation placed at its bottom, rows measured, nothing moving it);
+    //  (b) nothing counts while the app is not active, or while the surface is covered or not in front;
+    //  (c) a change of the content's size, or a move of the offset the person didn't make (an anchor, a scroll-to, a
+    //      re-placing), unsettles the surface and drops what was reported in that pass. While the person scrolls (a drag
+    //      or its deceleration) the offset moves under their eyes: those moves don't unsettle it.
 
-    /// The surfaces presented now, settled, in front and not covered (the view's word).
-    public private(set) var presentedSurfaces: Set<String> = []
-    public private(set) var appActive = true
-    /// Surfaces with reports waiting for the next presented frame: the view answers with `framePresented(_:)`.
-    public private(set) var awaitingFrame: Set<String> = []
-    private enum Report { case sighted(Card), readEnd(String, Card) }
-    @ObservationIgnored private var generation: [String: Int] = [:]
-    @ObservationIgnored private var pending: [String: [(Int, Report)]] = [:]
-
-    /// The view's word on a surface: presented (settled, the app active, nothing over it) or not. Becoming not presented
-    /// drops what it reported and has not yet had a presented frame.
-    public func surface(_ id: String, presented: Bool) {
-        if presented { presentedSurfaces.insert(id); return }
-        presentedSurfaces.remove(id)
-        generation[id, default: 0] += 1
-        pending[id] = nil; awaitingFrame.remove(id)
+    /// What the scroll view showed: its content's size and the visible rect (in content coordinates, less the bars).
+    public struct SurfaceLayout: Equatable, Sendable {
+        public var contentSize: CGSize
+        public var visible: CGRect
+        public init(contentSize: CGSize, visible: CGRect) { self.contentSize = contentSize; self.visible = visible }
     }
-    /// The surface left the screen (or its conversation is reloaded): nothing from it counts until it is presented again.
-    public func surfaceGone(_ id: String) { surface(id, presented: false); generation[id] = nil }
+    private struct Surface {
+        var layout: SurfaceLayout?
+        /// The layout the surface must still show at the next presented frame to settle.
+        var candidate: SurfaceLayout?
+        var settled = false
+        var inFront = false
+        var generation = 0
+        var pending: [(Int, Report)] = []
+    }
+    private enum Report { case sighted(Card), readEnd(String, Card) }
+    @ObservationIgnored private var surfaces: [String: Surface] = [:]
+    @ObservationIgnored private var ticketGeneration: [Int: Int] = [:]
+    @ObservationIgnored private var nextTicket = 0
+    public private(set) var appActive = true
+    /// The surfaces presented now: settled, in front, the app active. Only their viewport is handed to the cards.
+    public private(set) var presentedSurfaces: Set<String> = []
+    /// Per surface, the frame it waits for: the view presents a frame and answers `framePresented(_:ticket:)`.
+    public private(set) var frameRequest: [String: Int] = [:]
+
+    public func isPresented(_ surface: String) -> Bool { presentedSurfaces.contains(surface) }
+
+    /// The view's word: the surface is in front (its screen showing, nothing over it) or not.
+    public func surface(_ id: String, inFront: Bool) {
+        var s = surfaces[id] ?? Surface()
+        s.inFront = inFront
+        surfaces[id] = s
+        unsettle(id)
+    }
+    /// The scroll view's latest layout. A size change, or a move the person didn't make, unsettles the surface.
+    public func layout(_ id: String, _ layout: SurfaceLayout, userScrolling: Bool) {
+        var s = surfaces[id] ?? Surface()
+        let old = s.layout
+        s.layout = layout
+        surfaces[id] = s
+        if old == nil || old?.contentSize != layout.contentSize || (old?.visible != layout.visible && !userScrolling) {
+            unsettle(id)
+        } else if userScrolling, !s.settled {
+            // Scrolled by the person before it settled: settle on where they are.
+            surfaces[id]?.candidate = layout
+        }
+    }
+    /// The surface left the screen (or its conversation is reloaded): nothing from it counts.
+    public func surfaceGone(_ id: String) {
+        surfaces[id] = nil; presentedSurfaces.remove(id); frameRequest[id] = nil
+    }
     /// The app's scene phase: only an active app's surfaces count.
     public func setAppActive(_ active: Bool) {
+        guard active != appActive else { return }
         appActive = active
-        if !active { for id in presentedSurfaces.union(pending.keys) { surface(id, presented: false) } }
+        for id in surfaces.keys { unsettle(id) }
     }
-    private func accepts(_ surface: String) -> Bool { appActive && presentedSurfaces.contains(surface) }
+    private func unsettle(_ id: String) {
+        guard var s = surfaces[id] else { return }
+        s.generation += 1
+        s.settled = false
+        s.pending = []
+        s.candidate = s.layout
+        surfaces[id] = s
+        presentedSurfaces.remove(id)
+        if s.inFront && appActive { requestFrame(id) } else { frameRequest[id] = nil }
+    }
+    private func requestFrame(_ id: String) {
+        nextTicket += 1
+        ticketGeneration[nextTicket] = surfaces[id]?.generation
+        frameRequest[id] = nextTicket
+    }
 
     /// The view's report: this card, as it is now (id and hash), has been on screen from its heading, on `surface`. It
-    /// counts at the next presented frame, if the surface is still presented and unchanged then.
+    /// counts at the next presented frame, if the surface is still settled and unchanged then.
     public func sighted(_ card: Card, on surface: String) { hold(.sighted(card), on: surface) }
     /// The view's report: the end of an opened field of this card (as it is now) has been on screen, on `surface`.
     public func readEnd(_ field: String, of card: Card, on surface: String) { hold(.readEnd(field, card), on: surface) }
-    private func hold(_ report: Report, on surface: String) {
-        guard accepts(surface) else { return }
-        pending[surface, default: []].append((generation[surface, default: 0], report))
-        awaitingFrame.insert(surface)
+    private func hold(_ report: Report, on id: String) {
+        guard appActive, presentedSurfaces.contains(id), var s = surfaces[id] else { return }
+        s.pending.append((s.generation, report))
+        surfaces[id] = s
+        requestFrame(id)
     }
-    /// The view's word that a frame was presented on `surface` after its reports: those made in this generation, with the
-    /// surface still presented, count now.
-    public func framePresented(_ surface: String) {
-        let held = pending[surface] ?? []
-        pending[surface] = nil; awaitingFrame.remove(surface)
-        guard accepts(surface) else { return }
-        let now = generation[surface, default: 0]
-        for (gen, report) in held where gen == now {
+    /// The view's word that a frame was presented after the request `ticket`. A request made before the surface last
+    /// changed is stale and ignored. An unsettled surface whose layout held settles; a settled one counts its reports.
+    public func framePresented(_ id: String, ticket: Int) {
+        let gen = ticketGeneration.removeValue(forKey: ticket)
+        guard var s = surfaces[id], gen == s.generation else { return }
+        if frameRequest[id] == ticket { frameRequest[id] = nil }
+        guard appActive, s.inFront else { return }
+        if !s.settled {
+            guard let l = s.layout, l == s.candidate, l.contentSize.height > 0 else { return }
+            s.settled = true
+            surfaces[id] = s
+            presentedSurfaces.insert(id)
+            return
+        }
+        let held = s.pending; s.pending = []
+        surfaces[id] = s
+        for (g, report) in held where g == s.generation {
             switch report {
             case .sighted(let card): if cards.contains(card) { sighted.insert(Self.key(card)) }
             case .readEnd(let field, let card):

@@ -5,7 +5,7 @@ import QuartzCore
 /// composer), in the scroll content's coordinates, and only while the surface is presented (settled in its place, the app
 /// active, nothing over it). A card reports a part of itself as seen only when that part sits inside this rect; with none
 /// (`.zero`) nothing is reported, so an approve stays refused. The model then counts a report only at the next presented
-/// frame (see `CardsModel.surface(_:presented:)`).
+/// frame, and only while the surface stays settled (see `CardsModel.layout(_:_:userScrolling:)`).
 struct CardViewportKey: EnvironmentKey { static let defaultValue: CGRect = .zero }
 struct CardSurfaceKey: EnvironmentKey { static let defaultValue: String = "" }
 /// Something is over the screen (a sheet, the camera, a picker): its cards are not being looked at.
@@ -55,66 +55,56 @@ let cardContentSpace = "moss.cardContent"
     }
 }
 
-private struct ScrollReading: Equatable { var visible: CGRect; var contentSize: CGSize }
-
 private struct CardViewportReader: ViewModifier {
     let model: CardsModel
     let coveredHere: Bool
     @Environment(\.scenePhase) private var phase
     @Environment(\.cardsCovered) private var coveredAbove
     @State private var surface = UUID().uuidString
-    @State private var reading = ScrollReading(visible: .zero, contentSize: .zero)
-    /// Placed at its opening position, its content's size unchanged through a presented frame since.
-    @State private var placed = false
-    @State private var placing: Task<Void, Never>?
+    @State private var visible: CGRect = .zero
+    /// A drag or its deceleration is in progress: the person is moving it, and looking.
+    @State private var userScrolling = false
     @State private var framing: Task<Void, Never>?
 
     private var inFront: Bool { phase == .active && !coveredAbove && !coveredHere }
 
     func body(content: Content) -> some View {
         content
-            .environment(\.cardViewport, model.appActive && model.presentedSurfaces.contains(surface) ? reading.visible : .zero)
+            .environment(\.cardViewport, model.isPresented(surface) ? visible : .zero)
             .environment(\.cardSurface, surface)
             // The scroll view's visible rect, in content coordinates, less its content insets: the parts of its bounds the
             // system itself counts as covered (the navigation bar, the composer bar, the home indicator).
-            .onScrollGeometryChange(for: ScrollReading.self) { g in
+            .onScrollGeometryChange(for: CardsModel.SurfaceLayout.self) { g in
                 let v = g.visibleRect, i = g.contentInsets
-                return ScrollReading(visible: CGRect(x: v.minX + i.leading, y: v.minY + i.top,
-                                                     width: max(0, v.width - i.leading - i.trailing), height: max(0, v.height - i.top - i.bottom)),
-                                     contentSize: g.contentSize)
-            } action: { old, new in
-                reading = new
-                if new.contentSize != old.contentSize || !placed { unplace() }
+                return CardsModel.SurfaceLayout(contentSize: g.contentSize,
+                                                visible: CGRect(x: v.minX + i.leading, y: v.minY + i.top,
+                                                                width: max(0, v.width - i.leading - i.trailing), height: max(0, v.height - i.top - i.bottom)))
+            } action: { _, new in
+                visible = new.visible
+                model.layout(surface, new, userScrolling: userScrolling)
             }
-            .onAppear { unplace() }
-            .onDisappear { placing?.cancel(); framing?.cancel(); placed = false; model.surfaceGone(surface) }
-            .onChange(of: inFront) { _, _ in tell() }
+            .onScrollPhaseChange { _, p in
+                switch p {
+                case .tracking, .interacting, .decelerating: userScrolling = true
+                case .idle, .animating: userScrolling = false
+                @unknown default: userScrolling = false
+                }
+            }
+            .onChange(of: inFront, initial: true) { _, front in model.surface(surface, inFront: front) }
             .onChange(of: phase, initial: true) { _, p in model.setAppActive(p == .active) }
-            // Reports wait for the next presented frame; then the model counts those still valid.
-            .onChange(of: model.awaitingFrame.contains(surface)) { _, waiting in
-                guard waiting else { return }
+            // The model asks for a presented frame (to settle, or to count what was reported); answer with its ticket.
+            .onChange(of: model.frameRequest[surface], initial: true) { _, ticket in
+                guard let ticket else { return }
                 framing?.cancel()
                 framing = Task { @MainActor in
                     await FrameClock.presented()
                     guard !Task.isCancelled else { return }
-                    model.framePresented(surface)
+                    model.framePresented(surface, ticket: ticket)
                 }
             }
+            .onAppear { model.surface(surface, inFront: inFront) }
+            .onDisappear { framing?.cancel(); model.surfaceGone(surface) }
     }
-    /// The content moved or grew (or the screen just appeared): not presented until a frame is presented with it settled.
-    private func unplace() {
-        placed = false
-        tell()
-        placing?.cancel()
-        let size = reading.contentSize
-        placing = Task { @MainActor in
-            await FrameClock.presented()
-            guard !Task.isCancelled, reading.contentSize == size, size.height > 0 else { return }
-            placed = true
-            tell()
-        }
-    }
-    private func tell() { model.surface(surface, presented: placed && inFront) }
 }
 
 private struct SeenInViewport: ViewModifier {

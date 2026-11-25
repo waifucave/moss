@@ -32,7 +32,12 @@ public struct ConversationScreen: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 4) {
+                // Not lazy, on purpose: a lazy stack re-places itself as it measures rows, and a card's heading counted as
+                // seen in a place the person never saw it (the tall-card UI test). A plain stack lays out every loaded
+                // row when the conversation opens: the first page is 60 messages and each "Show earlier messages" adds 60
+                // more. Its cost with several pages loaded is not measured yet; the lazy stack, with the settle rule made
+                // to hold for it, is a follow-up of its own.
+                VStack(alignment: .leading, spacing: 4) {
                     if model.hasEarlier {
                         Button("Show earlier messages") { Task { await model.loadEarlier() } }
                             .font(.footnote).frame(maxWidth: .infinity)

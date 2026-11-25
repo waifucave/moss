@@ -217,9 +217,18 @@ class EngineFlowTests: XCTestCase {
     }
 }
 
-/// The view's two steps in one, for tests that are about something else: the surface is presented, the report made, and a
-/// frame presented after it.
+/// The view's steps in one: a settled surface, the report, a frame after it.
 @MainActor extension CardsModel {
-    func seenOnScreen(_ card: Card) { surface("engine-test", presented: true); sighted(card, on: "engine-test"); framePresented("engine-test") }
-    func readOnScreen(_ field: String, of card: Card) { surface("engine-test", presented: true); readEnd(field, of: card, on: "engine-test"); framePresented("engine-test") }
+    func seenOnScreen(_ card: Card) { report { sighted(card, on: "engine-test") } }
+    func readOnScreen(_ field: String, of card: Card) { report { readEnd(field, of: card, on: "engine-test") } }
+    private func report(_ make: () -> Void) {
+        let id = "engine-test"
+        if !isPresented(id) {
+            surface(id, inFront: true)
+            layout(id, SurfaceLayout(contentSize: CGSize(width: 1, height: 1), visible: .init(x: 0, y: 0, width: 1, height: 1)), userScrolling: false)
+            if let t = frameRequest[id] { framePresented(id, ticket: t) }
+        }
+        make()
+        if let t = frameRequest[id] { framePresented(id, ticket: t) }
+    }
 }

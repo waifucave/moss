@@ -146,93 +146,127 @@ final class CardFieldsTests: XCTestCase {
         XCTAssertEqual(model.cards.filter { $0.id == c.id }.count, 1)
     }
 
-    /// What counts as on screen: (a) nothing before the surface is presented in its settled place, and a report counts
-    /// only at the next presented frame; (b) nothing while the app is not active or the surface is covered; (c) a change
-    /// of the content's size drops what was reported in the same pass.
+    /// What counts as on screen. (a) nothing before the surface has settled (its size and visible rect held through a
+    /// presented frame), and a report counts only at a frame after it.
     @MainActor
-    func testAReportCountsOnlyOnAPresentedSurfaceAtTheNextFrame() async {
-        let fake = FakeEngineClient(scenario: .quiet)
-        let model = CardsModel(client: fake, app: .moss, now: { SampleData.now }, settleWait: .zero)
-        await model.load()
-        let card = SampleData.tallCard
-        await model.apply(.cardRequested(card))
-        try? await Task.sleep(for: .milliseconds(50))
-
-        // (a) The conversation laid out at its top, not yet placed at its bottom: the heading is "inside" then, unseen.
+    func testAReportCountsOnlyOnASettledSurfaceAtTheNextFrame() async {
+        let (model, card) = await tallModel()
+        let atTop = CardsModel.SurfaceLayout(contentSize: CGSize(width: 400, height: 600), visible: CGRect(x: 0, y: 0, width: 400, height: 670))
+        model.surface("s", inFront: true)
+        model.layout("s", atTop, userScrolling: false)
         model.sighted(card, on: "s")
-        model.framePresented("s")
-        XCTAssertFalse(model.mayAnswer(card), "a report before the surface is presented never counts")
-        model.surface("s", presented: true)
+        XCTAssertFalse(model.isPresented("s"), "laid out, not yet through a presented frame")
+        frame(model, "s")
+        XCTAssertFalse(model.mayAnswer(card), "a report before the surface settled never counts")
+        XCTAssertTrue(model.isPresented("s"))
         model.sighted(card, on: "s")
         XCTAssertFalse(model.mayAnswer(card), "not before a frame is presented after it")
-        XCTAssertTrue(model.awaitingFrame.contains("s"), "the view is asked for the next frame")
-        model.framePresented("s")
-        XCTAssertTrue(model.mayAnswer(card), "presented, then a frame presented: it counts")
+        frame(model, "s")
+        XCTAssertTrue(model.mayAnswer(card))
     }
 
+    /// (c) The offset moved without a size change, by no hand of the person's (the anchor placing it at its bottom): the
+    /// report made in that pass is dropped, and the wait starts over.
     @MainActor
-    func testNothingCountsWhileTheAppIsNotActiveOrTheSurfaceIsCovered() async {
-        let fake = FakeEngineClient(scenario: .quiet)
-        let model = CardsModel(client: fake, app: .moss, now: { SampleData.now }, settleWait: .zero)
-        await model.load()
-        let card = SampleData.tallCard
-        await model.apply(.cardRequested(card))
-        try? await Task.sleep(for: .milliseconds(50))
-        model.surface("s", presented: true)
-        // (b) In the app switcher or the background.
-        model.setAppActive(false)
-        model.sighted(card, on: "s"); model.framePresented("s")
-        XCTAssertFalse(model.mayAnswer(card), "an app not active counts nothing")
-        model.setAppActive(true)
-        model.sighted(card, on: "s"); model.framePresented("s")
-        XCTAssertFalse(model.mayAnswer(card), "going inactive unpresented the surface: it must be presented again")
-        // Going inactive between the report and the frame drops the report.
-        model.surface("s", presented: true)
+    func testTheOffsetMovedWithoutASizeChangeTheReportIsDropped() async {
+        let (model, card) = await tallModel()
+        let size = CGSize(width: 400, height: 2400)
+        let top = CardsModel.SurfaceLayout(contentSize: size, visible: CGRect(x: 0, y: 0, width: 400, height: 670))
+        let bottom = CardsModel.SurfaceLayout(contentSize: size, visible: CGRect(x: 0, y: 1730, width: 400, height: 670))
+        model.surface("s", inFront: true)
+        model.layout("s", top, userScrolling: false); frame(model, "s")
+        XCTAssertTrue(model.isPresented("s"))
         model.sighted(card, on: "s")
-        model.setAppActive(false); model.setAppActive(true); model.surface("s", presented: true)
-        model.framePresented("s")
-        XCTAssertFalse(model.mayAnswer(card), "a report from before the app left does not count after it is back")
-        // A sheet over it (the view says covered: not presented).
-        model.surface("s", presented: false)
-        model.sighted(card, on: "s"); model.framePresented("s")
-        XCTAssertFalse(model.mayAnswer(card), "a covered surface counts nothing")
-        // Gone from the screen.
-        model.surface("s", presented: true)
-        model.sighted(card, on: "s")
-        model.surfaceGone("s")
-        model.framePresented("s")
-        XCTAssertFalse(model.mayAnswer(card), "a surface that left counts nothing it reported")
+        let ticket = model.frameRequest["s"]
+        model.layout("s", bottom, userScrolling: false)          // moved, same size
+        XCTAssertFalse(model.isPresented("s"), "a move the person didn't make unsettles it")
+        if let ticket { model.framePresented("s", ticket: ticket) }
+        frame(model, "s")
+        XCTAssertFalse(model.mayAnswer(card), "the report from before the move is dropped, the stale frame ignored")
+        XCTAssertTrue(model.isPresented("s"), "settled again at its new place")
+        // The person's own scroll moves it too, and they are looking: a report then counts.
+        model.layout("s", top, userScrolling: true)
+        XCTAssertTrue(model.isPresented("s"), "the person's drag does not unsettle it")
+        model.sighted(card, on: "s"); frame(model, "s")
+        XCTAssertTrue(model.mayAnswer(card))
     }
 
+    /// (c) A change of the content's size drops what was reported in that pass, for a cut part's last line too.
     @MainActor
     func testAReportInThePassThatChangedTheContentSizeIsDropped() async {
         let fake = FakeEngineClient(scenario: .manyPaths)
         let model = CardsModel(client: fake, app: .moss, now: { SampleData.now }, settleWait: .zero)
         await model.load()
         let card = SampleData.manyPathsCard
-        model.surface("s", presented: true)
-        // (c) Rows measured, the content grew: the heading reported in that pass sat where it no longer is.
+        let small = CardsModel.SurfaceLayout(contentSize: CGSize(width: 400, height: 900), visible: CGRect(x: 0, y: 0, width: 400, height: 670))
+        var grown = small; grown.contentSize.height = 1300
+        model.surface("s", inFront: true)
+        model.layout("s", small, userScrolling: false); frame(model, "s")
         model.sighted(card, on: "s")
-        model.surface("s", presented: false)   // the content's size changed
-        model.surface("s", presented: true)    // settled again through a presented frame
-        model.framePresented("s")
+        model.layout("s", grown, userScrolling: true)            // rows measured: even mid-drag a size change unsettles
+        frame(model, "s"); frame(model, "s")
         XCTAssertFalse(model.sighted.contains(card.id + "#" + card.hash), "the report from the pass that changed the size is dropped")
-        model.sighted(card, on: "s"); model.framePresented("s")
+        model.sighted(card, on: "s"); frame(model, "s")
         XCTAssertTrue(model.sighted.contains(card.id + "#" + card.hash), "reported again in the settled place, it counts")
-        // The same for an opened part's last line.
         model.open("paths", of: card)
         model.readEnd("paths", of: card, on: "s")
-        model.surface("s", presented: false); model.surface("s", presented: true)
-        model.framePresented("s")
+        model.layout("s", small, userScrolling: false)
+        frame(model, "s"); frame(model, "s")
         XCTAssertFalse(model.readToEnd.contains(card.id + "#" + card.hash + "#paths"))
-        model.readEnd("paths", of: card, on: "s"); model.framePresented("s")
+        model.readEnd("paths", of: card, on: "s"); frame(model, "s")
         XCTAssertTrue(model.readToEnd.contains(card.id + "#" + card.hash + "#paths"))
+    }
+
+    /// (b) Nothing counts while the app is not active, the surface is covered, or it has left the screen.
+    @MainActor
+    func testNothingCountsWhileTheAppIsNotActiveOrTheSurfaceIsCovered() async {
+        let (model, card) = await tallModel()
+        let l = CardsModel.SurfaceLayout(contentSize: CGSize(width: 400, height: 900), visible: CGRect(x: 0, y: 0, width: 400, height: 670))
+        model.surface("s", inFront: true)
+        model.layout("s", l, userScrolling: false); frame(model, "s")
+        model.sighted(card, on: "s")
+        model.setAppActive(false)
+        frame(model, "s")
+        XCTAssertFalse(model.mayAnswer(card), "going inactive drops the report")
+        model.sighted(card, on: "s"); frame(model, "s")
+        XCTAssertFalse(model.mayAnswer(card), "an app not active counts nothing")
+        model.setAppActive(true)
+        frame(model, "s")                                      // settles again
+        model.surface("s", inFront: false)                     // a sheet over it
+        model.sighted(card, on: "s"); frame(model, "s")
+        XCTAssertFalse(model.mayAnswer(card), "a covered surface counts nothing")
+        model.surface("s", inFront: true); model.layout("s", l, userScrolling: false); frame(model, "s")
+        model.sighted(card, on: "s")
+        model.surfaceGone("s")
+        frame(model, "s")
+        XCTAssertFalse(model.mayAnswer(card), "a surface that left counts nothing it reported")
+    }
+
+    @MainActor private func tallModel() async -> (CardsModel, Card) {
+        let fake = FakeEngineClient(scenario: .quiet)
+        let model = CardsModel(client: fake, app: .moss, now: { SampleData.now }, settleWait: .zero)
+        await model.load()
+        await model.apply(.cardRequested(SampleData.tallCard))
+        try? await Task.sleep(for: .milliseconds(50))
+        return (model, SampleData.tallCard)
+    }
+    /// A frame presented for whatever the surface waits for now.
+    @MainActor private func frame(_ model: CardsModel, _ id: String) {
+        if let t = model.frameRequest[id] { model.framePresented(id, ticket: t) }
     }
 }
 
-/// The view's two steps in one, for tests that are about something else: the surface is presented, the report made, and a
-/// frame presented after it.
+/// The view's steps in one, for tests that are about something else: a settled surface, the report, a frame after it.
 @MainActor extension CardsModel {
-    func seenOnScreen(_ card: Card) { surface("test", presented: true); sighted(card, on: "test"); framePresented("test") }
-    func readOnScreen(_ field: String, of card: Card) { surface("test", presented: true); readEnd(field, of: card, on: "test"); framePresented("test") }
+    func seenOnScreen(_ card: Card) { report { sighted(card, on: "test") } }
+    func readOnScreen(_ field: String, of card: Card) { report { readEnd(field, of: card, on: "test") } }
+    private func report(_ make: () -> Void) {
+        if !isPresented("test") {
+            surface("test", inFront: true)
+            layout("test", SurfaceLayout(contentSize: CGSize(width: 1, height: 1), visible: .init(x: 0, y: 0, width: 1, height: 1)), userScrolling: false)
+            if let t = frameRequest["test"] { framePresented("test", ticket: t) }
+        }
+        make()
+        if let t = frameRequest["test"] { framePresented("test", ticket: t) }
+    }
 }
