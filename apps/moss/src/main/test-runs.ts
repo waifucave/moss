@@ -103,6 +103,9 @@ export const SCENES: readonly Scene[] = [
   { name: "question-withdrawn", go: { bot: "fern", panel: false, strip: false } },
   { name: "question-lines", go: { bot: "onyx", panel: false, strip: false } },
   { name: "question-long", go: { bot: "ada", panel: false, strip: false } },
+  // Open cards that wait for no turn: skipped (the person's own bubble "Skipped the question"), and two open at once.
+  { name: "question-skipped", go: { bot: "brook", panel: false, strip: false } },
+  { name: "question-two-open", go: { bot: "juniper", panel: false, strip: false } },
   // Lane MA2's pages (the side panel, Plugins, Settings), written as `ma2-<scene>-<theme>-<size>.png`.
   { name: "ma2-panel", go: { bot: "juniper", panel: true } },
   { name: "ma2-plugins", go: { page: "plugins", strip: false } },
