@@ -21,11 +21,10 @@ import { fileToolRefusal } from "../../src/agents/moss-code/backend";
 import { secretReadPlaces } from "../../src/contracts/fence";
 import { rmdirSync, symlinkSync } from "node:fs";
 import { MossApprovalBroker } from "../../src/approvals/broker";
-import { botApprovalCheck } from "../../src/approvals/bot-check";
+import { botApprovalCheck, runsLaterPlace, windowsFileToolInput } from "../../src/approvals/bot-check";
 import { FakeClock } from "../../src/contracts/fakes/clock";
 import type { BotSessionContext } from "../../src/bots/service";
 import type { CanUseTool } from "@waifucave/clover-agent-sdk";
-import { windowsFileToolInput } from "../../src/approvals/bot-check";
 import { agentShellTools, stopWindowsBackground, windowsShellTools } from "../../src/fence/win-shell-tools";
 import { planFromSettings, profileExcludeCandidates, QUARANTINE_COPY_LIMITS, quarantineWin, watchedReadDenies } from "../../src/fence/win-fenced";
 import { fencedExecutor } from "../../src/computers/fenced-executor";
@@ -566,53 +565,136 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     expect([ls?.behavior, lsCards]).toEqual(["allow", 0]);
     expect(cards.length - lsCards).toBe(1);
   });
-  // Lane WS9, a MEASUREMENT for the controller (no fix rests on it yet): does a fenced command's network path leave the
-  // machine? The fence's network filter is keyed to the pool account, but a share is reached by Windows's own SMB
-  // redirector and a WebDAV path by its WebClient service, and the host's name by the DNS client service. Dummies only:
-  // an address nothing answers (10.255.255.1, TEST-NET-like and unrouted on the runner), a `.invalid` name, and a WebDAV
-  // path to a listener of this test's own on a second loopback address. Each is tried fenced (as the bot) and, as the
-  // control, unfenced (as the runner's user). Recorded, never asserted: what it shows goes to the controller.
-  test("MEASURE (lane WS9): whether a fenced command's network path (SMB, WebDAV, a name lookup) leaves the machine", async () => {
-    const seenSyn = async (addr: string, during: () => Promise<unknown>) => {
-      let seen = false, owners = new Set<string>();
-      let going = true;
-      const poll = (async () => {
-        while (going) {
-          const r = Bun.spawnSync(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Get-NetTCPConnection -RemoteAddress $env:WS9_ADDR -ErrorAction SilentlyContinue | ForEach-Object { \"$($_.OwningProcess) $($_.State) $($_.RemotePort)\" }"], { env: { ...process.env, WS9_ADDR: addr } });
-          for (const line of r.stdout.toString().split(/\r?\n/).filter((l) => l.trim() !== "")) { seen = true; owners.add(line.trim()); }
-          await Bun.sleep(300);
-        }
-      })();
-      try { await during(); } finally { going = false; await poll; }
-      return { seen, owners: [...owners].slice(0, 6) };
-    };
-    const syn = async (what: string, run: () => Promise<unknown>) => {
-      const r = await seenSyn("10.255.255.1", run);
-      console.log(`[e2e] MEASURE smb ${what}: a TCP attempt to 10.255.255.1 seen ${r.seen} (pid state port: ${JSON.stringify(r.owners)})`);
-      return r.seen;
-    };
-    const fencedSmb = await syn("fenced (the bot's Bash)", () => call(tools.Bash!, { command: "ls //10.255.255.1/x >/dev/null 2>&1; echo done", timeout: 60_000 }));
-    const controlSmb = await syn("unfenced (the control)", async () => Bun.spawnSync(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Test-Path -LiteralPath '\\\\10.255.255.1\\x' | Out-Null"], { timeout: 60_000 }));
-    // A name lookup: whether the DNS client cached an answer (or a refusal) for a `.invalid` name after the command.
-    const cached = (name: string) => Bun.spawnSync(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "@(Get-DnsClientCache -Name $env:WS9_NAME -ErrorAction SilentlyContinue).Count"], { env: { ...process.env, WS9_NAME: name } }).stdout.toString().trim();
-    const fencedName = `ws9-fenced-${process.pid}.invalid`, controlName = `ws9-control-${process.pid}.invalid`;
-    await call(tools.Bash!, { command: `ls //${fencedName}/x >/dev/null 2>&1; echo done`, timeout: 60_000 });
-    Bun.spawnSync(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", `Test-Path -LiteralPath '\\\\${controlName}\\x' | Out-Null`], { timeout: 60_000 });
-    console.log(`[e2e] MEASURE dns: the DNS client's cache entries for the fenced name ${cached(fencedName) || "?"}, for the control's ${cached(controlName) || "?"}`);
-    // WebDAV to a listener of this test's own (127.0.0.2:80; the WebClient service may not run on the runner: then neither does).
-    let hits = 0;
-    let server: import("bun").TCPSocketListener<undefined> | undefined;
-    try { server = Bun.listen({ hostname: "127.0.0.2", port: 80, socket: { open(s) { hits++; s.end(); }, data() {} } }); } catch (e) { console.log(`[e2e] MEASURE webdav: no listener on 127.0.0.2:80 (${e instanceof Error ? e.message : String(e)})`); }
-    if (server !== undefined) {
-      await call(tools.Bash!, { command: "ls '//127.0.0.2@80/x' >/dev/null 2>&1; echo done", timeout: 60_000 });
-      const fencedHits = hits;
-      Bun.spawnSync(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Test-Path -LiteralPath '\\\\127.0.0.2@80\\x' | Out-Null"], { timeout: 60_000 });
-      const webclient = Bun.spawnSync(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "(Get-Service WebClient -ErrorAction SilentlyContinue).Status"]).stdout.toString().trim() || "not installed";
-      console.log(`[e2e] MEASURE webdav: connections to 127.0.0.2:80 from the fenced command ${fencedHits}, from the control ${hits - fencedHits}; WebClient service ${webclient}`);
-      server.stop(true);
+
+  test("a project on a mapped drive (lane WS9): the coding agent's file tools work in it, and a link in it to a secret place is still refused", () => {
+    const project = join(home, "ws9-mapped-project");
+    rmSync(project, { recursive: true, force: true });
+    mkdirSync(project, { recursive: true });
+    writeFileSync(join(project, "plain.txt"), "plain\n");
+    symlinkSync(join(home, ".ssh"), join(project, "keys"), "junction");
+    // A free letter, mapped to this computer's own share of the project (`net use`, the session's own credentials, no prompt).
+    const letter = ["Z", "Y", "X", "W", "V"].find((l) => !existsSync(`${l}:\\`));
+    const share = `\\\\localhost\\${home.slice(0, 1)}$${project.slice(2)}`;
+    const mapped = letter === undefined ? undefined : Bun.spawnSync(["net", "use", `${letter}:`, share, "/persistent:no"], { stdin: "ignore", timeout: 60_000 });
+    const ok = mapped !== undefined && mapped.exitCode === 0 && existsSync(`${letter}:\\plain.txt`);
+    console.log(`[e2e] mapped drive: ${letter ?? "(no free letter)"}: -> ${share}: mapped ${ok}${ok ? "" : ` (${(mapped?.stderr.toString() ?? "").trim().slice(0, 160)})`}`);
+    try {
+      if (!ok) {
+        // Mapping a drive can't be done for every runner user; the unit tests hold the rule (fold-paths.test.ts).
+        console.log("[e2e] mapped drive: SKIPPED here: no drive could be mapped to a share of this computer");
+        return;
+      }
+      const root = `${letter}:\\`;
+      const agentFence = { denyRead: [moss, ...secretReadPlaces("windows", home).map((p) => p.path)], denyWrite: [moss] };
+      const read = (file_path: string) => fileToolRefusal({ tool_name: "Read", tool_input: { file_path } }, agentFence, root);
+      const plain = read(`${root}plain.txt`), keys = read(`${root}keys\\id_e2e`);
+      const glob = fileToolRefusal({ tool_name: "Glob", tool_input: { pattern: "*.txt", path: root } }, agentFence, root);
+      const other = read(`\\\\localhost\\${home.slice(0, 1)}$\\Windows\\win.ini`);
+      console.log(`[e2e] mapped drive: Read plain refused ${plain !== undefined}; Glob refused ${glob !== undefined}; Read through a junction to .ssh refused ${keys !== undefined}; another place on the share refused ${other !== undefined}`);
+      expect(plain).toBeUndefined();
+      expect(glob).toBeUndefined();
+      expect(keys).toBeDefined();
+      expect(other).toBeDefined();
+    } finally {
+      if (ok) Bun.spawnSync(["net", "use", `${letter}:`, "/delete", "/y"], { stdin: "ignore", timeout: 60_000 });
+      try { rmdirSync(join(project, "keys")); } catch { /* already gone */ }
+      rmSync(project, { recursive: true, force: true });
     }
-    console.log(`[e2e] MEASURE summary: fenced smb attempt ${fencedSmb}, control smb attempt ${controlSmb}`);
-  }, 600_000);
+  });
+
+  test("a junction a bot made in its workshop into a project's run-later place (lane WS9): a write through it is refused", async () => {
+    const project = join(home, "ws9-junction-project");
+    const workshop = join(moss, "plugins", "mine");
+    rmSync(project, { recursive: true, force: true });
+    mkdirSync(join(project, ".vscode"), { recursive: true });
+    mkdirSync(workshop, { recursive: true });
+    const j = join(workshop, "j");
+    try { rmdirSync(j); } catch { /* not there */ }
+    symlinkSync(project, j, "junction");
+    try {
+      const broker = new MossApprovalBroker({ clock: new FakeClock(), levels: () => "automatic", localComputer: "Studio" });
+      const homes = { os: "windows" as const, userHome: home, mossHome: moss };
+      const check = botApprovalCheck(broker, { commandsSandboxed: true, home, runsLater: (_c, p) => runsLaterPlace(p, [], homes, () => "ordinary") });
+      const ctx = { botId: BOT, sessionId: "e2e-bot", kind: "bot", computer: "Studio", paths: { scratch }, caller: CALLER } as unknown as BotSessionContext;
+      const opts = { signal: new AbortController().signal, toolUseID: "call_j", requestId: "req_j" } as Parameters<CanUseTool>[2];
+      const through = await check(ctx, () => "user")("Write", { file_path: join(j, ".vscode", "settings.json"), content: "{}" }, opts);
+      const plain = await check(ctx, () => "user")("Write", { file_path: join(workshop, "notes.txt"), content: "x" }, opts);
+      console.log(`[e2e] workshop junction: Write through it to the project's .vscode -> ${through?.behavior}; a plain file in the workshop -> ${plain?.behavior}`);
+      expect(through).toMatchObject({ behavior: "deny", message: expect.stringContaining("run or apply later") });
+      expect(plain?.behavior).toBe("allow");
+      expect(existsSync(join(project, ".vscode", "settings.json"))).toBe(false);
+    } finally {
+      try { rmdirSync(j); } catch { /* already gone */ }
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+
+  // Lane WS9, a MEASUREMENT for the controller (no fix rests on it yet): does a fenced command's network path leave the
+  // machine? A share is reached by Windows's own SMB redirector, a WebDAV path by its WebClient service and a host's name
+  // by its DNS client, none of them the pool account's process, which is what the fence's network filter holds. Seen by
+  // Windows's own packet monitor (`pktmon`, on the network adapters: a packet that leaves passes there) and the DNS
+  // client's own log of the names it was asked for. Dummies only: 192.0.2.1 (TEST-NET-1, routed nowhere), names under
+  // `.invalid` and `.test`, and a WebDAV listener of this test's own on 127.0.0.1. Each is tried fenced (the bot's Bash)
+  // and, as the control, unfenced; a control that shows nothing makes the probe BLIND, and then nothing is concluded.
+  // Recorded, never asserted. Elevated only (pktmon and the DNS log need it); the standard user's job says so and skips.
+  test("MEASURE (lane WS9): whether a fenced command's network path (SMB, WebDAV, a name lookup) leaves the machine", async () => {
+    const elevated = Bun.spawnSync(["net", "session"]).exitCode === 0;
+    if (!elevated || process.env.CI === undefined) { console.log(`[e2e] MEASURE: SKIPPED (elevated ${elevated}, CI ${process.env.CI !== undefined}): pktmon and the DNS client's log need an administrator on CI's own runner`); return; }
+    const dir = mkdtempSync(join(tmpdir(), "ws9-measure-"));
+    const ps = (script: string, env: Record<string, string> = {}) => {
+      const r = Bun.spawnSync(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], { env: { ...process.env, ...env }, timeout: 120_000 });
+      return { code: r.exitCode, out: r.stdout.toString().trim(), err: r.stderr.toString().trim() };
+    };
+    const pk = (...args: string[]) => { const r = Bun.spawnSync(["pktmon", ...args], { timeout: 120_000 }); return { code: r.exitCode, out: `${r.stdout.toString()}${r.stderr.toString()}`.trim() }; };
+    const dnsLog = "Microsoft-Windows-DNS-Client/Operational";
+    const logWasOn = /enabled:\s*true/i.test(Bun.spawnSync(["wevtutil", "gl", dnsLog]).stdout.toString());
+    const unfenced = (unc: string) => ps("Test-Path -LiteralPath $env:WS9_UNC | Out-Null", { WS9_UNC: unc });
+    const fenced = (unc: string) => call(tools.Bash!, { command: `ls '${unc.replace(/\\/g, "/")}' >/dev/null 2>&1; echo done`, timeout: 90_000 });
+    try {
+      pk("stop"); pk("filter", "remove");
+      const added = [pk("filter", "add", "WS9SMB", "-i", "192.0.2.1"), pk("filter", "add", "WS9DNSU", "-t", "UDP", "-p", "53"), pk("filter", "add", "WS9DNST", "-t", "TCP", "-p", "53")];
+      console.log(`[e2e] MEASURE pktmon filters: ${added.map((a) => a.code).join(",")} (${added.map((a) => a.out.split(/\r?\n/)[0]).join(" | ").slice(0, 200)})`);
+      // One capture around one attempt: the packets to 192.0.2.1 and to port 53 it saw.
+      const captured = async (label: string, attempt: () => unknown | Promise<unknown>) => {
+        const etl = join(dir, `${label}.etl`), txt = join(dir, `${label}.txt`);
+        const started = pk("start", "--capture", "--pkt-size", "0", "--file-name", etl);
+        try { await attempt(); } finally { pk("stop"); }
+        let conv = pk("etl2txt", etl, "--out", txt);
+        if (conv.code !== 0) conv = pk("format", etl, "-o", txt);
+        const lines = (() => { try { return readFileSync(txt, "utf8").split(/\r?\n/); } catch { return []; } })();
+        const smb = lines.filter((l) => l.includes("192.0.2.1")).length, dns = lines.filter((l) => /[.:]53\b/.test(l)).length;
+        console.log(`[e2e] MEASURE ${label}: packets to 192.0.2.1 ${smb}, to port 53 ${dns} (capture ${started.code}, text ${conv.code})`);
+        return { smb, dns, ok: started.code === 0 && conv.code === 0 };
+      };
+      const quiet = await captured("quiet", () => Bun.sleep(3_000));
+      const smbFenced = await captured("smb-fenced", () => fenced("\\\\192.0.2.1\\x"));
+      const smbControl = await captured("smb-control", () => unfenced("\\\\192.0.2.1\\x"));
+      // The DNS client's own log of the names asked for (on only for this, and put back as it was).
+      Bun.spawnSync(["wevtutil", "sl", dnsLog, "/e:true"]);
+      const names = { fenced: [`ws9-f-${process.pid}.invalid`, `ws9-f-${process.pid}.test`], control: [`ws9-c-${process.pid}.invalid`, `ws9-c-${process.pid}.test`] };
+      const dnsFenced = await captured("dns-fenced", async () => { for (const n of names.fenced) await fenced(`\\\\${n}\\x`); });
+      const dnsControl = await captured("dns-control", () => { for (const n of names.control) unfenced(`\\\\${n}\\x`); });
+      const asked = (n: string) => Number(ps(`@(Get-WinEvent -LogName '${dnsLog}' -ErrorAction SilentlyContinue | Where-Object { $_.Message -like "*$env:WS9_NAME*" }).Count`, { WS9_NAME: n }).out || "0");
+      const loggedFenced = names.fenced.map(asked), loggedControl = names.control.map(asked);
+      console.log(`[e2e] MEASURE dns log: the fenced names asked ${JSON.stringify(loggedFenced)} time(s), the control's ${JSON.stringify(loggedControl)}`);
+      // WebDAV to a listener of this test's own on 127.0.0.1, at a free port.
+      let hits = 0;
+      const server = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { open(s) { hits++; s.end(); }, data() {} } });
+      const webclient = ps("$s = Get-Service WebClient -ErrorAction SilentlyContinue; if ($s) { \"$($s.Status)\" } else { 'not installed' }").out;
+      try {
+        await fenced(`\\\\127.0.0.1@${server.port}\\x`);
+        const fencedHits = hits;
+        unfenced(`\\\\127.0.0.1@${server.port}\\x`);
+        console.log(`[e2e] MEASURE webdav (WebClient ${webclient}): connections to this test's listener from the fenced command ${fencedHits}, from the control ${hits - fencedHits}`);
+      } finally { server.stop(true); }
+      const blindSmb = !smbControl.ok || smbControl.smb === 0, blindDns = dnsControl.dns <= quiet.dns && loggedControl.every((n) => n === 0);
+      console.log(`[e2e] MEASURE summary: smb ${blindSmb ? "BLIND (the control showed no packet)" : `fenced ${smbFenced.smb} packet(s), control ${smbControl.smb}`}; dns ${blindDns ? "BLIND (the control showed nothing)" : `fenced ${dnsFenced.dns} packet(s) and ${JSON.stringify(loggedFenced)} logged, control ${dnsControl.dns} and ${JSON.stringify(loggedControl)}, quiet ${quiet.dns}`}`);
+    } finally {
+      pk("stop"); pk("filter", "remove");
+      if (!logWasOn) Bun.spawnSync(["wevtutil", "sl", dnsLog, "/e:false"]);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 900_000);
 
   test("a share back to this computer (lane WS8, the reviewer's finding): whether Windows opens it for this user, and both file tools refuse it", () => {
     let opened = false;

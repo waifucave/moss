@@ -2075,6 +2075,10 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
           // waiting; what is left is removed by running it again (each step below is idempotent).
           if (Date.now() - removeStarted > SANDBOX_REMOVE_DEADLINE_MS) { fail(`it has taken more than ${SANDBOX_REMOVE_DEADLINE_MS / 60_000} minutes and stopped before ${principal}; run it again (or restart Windows first)`); break; }
           const memberStarted = Date.now();
+          // Each step's time (lane WS9: the first round's time moved from 36 to 213 s between runs; this says where it goes).
+          const steps: string[] = [];
+          let stepAt = Date.now();
+          const step = (name: string) => { const now = Date.now(); steps.push(`${name} ${((now - stepAt) / 1000).toFixed(1)}`); stepAt = now; };
           const { exists: principalExists, sid: liveSid } = await memberSid(launcher, principal);
           const principalSid = liveSid ?? marker?.members.find((m) => m.principal === principal)?.principalSid ?? null;
           if (principalExists) {
@@ -2084,14 +2088,17 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
             }
           }
           if (principalSid !== null) sids.push(principalSid);
+          step("look");
           // Held while this member is removed: a reset remaking it finishes first, and none starts on it meanwhile.
           // An account that is gone runs nothing and is remade by no reset: nothing to end or wait for.
           const held = principalExists ? await memberLock(principal) : "free";
+          step("lock");
           if (held === "held") { fail(`${principal} is still in use (a command of MOSS's or the profile reset after 3 minutes, or a process of the account that couldn't be ended); stop MOSS (or restart Windows) and run remove again`); break; }
           const guard = held === "free" ? null : held;
           try {
           // The profile for the reset below, resolved before the uninstall.
           const profileRoot = principalSid !== null ? await memberProfile(principalSid) : null;
+          step("profile path");
           // Full remove (principal + filters) for this member.
           // A session still ending (its daemon revokes its grants only when its broker has returned) makes srt-win
           // refuse with exit 22 and change nothing: every account's commands are ended again and the uninstall tried
@@ -2100,12 +2107,15 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
           // unregistered could take the account and start a process as it, which would have to be ended again; the
           // marker is gone, so no daemon can lease it either way. Before each try this account is checked once more.
           let { code, out } = await runT([...removeArgs(launcher, sublayer, principal)]);
+          let retries = 0;
           for (let i = 0; code === SRT_SESSIONS_RUNNING_EXIT && i < 12; i++) {
+            retries++;
             await endAll();
             await Bun.sleep(5_000);
             if (!(await endAccount(principal))) break;
             ({ code, out } = await runT([...removeArgs(launcher, sublayer, principal)]));
           }
+          step(retries === 0 ? "srt-win uninstall" : `srt-win uninstall (${retries} retries)`);
           if (code !== 0) {
             // Ended at its bound (lane WS8, the reviewer's nit): srt-win may have taken part of the account (its filters, or
             // the principal) and not the rest; running remove again finishes it (each step skips what is gone).
@@ -2117,18 +2127,21 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
           if (profileRoot !== null && principalSid !== null && !isTemporaryProfile(profileRoot)) {
             // The profile as Windows deletes one (hive, ProfileList key and folder; its junctions never followed).
             const gone = await runT([...deleteProfileArgs(principalSid)]);
+            step(gone.code === 0 ? "profile delete" : "profile delete (failed)");
             if (gone.code !== 0) {
               await runT(["reg", "unload", `HKU\\${principalSid}`]);
               await runT(["reg", "delete", `HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList\\${principalSid}`, "/f"]);
               await runT([...removeDirArgs(profileRoot)]);
+              step("profile by hand");
             }
             if (realUserProfile !== null && commonStartup !== null) {
               const startups = startupFolders({ profileRoot, realUserProfile, commonStartup });
               for (const path of startups) await runT([...icaclsRemoveDenyArgs(path, principalSid)]);
+              step("startup folders");
             }
           }
           } finally { guard?.release(); }
-          console.error(`sandbox remove: ${principal}: removed in ${((Date.now() - memberStarted) / 1000).toFixed(1)} s`);
+          console.error(`sandbox remove: ${principal}: removed in ${((Date.now() - memberStarted) / 1000).toFixed(1)} s (${steps.join(", ")} s)`);
         }
         if (failed) return;
         // The sweep: a profile a rebuild made for a member after its account went (its ProfileList entry and folder,
