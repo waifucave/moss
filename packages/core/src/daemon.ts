@@ -3512,7 +3512,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     // A local server's model: offered unless its server was asked and found silent (never refused on an expired answer).
     offered: (model) => {
       const local = localModelOffer(activeCatalog(), model);
-      if (local !== undefined) return local === "offered" ? true : "not-running";
+      if (local !== undefined) return local === "offered" ? true : local === "absent" ? false : "not-running";
       return catalogModelListings(activeCatalog(), new Set()).some((m) => m.id === model);
     },
     emit: (state) => void mossServer?.coreEvent({ type: "setup_changed", setup: state }),

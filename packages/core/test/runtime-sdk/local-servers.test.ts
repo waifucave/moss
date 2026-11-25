@@ -140,7 +140,13 @@ describe("the prober", () => {
   });
 
   test("a model that can't chat is never the default nor counted: the embedding marks, by name", () => {
-    expect(EMBEDDING_ID_MARKS.map(String)).toEqual(["/embed/i", "/(^|[/:])bge-/i", "/(^|[/:])e5-/i"]);
+    expect(EMBEDDING_ID_MARKS.map(String)).toEqual(["/embed/i", "/minilm/i", "/(^|[/:-])bge-/i", "/(^|[/:-])e5-/i", "/(^|[/:-])gte-/i"]);
+    // Each embedding family by name: none can chat.
+    const embeddings = ["nomic-embed-text", "mxbai-embed-large", "snowflake-arctic-embed:l", "all-minilm", "all-minilm:l6-v2", "paraphrase-multilingual-minilm", "bge-m3", "BAAI/bge-large-en", "e5-large-v2", "intfloat/multilingual-e5-small", "multilingual-e5-large", "gte-qwen2", "thenlper/gte-base", "granite-embedding:30m"];
+    for (const id of embeddings) expect({ id, chat: chatModels({ models: [{ id }] }).length === 1 }).toEqual({ id, chat: false });
+    // Chat models are never hidden, those with e5 or gte inside a word included.
+    const chats = ["qwen3:8b", "llama3.2", "gemma3:12b", "mistral-small3.2", "deepseek-r1:14b", "phi4-mini", "gpt-oss:20b", "qwen2.5-coder:7b", "smollm2:1.7b", "huge5-chat", "together-7b"];
+    for (const id of chats) expect({ id, chat: chatModels({ models: [{ id }] }).length === 1 }).toEqual({ id, chat: true });
     const answer = { models: [{ id: "nomic-embed-text" }, { id: "mxbai-embed-large" }, { id: "bge-m3" }, { id: "e5-large-v2" }, { id: "qwen3:8b" }, { id: "llama3.2" }] };
     expect(chatModels(answer).map((m) => m.id)).toEqual(["qwen3:8b", "llama3.2"]);
     expect(localRecommendation("ollama-local", new Map([["ollama-local", answer]]))).toEqual({ model: "ollama-local/qwen3:8b" });
@@ -247,6 +253,9 @@ describe("a local server's model past the cache time (the review's blocker)", ()
       r.advance(31_000); // expired
       expect(offer("ollama-local/qwen3:8b")).toBe("offered");
       expect(localModelOffer(catalog, "anthropic/claude-opus-5-5")).toBeUndefined();
+      // An empty id after the slash names no model.
+      expect(localModelOffer(catalog, "ollama-local/")).toBe("absent");
+      expect(offer("ollama-local/")).toBe("absent");
       expect(offer("acme/none")).toBe("absent");
     } finally {
       setLocalServers(undefined);
@@ -273,7 +282,7 @@ describe("a local server's model past the cache time (the review's blocker)", ()
         storedModel: () => written.at(-1), storedEffort: () => undefined,
         recommend: (p) => localRecommendation(p, r.servers.answers()), effortFor: () => undefined,
         writeModel: (m) => { written.push(m); }, clearModel: () => {}, dismissed: () => false, writeDismissed: () => {},
-        offered: (m) => { const l = localModelOffer(catalog, m); return l === undefined ? false : l === "offered" ? true : "not-running"; },
+        offered: (m) => { const l = localModelOffer(catalog, m); return l === undefined || l === "absent" ? false : l === "offered" ? true : "not-running"; },
         emit: () => {}, log: () => {},
       });
       await s.ask();

@@ -111,8 +111,11 @@ export const sdkListLocalModels: ListLocalModels = async (endpoint, timeoutMs) =
   return { models: result.models.map((m) => ({ id: m.id, ...(m.displayName !== undefined ? { name: m.displayName } : {}) })) };
 };
 
-/** Ids that plainly name an embedding model, which can't chat: kept short, named in a test. */
-export const EMBEDDING_ID_MARKS: readonly RegExp[] = [/embed/i, /(^|[/:])bge-/i, /(^|[/:])e5-/i];
+/** Ids that plainly name an embedding model, which can't chat: kept short, each named in a test. `embed` covers
+ *  `nomic-embed`, `mxbai-embed` and `snowflake-arctic-embed`; `minilm` covers `all-minilm`; `e5-` is matched at a word's
+ *  start (`e5-large`, `multilingual-e5-small`), never inside one. A chat model whose id merely contains `embed` is the
+ *  accepted false positive: it is left out of the list and the default, and the person can still name it. */
+export const EMBEDDING_ID_MARKS: readonly RegExp[] = [/embed/i, /minilm/i, /(^|[/:-])bge-/i, /(^|[/:-])e5-/i, /(^|[/:-])gte-/i];
 
 /** The models of an answer that can chat: an id that plainly names an embedding model is left out (the listing says
  *  nothing else of what a model does). */
@@ -219,12 +222,14 @@ export function localRecommendation(provider: string, answers: ReadonlyMap<strin
 /** Whether a model can be picked by what MOSS knows of its local server now: `offered` unless that server was asked and
  *  found silent (`not-running`); never refused on an answer that merely expired. Undefined for a model that isn't on a
  *  local server, or with no prober. */
-export function localModelOffer(catalog: Pick<WinterCatalog, "providers">, model: string): "offered" | "not-running" | undefined {
+export function localModelOffer(catalog: Pick<WinterCatalog, "providers">, model: string): "offered" | "not-running" | "absent" | undefined {
   const servers = localServers();
   const slash = model.indexOf("/");
   if (servers === undefined || slash <= 0) return undefined;
   const provider = model.slice(0, slash);
   if (!isLocalServerProvider(catalog, provider)) return undefined;
+  // An empty model id after the slash names no model at all.
+  if (model.length === slash + 1) return "absent";
   return servers.silent().has(provider) ? "not-running" : "offered";
 }
 
