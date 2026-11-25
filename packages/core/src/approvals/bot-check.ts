@@ -158,7 +158,10 @@ export function fencedReadOnlyCommand(tool: string, input: unknown): boolean {
   if (tool !== "Bash" || input === null || typeof input !== "object" || Array.isArray(input)) return false;
   const i = input as Record<string, unknown>;
   if (i.dangerouslyDisableSandbox !== undefined && i.dangerouslyDisableSandbox !== false) return false;
-  return typeof i.command === "string" && i.command.trim() !== "" && !namesNetworkPath(i.command) && !holdsLiveExpansion(i.command) && isReadOnlyShellCommand(i.command);
+  if (typeof i.command !== "string" || i.command.trim() === "") return false;
+  // Both checks read the line as bash joins it: a backslash-newline outside single quotes is gone (`$\<newline>x` is `$x`).
+  const joined = withoutLineJoins(i.command);
+  return !namesNetworkPath(joined) && !holdsLiveExpansion(joined) && isReadOnlyShellCommand(i.command);
 }
 
 /** Whether a `$'…'` (ANSI-C quoting) opens anywhere: a `$` outside single and double quotes, not escaped, followed by
@@ -195,8 +198,28 @@ export function holdsLiveExpansion(command: string): boolean {
     if (c === "'" && !double) { single = true; continue; }
     if (c === "`") return true;
     if (c === "$" && i + 1 < command.length && /[A-Za-z0-9_{('@*#?!$-]/.test(command[i + 1]!)) return true;
+    // A tilde the shell replaces by a folder it knows only when it runs (lane WS9): `~+` (PWD), `~-` (OLDPWD), `~N`,
+    // `~+N`, `~-N` (the directory stack), unquoted at a word's start or after `=` or `:` (an assignment's value):
+    // `cd /; cat ~-/host/share` is `//host/share` to bash. Plain `~/x` and `~user/x` stay as they are.
+    if (c === "~" && !double && (i === 0 || /[\s;|&()<>=:]/.test(command[i - 1]!)) && /[+\-0-9]/.test(command[i + 1] ?? "")) return true;
   }
   return false;
+}
+
+/** A command line with every backslash-newline outside single quotes removed, as bash joins the lines before it reads the
+ *  words (inside single quotes the pair is literal). Lane WS9. */
+export function withoutLineJoins(command: string): string {
+  let out = "", single = false, double = false;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!;
+    if (single) { if (c === "'") single = false; out += c; continue; }
+    if (c === '"') { double = !double; out += c; continue; }
+    if (c === "'" && !double) { single = true; out += c; continue; }
+    if (c === "\\" && command[i + 1] === "\n") { i++; continue; }
+    if (c === "\\" && i + 1 < command.length) { out += c + command[i + 1]!; i++; continue; }
+    out += c;
+  }
+  return out;
 }
 
 /** Whether a command line names a network path on Windows (the WS9 reviewer's finding): a word starting with two slashes

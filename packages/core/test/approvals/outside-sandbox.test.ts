@@ -8,7 +8,7 @@ import { join } from "node:path";
 import type { Card, Level } from "@waifucave/moss-protocol";
 import { MossApprovalBroker, botDisplayName, type MossApprovalRequest } from "../../src/approvals/broker";
 import {
-  botApprovalCheck, CODE_MAX, fencedReadOnlyCommand, holdsLiveExpansion, MISPLACED_SANDBOX_FLAG_REFUSAL, namesNetworkPath, OUTSIDE_SANDBOX_SENTENCE, misplacedSandboxFlag,
+  botApprovalCheck, CODE_MAX, fencedReadOnlyCommand, holdsLiveExpansion, MISPLACED_SANDBOX_FLAG_REFUSAL, namesNetworkPath, OUTSIDE_SANDBOX_SENTENCE, misplacedSandboxFlag, withoutLineJoins,
   outsideSandboxFlagOf, outsideSandboxHeadline, outsideSandboxInputError, outsideSandboxTimeoutLine,
 } from "../../src/approvals/bot-check";
 import { mergedHooks, withoutAllow } from "../../src/runtime-sdk/turn-loop/hook-merge";
@@ -25,6 +25,7 @@ import { botPaths } from "../../src/bots/paths";
 import type { EffectiveBot } from "../../src/bots/service";
 import type { CanUseTool } from "@waifucave/clover-agent-sdk";
 import { query as sdkQuery } from "@waifucave/clover-agent-sdk";
+import { isReadOnlyShellCommand } from "@waifucave/clover-agent-runtime";
 import { describeWithEmbeddedRuntime } from "../helpers/embedded-runtime";
 import { darwinTest } from "../helpers/darwin-only";
 
@@ -355,6 +356,29 @@ describe("a read-only command of the fenced Bash on Windows (lane WS9): no card,
       for (const command of live) expect([command, holdsLiveExpansion(command), await judged("Bash", command, level, "up")]).toEqual([command, true, level === "ask" ? "card" : "deny"]);
     });
   }
+  // Lane WS9's follow-up: a tilde bash replaces by a folder known only when it runs, and a backslash-newline between `$` and
+  // its name (bash joins the lines first).
+  const tildeAndJoins = ["cd /; cd /c; cat ~-/host/share", "cd /; cat ~+/host/x", "cat ~-/host/share", "cat ~+/host/x", "cat ~1/x", "cat ~+1/x", "cat ~-1/x",
+    "x=~-/host; cat $x", "cat a:~-/x", "x=/; cat $\\\nx$\\\nx/host/s", "cat $\\\n{x:-//host/x}"];
+  for (const level of ["ask", "read-only"] as const) {
+    test(`a tilde from the shell's folders (\`~+\`, \`~-\`, \`~N\`) or a \`$\` joined to its name across a backslash-newline, at ${level}: ${level === "ask" ? "a card" : "refused"}`, async () => {
+      for (const command of tildeAndJoins) expect([command, await judged("Bash", command, level, "up")]).toEqual([command, level === "ask" ? "card" : "deny"]);
+    });
+  }
+  test("a plain `~/x` and `~user/x`, and a tilde inside a word or quotes, stay as they were", async () => {
+    for (const command of ["cat ~/x", "ls ~user/x", "ls a~-b", "grep '~-' f"]) {
+      expect([command, holdsLiveExpansion(withoutLineJoins(command))]).toEqual([command, false]);
+    }
+    // What the classifier answers for them and for a `cd` (pinned, so a change in the SDK is seen).
+    for (const [command, readOnly] of [["cat ~/x", true], ["cd /", false], ["cd / && ls", false]] as const) {
+      expect([command, isReadOnlyShellCommand(command)]).toEqual([command, readOnly]);
+    }
+  });
+  test("a backslash-newline is joined outside single quotes only (inside them it is literal)", () => {
+    expect(withoutLineJoins("cat $\\\nx")).toBe("cat $x");
+    expect(withoutLineJoins("echo 'a\\\nb'")).toBe("echo 'a\\\nb'");
+    expect(withoutLineJoins("echo \"it's\" $\\\nx")).toBe("echo \"it's\" $x");
+  });
   test("a literal `$` stays allowed: in single quotes, before a closing quote or a regex character, at a word's end", async () => {
     for (const command of ["grep 'foo$' f", "grep \"foo$\" f", "grep -E \"a$|b\" f", "ls src", "echo 'cost: $5'"]) {
       expect([command, holdsLiveExpansion(command), await judged("Bash", command, "ask", "up")]).toEqual([command, false, "allow"]);
