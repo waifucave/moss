@@ -53,6 +53,7 @@ public struct ConversationScreen: View {
                     Color.clear.frame(height: 1).id("end")
                 }
                 .padding(.horizontal, 16).padding(.top, 8)
+                .cardContent()
             }
             .scrollDismissesKeyboard(.interactively)
             // Messages pass under the bars as the system does it: the top and bottom scroll edge effects blur what is beneath the title and the composer.

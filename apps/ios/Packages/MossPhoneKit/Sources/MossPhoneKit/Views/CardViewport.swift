@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The part of a scroll view a person can actually see: its frame less the bars over it (the navigation bar, the
-/// composer), in window coordinates. A card reports a part of itself as seen only when that part sits
+/// The part of a scroll view a person can actually see: its visible rect less the bars over it (the navigation bar, the
+/// composer), in the scroll content's coordinates. A card reports a part of itself as seen only when that part sits
 /// inside this rect; without one (no scroll view set it) nothing is ever reported seen, so an approve stays refused.
 struct CardViewportKey: EnvironmentKey { static let defaultValue: CGRect = .zero }
 extension EnvironmentValues {
@@ -23,27 +23,29 @@ extension View {
 }
 #endif
 
+/// The scroll content's own coordinate space: what a card measures itself in, the same space the scroll view's visible
+/// rect is given in, so neither a sheet's offset in the window nor how the bars are counted can put the two apart.
+let cardContentSpace = "moss.cardContent"
+
 private struct CardViewportReader: ViewModifier {
     @State private var viewport: CGRect = .zero
     func body(content: Content) -> some View {
         content
             .environment(\.cardViewport, viewport)
-            // In window coordinates, from the first layout on (`onAppear`; a change only reports changes): the scroll
-            // view's frame less the bars it runs under (its safe area there). The cards measure themselves the same way.
-            .background {
-                GeometryReader { g in
-                    let r = Self.rect(g)
-                    Color.clear
-                        .onAppear { viewport = r }
-                        .onChange(of: r) { _, new in viewport = new }
-                }
-            }
+            // The scroll view's visible rect, in content coordinates, less its content insets: the parts of its bounds the
+            // system itself counts as covered (the navigation bar, the composer bar, the home indicator).
+            .onScrollGeometryChange(for: CGRect.self) { g in
+                let v = g.visibleRect, i = g.contentInsets
+                return CGRect(x: v.minX + i.leading, y: v.minY + i.top,
+                              width: max(0, v.width - i.leading - i.trailing), height: max(0, v.height - i.top - i.bottom))
+            } action: { _, new in viewport = new }
     }
-    static func rect(_ g: GeometryProxy) -> CGRect {
-        let f = g.frame(in: .global)
-        return CGRect(x: f.minX, y: f.minY + g.safeAreaInsets.top, width: f.width,
-                      height: max(0, f.height - g.safeAreaInsets.top - g.safeAreaInsets.bottom))
-    }
+}
+
+extension View {
+    /// Applied to the outermost content view inside a card-holding scroll view (after its padding): names the space the
+    /// scroll view's visible rect is measured in.
+    func cardContent() -> some View { coordinateSpace(.named(cardContentSpace)) }
 }
 
 private struct SeenInViewport: ViewModifier {
@@ -53,7 +55,7 @@ private struct SeenInViewport: ViewModifier {
     func body(content: Content) -> some View {
         content.background {
             GeometryReader { g in
-                let f = g.frame(in: .global)
+                let f = g.frame(in: .named(cardContentSpace))
                 Color.clear
                     .onAppear { check(f, viewport) }
                     .onChange(of: f) { _, new in check(new, viewport) }
