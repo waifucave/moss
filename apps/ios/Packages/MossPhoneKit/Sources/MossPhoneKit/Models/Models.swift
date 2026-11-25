@@ -232,6 +232,16 @@ public struct Card: Identifiable, Codable, Hashable, Sendable {
     }
 
     public var title: String { text("title") ?? "Needs your answer" }
+    /// The protocol's sealed field names (`CARD_FIELD_NAMES`, approvals.ts), in its order: a card is drawn with every one it carries.
+    public static let fieldNames = ["title", "what", "command", "computer", "risk", "reason", "source", "host", "paths", "detail", "expires", "rule"]
+    /// The fields drawn under the heading (title and what), in the protocol's order.
+    public static var bodyFields: [String] { fieldNames.filter { $0 != "title" && $0 != "what" } }
+    /// Every field it carries is one the phone draws, and the heading's two are text: else it is answered on the computer.
+    public var drawnWhole: Bool {
+        fields.keys.allSatisfy(Card.fieldNames.contains)
+            && fields["title"].map { if case .text = $0 { return true } else { return false } } ?? true
+            && fields["what"].map { if case .text = $0 { return true } else { return false } } ?? true
+    }
     public var what: String? { text("what") }
     private func text(_ name: String) -> String? {
         if case .text(let t)? = fields[name] { return t }

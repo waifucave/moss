@@ -363,9 +363,13 @@ public actor CoreEngineClient: EngineClient {
             // A plugin OK's checkboxes aren't drawn on the phone yet: none is left checked.
             r = try await c.answer(shown, option: option.id, children: [])
         } catch LinkError.timeout(let r) {
-            // A timeout after the answer began going out may have reached the computer: the card stays as it is (its
-            // `card_resolved` settles it), and nothing is sent again by itself.
-            throw LinkError.timeout(r)
+            // A timeout after the answer began going out may have reached the computer: it is read back, never sent
+            // again by itself. Settled with the option this phone sent: taken. Settled any other way: answered elsewhere.
+            // Still pending: the timeout stands, and the card stays for the person to try again.
+            guard let back = try? await Doors.cardOutcome(c, id: card.id), back.outcome != nil else { throw LinkError.timeout(r) }
+            shelf.resolve(card.id)
+            if back.option == option.id { return }
+            throw card.expiresAt <= now() ? CardAnswerError.expired : CardAnswerError.answeredElsewhere
         } catch LinkError.refused {
             shelf.resolve(card.id)
             throw card.expiresAt <= now() ? CardAnswerError.expired : CardAnswerError.answeredElsewhere

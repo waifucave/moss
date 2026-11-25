@@ -72,7 +72,10 @@ public final class CardsModel {
     public func apply(_ event: EngineEvent) async {
         switch event {
         case .cardRequested(let c):
-            if await client.shows(c, in: app), !cards.contains(where: { $0.id == c.id }) { cards.append(c) }
+            guard await client.shows(c, in: app) else { break }
+            // The same card again with new content replaces the one on screen, in its place (never stale text whose press fails).
+            if let i = cards.firstIndex(where: { $0.id == c.id }) { if cards[i] != c { cards[i] = c; notes[c.id] = nil } }
+            else { cards.append(c) }
         case .cardResolved(let id):
             if answeredHere.contains(id) { cards.removeAll { $0.id == id } }
             else if cards.contains(where: { $0.id == id }) { notes[id] = .answeredElsewhere }

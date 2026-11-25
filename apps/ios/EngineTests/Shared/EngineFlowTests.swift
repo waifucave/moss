@@ -132,6 +132,10 @@ class EngineFlowTests: XCTestCase {
         // The runner's engine offers files to a paired phone (a phone with an answer key, a session this computer runs).
         XCTAssertTrue(offers.files, "the engine's composer offers files here")
         if offers.files {
+            // The client's own call first, so a refusal says why (the model's line is the person's plain one).
+            let sid = app == .moss ? (try await client.bots().first { $0.name == "Alpha" }?.mainSession ?? "") : (codingSession ?? "")
+            do { let f = try await client.stageFile(session: sid, name: "probe.txt", data: Data("probe\n".utf8)); print("IW staged \(f.path)") }
+            catch { print("IW stageFile refused: \(error)"); XCTFail("stageFile: \(error)") }
             await conversation.stageFile(name: "notes.txt", size: 12, data: Data("hello, file\n".utf8))
             XCTAssertEqual(conversation.stagedFiles.count, 1, conversation.errorText ?? "")
             conversation.draft = "With a file"
@@ -144,6 +148,7 @@ class EngineFlowTests: XCTestCase {
         if offers.pictures {
             // The smallest PNG there is: one pixel.
             let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")!
+            do { _ = try await client.stageImage(session: sid, data: png); print("IW picture staged") } catch { print("IW stageImage refused: \(error)") }
             await conversation.stage(png, thumbnail: png)
             XCTAssertEqual(conversation.staged.count, 1, conversation.errorText ?? "")
             conversation.draft = "With a picture"

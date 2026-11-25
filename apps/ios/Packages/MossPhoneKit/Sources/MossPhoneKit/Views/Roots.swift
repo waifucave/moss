@@ -29,6 +29,7 @@ public struct AppLaunch {
             case "loading": l.scenario = .loading
             case "cardStates": l.scenario = .cardStates
             case "sendFails": l.scenario = .sendFails
+            case "providerConsent": l.scenario = .providerConsent
             case "botLimit": l.scenario = .botLimit
             default: break
             }

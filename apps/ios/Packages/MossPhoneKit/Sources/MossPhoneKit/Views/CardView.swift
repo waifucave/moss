@@ -33,6 +33,10 @@ public struct CardView: View {
                     Button { onSettle() } label: { Text(note == .failed ? "Try again" : "Dismiss").frame(maxWidth: .infinity) }
                         .buttonStyle(.bordered).tint(.secondary)
                 }
+            } else if !card.drawnWhole {
+                // A field this phone doesn't know how to draw: what the person would approve isn't all on screen.
+                Label("Answer this one on your computer: it carries something this phone can't show.", systemImage: "desktopcomputer")
+                    .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else {
                 (card.options.count > 2 ? AnyLayout(VStackLayout(spacing: 8)) : AnyLayout(HStackLayout(spacing: 8))) {
                     ForEach(card.options) { option in
@@ -42,7 +46,7 @@ public struct CardView: View {
                         .buttonStyle(.bordered)
                         .tint(option.kind == .approve ? Theme.accent : .secondary)
                         .controlSize(.regular)
-                        .disabled(busy)
+                        .disabled(busy || settling)
                         .accessibilityLabel(option.rememberAlways ? "\(option.label), and remember" : option.label)
                         .accessibilityHint(option.kind == .approve ? "Approves this request" : "Refuses this request")
                     }
@@ -54,12 +58,18 @@ public struct CardView: View {
         .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Color.primary.opacity(0.14), lineWidth: 0.5))
         .opacity(note == nil || note == .failed ? 1 : 0.75)
         .accessibilityElement(children: .contain)
+        .onChange(of: card) { _, _ in
+            settling = true
+            Task { try? await Task.sleep(for: .milliseconds(1200)); settling = false }
+        }
     }
 
-    private static let order = ["command", "paths", "detail", "reason", "risk", "computer"]
+    /// Every field the protocol lists (`CARD_FIELD_NAMES`) after the heading's two, in the desktop's order; `computer` sits in the footer.
     private var shownFields: [(String, SealedValue)] {
-        Self.order.compactMap { name in card.fields[name].map { (name, $0) } }
+        Card.bodyFields.compactMap { name in card.fields[name].map { (name, $0) } }
     }
+    /// A card whose content changed under the same id: its buttons wait a moment, so a press meant for the old text never lands on the new.
+    @State private var settling = false
 
     @ViewBuilder private func field(_ name: String, _ value: SealedValue) -> some View {
         switch value {
@@ -67,11 +77,13 @@ public struct CardView: View {
             if name == "computer" { EmptyView() }   // shown in the footer
             else { labelled(name) { cutText(t, name: name, limit: 600).font(.callout) } }
         case .code(let c, _):
-            cutText(c, name: name, limit: 800)
-                .font(.system(.footnote, design: .monospaced))
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            labelled(name) {
+                cutText(c, name: name, limit: 800)
+                    .font(.system(.footnote, design: .monospaced))
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
         case .list(let items):
             labelled(name) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -82,7 +94,7 @@ public struct CardView: View {
                 }
             }
         case .rows(let rows):
-            VStack(alignment: .leading, spacing: 4) {
+            labelled(name) { VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, r in
                     (typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 0)) : AnyLayout(HStackLayout(alignment: .firstTextBaseline))) {
                         Text(Sealed.visible(r.label)).foregroundStyle(.secondary)
@@ -90,7 +102,7 @@ public struct CardView: View {
                         Text(Sealed.visible(r.value)).multilineTextAlignment(typeSize.isAccessibilitySize ? .leading : .trailing)
                     }.font(.callout)
                 }
-            }
+            } }
         }
     }
 
@@ -100,7 +112,9 @@ public struct CardView: View {
             content()
         }
     }
-    private static let labels = ["risk": "Risk", "reason": "Why", "paths": "Files", "detail": "Details"]
+    /// The desktop's words for each field (its sealed page's `FIELD_TITLES`); `rule` has none there, so it says what it is.
+    static let labels = ["command": "Command", "computer": "Computer", "risk": "Risk", "reason": "Why", "source": "From", "host": "Site",
+                         "paths": "Files", "detail": "Everything it sends", "expires": "Expires", "rule": "What Always would save"]
 
     /// A long field is cut openly: it says how much is hidden and offers the rest.
     @ViewBuilder private func cutText(_ s: String, name: String, limit: Int) -> some View {
@@ -141,7 +155,8 @@ public struct CardsScreen: View {
             LazyVStack(alignment: .leading, spacing: 18) {
                 if model.loadFailed { UnreachableNotice(onRetry: { Task { await model.load() } }).padding(14).background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Color.primary.opacity(0.14), lineWidth: 0.5)) }
-                ForEach(model.cards.sorted { $0.issuedAt > $1.issuedAt }) { card in
+                // In the order they came: a new card joins at the end and never moves the list under the person's finger.
+                ForEach(model.cards) { card in
                     VStack(alignment: .leading, spacing: 6) {
                         Text(who(card)).font(.footnote).foregroundStyle(.secondary).padding(.leading, 6)
                             .accessibilityAddTraits(.isHeader)

@@ -116,6 +116,19 @@ public enum SampleData {
         }
     }
 
+    /// The provider-consent card (core/src/bots/provider-consent.ts): the provider whose stored key is used is in `host` only.
+    public static let providerConsentCard = Card(id: "card_prov0001", kind: "change", computer: computerName, bot: "alpha", origin: "bot",
+             issuedAt: ago(60), expiresAt: now + 540_000, hash: String(repeating: "c", count: 64),
+             fields: [
+                "title": .text("Use your stored key for Alpha?"),
+                "what": .text("This bot's plugin, not you, chose a model whose provider uses your stored key. A yes lets this bot use that provider with your key, and no other bot or provider."),
+                "reason": .text("You can choose the model yourself in the bot's settings instead: then nothing asks."),
+                "source": .code("alpha", language: nil),
+                "host": .code("fireworks", language: nil),
+                "command": .code("fireworks/kimi-k3", language: nil),
+             ],
+             options: [CardOption(id: "approve", kind: .approve, label: "Allow"), CardOption(id: "deny", kind: .deny, label: "Deny")])
+
     public static let cards: [Card] = [
         Card(id: "card_0a1b2c3d", kind: "tool", computer: computerName, session: "s_alpha", bot: "alpha", origin: "routine",
              issuedAt: ago(150), expiresAt: now + 450_000, hash: String(repeating: "a", count: 64),

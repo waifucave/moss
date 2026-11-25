@@ -4,7 +4,8 @@ import MossPhoneKit
 // THE ONE SMALL FILE where the client still reads or writes the engine's JSON itself: what the phone core doesn't type
 // yet (lane PC3 types every other call). Each function is one call, meant to be swapped for a typed one of the core's:
 //   * `session.attach` / `session.detach` (following a conversation live; the core then types its events);
-//   * `card.list`'s ids (the cards themselves only ever come from the core's issue);
+//   * `card.list`'s ids (the cards themselves only ever come from the core's issue), and `card.get`'s outcome and option
+//     (read back after an answer timed out);
 //   * a card's JSON into the screens' `Card` (the core gives `card_json` to draw; every string in it is drawn through the
 //     core's `visible_text`). A card the phone can't draw whole (an unknown sealed field or option kind) is never shown.
 
@@ -35,6 +36,12 @@ enum Doors {
     /// The ids `card.list` names now.
     static func pendingCardIDs(_ c: ConnectionLink) async throws -> [String] {
         ((try await call(c, "card.list", [:])["cards"] as? [[String: Any]]) ?? []).compactMap { $0["id"] as? String }
+    }
+
+    /// A card's outcome and the option that settled it (`card.get`), for reading back an answer after a timeout.
+    static func cardOutcome(_ c: ConnectionLink, id: String) async throws -> (outcome: String?, option: String?) {
+        let o = try await call(c, "card.get", ["id": id])
+        return (o["outcome"] as? String, o["option"] as? String)
     }
 
     /// A card as the screens draw it, from the JSON the core issued, every string through `visible`. `nil` when the

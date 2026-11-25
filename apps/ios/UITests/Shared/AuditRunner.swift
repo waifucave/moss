@@ -8,7 +8,7 @@ enum AuditRunner {
             ("home", ["-screen", "home"]), ("conversation", ["-screen", "conversation", "-scenario", "midTurn"]),
             ("cards", ["-screen", "cards"]), ("pairScan", ["-screen", "pairScan"]), ("pairWords", ["-screen", "pairWords"]),
             ("settings", ["-screen", "settings"]), ("unreachable", ["-screen", "home", "-scenario", "unreachable"]),
-            ("empty", ["-screen", "home", "-scenario", "empty"]), ("cardStates", ["-screen", "cards", "-scenario", "cardStates"]),
+            ("empty", ["-screen", "home", "-scenario", "empty"]), ("cardStates", ["-screen", "cards", "-scenario", "cardStates"]), ("providerConsent", ["-screen", "cards", "-scenario", "providerConsent"]),
             ("sendFails", ["-screen", "conversation", "-scenario", "sendFails"]),
         ],
         "com.waifucave.moss.code.ios": [

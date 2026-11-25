@@ -25,6 +25,8 @@ public actor FakeEngineClient: EngineClient {
         case cardStates
         /// Paired; sending a message fails.
         case sendFails
+        /// Paired; the provider-consent card waits (its provider is in `host` only).
+        case providerConsent
         /// This phone has already made the day's 5 bots: the next `createBot` is refused.
         case botLimit
     }
@@ -92,6 +94,9 @@ public actor FakeEngineClient: EngineClient {
             paired = PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName)
             botsMadeToday = Self.botsPerDay
         case .sendFails: paired = PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName)
+        case .providerConsent:
+            paired = PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName)
+            cardList = [SampleData.providerConsentCard]
         }
         if paired != nil, scenario != .unreachable, scenario != .empty { paired?.lastSeen = SampleData.now - 20_000 }
     }
