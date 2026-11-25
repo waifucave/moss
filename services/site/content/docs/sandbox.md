@@ -5,7 +5,7 @@ description: What a bot's shell commands can and can't touch on macOS, Windows a
 
 > **Not released yet.** This page describes MOSS as it is being built for the first release.
 
-Every shell command a bot runs goes through a sandbox. It decides which folders a command may write, what it may read, and keeps it off the network. A command runs outside the sandbox only when you say yes to a card for that one command ([Approvals](/docs/approvals/#the-sandbox-around-commands)).
+Every shell command a bot runs goes through a sandbox. It decides which folders a command may write and what it may read, and keeps it off the network at every level. A command runs outside the sandbox only when you say yes to a card for that one command ([Approvals](/docs/approvals/#the-sandbox-around-commands)).
 
 ## On each system
 
@@ -31,7 +31,7 @@ At the default level, that's why a bot's commands run without asking: what they 
 
 At every level, and whatever folder you give it:
 
-- **The network.** A command reaches no network, and no socket on your computer either: not MOSS's own, not an SSH agent's, not Docker's. A bot reaches the web through its web tools instead.
+- **The network.** On macOS and Linux, a command reaches no network, and no socket on your computer either: not MOSS's own, not an SSH agent's, not Docker's. On Windows, a network filter keyed to the restricted account blocks its connections, to your own computer's addresses too. No level, folder or saved rule opens the network to a command: a bot reaches the web through its web tools, and only a command you approve on a card to run outside the sandbox has the network.
 - **MOSS's own settings**: approval levels, saved rules, keys, the device list, plugins and their data. A bot changes those only through MOSS, which asks you on a card.
 - **Your secret places**, read or written: `~/.ssh`, `~/.gnupg`, `~/.aws` and other cloud sign-ins, `~/.netrc`, `~/.docker/config.json`, package registries' tokens, `gh`'s sign-in, and coding agents' own sign-in files.
 - **Places that would run something later**, outside the sandbox: where your system starts programs at login, shell startup files, folders on your `PATH`, and a repository's `.git/hooks`.

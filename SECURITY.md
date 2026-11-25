@@ -45,11 +45,15 @@ This is a small project without a bug bounty. We can offer a fast fix and public
 
 These are in scope and genuinely interesting to us:
 
-- **Sandbox escape.** The agent's shell runs under the system's sandbox — Seatbelt on macOS,
-  bubblewrap on Linux, a separate restricted account on Windows — with an explicit writable set and
-  no network. Anything that writes outside it without consent, or that writes MOSS's own settings,
-  levels, credentials or plugins under `~/.moss`, which the fence denies at every level, is a real
-  finding.
+- **Sandbox escape.** The agent's shell runs under the system's sandbox with an explicit writable
+  set, and without the network: on macOS a Seatbelt profile that denies all network, on Linux
+  bubblewrap in a network namespace of its own with Unix sockets refused, and on Windows a separate
+  restricted account whose connections a filter keyed to that account blocks, loopback included.
+  No approval level, saved rule or grant opens the network to a sandboxed command; only a command
+  the user approves on a card to run outside the sandbox has it. Anything that writes outside the
+  writable set without consent, that reaches the network from inside the sandbox, or that writes
+  MOSS's own settings, levels, credentials or plugins under `~/.moss`, which the fence denies at
+  every level, is a real finding.
 - **Approval bypass.** MOSS's permission model is enforced in the daemon, not suggested in a
   prompt. Any path that performs a gated action (an out-of-root write, a dangerous-domain
   navigation, an unsandboxed command) without the policy that governs it is in scope.
@@ -102,7 +106,7 @@ Stated plainly, so you know what you're auditing:
   established, the connection relays through public iroh relays, or a relay you choose — it
   forwards ciphertext only, and terminates nothing.
 - **Shell commands are sandboxed** under the system's sandbox, with a writable set drawn from the
-  approval level and the session. So are
+  approval level and the session, and no network at any level. So are
   the model-authored workflow scripts, which run in a separate confined subprocess.
 - **Reads are broad by design** — the file tools read what the user themselves can read. That is
   a deliberate decision. The denials are MOSS's own run folder and credentials, and the secret places

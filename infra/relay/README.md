@@ -1,3 +1,5 @@
+> This folder is the previous app's relay setup. MOSS doesn't use these relays: its link (`native/link`) uses iroh's default relays, or a relay server you choose in Settings.
+
 # Winter relay infrastructure (SP2b Task 6)
 
 Two Oracle Always-Free `iroh-relay` VMs in Frankfurt (`relay-1`/`relay-2.yanlinglabs.com`), the

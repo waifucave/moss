@@ -459,3 +459,22 @@ describe("the reference pages name what the SDK and the engine really have", () 
     expect(engineBinaryPath("~/.moss", "linux")).toBe("~/.moss/bin/daemon/moss-core");
   });
 });
+
+describe("the sandbox page's network sentence", () => {
+  test("holds in the fence's code on every system", () => {
+    const src = (...p: string[]) => readFileSync(join(REPO_ROOT, "packages", "core", "src", ...p), "utf8");
+    const page = readFileSync(join(SITE_DIR, "content", "docs", "sandbox.md"), "utf8");
+    // A bot's sandbox settings never carry a network key, at any level (the runtime then denies the whole network).
+    expect(src("fence", "sandbox-settings.ts")).toContain("const { network: _never, ...out } = sandboxSettingsOf(");
+    // MOSS's own fenced process: Seatbelt denies the network, bubblewrap takes a network namespace of its own.
+    expect(src("fence", "macos-profile.ts")).toContain('lines.push("(deny network*)");');
+    expect(src("fence", "linux-bwrap.ts")).toContain('"--unshare-net"');
+    // Windows: only the escape account is installed network-open; a filter that opens loopback isn't ready.
+    const win = src("fence", "win-sandbox.ts");
+    expect(win).toContain('...(o.networkOpen === true ? ["--network-open"] : [])');
+    expect(win).toContain("if (wfp.allowLoopback) return no(");
+    // No grant gives a command the network.
+    expect(src("approvals", "request-access.ts")).toContain("Network access for shell commands isn't available yet");
+    expect(page).toContain("No level, folder or saved rule opens the network to a command");
+  });
+});
