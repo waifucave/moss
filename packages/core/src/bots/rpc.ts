@@ -31,7 +31,7 @@ import { StagedImages } from "./staged-images";
 import { FileStager, stageTargetOf, type StageLimits, type StageTarget } from "./staged-files";
 import { refuseWhileUpdating, type UpdateGateLike } from "./update-gate";
 import type { BotService } from "./service";
-import type { BotQuestions } from "./questions";
+import { ANSWER_MESSAGE_ID_PREFIX, reservedMessageIdWords, type BotQuestions } from "./questions";
 import { fromPeer } from "../sessions/exchange-depth";
 import { isPhoneCaller, requirePairedPhone, type PhoneMay } from "../rpc/phone-door";
 
@@ -324,6 +324,7 @@ export function sessionsMethods(deps: SessionsMethodsDeps): Record<string, Metho
       refuseWhileUpdating(deps.updateGate);
       reachable(id);
       if (message.text.trim() === "") throw new ContractError("invalid", "a message needs text");
+      if (message.clientMessageId.startsWith(ANSWER_MESSAGE_ID_PREFIX)) throw new ContractError("invalid", reservedMessageIdWords);
       const images = checkedImages(caller, id, message.text, message.images);
       const attached = checkedFiles(caller, id, message.text, message.clientMessageId, message.files);
       const v = view(id);
@@ -400,7 +401,7 @@ export function sessionsMethods(deps: SessionsMethodsDeps): Record<string, Metho
         if (!bots.botsRunHere().includes(v.bot)) throw new ContractError("not_main", `this computer doesn't run ${v.bot}'s conversation now: answer on the computer that does`);
         const settled = deps.questions!.settleOpen(id, callId, { answers, ...(notes === undefined ? {} : { notes }), skipped: skipped === true });
         if (!settled.ok) throw new ContractError(settled.code, settled.message);
-        const message = { text: settled.text, clientMessageId: `question-${callId}`, sentAt: deps.clock.now() };
+        const message = { text: settled.text, clientMessageId: `${ANSWER_MESSAGE_ID_PREFIX}${callId}`, sentAt: deps.clock.now() };
         try {
           await bots.sendUserTo(v.bot, { text: message.text, device: user.device ?? deps.localDevice, sentAt: message.sentAt, clientMessageId: message.clientMessageId }, message);
         } catch (err) {
@@ -557,6 +558,7 @@ export function peerSessionMethods(deps: PeerSessionMethodsDeps): Record<string,
       // coding session (review B2).
       runningBot(id, P.name);
       if (message.text.trim() === "") throw new ContractError("invalid", "a message needs text");
+      if (message.clientMessageId.startsWith(ANSWER_MESSAGE_ID_PREFIX)) throw new ContractError("invalid", reservedMessageIdWords);
       // Images name files on the computer they were staged on, which isn't this one.
       if (message.images !== undefined && message.images.length > 0) throw new MethodError(ERR.INVALID_PARAMS, "a relayed message can't carry images yet", { code: IMAGE_REFERENCE_INVALID });
       const signed = deps.devices === undefined ? false : await verifyUserMessage({ session: id, device, message }, { now: deps.clock.now(), sha256, devices: deps.devices });

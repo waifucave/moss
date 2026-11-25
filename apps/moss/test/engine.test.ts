@@ -538,6 +538,14 @@ describe("a bot's question (AskUserQuestion)", () => {
     const page = await engine.conversation("kite");
     const users = ("messages" in page ? page.messages : []).filter((m) => m.from === "user" && m.quoted !== undefined);
     expect(users.map((m) => [m.text, m.quoted])).toEqual([[`Answered: ${evil}`, ask], ["Skipped the question", ask]]);
+    // A card whose record isn't the engine's own open-card answer (no `toBot`) never turns a message into an answer bubble: the typed words stay.
+    e.say("kite", { type: "question_asked", callId: "h3", questions: [{ question: ask, header: "Pick", options: [{ label: "a" }, { label: "b" }], multiSelect: false }] });
+    e.say("kite", { type: "question_resolved", callId: "h3", answers: { [ask]: "a" }, by: "user" });
+    e.say("kite", { type: "user_message", answersQuestion: "h3", text: "my own typed words", clientName: "d", threadId: "t" });
+    const again = await engine.conversation("kite");
+    const typed = ("messages" in again ? again.messages : []).find((m) => m.text === "my own typed words");
+    expect(typed).toMatchObject({ from: "user", text: "my own typed words" });
+    expect(typed?.quoted).toBeUndefined();
     // Without the mark, a message is drawn as typed.
     expect(messageOf({ type: "user_message", seq: 3, sessionId: "s", ts: 1, text: "I skipped your question" }, () => ({ text: "x" }))).toMatchObject({ text: "I skipped your question" });
   });

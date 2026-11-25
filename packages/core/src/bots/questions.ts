@@ -49,6 +49,11 @@ export function questionKeys(own: readonly string[], keys: readonly string[]): {
   return { ok: true, of };
 }
 
+/** The client message id of the person's answer to (or skip of) a bot's open question is `question-<callId>`: only the answer path uses it. `session.send`
+ *  (and a relayed send) refuse an id with this prefix, so a typed message can neither take the answer's place nor be drawn as an answer. */
+export const ANSWER_MESSAGE_ID_PREFIX = "question-";
+export const reservedMessageIdWords = `a message id can't start with "${ANSWER_MESSAGE_ID_PREFIX}": that is the id of a person's answer to a bot's question`;
+
 /** What a bot's `AskUserQuestion` returns at once: the question is on the person's screen and the turn is not waiting for it. */
 export const ASKED_REPLY = "Asked. The person may answer whenever they like, or skip it; the answer will arrive as a message from them. Carry on with what doesn't depend on it, or end your turn.";
 
@@ -182,7 +187,7 @@ export function botQuestions(o: {
       for (const [callId, given] of last) {
         const card = cards.get(callId);
         if (given === undefined || card === undefined) continue;
-        const clientMessageId = `question-${callId}`;
+        const clientMessageId = `${ANSWER_MESSAGE_ID_PREFIX}${callId}`;
         if (sentAs.call(o.host, sessionId, clientMessageId) !== undefined) continue;
         try {
           await sendUser.call(o.host, sessionId, { text: answerText({ questions: [...card] }, given.answers, given.notes, given.skipped), device: "core", sentAt: Date.now(), clientMessageId });

@@ -10,7 +10,7 @@ import type { Message, QuestionView } from "../shared/view";
 
 /** `seq` is the resolving event's place in the log: a question asked AGAIN after it (an engine stop withdrew an older one that comes back as an open card) reads
  *  open, because the resolution is older than that asking. */
-type Outcome = { state: "answered" | "skipped" | "expired" | "withdrawn"; answers?: Record<string, string>; notes?: Record<string, string>; seq?: number };
+type Outcome = { state: "answered" | "skipped" | "expired" | "withdrawn"; answers?: Record<string, string>; notes?: Record<string, string>; seq?: number; toBot?: true };
 
 /** Entries kept in each table: the newest; a conversation's old questions are read from its pages again. */
 const KEPT = 500;
@@ -125,7 +125,8 @@ export class QuestionLog {
     if (call === undefined) return undefined;
     const id = `${String(e.sessionId ?? "s")}:q${call}`;
     const out = this.outcomes.get(id);
-    if (out === undefined || (out.state !== "answered" && out.state !== "skipped")) return undefined;
+    // Only a record the engine marked as an open card's answer to the bot (`toBot`) is drawn as an answer bubble.
+    if (out === undefined || out.toBot !== true || (out.state !== "answered" && out.state !== "skipped")) return undefined;
     const questions = this.asked.get(id)?.question?.questions.map((q) => q.question) ?? [];
     const quoted = questions[0];
     if (out.state === "skipped") return { text: "Skipped the question", ...(quoted !== undefined ? { quoted } : {}) };
@@ -143,7 +144,7 @@ export class QuestionLog {
   /** The person's answer went in: the question reads answered at once; the engine's own `question_resolved` follows. */
   answered(session: string, callId: string, answers: Record<string, string>, notes?: Record<string, string>, skipped = false): Message | undefined {
     const id = `${session}:q${callId}`;
-    const out: Outcome = skipped ? { state: "skipped" } : { state: "answered", answers, ...(notes !== undefined ? { notes } : {}) };
+    const out: Outcome = skipped ? { state: "skipped", toBot: true } : { state: "answered", answers, ...(notes !== undefined ? { notes } : {}), toBot: true };
     remember(this.outcomes, id, out);
     return this.changed(id, out);
   }
@@ -165,8 +166,9 @@ function outcomeOf(e: Record<string, unknown>): Outcome {
   const by = typeof e.by === "string" ? e.by : "";
   const answers = record(e.answers);
   const notes = record(e.notes);
-  if (e.skipped === true && by === "user") return { state: "skipped" };
+  const toBot = e.toBot === true && by === "user" ? { toBot: true as const } : {};
+  if (e.skipped === true && by === "user") return { state: "skipped", ...toBot };
   if (by === "timeout") return { state: "expired" };
   if (by === "aborted" || by === "superseded" || by === "emit-failure") return { state: "withdrawn" };
-  return { state: "answered", ...(answers !== undefined ? { answers } : {}), ...(notes !== undefined && Object.keys(notes).length > 0 ? { notes } : {}) };
+  return { state: "answered", ...(answers !== undefined ? { answers } : {}), ...(notes !== undefined && Object.keys(notes).length > 0 ? { notes } : {}), ...toBot };
 }

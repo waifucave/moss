@@ -221,6 +221,20 @@ describe("session.answer: a bot's AskUserQuestion is an open card, not a wait", 
     await again.shutdown();
   });
 
+  test("session.send refuses a client message id with the answer prefix (a typed message can't take an open card's answer id), and the answer still reaches the bot", async () => {
+    const b = await boot({ home: tempDir(), plugins: (await pluginFromFolder(ALPHA_FOLDER, { bundled: true })).inputs });
+    const canUseTool = b.side.questions.canUseTool("b_alpha", async () => ({ behavior: "allow", updatedInput: {} }));
+    await ask(canUseTool, "call_1");
+    const methods = b.side.methods({ localDevice: "studio" });
+    const refused = await caught(() => methods[SESSIONS_METHODS.sessionSend.name]!({ id: "b_alpha", message: { text: "typed words", clientMessageId: "question-call_1", sentAt: 1 } }, { caller: theUser } as never));
+    expect(String(refused)).toContain("can't start with");
+    expect(userInputs(b)).toEqual([]);
+    expect(await methods[SESSIONS_METHODS.sessionAnswer.name]!({ id: "b_alpha", callId: "call_1", answers: { "Which one?": "Tea" } }, { caller: theUser } as never)).toEqual({ ok: true });
+    await flush();
+    expect(userInputs(b)).toEqual(['My answer to your question "Which one?" (options: "Tea" / "Coffee"): chose "Tea"']);
+    await b.shutdown();
+  });
+
   test("the 10-minute rule: a question from a turn the user didn't start is denied unanswered; one from the user's waits", async () => {
     expect(questionTimeoutMs("user")).toBeUndefined();
     for (const origin of ["bot", "routine", "plugin", "agent", "peer", "task-notification", undefined] as const) {

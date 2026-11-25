@@ -1111,7 +1111,7 @@ button.cl-conv-diff:hover {
 
 .cl-conv-question__skip:disabled {
   cursor: default;
-  opacity: 0.6;
+  color: var(--moss-color-text-muted);
 }
 
 .cl-conv-question__send:disabled {
