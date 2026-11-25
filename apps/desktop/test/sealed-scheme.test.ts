@@ -75,3 +75,20 @@ describe("a card page never waits for the scheme", () => {
     expect(sent.map((l) => l.split(" ").pop())).toEqual(["dark", "light"]);
   });
 });
+
+describe("every colour variable the card pages' dark rule sets has a light value, and the three forms agree", () => {
+  const css = readFileSync(new URL("../src/main/sealed-pages.ts", import.meta.url), "utf8");
+  const vars = (block: string) => [...block.matchAll(/(--seal-[a-z-]+):/g)].map((m) => m[1]!).sort();
+  const base = /PAGE_CSS = `\n:root \{([^}]*)\}/.exec(css)![1]!;
+  const dark = /:root\[data-scheme="dark"\] \{ (--seal-surface[^}]*)\}/.exec(css)![1]!;
+  const unset = /:root:not\(\[data-scheme\]\) \{ (--seal-surface[^}]*)\}/.exec(css)![1]!;
+  test("the light (base) rule defines every variable the dark rule and the unset media-query form do, with the same values in both dark forms", () => {
+    for (const v of vars(dark)) expect(vars(base)).toContain(v);
+    expect(vars(unset)).toEqual(vars(dark));
+    expect(unset.replace(/\s+/g, " ").trim()).toBe(dark.replace(/\s+/g, " ").trim());
+  });
+  test("a switch back to light needs no reset: data-scheme=light matches no dark rule", () => {
+    expect(css).not.toContain(':root[data-scheme="light"] { --seal');
+    expect(css).toContain(':root[data-scheme="light"] { color-scheme: light }');
+  });
+});
