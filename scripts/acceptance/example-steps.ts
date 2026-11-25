@@ -51,7 +51,7 @@ export interface ExampleCtx {
   keychainFile: string;
   appLog(): string;
   /** The fake's requests: `body` is the request as sent (its prompt, never a key). */
-  requests(): { lastUserText: string; toolUse?: string; toolResult?: { text: string; isError: boolean; images?: number }; tools: string[]; body?: unknown }[];
+  requests(): { lastUserText: string; toolUse?: string; toolResult?: { text: string; isError: boolean; images?: number }; tools: string[]; body?: unknown; answered?: string; refused?: unknown }[];
   /** The user's own `moss-core app <words>` (the target's CLI), where the run has it. */
   appCli?(words: string[]): Promise<{ code: number; stdout: string; stderr: string }>;
   /** Points main's picker (the test build's) at a folder for the next pick. */

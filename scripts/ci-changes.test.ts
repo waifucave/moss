@@ -340,12 +340,14 @@ describe("CI for the lanes", () => {
 
   test("the lane gate is the gate without the Windows jobs, plus the acceptance run", () => {
     const windows = Object.keys(ci.jobs).filter((id) => runnersOf(ci.jobs[id]!).some((r) => r.startsWith("windows")));
-    expect(windows.sort()).toEqual(["installers-windows", "link-windows", "machine-windows", "sealed-core-windows", "tree-windows", "windows-fence"]);
+    expect(windows.sort()).toEqual(["acceptance-windows", "installers-windows", "link-windows", "machine-windows", "sealed-core-windows", "tree-windows", "windows-fence"]);
     const gate = needsOf("gate");
     const lane = needsOf("lane-gate");
     expect(lane.sort()).toEqual([...gate.filter((id) => !windows.includes(id)), "acceptance"].sort());
     // Every job the full gate needs is a Windows job or the lane gate's too: nothing weakens `gate`.
-    for (const id of windows) expect([id, gate.includes(id)]).toEqual([id, true]);
+    // (`acceptance-windows` is the one Windows job in neither gate: the Windows acceptance run is evidence, not a requirement, until its rows are classed)
+    for (const id of windows.filter((x) => x !== "acceptance-windows")) expect([id, gate.includes(id)]).toEqual([id, true]);
+    expect(["acceptance-windows", gate.includes("acceptance-windows"), lane.includes("acceptance-windows")]).toEqual(["acceptance-windows", false, false]);
     expect(ci.jobs["lane-gate"]!.if).toContain("always()");
     expect(ci.jobs.gate!.if).toBe("always()");
   });
@@ -431,6 +433,8 @@ describe("the path-to-area map", () => {
     // CI's own scripts take no macOS leg of the scripts' darwin tests: none reads them.
     { name: "the lane script", files: ["scripts/ci/lane"], areas: ["workspaces", "daemon", "app", "packages", "gallery", "typecheck", "lockfiles", "extension", "core", "corelinux", "windows", "cli", "scripts", "scriptsmac", "codegen", "verify", "tree", "link", "linuxrepo", "adapters", "acceptance"], units: "all" },
     { name: "the Windows fence's CI scripts", files: ["scripts/ci/windows-fence/hold-account.ts", "scripts/ci/windows-fence/remove.ps1"], areas: ["typecheck", "corelinux", "windows", "scripts"], units: [] },
+    // The sources of the Windows-only core tests (the windows-fence unit job's step for the plugin host, the guard, the ACL read-back and the secrets store) start the `windows` area as well as the core's.
+    { name: "a source the Windows-only core tests exercise", files: ["packages/core/src/platform/win-acl.ts", "packages/core/src/plugin-host/link.ts"], areas: ["workspaces", "daemon", "packages", "typecheck", "core", "windows", "cli", "scripts", "scriptsmac", "verify", "acceptance"], units: "all" },
     { name: "a script the macOS tests read", files: ["scripts/embed-runtimes.sh"], areas: ["typecheck", "corelinux", "scripts", "scriptsmac"], units: [] },
     // The shared packages start everything that builds on them.
     { name: "the protocol", files: ["packages/protocol/src/agents.ts", "packages/protocol/generated/moss/agents.json"], areas: ["workspaces", "daemon", "packages", "gallery", "typecheck", "core", "cli", "scripts", "codegen", "verify", "link", "acceptance"], units: "all" },
