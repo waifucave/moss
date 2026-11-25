@@ -8,7 +8,7 @@ import { join } from "node:path";
 import type { Card, Level } from "@waifucave/moss-protocol";
 import { MossApprovalBroker, botDisplayName, type MossApprovalRequest } from "../../src/approvals/broker";
 import {
-  botApprovalCheck, CODE_MAX, fencedReadOnlyCommand, holdsLiveExpansion, MISPLACED_SANDBOX_FLAG_REFUSAL, namesNetworkPath, OUTSIDE_SANDBOX_SENTENCE, misplacedSandboxFlag, withoutLineJoins,
+  botApprovalCheck, CODE_MAX, fencedReadOnlyCommand, MISPLACED_SANDBOX_FLAG_REFUSAL, namesNetworkPath, OUTSIDE_SANDBOX_SENTENCE, misplacedSandboxFlag, withoutLineJoins,
   outsideSandboxFlagOf, outsideSandboxHeadline, outsideSandboxInputError, outsideSandboxTimeoutLine,
 } from "../../src/approvals/bot-check";
 import { mergedHooks, withoutAllow } from "../../src/runtime-sdk/turn-loop/hook-merge";
@@ -344,33 +344,28 @@ describe("a read-only command of the fenced Bash on Windows (lane WS9): no card,
       for (const command of network) expect([command, await judged("Bash", command, level, "up")]).toEqual([command, level === "ask" ? "card" : "deny"]);
     });
   }
-  // A live expansion (the reviewer's second finding): text the command builds while it runs can spell a network path no
-  // reading of the text sees, so no command holding one gets the allowance (the classifier calls these forms read-only).
-  const live = ["cat ${x:-//host/x}", "cat ${x:-/}/host/x", "cat ${x-/}/host/x", "cat /${x:-/host/x}", "cat \"${x:-/}\"/host/x", "cat ${x:-/}${x:-/}host/x",
-    "x=/; cat $x/host/s", "x=/ y=/host/s; cat $x$y", "x=/; cat $x$x/host", "cat ${x}${x}host", "y=/; y+=/host/s; cat $y", "printf -v y %s%s / /host/s; cat $y",
-    "x=${PWD:0:1}; y=$x; y+=$x; y+=host; cat $y", "cat \"it's\" $x/host", "cat `printf %s%s / /host`", "echo $(ls)",
-    // The accepted cost: an ordinary variable asks on Windows too.
-    "ls $HOME/x", "echo $PATH"];
+  // Lane WS11 (the controller's ruling): a path the command builds while it runs is allowed as on macOS. The forms below can
+  // build `//host` at run time and no reading of the text sees it; they now get the allowance wherever the classifier calls
+  // them read-only. What holds them is the fence itself: a fenced command's share open is refused before anything is sent,
+  // by name and by address, and the guard in win-fenced.e2e.test.ts ("MEASURE (lane WS10): …") fails if that changes.
+  const builtAtRunTime = ["cat ${x:-//host/x}", "cat ${x:-/}/host/x", "cat ${x-/}/host/x", "cat /${x:-/host/x}", "cat \"${x:-/}\"/host/x", "cat ${x:-/}${x:-/}host/x",
+    "cat ${x}${x}host", "cat \"it's\" $x/host", "echo $(ls)", "ls $HOME/x", "echo $PATH", "cat \"$FILE\"", "ls \"$HOME\"/x",
+    "cat ~-/host/share", "cat ~+/host/x", "cat ~1/x", "cat ~+1/x", "cat ~-1/x", "cat a:~-/x", "cat $\\\n{x:-//host/x}"];
   for (const level of ["ask", "read-only"] as const) {
-    test(`a command holding a live expansion (\`\${x:-/}\`, \`$x\`, an append, \`printf -v\`, a backtick), at ${level}: ${level === "ask" ? "a card" : "refused"}`, async () => {
-      for (const command of live) expect([command, holdsLiveExpansion(command), await judged("Bash", command, level, "up")]).toEqual([command, true, level === "ask" ? "card" : "deny"]);
+    test(`a path built at run time (\`$HOME/x\`, \`\${x:-/}\`, \`~-\`), at ${level}: allowed as on macOS (the fence's own refusal of shares holds it)`, async () => {
+      for (const command of builtAtRunTime) expect([command, namesNetworkPath(withoutLineJoins(command)), await judged("Bash", command, level, "up")]).toEqual([command, false, "allow"]);
     });
   }
-  // Lane WS9's follow-up: a tilde bash replaces by a folder known only when it runs, and a backslash-newline between `$` and
-  // its name (bash joins the lines first).
-  const tildeAndJoins = ["cd /; cd /c; cat ~-/host/share", "cd /; cat ~+/host/x", "cat ~-/host/share", "cat ~+/host/x", "cat ~1/x", "cat ~+1/x", "cat ~-1/x",
-    "x=~-/host; cat $x", "cat a:~-/x", "x=/; cat $\\\nx$\\\nx/host/s", "cat $\\\n{x:-//host/x}"];
+  // These the classifier itself doesn't call read-only (an assignment, a `cd`, a backtick, `printf -v`): they ask, as on macOS.
+  const classifierAsks = ["x=/; cat $x/host/s", "x=/ y=/host/s; cat $x$y", "x=/; cat $x$x/host", "y=/; y+=/host/s; cat $y", "printf -v y %s%s / /host/s; cat $y",
+    "x=${PWD:0:1}; y=$x; y+=$x; y+=host; cat $y", "cat `printf %s%s / /host`", "cd /; cd /c; cat ~-/host/share", "cd /; cat ~+/host/x", "x=~-/host; cat $x", "x=/; cat $\\\nx$\\\nx/host/s"];
   for (const level of ["ask", "read-only"] as const) {
-    test(`a tilde from the shell's folders (\`~+\`, \`~-\`, \`~N\`) or a \`$\` joined to its name across a backslash-newline, at ${level}: ${level === "ask" ? "a card" : "refused"}`, async () => {
-      for (const command of tildeAndJoins) expect([command, await judged("Bash", command, level, "up")]).toEqual([command, level === "ask" ? "card" : "deny"]);
+    test(`what the classifier doesn't call read-only (an assignment, a \`cd\`, a backtick, \`printf -v\`), at ${level}: ${level === "ask" ? "a card" : "refused"}`, async () => {
+      for (const command of classifierAsks) expect([command, isReadOnlyShellCommand(command), await judged("Bash", command, level, "up")]).toEqual([command, false, level === "ask" ? "card" : "deny"]);
     });
   }
-  test("a plain `~/x` and `~user/x`, and a tilde inside a word or quotes, stay as they were", async () => {
-    for (const command of ["cat ~/x", "ls ~user/x", "ls a~-b", "grep '~-' f"]) {
-      expect([command, holdsLiveExpansion(withoutLineJoins(command))]).toEqual([command, false]);
-    }
-    // What the classifier answers for them and for a `cd` (pinned, so a change in the SDK is seen).
-    for (const [command, readOnly] of [["cat ~/x", true], ["cd /", false], ["cd / && ls", false]] as const) {
+  test("the classifier's answers for a plain tilde and a `cd` (pinned, so a change in the SDK is seen)", () => {
+    for (const [command, readOnly] of [["cat ~/x", true], ["ls ~user/x", true], ["cd /", false], ["cd / && ls", false]] as const) {
       expect([command, isReadOnlyShellCommand(command)]).toEqual([command, readOnly]);
     }
   });
@@ -378,10 +373,12 @@ describe("a read-only command of the fenced Bash on Windows (lane WS9): no card,
     expect(withoutLineJoins("cat $\\\nx")).toBe("cat $x");
     expect(withoutLineJoins("echo 'a\\\nb'")).toBe("echo 'a\\\nb'");
     expect(withoutLineJoins("echo \"it's\" $\\\nx")).toBe("echo \"it's\" $x");
+    // A share spelled across a line join is still a visible share.
+    expect(namesNetworkPath(withoutLineJoins("cat /\\\n/host/x"))).toBe(true);
   });
   test("a literal `$` stays allowed: in single quotes, before a closing quote or a regex character, at a word's end", async () => {
     for (const command of ["grep 'foo$' f", "grep \"foo$\" f", "grep -E \"a$|b\" f", "ls src", "echo 'cost: $5'"]) {
-      expect([command, holdsLiveExpansion(command), await judged("Bash", command, "ask", "up")]).toEqual([command, false, "allow"]);
+      expect([command, await judged("Bash", command, "ask", "up")]).toEqual([command, "allow"]);
     }
   });
   test("a single slash, a doubled one inside a path, a URL in a pattern: still read-only (no card)", async () => {

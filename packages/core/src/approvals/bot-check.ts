@@ -159,9 +159,12 @@ export function fencedReadOnlyCommand(tool: string, input: unknown): boolean {
   const i = input as Record<string, unknown>;
   if (i.dangerouslyDisableSandbox !== undefined && i.dangerouslyDisableSandbox !== false) return false;
   if (typeof i.command !== "string" || i.command.trim() === "") return false;
-  // Both checks read the line as bash joins it: a backslash-newline outside single quotes is gone (`$\<newline>x` is `$x`).
-  const joined = withoutLineJoins(i.command);
-  return !namesNetworkPath(joined) && !holdsLiveExpansion(joined) && isReadOnlyShellCommand(i.command);
+  // Read as bash joins the lines (a backslash-newline outside single quotes is gone). A command that VISIBLY names a share
+  // gets no allowance (`namesNetworkPath`). One that builds a path while it runs (`$HOME/x`, `${x:-/}/host`, `~-/x`) is
+  // allowed as on macOS (lane WS11, the controller's ruling): the fence itself refuses a fenced command's share open,
+  // by name and by address, before anything is sent, which the fence e2e's guard holds ("MEASURE (lane WS10)" in
+  // win-fenced.e2e.test.ts fails if a fenced share open sends a packet or isn't refused).
+  return !namesNetworkPath(withoutLineJoins(i.command)) && isReadOnlyShellCommand(i.command);
 }
 
 /** Whether a `$'…'` (ANSI-C quoting) opens anywhere: a `$` outside single and double quotes, not escaped, followed by
@@ -175,33 +178,6 @@ function opensAnsiCQuote(command: string): boolean {
     if (c === '"') { double = !double; continue; }
     if (c === "$" && !double && command[i + 1] === "'") return true;
     if (c === "'" && !double) single = true;
-  }
-  return false;
-}
-
-/** Whether a command line holds a live expansion (the WS9 reviewer's second finding): a `$` outside single quotes and not
- *  escaped, followed by a name character, a digit, `{`, `(`, `'` or one of `@ * # ? ! $ -`; or a backtick outside single
- *  quotes. Text a command builds while it runs (`${x:-/}/host/x`, `x=/; cat $x$x/host`, `y+=/host`, `printf -v`,
- *  `${PWD:0:1}`) can spell a network path no reading of the text can see, so such a command gets no allowance: it asks as
- *  a writing command does. A literal `$` stays allowed: inside single quotes (`grep 'foo$' f`), before a closing quote or
- *  a regex character (`grep "foo$" f`, `grep -E "a$|b" f`), at a word's end. The cost is accepted (the controller's
- *  ruling): `ls $HOME/x` and `echo $PATH` ask at ask and are refused at read-only on Windows. If the measurement on
- *  `lane/ws-9` shows the fence itself keeps a pool account off every share, this can be relaxed to `namesNetworkPath`. */
-export function holdsLiveExpansion(command: string): boolean {
-  let single = false, double = false;
-  for (let i = 0; i < command.length; i++) {
-    const c = command[i]!;
-    if (single) { if (c === "'") single = false; continue; }
-    if (c === "\\") { i++; continue; }
-    if (c === '"') { double = !double; continue; }
-    // A single quote inside double quotes is a letter; outside, it opens a literal span.
-    if (c === "'" && !double) { single = true; continue; }
-    if (c === "`") return true;
-    if (c === "$" && i + 1 < command.length && /[A-Za-z0-9_{('@*#?!$-]/.test(command[i + 1]!)) return true;
-    // A tilde the shell replaces by a folder it knows only when it runs (lane WS9): `~+` (PWD), `~-` (OLDPWD), `~N`,
-    // `~+N`, `~-N` (the directory stack), unquoted at a word's start or after `=` or `:` (an assignment's value):
-    // `cd /; cat ~-/host/share` is `//host/share` to bash. Plain `~/x` and `~user/x` stay as they are.
-    if (c === "~" && !double && (i === 0 || /[\s;|&()<>=:]/.test(command[i - 1]!)) && /[+\-0-9]/.test(command[i + 1] ?? "")) return true;
   }
   return false;
 }
