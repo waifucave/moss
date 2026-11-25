@@ -3,6 +3,7 @@
 // which form this daemon hands agents.
 import { join } from "node:path";
 import { runBridge } from "./server";
+import { engineEndpoint } from "@waifucave/moss-protocol/rendezvous";
 
 export const BRIDGE_MAIN_PATH = join(import.meta.dir, "main.ts");
 
@@ -45,7 +46,7 @@ export async function bridgeMain(): Promise<void> {
         }
       };
       const sock = await Bun.connect({
-        unix: path,
+        unix: await engineEndpoint(path),
         socket: {
           data: (_s, chunk) => onData(chunk),
           drain: (s) => flush(s),

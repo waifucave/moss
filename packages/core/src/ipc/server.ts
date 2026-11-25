@@ -2211,7 +2211,7 @@ export function startIpcServer(opts: IpcServerOptions): IpcServer {
     // Windows' well-known pipe names no client: it hands out a pipe made for the one that asks, and answers nothing else.
     if (socket.data.rendezvousOnly) {
       if (method !== "protocol.rendezvous") throw new RpcFailure(ERR.INVALID_REQUEST, "this engine takes a connection through its rendezvous: this program is older than the engine, update it");
-      try { return oneShots!.issue(); } catch (err) { throw new RpcFailure(ERR.INTERNAL, err instanceof OneShotRefused ? err.message : "the connection's pipe could not be made"); }
+      try { return oneShots!.issue(); } catch (err) { throw new RpcFailure(ERR.INTERNAL, err instanceof OneShotRefused ? err.message : "the connection's pipe could not be made", { rendezvous: "refused" }); }
     }
     if (method === "protocol.rendezvous") throw new RpcFailure(ERR.METHOD_NOT_FOUND, "method not found: protocol.rendezvous");
     // C-M1: a MOSS connection speaks only MOSS's methods, through its role's gate.

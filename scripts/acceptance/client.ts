@@ -2,6 +2,7 @@
 // a role, and answers to the daemon's own requests (`app.ping`, which the pair's heartbeat sends every 5 s).
 import { createConnection, type Socket } from "node:net";
 import { scaled } from "./time-scale";
+import { engineEndpoint } from "../../packages/protocol/src/rendezvous";
 
 export class RpcError extends Error {
   constructor(readonly method: string, readonly code: number, message: string, readonly data?: unknown) {
@@ -29,12 +30,13 @@ export class MossClient {
   // job's start, run 45381009835's host row) is a slow runner, not a daemon that does not answer.
   static connect(path: string, timeoutMsAsked = 5_000): Promise<MossClient> {
     const timeoutMs = scaled(timeoutMsAsked);
-    return new Promise((resolve, reject) => {
-      const s = createConnection({ path });
+    // Windows: through the engine's rendezvous (a pipe of its own), as every client of the engine does.
+    return engineEndpoint(path, { timeoutMs }).then((target) => new Promise<MossClient>((resolve, reject) => {
+      const s = createConnection({ path: target });
       const t = setTimeout(() => { s.destroy(); reject(new Error(`no answer on the socket within ${timeoutMs} ms`)); }, timeoutMs);
       s.once("connect", () => { clearTimeout(t); resolve(new MossClient(s)); });
       s.once("error", (e) => { clearTimeout(t); reject(e); });
-    });
+    }));
   }
 
   get isClosed(): boolean { return this.closed; }

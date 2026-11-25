@@ -7,6 +7,7 @@
 import { MOSS_PROTOCOL_VERSION, CODE_AGENT_LINE_NOTIFICATION, CODE_AGENT_MAX_LINE, encodeLine, LineDecoder, METHODS, NDJSON_MAX_LINE_BYTES } from "@waifucave/moss-protocol";
 import { KeychainSecretStore } from "../../auth/secret-store";
 import { TOKEN_NAMES } from "../../auth/tokens";
+import { engineEndpoint } from "@waifucave/moss-protocol/rendezvous";
 
 export interface CodeAgentRelayOptions {
   /** The daemon's endpoint (`<home>/run/core.sock`, or the home's pipe on Windows). */
@@ -106,7 +107,7 @@ export async function runCodeAgentRelay(o: CodeAgentRelayOptions): Promise<numbe
   };
   try {
     socket = await Bun.connect({
-      unix: o.endpoint,
+      unix: await engineEndpoint(o.endpoint),
       socket: {
         data(_s, chunk) {
           let lines: string[];

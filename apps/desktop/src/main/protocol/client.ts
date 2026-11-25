@@ -8,6 +8,7 @@ import { connect, type Socket } from "node:net";
 import { createHash } from "node:crypto";
 import { posix, win32 } from "node:path";
 import { LineDecoder, encodeLine } from "@waifucave/moss-protocol";
+import { engineEndpoint } from "@waifucave/moss-protocol/rendezvous";
 
 /** Where the daemon listens for a home, as lane C's `platform/transport.ts` resolves it: `<home>/run/core.sock`, or
  *  on Windows the named pipe `\\.\pipe\moss-core-<id>`, `<id>` the first 16 hex of SHA-256 over the run
@@ -188,9 +189,12 @@ export class DaemonClient {
 }
 
 /** Dials the daemon; undefined when nothing answers within `timeoutMs`. */
-export function dial(endpoint: string, timeoutMs = 1000): Promise<DaemonClient | undefined> {
+export async function dial(endpoint: string, timeoutMs = 1000): Promise<DaemonClient | undefined> {
+  // Windows: the engine's own pipe for this client (a rendezvous); anywhere else the endpoint itself.
+  let target: string;
+  try { target = await engineEndpoint(endpoint, { timeoutMs: Math.max(timeoutMs, 2000) }); } catch { return undefined; }
   return new Promise((resolve) => {
-    const socket = connect(endpoint);
+    const socket = connect(target);
     const timer = setTimeout(() => {
       socket.destroy();
       resolve(undefined);

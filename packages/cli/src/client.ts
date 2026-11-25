@@ -1,4 +1,5 @@
 import { controllingTtyName } from "./tty-name";
+import { engineEndpoint } from "@waifucave/moss-protocol/rendezvous";
 import {
   LineDecoder, encodeLine, METHODS, PROTOCOL_VERSION, SessionEvent, COWORK_RPC, CoworkWatchFrame, WORKSPACE_WATCH_RENEW_MS, WORKSPACE_WATCH_LEASE_MS, type CoworkMethod, type CoworkParams, type CoworkResult,
   DAEMON_FEATURE_IMAGE_ORIGINAL_PATHS, HelloResult, SessionCreateResult, SessionAttachResult, SessionSendResult, SessionStageImageResult, SessionListResult,
@@ -102,7 +103,7 @@ export class MossClient {
     const client = new MossClient(opts.timeoutMs ?? 5000);
     client.watchError = opts.onWorkspaceWatchError;
     client.socket = await Bun.connect({
-      unix: opts.socketPath,
+      unix: await engineEndpoint(opts.socketPath),
       socket: {
         data(_s, chunk) {
           for (const line of client.decoder.push(chunk)) {

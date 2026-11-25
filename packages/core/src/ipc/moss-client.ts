@@ -2,6 +2,7 @@
 // say hello at protocol version 1 with a role and its token, make one request, close. Works over the
 // Unix socket and the Windows pipe alike.
 import { MOSS_PROTOCOL_VERSION, encodeLine, LineDecoder, METHODS, type MossRole } from "@waifucave/moss-protocol";
+import { engineEndpoint } from "@waifucave/moss-protocol/rendezvous";
 
 export async function mossCall(
   endpoint: string,
@@ -10,7 +11,7 @@ export async function mossCall(
 ): Promise<unknown> {
   const decoder = new LineDecoder();
   const pending = new Map<number, { ok(v: unknown): void; fail(e: Error): void }>();
-  const socket = await Bun.connect({ unix: endpoint, socket: {
+  const socket = await Bun.connect({ unix: await engineEndpoint(endpoint), socket: {
     data(_s, chunk) {
       for (const line of decoder.push(chunk)) {
         const m = JSON.parse(line) as { id?: unknown; result?: unknown; error?: { code: number; message: string } };
