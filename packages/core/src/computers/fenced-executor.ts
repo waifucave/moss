@@ -1,7 +1,8 @@
 // The computer node's Bash (the controller's wiring ruling, item 3; C-M2 part 2): a tool call on this computer's tree
-// runs through lane C's fenced process (`fencedSpawner`): Seatbelt on macOS, bubblewrap on Linux, and on Windows the
-// door is closed and every call is refused with the reason. Never unsandboxed: there is no fallback to a plain shell,
-// and a spawner that can't start a fenced process here refuses each call.
+// runs through lane C's fenced process (`fencedSpawner`): Seatbelt on macOS, bubblewrap on Linux, and the Windows fence
+// (`win-fenced.ts`) on Windows, where every call is refused with the reason until that fence is set up. Never
+// unsandboxed: there is no fallback to a plain shell, and a spawner that can't start a fenced process here refuses
+// each call. The daemon's parts build it over their one MossFence (lane XC).
 //
 // The run is the caller's (`who`): a bot's own session gets its bot's reach, a coding session its own, and another
 // computer's call (a peer) the fence's floor. The child's environment is built here, whole: a fixed PATH, the user's

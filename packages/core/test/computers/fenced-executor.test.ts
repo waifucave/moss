@@ -180,7 +180,7 @@ describe("through the daemon's parts (startDaemonParts), as the daemon wires it"
     stops = [];
   });
 
-  async function start(spawner?: FencedSpawner) {
+  async function start(spawner?: FencedSpawner | false) {
     const clock = new SystemClock();
     const home = temp("lane-j-exec-home-");
     const userHome = temp("lane-j-exec-user-");
@@ -196,10 +196,10 @@ describe("through the daemon's parts (startDaemonParts), as the daemon wires it"
     const parts = await startDaemonParts({
       mossHome: home, userHome, clock, links: d.links, handlers: {},
       bots: { registry: new FakePluginRegistry({ catalog: catalogPointDecl, plugins: [] }), drivers: () => fakes.factory, defaultModel: () => ({ model: "moss-test/calls" }) },
-      ...(spawner ? { spawner } : {}),
+      ...(spawner !== undefined ? { spawner } : {}),
     });
     stops.push(() => parts.close());
-    return { node: parts.node!, userHome };
+    return { node: parts.node!, userHome, home };
   }
 
   test("a bot's Bash on this computer runs through the daemon's spawner, as that bot, in the folder's real path", async () => {
@@ -217,11 +217,33 @@ describe("through the daemon's parts (startDaemonParts), as the daemon wires it"
     expect(s.runs[1]!.env.TMPDIR).toBe(new MossFence({ home: userHome, mossHome: join(userHome, ".x") }).temp);
   }, 30_000);
 
-  test("without a spawner the node has no executor: Bash on its tree is refused, never run unsandboxed", async () => {
-    const { node } = await start();
+  test("with spawner: false the node has no executor: Bash on its tree is refused, never run unsandboxed", async () => {
+    const { node } = await start(false);
     const name = node.registry.self().name;
     const r = await node.tools.run("Bash", { command: "echo ok" }, { session: "s_luna", sessionKind: "bot", bot: "luna", callId: "c1", cwd: `home/${name}` });
     expect(r.isError).toBe(true);
     expect(JSON.stringify(r.output)).toContain("no executor");
+  }, 30_000);
+
+  // Lane XC: the daemon hands no spawner, so before this every other computer's Bash here was refused. Now the parts
+  // build `fencedSpawner` over their one MossFence: the command runs fenced (Seatbelt here, bubblewrap on Linux, the
+  // Windows fence once set up) or is refused with the fence's reason, and never runs unsandboxed.
+  test("given no spawner, the node's Bash runs on the parts' own fenced process; a fenced file stays unwritten", async () => {
+    const { node, home } = await start();
+    const name = node.registry.self().name;
+    const coding = { session: "s_code", sessionKind: "coding" as const, callId: "c1", cwd: `home/${name}` };
+    const r = await node.tools.run("Bash", { command: "echo ok" }, coding);
+    expect(JSON.stringify(r.output)).not.toContain("no executor");
+    if (process.platform === "darwin") {
+      expect(r.isError).toBe(false);
+      expect((r.output as { stdout: string }).stdout).toBe("ok\n");
+      writeFileSync(join(home, "settings.json"), "orig");
+      const planted = await node.tools.run("Bash", { command: `echo planted > ${JSON.stringify(join(home, "settings.json"))}` }, { ...coding, callId: "c2" });
+      expect(planted.isError).toBe(true);
+      expect(readFileSync(join(home, "settings.json"), "utf8")).toBe("orig");
+    } else if (r.isError) {
+      // No sandbox on this runner: refused with the fence's reason, never run.
+      expect(JSON.stringify(r.output)).toContain("refused");
+    }
   }, 30_000);
 });

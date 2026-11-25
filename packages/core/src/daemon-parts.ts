@@ -178,10 +178,12 @@ export interface DaemonPartsInput {
   programKeys?: ProgramAnswerVerifier;
   /** Lane RT: feeds the broker's cards to the router (`surfaces/routing.ts`); its undo. */
   cardRouting?: (broker: MossApprovalBroker) => () => void;
-  /** Lane C's fenced process on this computer (`fencedSpawner({ fence })` over the daemon's one MossFence): the
-   *  computer node's Bash runs through it (`fencedExecutor`, lane J). Without it the node has no executor and Bash on
-   *  its tree is refused; it never runs unsandboxed. A test's own `node.executor` wins. */
-  spawner?: FencedSpawner;
+  /** Lane C's fenced process on this computer: the computer node's Bash runs through it (`fencedExecutor`, lane J),
+   *  another computer's call there as a peer at the fence's floor. Left out, it is `fencedSpawner({ fence })` over
+   *  these parts' one MossFence (lane XC: before, nothing was handed over and every peer's Bash was refused); `false`
+   *  for none (Bash on the tree refused). Never unsandboxed: a spawner that can't fence here (no Seatbelt, no
+   *  bubblewrap, a Windows fence not set up) refuses each call with the reason. A test's own `node.executor` wins. */
+  spawner?: FencedSpawner | false;
   /** The daemon's update gate: the bot side's running turns keep an update waiting. */
   updateGate?: BotSideOptions["updateGate"];
   /** Lane K's agents over the bot side's host; false for none. They need the node (the folder tree) and the bot side. */
@@ -384,10 +386,9 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
         // The broker below, bound late: it needs the node's own registry for each computer's level.
         approvals: input.approvals ?? lateApprovals,
         ...(input.reviewer ? { reviewer: input.reviewer } : {}),
-        // `temp`: the fence's temp folder, which the fence lets every runner write: TMPDIR for every Bash run here except
-        // a bot's own, which gets its scratch folder instead (`fencedExecutor`, from `mossHome`). Read from a fence of
-        // this home until INT's one daemon-wide MossFence lands here (#365); then it is that fence's `temp`.
-        ...(input.spawner ? { bash: { spawner: input.spawner, home: input.userHome, mossHome: input.mossHome, temp: new MossFence({ home: input.userHome, mossHome: input.mossHome }).temp } } : {}),
+        // `temp`: the one fence's temp folder, which the fence lets every runner write: TMPDIR for every Bash run here
+        // except a bot's own, which gets its scratch folder instead (`fencedExecutor`, from `mossHome`).
+        ...(input.spawner === false ? {} : { bash: { spawner: input.spawner ?? fencedSpawner({ fence }), home: input.userHome, mossHome: input.mossHome, temp: fence.temp } }),
         answers: { devices: nodeLinks.devices, mossHome: input.mossHome, clock: input.clock },
         log: (line) => log(`[computers] ${line}`),
       });
