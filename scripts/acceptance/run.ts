@@ -4039,8 +4039,10 @@ async function computersRun(): Promise<void> {
 
     // ── pairing, through the product's own path ──
     try {
-      const begun = await c.request<{ pairingId: string; qr: string }>("device.pair.begin", {});
-      const joined = await betaApp.request<{ pairingId: string }>("device.pair.join", { code: begun.qr });
+      // Begun and joined in each user's own terminal, so each confirms there with the words it shows (a pairing an app
+      // began is confirmed on its sealed card instead).
+      const begun = await ta.t.request<{ pairingId: string; qr: string }>("device.pair.begin", {});
+      const joined = await tb.t.request<{ pairingId: string }>("device.pair.join", { code: begun.qr });
       const wa = await until("Alpha's terminal hearing the four words", 60_000, () => ta.words[0]);
       const wb = await until("Beta's terminal hearing the four words", 60_000, () => tb.words[0]);
       if (wa.join(" ") !== wb.join(" ")) fail(`the two terminals heard different words (${wa.length} and ${wb.length} words)`);
@@ -4054,7 +4056,7 @@ async function computersRun(): Promise<void> {
         const got = await c.request<{ computer: { online?: boolean; state?: string; level?: string } }>("computer.get", { name: "Beta" }).catch(() => undefined);
         return got !== undefined && (got.computer.online === true || got.computer.state === "online") && got.computer.level === "automatic" ? true : undefined;
       });
-      put(COMPUTERS_PAIR_STEP, "PASS", "paired over the two sidecars on loopback (QR, four words in each terminal, the terminals' confirm); both list Alpha and Beta; Beta online on Alpha");
+      put(COMPUTERS_PAIR_STEP, "PASS", "paired over the two sidecars on loopback (begun and joined with the QR in each user's terminal, the four words heard and confirmed there); both list Alpha and Beta; Beta online on Alpha");
     } catch (err) {
       put(COMPUTERS_PAIR_STEP, statusOf(err), why(err));
       throw err;
