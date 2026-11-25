@@ -96,7 +96,22 @@ fun ConversationScreen(model: ConversationModel, cards: CardsModel, onBack: () -
         if (model.statusLine != null) add(Item.Status)
     }
     val list = rememberLazyListState()
-    LaunchedEffect(rows.size) { if (!startsAtTop && rows.isNotEmpty()) list.scrollToItem(rows.size - 1 + (if (model.hasEarlier) 1 else 0)) }
+    // A card with live buttons on screen holds the list still: no scroll to the newest message moves it under the finger.
+    // A card whose place in the conversation changed (a message came in above it) waits again before it takes a press.
+    val cardPlaces = rows.withIndex().filter { it.value is Item.CardItem }.associate { (it.value as Item.CardItem).card.id to it.index }
+    var lastPlaces by remember { mutableStateOf(cardPlaces) }
+    LaunchedEffect(cardPlaces) {
+        for ((id, at) in cardPlaces) if (lastPlaces[id] != null && lastPlaces[id] != at) cards.cards.firstOrNull { it.id == id }?.let(cards::rearm)
+        lastPlaces = cardPlaces
+    }
+    LaunchedEffect(rows.size) {
+        if (startsAtTop || rows.isEmpty()) return@LaunchedEffect
+        val liveCardShown = list.layoutInfo.visibleItemsInfo.any { info ->
+            (info.key as? String)?.removePrefix("c-")?.takeIf { (info.key as String).startsWith("c-") }
+                ?.let { id -> cards.cards.firstOrNull { it.id == id }?.let { cards.note(it) == null } } == true
+        }
+        if (!liveCardShown) list.scrollToItem(rows.size - 1 + (if (model.hasEarlier) 1 else 0))
+    }
 
     Column(Modifier.fillMaxSize().background(c.background).systemBarsPadding()) {
         ConversationHeader(model, onBack)
@@ -133,7 +148,7 @@ fun ConversationScreen(model: ConversationModel, cards: CardsModel, onBack: () -
                             is Item.CardItem -> CardView(item.card, item.card.id in cards.answering, cards.note(item.card),
                                 onAnswer = { o -> scope.launch { cards.answer(item.card, o) } },
                                 onSettle = { if (cards.note(item.card) == CardNote.failed) cards.clearFailure(item.card) else cards.dismiss(item.card) },
-                                changed = item.card.id in cards.changed, wait = cards.waitLeft(item.card), waitKey = cards.armedAt[item.card.id], onOpen = { f -> cards.open(item.card, f) },
+                                changed = item.card.id in cards.changed, wait = cards.waitLeft(item.card), waitKey = cards.armedAt[item.card.id], onOpen = { f -> cards.open(item.card, f) }, onScrolled = { o, e -> cards.scrolled(item.card, o, e) }, refusal = cards.refusals[item.card.id],
                                 modifier = Modifier.padding(top = 6.dp))
                             Item.Status -> StatusLine(model.statusLine ?: "", Modifier.padding(start = 4.dp, top = 2.dp))
                         }

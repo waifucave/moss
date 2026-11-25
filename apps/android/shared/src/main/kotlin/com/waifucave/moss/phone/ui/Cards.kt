@@ -13,6 +13,8 @@ import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.TimerOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.foundation.ScrollState
 import androidx.compose.ui.platform.testTag
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.verticalScroll
@@ -35,6 +37,7 @@ import com.waifucave.moss.phone.vm.ARM_MS
 import com.waifucave.moss.phone.vm.CardNote
 import com.waifucave.moss.phone.vm.CardsModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -147,6 +150,10 @@ fun CardView(
     wait: Long = 0L, waitKey: Any? = null,
     /** Told each field the person opens (`CardsModel.opened`), so the model knows too. */
     onOpen: (String) -> Unit = {},
+    /** Told whether the values area overflows and whether it has been scrolled to its end (`CardsModel.scrolled`). */
+    onScrolled: (overflows: Boolean, reachedEnd: Boolean) -> Unit = { _, _ -> },
+    /** Why the model refused the last press on this card, in one line ("Wait a moment", "Open the rest first"). */
+    refusal: String? = null,
 ) {
     val c = MossTheme.colors
     val now = nowMs()
@@ -155,6 +162,19 @@ fun CardView(
     val openField: (String) -> Unit = { name -> if (name !in expanded) { expanded = expanded + name; onOpen(name) } }
     val cut = remember(card) { card.cutFields() }
     val unopened = cut - expanded
+    // The values area scrolls inside the card when it is taller than FIELDS_MAX: the buttons wait until it has been
+    // scrolled to its end once (every field has been on screen), with a cue while there is more below. When all fits,
+    // nothing waits.
+    val fieldsScroll = remember(card.id, card.hash) { ScrollState(0) }
+    var reachedEnd by remember(card.id, card.hash) { mutableStateOf(false) }
+    val measured = fieldsScroll.maxValue != Int.MAX_VALUE
+    val overflows = measured && fieldsScroll.maxValue > 0
+    LaunchedEffect(fieldsScroll) {
+        snapshotFlow { fieldsScroll.maxValue != Int.MAX_VALUE && fieldsScroll.value >= fieldsScroll.maxValue }.first { it }
+        reachedEnd = true
+    }
+    LaunchedEffect(card.id, card.hash, measured, overflows, reachedEnd) { if (measured) onScrolled(overflows, reachedEnd) }
+    val scrolledEnough = measured && (!overflows || reachedEnd)
     // A card new to the screen, or whose content just changed, takes no press for a moment: a tap meant for what was
     // there before never answers it.
     var armed by remember(card.id, card.hash) { mutableStateOf(false) }
@@ -175,7 +195,7 @@ fun CardView(
         }
         // The values in a bounded area of their own: however much they hold, the footer and the buttons stay on screen.
         Column(
-            Modifier.fillMaxWidth().heightIn(max = FIELDS_MAX).verticalScroll(rememberScrollState()),
+            Modifier.fillMaxWidth().heightIn(max = FIELDS_MAX).verticalScroll(fieldsScroll).testTag("card-values"),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
         for (name in CARD_FIELDS) {
@@ -234,6 +254,13 @@ fun CardView(
                 if (left > 0) Text("Expires in ${maxOf(1, left / 60)} min", style = MossType.caption, color = c.secondary)
             }
         }
+        if (overflows && fieldsScroll.canScrollForward) Row(verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.semantics(mergeDescendants = true) { contentDescription = "More below: scroll the card to read it all" }) {
+            Icon(Icons.Filled.KeyboardArrowDown, null, tint = c.secondary, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(4.dp))
+            Text(if (reachedEnd) "More below" else "More below. Scroll to the end to answer.", style = MossType.footnote, color = c.secondary)
+        }
+        refusal?.let { Text(it, style = MossType.footnote, color = c.secondary, modifier = Modifier.semantics { contentDescription = it }) }
         if (changed) Text("This card changed while it was shown. Read it again before you answer.", style = MossType.footnote, color = c.secondary)
         if (!card.drawable()) {
             // A field this build can't draw: the person would approve less than what they were asked. No buttons.
@@ -255,7 +282,7 @@ fun CardView(
             val buttons: @Composable (CardOption, Modifier) -> Unit = { option, m ->
                 val approve = option.kind == CardOption.Kind.approve
                 FilledTonalButton(
-                    onClick = { if (armed && unopened.isEmpty()) onAnswer(option) }, enabled = !busy && armed && unopened.isEmpty(), modifier = m.semantics {
+                    onClick = { if (armed && unopened.isEmpty() && scrolledEnough) onAnswer(option) }, enabled = !busy && armed && unopened.isEmpty() && scrolledEnough, modifier = m.semantics {
                         contentDescription = if (option.rememberAlways) "${option.label}, and remember" else option.label
                         stateDescription = if (approve) "Approves this request" else "Refuses this request"
                     },
@@ -329,7 +356,8 @@ fun NeedsYouScreen(model: CardsModel, who: (Card) -> String, onBack: () -> Unit)
                             CardView(card, card.id in model.answering, model.note(card),
                                 onAnswer = { o -> scope.launch { model.answer(card, o) } },
                                 onSettle = { if (model.note(card) == CardNote.failed) model.clearFailure(card) else model.dismiss(card) },
-                                changed = card.id in model.changed, wait = model.waitLeft(card), waitKey = model.armedAt[card.id], onOpen = { f -> model.open(card, f) })
+                                changed = card.id in model.changed, wait = model.waitLeft(card), waitKey = model.armedAt[card.id], onOpen = { f -> model.open(card, f) },
+                                onScrolled = { o, e -> model.scrolled(card, o, e) }, refusal = model.refusals[card.id])
                         }
                     }
                 }

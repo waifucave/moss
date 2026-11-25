@@ -200,4 +200,20 @@ class RulesTest {
         m.answer(long, long.options.first())
         assertFalse("answered once opened", m.cards.any { it.id == long.id })
     }
+
+    /** The model refuses a card whose values overflow until they were scrolled to the end, and says why in one line. */
+    @Test fun aCardNotScrolledToItsEndIsRefusedWithAReason() = runTest {
+        val c = FakeEngineClient()
+        c.setOtherAppInstalled(false)
+        val m = CardsModel(c, PhoneApp.moss, { SampleData.now }, steppingClock())
+        m.load()
+        val a = m.cards.first { m.note(it) == null }
+        m.scrolled(a, overflows = true, reachedEnd = false)
+        m.answer(a, a.options.first())
+        assertTrue(m.cards.any { it.id == a.id })
+        assertEquals("Scroll to the end of the card first.", m.refusals[a.id])
+        m.scrolled(a, overflows = true, reachedEnd = true)
+        m.answer(a, a.options.first())
+        assertFalse(m.cards.any { it.id == a.id })
+    }
 }

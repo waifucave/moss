@@ -3,6 +3,10 @@ package com.waifucave.moss.phone
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.assertIsNotDisplayed
+import androidx.compose.ui.test.swipeUp
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -77,7 +81,9 @@ class CardFieldsTest {
             assertTrue("$name's value drawn", compose.onAllNodes(hasText("value-of-$name")).fetchSemanticsNodes().isNotEmpty())
             assertTrue("$name's label drawn", compose.onAllNodes(hasText(CARD_FIELD_LABELS.getValue(name))).fetchSemanticsNodes().isNotEmpty())
         }
-        // Past the card's first moment on screen (when it takes no press), the drawn button answers with its own option.
+        // Past the card's first moment on screen (when it takes no press), and with its values scrolled to their end, the
+        // drawn button answers with its own option.
+        scrollValuesToEnd()
         compose.mainClock.advanceTimeBy(1_000)
         compose.waitForIdle()
         compose.onNodeWithContentDescription("Yes").performScrollTo().performClick()
@@ -153,5 +159,45 @@ class CardFieldsTest {
         assertFalse(card(mapOf("title" to SealedValue.Text("T"))).copy(hasChildren = true).drawable())
         assertFalse(card(mapOf("title" to SealedValue.Text("T"), "detail" to SealedValue.Code("x".repeat(70_000)))).drawable())
         assertTrue(card(mapOf("title" to SealedValue.Text("T"))).drawable())
+    }
+
+    private fun scrollValuesToEnd() {
+        repeat(12) { compose.onNodeWithTag("card-values").performTouchInput { swipeUp() }; compose.waitForIdle() }
+    }
+
+    /**
+     * The values area overflows (a 6-line command, a 6-line detail, 8 paths, the site and the rule, last): the buttons wait,
+     * with a "more below" cue, until it is scrolled to its end, and then the rule is on screen.
+     */
+    @Test fun theButtonsWaitUntilTheValuesWereScrolledToTheEnd() {
+        val six = (1..6).joinToString("\n") { "step $it" }
+        val c = card(linkedMapOf(
+            "title" to SealedValue.Text("Run this?"),
+            "command" to SealedValue.Code(six),
+            "detail" to SealedValue.Code(six),
+            "paths" to SealedValue.ListOf((1..8).map { "src/file$it.ts" }),
+            "host" to SealedValue.Code("example.com"),
+            "rule" to SealedValue.Rows(listOf(SealedValue.Row("Kind", "command"), SealedValue.Row("Where", "every folder"))),
+        ))
+        assertTrue("nothing is cut", c.cutFields().isEmpty())
+        compose.setContent { MossTheme(false) { Box(Modifier.height(900.dp)) { CardView(c, busy = false, note = null, onAnswer = {}, onSettle = {}) } } }
+        compose.mainClock.advanceTimeBy(1_000)
+        compose.waitForIdle()
+        compose.onNodeWithContentDescription("Yes").assertIsNotEnabled()
+        assertTrue("a cue says there is more", compose.onAllNodes(hasContentDescription("More below", substring = true)).fetchSemanticsNodes().isNotEmpty())
+        compose.onNodeWithTag("card-value:rule").assertIsNotDisplayed()
+        scrollValuesToEnd()
+        compose.onNodeWithTag("card-value:rule").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Yes").assertIsEnabled()
+    }
+
+    /** When everything fits, nothing waits for a scroll. */
+    @Test fun aCardThatFitsNeedsNoScroll() {
+        val c = card(mapOf("title" to SealedValue.Text("T"), "host" to SealedValue.Code("example.com")))
+        compose.setContent { MossTheme(false) { CardView(c, busy = false, note = null, onAnswer = {}, onSettle = {}) } }
+        compose.mainClock.advanceTimeBy(1_000)
+        compose.waitForIdle()
+        compose.onNodeWithContentDescription("Yes").assertIsEnabled()
+        assertTrue(compose.onAllNodes(hasContentDescription("More below", substring = true)).fetchSemanticsNodes().isEmpty())
     }
 }
