@@ -26,6 +26,13 @@ export function withoutAllow(out: unknown): unknown {
     }
     const d = s.decision;
     if (d !== null && typeof d === "object" && (d as { behavior?: unknown }).behavior === "allow") delete s.decision;
+    // An answer to the call (agent SDK 0.0.87's `toolResult`) is an allow that also skips the tool: a base hook's is
+    // taken out, and since it meant "don't run this", the call is refused rather than run.
+    if (s.toolResult !== undefined) {
+      delete s.toolResult;
+      s.permissionDecision = "deny";
+      s.permissionDecisionReason = "a hook of the session's base options tried to answer this call itself; only the session's own hooks may";
+    }
     o.hookSpecificOutput = s;
   }
   return o;

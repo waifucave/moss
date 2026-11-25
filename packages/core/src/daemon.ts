@@ -5001,7 +5001,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
           holds: node.holds, terminals: node.terminals,
           computers: () => node.registry.list().map((c) => ({ name: c.name, os: c.os, online: c.state === "online", main: c.isMain })),
           // Lane XC: a bot's own calls on tree paths (`home/<this computer>/…`, `home/memory/…`) run on the real paths.
-          tree: { directory: node.peers.directory(), resolve: (path: string, as: Caller) => node.tree.resolve(path, as), names: () => node.registry.list().map((c) => c.name) },
+          // A call on another computer's path runs there through the node's tree tools, judged and fenced by that computer.
+          tree: { directory: node.peers.directory(), resolve: (path: string, as: Caller) => node.tree.resolve(path, as), names: () => node.registry.list().map((c) => c.name), tools: node.tools },
         } : {}),
         log: (line) => console.error(`[bots] ${line}`),
         });

@@ -68,6 +68,7 @@ import { BOT_KEY_PATHS, RUNTIME_STATE_STORES, RUNTIME_STATE_SUFFIXES, fenceSearc
 import { secretReadPlaces, type Fence } from "../../contracts/fence";
 import { runtimeDenyForms } from "../../fence/runtime-deny-forms";
 import { TreeRouter, type TreeRoute, type TreeRouteDeps } from "../../tree/route";
+import type { TreeToolResult, TreeTools } from "../../tree/tools";
 
 /** The runtime's built-in tools a bot's session is offered (spec §6.7). The runtime's own `SendMessage`, `ListAgents`,
  *  `TaskStop` and `Agent` are not: the core's take those names. Nor are `Skill` and `ToolSearch` (retired for
@@ -177,6 +178,31 @@ export function withBotKeyReads(sandbox: SandboxSettingsConfig, fence: Pick<File
 
 /** The daemon's fence for a bot's own Read, Glob and Grep: lane C's fence as the session meets it (`forCaller`), so
  *  inside the MOSS home only its own folders are readable (`fileToolFenceRefusal`). */
+/** Lane XC: what another computer's tree call gave back, as the model reads a tool's result: the runtime's own shapes
+ *  where there is one (Bash's output, Glob's paths one per line, Grep's `path:line:text`), the reason for an error. */
+export function treeResultText(tool: string, output: unknown): string {
+  if (typeof output === "string") return output;
+  if (output === null || typeof output !== "object") return String(output ?? "");
+  const o = output as Record<string, unknown>;
+  if (typeof o.error === "string" && (typeof o.message === "string" || Object.keys(o).length <= 2)) {
+    return `Error: ${o.error}${typeof o.message === "string" ? `: ${o.message}` : ""}`;
+  }
+  if (tool === "Bash") {
+    const out = [o.stdout, o.stderr].map((s) => (typeof s === "string" ? s.replace(/\n+$/, "") : "")).filter((s) => s !== "").join("\n");
+    const notes = [o.timedOut === true ? "(timed out)" : "", o.aborted === true ? "(stopped)" : "", typeof o.code === "number" && o.code !== 0 ? `Exit code ${o.code}` : ""].filter((s) => s !== "");
+    return [out, ...notes].filter((s) => s !== "").join("\n");
+  }
+  if (tool === "Glob" && Array.isArray(o.paths)) {
+    const paths = o.paths.filter((p): p is string => typeof p === "string");
+    return paths.length === 0 ? "No files found" : `${paths.join("\n")}${o.truncated === true ? "\n(more files: narrow the pattern)" : ""}`;
+  }
+  if (tool === "Grep" && Array.isArray(o.matches)) {
+    const lines = o.matches.map((m) => (m !== null && typeof m === "object" ? `${String((m as { path?: unknown }).path)}:${String((m as { line?: unknown }).line)}:${String((m as { text?: unknown }).text)}` : "")).filter((l) => l !== "");
+    return lines.length === 0 ? "No matches found" : `${lines.join("\n")}${o.truncated === true ? "\n(more matches: narrow the search)" : ""}`;
+  }
+  return JSON.stringify(output);
+}
+
 export function botFileFence(fence: Pick<Fence, "forCaller">, home: string, os?: Os, userHome?: string): (ctx: BotSessionContext) => FileFence {
   return (ctx) => {
     const own = fence.forCaller(ctx.caller);
@@ -239,7 +265,11 @@ export interface BotDriverDeps {
   terminals?: { closeSession(session: string): Promise<number> | number };
   /** The folder tree (lane XC, `tree/route.ts`): a call on a tree path this computer holds runs on its real path; one
    *  on another computer's goes there. Without it every call is the runtime's own, as before. */
-  tree?: TreeRouteDeps;
+  tree?: TreeRouteDeps & {
+    /** The node's tree tools (`ComputerNode.tools`): a call on another computer's path runs there, fenced and judged
+     *  by that computer. Without them such a call is refused with the reason. */
+    tools?: Pick<TreeTools, "run">;
+  };
   /** The plugin registry, for `Glossary`'s skills, agent definitions, plugins and points. */
   registry?: GlossaryDeps["registry"];
   /** The plugins' hooks (`pluginHooks`); none without it. */
@@ -447,6 +477,9 @@ export class BotSessionDriver implements SessionDriver {
   readonly #fileFence: FileFence | undefined;
   /** The session's tree router (lane XC), with Bash's folder on another computer. */
   readonly #router: TreeRouter | undefined;
+  /** Calls `#preTool` found on another computer's path, by call id: `#treeHandOff` answers them; their results are the
+   *  holder's, fenced there, so `#postTool` leaves them unfiltered. */
+  readonly #remoteCalls = new Set<string>();
   readonly #d: BotDriverDeps;
   readonly #log: (line: string) => void;
   readonly #statePath: string;
@@ -711,6 +744,56 @@ export class BotSessionDriver implements SessionDriver {
     return fileToolFenceRefusal(input.tool_name ?? "", input.tool_input, this.#fileFence, this.#ctx.paths.scratch);
   }
 
+  /** Lane XC, the very last `PreToolUse` hook: a call `#preTool` found on another computer's path runs there through
+   *  the tree (`TreeTools.run`), and this hook ANSWERS it (agent SDK 0.0.87's `toolResult`): the runtime's own tool
+   *  never runs, and the result carries a true error flag. Last, so every other hook (the pause, the plugins, the fence,
+   *  the trailing gate) has had its say and a deny from any of them wins before anything runs elsewhere. The holder
+   *  judges the call by its own level, saved rules and fence (`service.ts`, `judgePeer`); a card it needs comes back
+   *  through this computer's broker (`askUser`). Bash on another computer moves the session's tree folder, shown on
+   *  the result's first line when it changes. */
+  #treeHandOff(): HookCallbackMatcher {
+    return {
+      failClosed: true,
+      timeout: TOOL_HOOK_TIMEOUT_S,
+      hooks: [async (raw, toolUseId, { signal }) => {
+        const input = raw as ToolUseInput;
+        const callId = input.tool_use_id ?? toolUseId ?? "";
+        if (!this.#remoteCalls.has(callId)) return {};
+        const name = input.tool_name ?? "";
+        const tools = this.#d.tree?.tools;
+        // On the input as the earlier hooks left it, routed again: what runs is what was judged here.
+        const route = this.#router?.route(name, input.tool_input) ?? { kind: "local" as const };
+        const answer = (text: string, isError: boolean) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", toolResult: { content: text, isError } } });
+        if (route.kind === "refused") return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: route.reason } };
+        if (route.kind !== "other" || tools === undefined) {
+          this.#remoteCalls.delete(callId);
+          return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "this call no longer names another computer's path; run it again" } };
+        }
+        if (!route.online) return answer(`Error: computer offline: ${route.computer} is offline`, true);
+        const ctx = this.#ctx;
+        const before = this.#router?.treeCwd;
+        let r: TreeToolResult;
+        try {
+          r = await tools.run(name, input.tool_input, {
+            session: ctx.sessionId, sessionKind: ctx.caller.sessionKind, ...(ctx.caller.bot === undefined ? {} : { bot: ctx.caller.bot }),
+            callId, ...(route.cwd === undefined ? {} : { cwd: route.cwd }), signal,
+            ...(this.#origin === undefined ? {} : { origin: this.#origin }),
+            ...(this.#d.epoch === undefined ? {} : { epoch: this.#d.epoch() }),
+          });
+        } catch (e) {
+          return answer(`Error: ${route.computer}: ${e instanceof Error ? e.message : String(e)}`, true);
+        }
+        let text = treeResultText(name, r.output);
+        if (name === "Bash") {
+          this.#router?.settled(route, r.cwd);
+          const after = this.#router?.treeCwd;
+          if (after !== before) text = `${after !== undefined ? `now on ${r.computer}: ${after}` : `back on ${ctx.computer}: the commands after this run here`}\n${text}`;
+        }
+        return answer(text, r.isError);
+      }],
+    };
+  }
+
   /** The pause and the lease once more, after every other `PreToolUse` hook (`mergedHooks`' trailing check). */
   #trailingGate(): HookCallbackMatcher {
     return {
@@ -747,8 +830,14 @@ export class BotSessionDriver implements SessionDriver {
     const route = this.#route(name, r.input !== input.tool_input && r.input !== null && typeof r.input === "object" && !Array.isArray(r.input) ? r.input : input.tool_input);
     if (route.kind === "refused") return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: route.reason } };
     if (route.kind === "other") {
-      const why = route.online ? `${route.computer} holds that path, and a tool call on another computer doesn't run from here yet` : `computer offline: ${route.computer} is offline`;
-      return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: why } };
+      // Another computer's path: answered by the last hook (`#treeHandOff`), once every other hook has had its say, and
+      // never without the tree's tools.
+      if (this.#d.tree?.tools === undefined) {
+        const why = route.online ? `${route.computer} holds that path, and this computer can't reach another's tree` : `computer offline: ${route.computer} is offline`;
+        return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: why } };
+      }
+      if (callId !== "") this.#remoteCalls.add(callId);
+      return {};
     }
     if (route.kind === "here") r = { ...r, input: route.input };
     // The MOSS home's default-deny for the session's own file tools, on the input a plugin's hook may have changed.
@@ -806,8 +895,11 @@ export class BotSessionDriver implements SessionDriver {
     const name = input.tool_name ?? "";
     this.#dropCallId(name, input.tool_use_id ?? toolUseId);
     this.#dropsAfter(input.tool_use_id ?? toolUseId ?? "");
+    // A call another computer answered was fenced there (its holder's fence, on its own disk): this computer's search
+    // fence has no say over its paths.
+    const remote = this.#remoteCalls.delete(input.tool_use_id ?? toolUseId ?? "");
     // A search's hits through a link out of the session's folders are dropped before anyone sees them, plugins too.
-    const fenced = this.#fileFence === undefined ? undefined : fenceSearchOutput(name, input.tool_response, this.#fileFence, this.#ctx.paths.scratch, input.tool_input);
+    const fenced = this.#fileFence === undefined || remote ? undefined : fenceSearchOutput(name, input.tool_response, this.#fileFence, this.#ctx.paths.scratch, input.tool_input);
     const result = await this.#hooks.toolAfter(this.#hookSession, { name, callId: input.tool_use_id ?? toolUseId ?? "" }, input.tool_input, fenced ?? input.tool_response, signal);
     try { this.#d.observe?.toolResult?.(this.#ctx, name, input.tool_response, input.tool_input); } catch { /* an observer never fails the call */ }
     // A core tool asked for the turn to end here (`#continueWith`): the runtime stops after this round, and `turn`
@@ -834,6 +926,7 @@ export class BotSessionDriver implements SessionDriver {
         const input = raw as ToolUseInput;
         this.#dropCallId(input.tool_name ?? "", input.tool_use_id ?? toolUseId);
         this.#dropsAfter(input.tool_use_id ?? toolUseId ?? "");
+        this.#remoteCalls.delete(input.tool_use_id ?? toolUseId ?? "");
         return {};
       }],
     };
@@ -963,7 +1056,7 @@ export class BotSessionDriver implements SessionDriver {
       canUseTool: this.#gatedCanUseTool(this.#d.canUseTool(ctx, origin)),
       // The driver's hooks first, the base's kept but never allowing, and the pause and the lease again last, behind any
       // hook the runtime ranks first (hook-merge.ts).
-      hooks: mergedHooks(base.hooks, this.#toolHooks(), { last: { PreToolUse: [this.#trailingGate()] } }),
+      hooks: mergedHooks(base.hooks, this.#toolHooks(), { last: { PreToolUse: [this.#trailingGate(), this.#treeHandOff()] } }),
       permissionMode: "default",
       abortController: abort,
       includePartialMessages: true,
