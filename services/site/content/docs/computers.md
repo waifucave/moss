@@ -42,4 +42,4 @@ It copies itself to `~/.moss/bin/daemon/moss-core`, with the plugins it ships, s
 ~/.moss/bin/daemon/moss-core server uninstall
 ```
 
-That stops it, removes its login start and the files the install put in place, and leaves the rest of `~/.moss`. Pairing happens in an app today: the engine's command line has no pairing command.
+That stops it, removes its login start and the files the install put in place, and leaves the rest of `~/.moss`. To pair a computer that has only the engine, run `moss device pair` in its terminal: it prints a code and a line to paste on the other device (`moss device pair --join …`, or join from the app), then shows four words. Check them on the other device and type them to confirm; a wrong word cancels the pairing. `moss device list` shows your devices and `moss device revoke <name>` removes one.
