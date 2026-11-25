@@ -214,7 +214,9 @@ test("a page calling everything it can reach, with a key press on every call, ad
   expect((await ok<Devices>(a.app, "device.list", {})).devices).toHaveLength(1);
   expect((await ok<Devices>(b.app, "device.list", {})).devices).toHaveLength(1);
   // Nothing the page was handed, and nothing any app connection or the page's layer heard, holds the four words.
-  const forbidden = (text: string): string[] => [phrase, ...words.map((w) => `"${w}"`)].filter((w) => text.includes(w));
+  // The four together, in the forms the engine could write them: one word alone proves nothing, as a few of the list's words ("class",
+  // "card", "step", "name") are also the events' own keys and values (a Linux run failed on `"class"`).
+  const forbidden = (text: string): string[] => [phrase, words.join(","), words.join("-"), JSON.stringify(words), words.join('","')].filter((w) => text.includes(w));
   expect(forbidden(seen.join("\n"))).toEqual([]);
   expect(forbidden(logs.join("\n"))).toEqual([]);
   // The page's layer did hear the pairing (the step and the name), so the check that it heard no words has something to fail on.

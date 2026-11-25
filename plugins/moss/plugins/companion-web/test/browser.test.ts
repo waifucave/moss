@@ -194,12 +194,15 @@ describe.skipIf(!enabled)("the web companion in headless Chrome", () => {
     );
     // A cold Chrome on a Windows runner can take well over 20 s to start listening.
     const portFile = join(profile, "DevToolsActivePort");
-    for (let i = 0; i < 900 && !existsSync(portFile); i++) {
+    // The file is created before its content is written: a read that came between saw no port (a macOS run read port 0), so the
+    // wait is for a port in it.
+    const portOf = (): number => { try { return Number(readFileSync(portFile, "utf8").split("\n")[0]) || 0; } catch { return 0; } };
+    for (let i = 0; i < 900 && portOf() === 0; i++) {
       if (browser.exitCode !== null) throw new Error(`Chrome exited with ${browser.exitCode} before it was listening`);
       await Bun.sleep(100);
     }
-    if (!existsSync(portFile)) throw new Error("Chrome didn't start listening within 90 s");
-    page = await Page.attach(Number(readFileSync(portFile, "utf8").split("\n")[0]));
+    if (portOf() === 0) throw new Error("Chrome didn't start listening within 90 s");
+    page = await Page.attach(portOf());
     await page.send("Page.enable");
     await page.send("Page.navigate", { url });
 

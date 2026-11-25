@@ -294,7 +294,8 @@ describe("daemon IPC", () => {
     const c = await TestClient.connect(daemon.socketPath);
     await c.hello(harnessToken, "garbler");
     (c as any).socket.write(new TextEncoder().encode("THIS IS NOT JSON\n"));
-    await new Promise((r) => setTimeout(r, 50));
+    // Until the frame arrives (a fixed 50 ms was not enough on a loaded macOS runner).
+    for (let i = 0; i < 200 && c.errors.length === 0; i++) await new Promise((r) => setTimeout(r, 25));
     const frame = c.errors[0];
     expect(frame).toBeTruthy();
     expect(frame.id).toBeNull();
