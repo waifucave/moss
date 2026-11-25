@@ -23,13 +23,19 @@ final class CardGateUITests: XCTestCase {
         guardrail()
     }
 
+    /// One short drag that lands where it stops (no coasting): towards the top of the content when `towardsTop`.
+    private func nudge(_ app: XCUIApplication, towardsTop: Bool) {
+        let w = app.windows.firstMatch
+        let start = w.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: towardsTop ? 0.45 : 0.5))
+        let end = w.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: towardsTop ? 0.5 : 0.45))
+        start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
+        usleep(400_000)
+    }
+
     func testAllowWaitsUntilTheNinthPathIsOnScreen() throws {
         let app = launch(["-screen", "cards", "-scenario", "manyPaths"])
         let allow = app.buttons["Allow"].firstMatch
         XCTAssertTrue(allow.waitForExistence(timeout: 10))
-        sleep(2)
-        print("IW probe at start: \(app.staticTexts["iw-probe"].firstMatch.label) title frame \(app.staticTexts["Change nine files?"].firstMatch.frame) window \(app.windows.firstMatch.frame)")
-        for t in app.staticTexts.allElementsBoundByIndex where t.label.contains("first") { print("IW card says at start: \(t.label)") }
         XCTAssertFalse(app.staticTexts["~/.ssh/authorized_keys"].exists, "the ninth path is cut at first")
         XCTAssertFalse(allow.isEnabled, "Allow is disabled while a part is cut")
         XCTAssertTrue(app.buttons["Deny"].firstMatch.isEnabled, "Deny never waits to be read")
@@ -42,7 +48,6 @@ final class CardGateUITests: XCTestCase {
         if !allow.isEnabled {
             // Why it waits, as the card says it (for the log).
             for t in app.staticTexts.allElementsBoundByIndex where t.label.contains("first") { print("IW card says: \(t.label)") }
-            print("IW probe at end: \(app.staticTexts["iw-probe"].firstMatch.label)")
             print("IW title hittable: \(app.staticTexts["Change nine files?"].isHittable)")
         }
         XCTAssertTrue(allow.isEnabled, "every cut part opened and read to its end: Allow answers")
@@ -70,12 +75,19 @@ final class CardGateUITests: XCTestCase {
         sleep(1)
         XCTAssertFalse(allow.isEnabled, "opening is not reading")
         let fifteenth = app.staticTexts["~/.ssh/authorized_keys"]
+        let last = app.staticTexts["notes/file-38.md"]
         var fifteenthSeen = fifteenth.exists && fifteenth.isHittable
+        var lastSeen = last.exists && last.isHittable
         scroll(app, up: true, tries: 40, guardrail: {
             if fifteenth.exists && fifteenth.isHittable { fifteenthSeen = true }
-            if allow.isEnabled { XCTAssertTrue(fifteenthSeen, "Allow enabled before the 15th path was on screen") }
+            if last.exists && last.isHittable { lastSeen = true }
+            if allow.isEnabled {
+                XCTAssertTrue(fifteenthSeen, "Allow enabled before the 15th path was on screen")
+                XCTAssertTrue(lastSeen, "Allow enabled before the list's last line was above the composer")
+            }
         }, until: { allow.isEnabled })
         XCTAssertTrue(fifteenthSeen, "the 15th path was on screen")
+        XCTAssertTrue(lastSeen, "the 38th path was on screen")
         XCTAssertTrue(allow.isEnabled, "read to the end: Allow answers")
         app.terminate()
     }
@@ -88,11 +100,28 @@ final class CardGateUITests: XCTestCase {
         XCTAssertTrue(allow.waitForExistence(timeout: 10))
         sleep(2)
         let title = app.staticTexts["Run this command?"]
+        XCTAssertFalse(allow.isEnabled, "opened at its bottom, the heading out of sight: Allow waits")
         if !(title.exists && title.isHittable) {
             XCTAssertFalse(allow.isEnabled, "the heading hasn't been on screen: Allow waits")
             XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH 'Scroll up to the top'")).firstMatch.exists, "it says why")
         }
-        scroll(app, up: false, until: { title.exists && title.isHittable })
+        // Down towards the heading in short steps that don't coast, so it passes through the bar: while any of it is
+        // under the bar Allow still waits, and it answers only once the heading is wholly below the bar.
+        let bar = app.navigationBars.firstMatch
+        var underBarSeen = false
+        for _ in 0..<80 {
+            if title.exists {
+                let t = title.frame, b = bar.frame
+                if t.maxY > b.minY && t.minY < b.maxY - 1 {
+                    XCTAssertFalse(allow.isEnabled, "the heading is under the bar: Allow waits")
+                    underBarSeen = true
+                }
+                if t.minY >= b.maxY + 4 { break }
+            }
+            nudge(app, towardsTop: true)
+        }
+        XCTAssertTrue(underBarSeen, "the heading passed under the bar on its way into sight")
+        sleep(1)
         scroll(app, up: true, until: { allow.isEnabled })
         XCTAssertTrue(allow.isEnabled, "the heading seen, nothing cut: Allow answers")
         app.terminate()

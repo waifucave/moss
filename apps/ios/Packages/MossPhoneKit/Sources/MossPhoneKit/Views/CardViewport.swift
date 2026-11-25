@@ -12,16 +12,9 @@ extension View {
     /// Applied to the scroll view that holds cards: measures what of it is unobstructed and hands that to the cards.
     func cardViewport() -> some View { modifier(CardViewportReader()) }
     /// Calls `seen` once this view has been wholly inside the unobstructed part of the scroll view.
-    func whenSeen(probe: String? = nil, _ seen: @escaping () -> Void) -> some View { modifier(SeenInViewport(probe: probe, seen: seen)) }
+    func whenSeen(_ seen: @escaping () -> Void) -> some View { modifier(SeenInViewport(seen: seen)) }
 }
 
-#if DEBUG
-/// Debug builds only: the last measurement of a probed marker, drawn as an invisible element UI tests can read.
-@MainActor @Observable final class SeenProbe {
-    static let shared = SeenProbe()
-    var last: [String: String] = [:]
-}
-#endif
 
 /// The scroll content's own coordinate space: what a card measures itself in, the same space the scroll view's visible
 /// rect is given in, so neither a sheet's offset in the window nor how the bars are counted can put the two apart.
@@ -49,7 +42,6 @@ extension View {
 }
 
 private struct SeenInViewport: ViewModifier {
-    let probe: String?
     let seen: () -> Void
     @Environment(\.cardViewport) private var viewport
     func body(content: Content) -> some View {
@@ -64,9 +56,6 @@ private struct SeenInViewport: ViewModifier {
         }
     }
     private func check(_ frame: CGRect, _ viewport: CGRect) {
-        #if DEBUG
-        if let probe { SeenProbe.shared.last[probe] = "f=\(Int(frame.minY))..\(Int(frame.maxY)) x\(Int(frame.minX))..\(Int(frame.maxX)) v=\(Int(viewport.minY))..\(Int(viewport.maxY)) x\(Int(viewport.minX))..\(Int(viewport.maxX))" }
-        #endif
         guard viewport.height > 1, frame.height > 0 else { return }
         if viewport.insetBy(dx: -1, dy: -1).contains(frame) { seen() }
     }
