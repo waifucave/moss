@@ -70,6 +70,9 @@ public struct ConversationScreen: View {
             // Only where it opens: growth (a card's opened list) is not pinned to the bottom, so it grows downward from where it was.
             .defaultScrollAnchor(startsAtTop ? .top : .bottom, for: .initialOffset)
             .cardViewport()
+            #if DEBUG
+            .overlay(alignment: .bottomLeading) { SeenLogView() }
+            #endif
             .task(id: scrollTarget) { if let t = scrollTarget { try? await Task.sleep(for: .seconds(1)); proxy.scrollTo(t, anchor: .top) } }
             // Never scrolled by itself while a card's buttons are on screen: nothing moves under the person's finger.
             .onChange(of: model.messages.count) { _, _ in if !startsAtTop, scrollTarget == nil, waitingCards.isEmpty { withAnimation { proxy.scrollTo("end") } } }

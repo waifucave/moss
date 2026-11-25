@@ -12,8 +12,26 @@ extension View {
     /// Applied to the scroll view that holds cards: measures what of it is unobstructed and hands that to the cards.
     func cardViewport() -> some View { modifier(CardViewportReader()) }
     /// Calls `seen` once this view has been wholly inside the unobstructed part of the scroll view.
-    func whenSeen(_ seen: @escaping () -> Void) -> some View { modifier(SeenInViewport(seen: seen)) }
+    func whenSeen(_ tag: String = "", _ seen: @escaping () -> Void) -> some View { modifier(SeenInViewport(tag: tag, seen: seen)) }
 }
+
+#if DEBUG
+/// Debug builds with `-seenLog` only: each report a marker made, with its frame and the viewport then, drawn as one
+/// accessibility element (`seen-log`) so a failed UI test's view hierarchy carries why something counted as seen.
+@MainActor @Observable final class SeenLog {
+    static let shared = SeenLog()
+    static let on = ProcessInfo.processInfo.arguments.contains("-seenLog")
+    var entries: [String] = []
+}
+struct SeenLogView: View {
+    var body: some View {
+        if SeenLog.on {
+            Text(SeenLog.shared.entries.suffix(12).joined(separator: " | ")).font(.system(size: 2)).opacity(0.02)
+                .accessibilityIdentifier("seen-log").allowsHitTesting(false)
+        }
+    }
+}
+#endif
 
 
 /// The scroll content's own coordinate space: what a card measures itself in, the same space the scroll view's visible
@@ -42,6 +60,7 @@ extension View {
 }
 
 private struct SeenInViewport: ViewModifier {
+    let tag: String
     let seen: () -> Void
     @Environment(\.cardViewport) private var viewport
     func body(content: Content) -> some View {
@@ -57,6 +76,13 @@ private struct SeenInViewport: ViewModifier {
     }
     private func check(_ frame: CGRect, _ viewport: CGRect) {
         guard viewport.height > 1, frame.height > 0 else { return }
-        if viewport.insetBy(dx: -1, dy: -1).contains(frame) { seen() }
+        if viewport.insetBy(dx: -1, dy: -1).contains(frame) {
+            #if DEBUG
+            if SeenLog.on, !tag.isEmpty {
+                SeenLog.shared.entries.append("\(tag) f=\(Int(frame.minY))..\(Int(frame.maxY)) v=\(Int(viewport.minY))..\(Int(viewport.maxY))")
+            }
+            #endif
+            seen()
+        }
     }
 }

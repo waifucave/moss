@@ -7,7 +7,7 @@ final class CardGateUITests: XCTestCase {
     private var running: XCUIApplication?
     private func launch(_ args: [String]) -> XCUIApplication {
         let app = XCUIApplication(bundleIdentifier: "com.waifucave.moss.ios")
-        app.launchArguments = args
+        app.launchArguments = args + ["-seenLog"]
         app.launch()
         running = app
         return app
@@ -118,6 +118,7 @@ final class CardGateUITests: XCTestCase {
         let title = app.staticTexts["Run this command?"]
         let bar = app.navigationBars.firstMatch
         print("IW tall at start: title \(title.exists ? "\(title.frame)" : "absent") bar \(bar.frame) allow \(allow.isEnabled)")
+        print("IW tall seen-log at start: \(app.staticTexts["seen-log"].firstMatch.label)")
         XCTAssertFalse(allow.isEnabled, "opened at its bottom, the heading out of sight: Allow waits")
         if !(title.exists && title.isHittable) {
             XCTAssertFalse(allow.isEnabled, "the heading hasn't been on screen: Allow waits")
