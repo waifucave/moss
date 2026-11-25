@@ -15,6 +15,9 @@ export function eraseResultPath(home: string): string {
 /** The engine's kinds (`ERASE_LEFT_KINDS`) in the app's words; an unknown value is never shown. */
 const KIND_WORDS: Record<string, string> = {
   bots: "bots and their memory",
+  archive: "archived bots",
+  memory: "memory",
+  other: "other MOSS data",
   conversations: "conversations",
   files: "bots' files",
   routines: "routines",
@@ -52,7 +55,8 @@ export function takeEraseResult(home: string, uid: number | undefined = process.
   } catch {
     return undefined;
   }
-  if (r.result === "erased") return { ok: true, message: "Everything MOSS kept on this computer was erased.", detail: "MOSS starts fresh now. The apps themselves stay until you uninstall them." };
+  // True after an erase and on a brand-new install alike (a signal planted beside a new home reads as erased).
+  if (r.result === "erased") return { ok: true, message: "MOSS is starting fresh on this computer.", detail: "Nothing MOSS kept here before is left. The apps themselves stay until you uninstall them." };
   if (r.result !== "partial") return undefined;
   const words = [...new Set((Array.isArray(r.left) ? r.left : []).flatMap((k) => (typeof k === "string" && Object.hasOwn(KIND_WORDS, k) ? [KIND_WORDS[k]!] : [])))];
   return {

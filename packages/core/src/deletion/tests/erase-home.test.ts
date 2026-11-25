@@ -2,13 +2,13 @@
 // another install's home, a project), then what goes and what stays. Every test works in its own temp folders; the
 // secrets are a memory store's, never a Keychain.
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { KeychainValues, memoryVault, MossSecretStore } from "../../secrets/moss-secret-store";
 import { Secret } from "../../contracts/secret-store";
 import { OLD_INSTALL_HOME_DIR } from "../../other-installs";
-import { dropMossOsItems, ensureHomeMarker, eraseHome, eraseResultPath, eraseSignalPath, eraseStartedPath, homeMarkerPath, recogniseMossHome, takeEraseSignalAtStart, writeEraseResult, writeEraseSignal } from "../erase-home";
+import { dropMossOsItems, ensureHomeMarker, ERASE_NOT_COUNTED, eraseHome, eraseLeftKinds, eraseResultPath, eraseSignalPath, eraseStartedPath, homeMarkerPath, recogniseMossHome, takeEraseSignalAtStart, writeEraseResult, writeEraseSignal } from "../erase-home";
 import { bootstrapMossDir } from "../../moss-dir";
 import { osStoreItemNames } from "../../secrets/file-backend";
 import { runErase } from "../erase-command";
@@ -179,6 +179,41 @@ describe("erase: what goes and what stays", () => {
     writeFileSync(eraseStartedPath(w.home), "erase\n");
     writeEraseSignal(w.home);
     expect(takeEraseSignalAtStart(w.home)).toEqual({ v: 1, result: "partial", left: ["bots", "conversations", "settings"] });
+  });
+
+  test("with the erase's proof, any entry left but run/ and logs/ is partial: each unlisted folder is other MOSS data, never erased", () => {
+    for (const name of ["archive", "credentials", "memory", "sdk", "agents", "outputs", "diffs", "user-layers", "a-kind-added-later"]) {
+      const user = mkdtempSync(join(tmpdir(), "moss-left-"));
+      const home = join(user, ".moss");
+      mkdirSync(join(home, "run"), { recursive: true });
+      mkdirSync(join(home, "logs"), { recursive: true });
+      mkdirSync(join(home, name), { recursive: true });
+      writeFileSync(eraseStartedPath(home), "erase\n");
+      writeEraseSignal(home);
+      const r = takeEraseSignalAtStart(home);
+      expect([name, r?.result]).toEqual([name, "partial"]);
+      expect(r?.left.length).toBe(1);
+    }
+    // run/ and logs/ alone: erased.
+    const user = mkdtempSync(join(tmpdir(), "moss-left-"));
+    const home = join(user, ".moss");
+    mkdirSync(join(home, "run"), { recursive: true });
+    mkdirSync(join(home, "logs"), { recursive: true });
+    writeFileSync(eraseStartedPath(home), "erase\n");
+    writeEraseSignal(home);
+    expect(takeEraseSignalAtStart(home)).toEqual({ v: 1, result: "erased", left: [] });
+  });
+
+  test("everything a home's own start makes counts as left but run/ and logs/: a new top-level kind can't make a whole home read as erased", () => {
+    const user = mkdtempSync(join(tmpdir(), "moss-layout-"));
+    const home = join(user, ".moss");
+    bootstrapMossDir(home);
+    const names = readdirSync(home);
+    for (const n of names) if (!ERASE_NOT_COUNTED.includes(n)) expect([n, eraseLeftKinds([n]).length]).toEqual([n, 1]);
+    expect(eraseLeftKinds(names).length).toBeGreaterThan(0);
+    // A planted signal beside it, with no erase begun, says nothing.
+    writeEraseSignal(home);
+    expect(takeEraseSignalAtStart(home)).toBeUndefined();
   });
 
   test("an upgraded home (an older build wrote no marker, no erase began) with a planted signal: nothing is said, the signal goes, the start writes the marker", () => {

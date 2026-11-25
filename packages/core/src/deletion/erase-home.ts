@@ -53,10 +53,23 @@ export function ensureHomeMarker(home: string): void {
   }
 }
 
-/** The kinds of MOSS data an erase can leave, by the home's top-level names (anything else isn't counted: the engine's
- *  own start makes `logs/` and `run/` before it reads this, and a runner can't write the home). */
-export const ERASE_LEFT_KINDS = { bots: "bots", transcripts: "conversations", sessions: "conversations", "sessions-runtime": "conversations", scratch: "files", routines: "routines", plugins: "plugins", "plugin-data": "plugins", "settings.json": "settings" } as const;
-export type EraseLeftKind = (typeof ERASE_LEFT_KINDS)[keyof typeof ERASE_LEFT_KINDS];
+/** The kinds of MOSS data an erase can leave, named for the person by the home's top-level names. Every other entry
+ *  but `ERASE_NOT_COUNTED` counts as `other` ("other MOSS data"), so a kind the home gains later can never be missed. */
+export const ERASE_LEFT_KINDS = {
+  bots: "bots", archive: "archive", transcripts: "conversations", sessions: "conversations", "sessions-runtime": "conversations",
+  scratch: "files", outputs: "files", diffs: "files", routines: "routines", plugins: "plugins", "plugin-data": "plugins",
+  "settings.json": "settings", memory: "memory",
+} as const;
+/** Not data left by an erase: `run/` holds the erase's own proof (removed last), and the CLI's log tee may make `logs/`
+ *  before the engine reads the signal. */
+export const ERASE_NOT_COUNTED: readonly string[] = ["run", "logs"];
+export type EraseLeftKind = (typeof ERASE_LEFT_KINDS)[keyof typeof ERASE_LEFT_KINDS] | "other";
+
+/** What is left in `home` as kinds: every entry but `run` and `logs`, a listed name by its kind, anything else `other`. */
+export function eraseLeftKinds(names: readonly string[]): EraseLeftKind[] {
+  const kinds = names.filter((n) => !ERASE_NOT_COUNTED.includes(n)).map((n): EraseLeftKind => (Object.hasOwn(ERASE_LEFT_KINDS, n) ? ERASE_LEFT_KINDS[n as keyof typeof ERASE_LEFT_KINDS] : "other"));
+  return [...new Set(kinds)].sort();
+}
 
 export interface EraseResult {
   v: 1;
@@ -89,7 +102,7 @@ export function takeEraseSignalAtStart(home: string, uid: number | undefined = p
   } catch {
     // No home: all of it went.
   }
-  const left = [...new Set(names.flatMap((n) => (Object.hasOwn(ERASE_LEFT_KINDS, n) ? [ERASE_LEFT_KINDS[n as keyof typeof ERASE_LEFT_KINDS]] : [])))].sort();
+  const left = eraseLeftKinds(names);
   // Only the erase's own proof inside the home (`run/erase.started`, which no runner can write) says it was cut short.
   // Without it, a home that still holds MOSS's data was never erased (a planted signal, or a home an older build ran,
   // which never wrote the marker): nothing is said.
