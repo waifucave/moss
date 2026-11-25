@@ -130,26 +130,17 @@ describe("settings on the runtime", () => {
     expect(routes).toEqual([{ route: "plugins", params: {} }]);
   });
 
-  test("a computer's level and making a computer main: each press only asks (the engine's sealed card decides); opening the page asks nothing", async () => {
+  test("a computer's level and making a computer main are not offered; no bare call is made for them", async () => {
     const lv = await mount({ section: "levels" });
-    // Opening the page starts nothing.
-    expect(lv.core.calls.some((c) => /^(computer\.setLevel|main\.set)/.test(c.method))).toBe(false);
-    const selects = screen.getAllByRole("combobox") as HTMLSelectElement[];
-    expect(selects[0]!.value).toBe("ask-risky");
-    expect(selects[0]!.disabled).toBe(false);
-    // A pick asks for exactly that computer and level, once; the select stays at the level that holds until the card is answered.
-    fireEvent.change(selects[1]!, { target: { value: "automatic" } });
-    await act(() => settle());
-    expect(lv.core.calls.filter((c) => c.method === "computer.setLevel").map((c) => c.params)).toEqual([{ name: "Laptop", level: "automatic" }]);
+    const select = screen.getAllByRole("combobox")[0] as HTMLSelectElement;
+    expect(select.value).toBe("ask-risky");
+    expect(select.disabled).toBe(true);
     cleanup();
     const dv = await mount({ section: "devices" });
-    expect(dv.core.calls.some((c) => /^(main\.set|device\.(pair|revoke))/.test(c.method))).toBe(false);
-    // Only a computer that isn't main offers it: never the phone, never the main one.
-    expect(screen.queryByRole("button", { name: "Make Studio the main computer" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Make iPhone the main computer" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Make Laptop the main computer" }));
-    await act(() => settle());
-    expect(dv.core.calls.filter((c) => c.method === "main.set").map((c) => c.params)).toEqual([{ device: "d2" }]);
+    expect(screen.queryByRole("button", { name: "Make Laptop the main computer" })).toBeNull();
+    for (const { core } of [lv, dv]) expect(core.calls.some((c) => /^(computer\.setLevel|main\.set)/.test(c.method))).toBe(false);
+    // Opening the page starts nothing: no pairing, no removal, until the user presses a control.
+    expect(dv.core.calls.some((c) => /^device\.(pair|revoke)/.test(c.method))).toBe(false);
   });
 
   test("appearance: the theme plugin through `ui.set`; light or dark only as the core's `appearance` (the one main applies), the text size as this plugin's setting; the language", async () => {
