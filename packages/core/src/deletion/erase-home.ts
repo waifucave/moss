@@ -13,7 +13,7 @@
 //   only loses this name;
 // * beside it, the folder of files paired phones sent to coding sessions (`<home>-received`) goes too, as itself.
 import { randomBytes } from "node:crypto";
-import { closeSync, constants, existsSync, lstatSync, openSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import type { SecretMeta, SecretRef } from "../contracts/secret-store";
@@ -38,8 +38,9 @@ export function eraseSignalPath(home: string): string {
 }
 
 /** A file the engine keeps in every home it runs (made at each start, `ensureHomeMarker`), inside `run/`: the MOSS home
- *  is write-denied to every runner on every system (fence.ts `policy()`), so only the engine makes or removes it. An
- *  erase removes it before anything else. */
+ *  is write-denied to every runner on every system (fence.ts `policy()`), so only the engine makes or removes it. The
+ *  start's reading of an erase rests on `run/erase.started` (the erase's own proof), not on this: a home an older build
+ *  ran has no marker yet. */
 export function homeMarkerPath(home: string): string {
   return join(home, "run", "home.marker");
 }
@@ -81,7 +82,7 @@ export function takeEraseSignalAtStart(home: string, uid: number | undefined = p
   } catch {
     return undefined;
   }
-  if (!ok || existsSync(homeMarkerPath(home))) return undefined;
+  if (!ok) return undefined;
   let names: string[] = [];
   try {
     names = readdirSync(home);
@@ -89,7 +90,16 @@ export function takeEraseSignalAtStart(home: string, uid: number | undefined = p
     // No home: all of it went.
   }
   const left = [...new Set(names.flatMap((n) => (Object.hasOwn(ERASE_LEFT_KINDS, n) ? [ERASE_LEFT_KINDS[n as keyof typeof ERASE_LEFT_KINDS]] : [])))].sort();
-  return { v: 1, result: left.length === 0 ? "erased" : "partial", left };
+  // Only the erase's own proof inside the home (`run/erase.started`, which no runner can write) says it was cut short.
+  // Without it, a home that still holds MOSS's data was never erased (a planted signal, or a home an older build ran,
+  // which never wrote the marker): nothing is said.
+  if (existsSync(eraseStartedPath(home))) return { v: 1, result: left.length === 0 ? "erased" : "partial", left };
+  return left.length === 0 ? { v: 1, result: "erased", left: [] } : undefined;
+}
+
+/** The erase's proof that it began, inside the home (written first, removed last with `run/`). */
+export function eraseStartedPath(home: string): string {
+  return join(home, "run", "erase.started");
 }
 
 /** Inside the home (`run/`), where no runner can write: MOSS reads it once (apps/moss `erase-outcome.ts`). */
@@ -205,8 +215,10 @@ export interface EraseOutcome {
 export async function eraseHome(deps: EraseDeps): Promise<EraseOutcome> {
   const check = recogniseMossHome(deps.home, deps.userHome);
   if (!check.ok) throw new ContractError("refused", `erase refused: ${check.why}; nothing was removed`);
-  // The home's marker goes first: a home an erase got into, whatever is left of it, never reads as healthy again.
-  rmSync(homeMarkerPath(check.real), { force: true });
+  // The erase's own proof goes in first (`run/erase.started`): a home an erase got into, whatever is left of it, says so
+  // at the next start; `run/` itself goes last, so the proof stays while anything else is left.
+  mkdirSync(join(check.real, "run"), { recursive: true });
+  writeFileSync(eraseStartedPath(check.real), "erase\n", { mode: 0o600 });
   let secrets = 0;
   let secretsLeft = 0;
   if (deps.secrets) {
@@ -232,7 +244,8 @@ export async function eraseHome(deps: EraseDeps): Promise<EraseOutcome> {
   }
   // Every entry removed as itself (rmSync never follows a link inside what it removes), then the folder, then the link
   // the home was given as.
-  for (const name of readdirSync(check.real)) rmSync(join(check.real, name), { recursive: true, force: true });
+  for (const name of readdirSync(check.real)) if (name !== "run") rmSync(join(check.real, name), { recursive: true, force: true });
+  rmSync(join(check.real, "run"), { recursive: true, force: true });
   rmdirSync(check.real);
   // The files paired phones sent to coding sessions live beside the home (`<home>-received`, lane PH): removed as itself, never
   // followed if it is a link.

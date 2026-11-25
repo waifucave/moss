@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { KeychainValues, memoryVault, MossSecretStore } from "../../secrets/moss-secret-store";
 import { Secret } from "../../contracts/secret-store";
 import { OLD_INSTALL_HOME_DIR } from "../../other-installs";
-import { dropMossOsItems, ensureHomeMarker, eraseHome, eraseResultPath, eraseSignalPath, homeMarkerPath, recogniseMossHome, takeEraseSignalAtStart, writeEraseResult, writeEraseSignal } from "../erase-home";
+import { dropMossOsItems, ensureHomeMarker, eraseHome, eraseResultPath, eraseSignalPath, eraseStartedPath, homeMarkerPath, recogniseMossHome, takeEraseSignalAtStart, writeEraseResult, writeEraseSignal } from "../erase-home";
 import { bootstrapMossDir } from "../../moss-dir";
 import { osStoreItemNames } from "../../secrets/file-backend";
 import { runErase } from "../erase-command";
@@ -173,11 +173,23 @@ describe("erase: what goes and what stays", () => {
     expect(takeEraseSignalAtStart(w.home)).toBeUndefined();
   });
 
-  test("an erase cut short: the marker went first, so what is left is named by kind", () => {
+  test("an erase cut short: its own proof inside the home (run/erase.started) names what is left by kind", () => {
     const w = world();
-    // The world's home holds bots, conversations and settings, and no marker (the erase took it first).
+    // The world's home holds bots, conversations and settings; the erase wrote its proof and stopped.
+    writeFileSync(eraseStartedPath(w.home), "erase\n");
     writeEraseSignal(w.home);
     expect(takeEraseSignalAtStart(w.home)).toEqual({ v: 1, result: "partial", left: ["bots", "conversations", "settings"] });
+  });
+
+  test("an upgraded home (an older build wrote no marker, no erase began) with a planted signal: nothing is said, the signal goes, the start writes the marker", () => {
+    const w = world();
+    expect(existsSync(homeMarkerPath(w.home))).toBe(false);
+    writeEraseSignal(w.home);
+    expect(takeEraseSignalAtStart(w.home)).toBeUndefined();
+    expect(existsSync(eraseSignalPath(w.home))).toBe(false);
+    ensureHomeMarker(w.home);
+    expect(existsSync(homeMarkerPath(w.home))).toBe(true);
+    expect(existsSync(eraseResultPath(w.home))).toBe(false);
   });
 
   test("a link planted at the signal's name is removed unread at start and counts as none", () => {
@@ -190,12 +202,26 @@ describe("erase: what goes and what stays", () => {
     expect(readFileSync(target, "utf8")).toBe("the person's keys");
   });
 
-  test("the erase removes the home's marker before anything else", async () => {
+  test("the erase writes its proof first and removes run/ last: a removal that fails midway leaves the proof", async () => {
     const w = world();
     ensureHomeMarker(w.home);
-    expect(existsSync(homeMarkerPath(w.home))).toBe(true);
-    await eraseHome({ home: w.home, userHome: w.user });
-    expect(existsSync(homeMarkerPath(w.home))).toBe(false);
+    // A folder the erase can't remove (no write on it) stops it midway; run/ is still there with the proof.
+    const stuck = join(w.home, "bots");
+    writeFileSync(join(stuck, "pinned.md"), "x");
+    const { chmodSync } = await import("node:fs");
+    chmodSync(stuck, 0o500);
+    try {
+      await eraseHome({ home: w.home, userHome: w.user }).catch(() => undefined);
+    } finally {
+      chmodSync(stuck, 0o700);
+    }
+    if (existsSync(join(stuck, "pinned.md"))) {
+      expect(existsSync(eraseStartedPath(w.home))).toBe(true);
+      writeEraseSignal(w.home);
+      const r = takeEraseSignalAtStart(w.home);
+      expect(r?.result).toBe("partial");
+      expect(r?.left).toContain("bots");
+    }
   });
 
   test("a home given as a link: the folder it names goes, then the link; nothing beside them", async () => {
