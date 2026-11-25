@@ -16,6 +16,10 @@ import { MOSS_PLUGIN_VERBS, runPluginCommand, runPluginDev, runPluginList } from
 import { loginEnable, loginRemove, loginStatus, type LoginOsDeps } from "../../../packages/core/src/platform/login/manager";
 import { engineBinaryPath } from "../../../packages/core/src/update/engine-copy";
 import { keychainService } from "../../../packages/core/src/profile";
+import { SPOTS } from "../../../packages/plugin-sdk/src/catalogs/spots";
+import { AgentBackendSchema, CORE_CONTRIBUTION_KEYS, ManifestSchema, SettingSchema, UiSchema } from "../../../packages/plugin-sdk/src/manifest/schema";
+import { ThemeSchema } from "../../../packages/plugin-sdk/src/formats/theme";
+import { SERVER_USAGE } from "../../../packages/cli/src/server-install";
 
 const root = mkdtempSync(join(tmpdir(), "moss-site-test-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -408,5 +412,49 @@ describe("removing MOSS, as the page says", () => {
     expect(store).toContain("vault(`${o.service}.key`)");
     expect(page).toContain("`com.waifucave.moss.core.key`");
     expect(page).toContain("`~/.moss/secrets.enc`");
+  });
+});
+
+describe("the reference pages name what the SDK and the engine really have", () => {
+  const doc = (slug: string) => readFileSync(join(SITE_DIR, "content", "docs", `${slug}.md`), "utf8");
+  const named = (page: string) => new Set([...page.matchAll(/`([A-Za-z$][A-Za-z0-9.$]*)`/g)].map((m) => m[1]!));
+
+  test("the manifest page names every field of moss.json, and none it hasn't", () => {
+    const page = named(doc("manifest"));
+    const top = Object.keys(ManifestSchema.shape);
+    for (const k of top) expect([k, page.has(k)]).toEqual([k, true]);
+    // The retired `bot` point is left out on purpose: bots are made in the app.
+    for (const k of CORE_CONTRIBUTION_KEYS.filter((k) => k !== "bot")) expect([k, page.has(k)]).toEqual([k, true]);
+    for (const k of Object.keys(SettingSchema.shape)) expect([k, page.has(k)]).toEqual([k, true]);
+    const host = (ManifestSchema.shape.host.unwrap() as unknown as { shape: Record<string, unknown> }).shape;
+    for (const k of Object.keys(host)) expect([k, page.has(k)]).toEqual([k, true]);
+  });
+
+  test("the agent page names every field of an agentBackends entry", () => {
+    const page = named(doc("agent-plugin"));
+    for (const k of Object.keys(AgentBackendSchema.shape).filter((k) => k !== "handler" && k !== "declares")) expect([k, page.has(k)]).toEqual([k, true]);
+    expect(AgentBackendSchema.shape.protocol.options).toContain("acp");
+  });
+
+  test("the window page lists every spot the catalog has, and the fields a theme and a ui entry take", () => {
+    const text = doc("window-parts");
+    const rows = new Set([...text.matchAll(/^\| `([a-z.]+)` \|/gm)].map((m) => m[1]!));
+    const spots = SPOTS.map((s) => s.name);
+    for (const name of spots) expect([name, rows.has(name)]).toEqual([name, true]);
+    for (const name of rows) if (name.includes(".") || spots.includes(name)) expect([name, spots.includes(name)]).toEqual([name, true]);
+    const page = named(text);
+    for (const k of ["appearance", "tokens", "dark", "css", "fonts", "icons"]) expect([k, k in ThemeSchema.shape, page.has(k)]).toEqual([k, true, true]);
+    for (const k of ["spot", "key", "id", "style", "hide", "target", "component", "web", "order", "when"]) expect([k, k in UiSchema.shape, page.has(k)]).toEqual([k, true, true]);
+    const composer = SPOTS.find((s) => s.name === "composer.action")!.doc;
+    for (const key of ["attach", "model", "level", "send", "stop"]) expect(composer).toContain(`\`${key}\``);
+  });
+
+  test("the computers page's server commands are the ones the engine has", () => {
+    expect(SERVER_USAGE).toContain("server install");
+    expect(SERVER_USAGE).toContain("server uninstall");
+    const page = doc("computers");
+    expect(page).toContain("server install\n");
+    expect(page).toContain("~/.moss/bin/daemon/moss-core server uninstall");
+    expect(engineBinaryPath("~/.moss", "linux")).toBe("~/.moss/bin/daemon/moss-core");
   });
 });

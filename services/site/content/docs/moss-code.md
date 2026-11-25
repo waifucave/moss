@@ -104,6 +104,6 @@ Any agent that speaks ACP can be added with a plugin: a folder with a `moss.json
 
 - `command` and `args` are what MOSS starts, found on your computer's `PATH`.
 - `icon` is the agent's mark, a PNG or SVG file in the plugin's folder, and `color` its colour. Without one, MOSS Code draws the agent's first letter.
-- `quirks` is an optional file of what MOSS knows about how the agent behaves. Where it says nothing, MOSS takes the careful choice.
+- `quirks` names a file of what MOSS knows about how the agent behaves. An agent without one isn't offered. [An agent MOSS doesn't ship](/docs/agent-plugin/) goes through it.
 
 Put the folder in your plugins folder, `~/.moss/plugins/`, named as the plugin's id, or add it from the Plugins page. MOSS asks for your OK on a card before it loads it. [Write your first plugin](/docs/first-plugin/) has more on plugins.
