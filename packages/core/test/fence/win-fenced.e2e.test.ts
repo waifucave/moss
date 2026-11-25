@@ -26,7 +26,7 @@ import { FakeClock } from "../../src/contracts/fakes/clock";
 import type { BotSessionContext } from "../../src/bots/service";
 import type { CanUseTool } from "@waifucave/clover-agent-sdk";
 import { agentShellTools, stopWindowsBackground, windowsShellTools } from "../../src/fence/win-shell-tools";
-import { planFromSettings, profileExcludeCandidates, QUARANTINE_COPY_LIMITS, quarantineWin, watchedReadDenies } from "../../src/fence/win-fenced";
+import { planFromSettings, profileExcludeCandidates, QUARANTINE_COPY_LIMITS, quarantineWin, watchedReadDenies, windowsShells } from "../../src/fence/win-fenced";
 import { fencedExecutor } from "../../src/computers/fenced-executor";
 import { resolveEndpoint } from "../../src/platform/transport";
 import { currentUserSid, lockPipeDacl } from "../../src/platform/win-pipe";
@@ -629,70 +629,76 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     }
   });
 
-  // Lane WS9, a MEASUREMENT for the controller (no fix rests on it yet): does a fenced command's network path leave the
-  // machine? A share is reached by Windows's own SMB redirector, a WebDAV path by its WebClient service and a host's name
-  // by its DNS client, none of them the pool account's process, which is what the fence's network filter holds. Seen by
-  // Windows's own packet monitor (`pktmon`, on the network adapters: a packet that leaves passes there) and the DNS
-  // client's own log of the names it was asked for. Dummies only: 192.0.2.1 (TEST-NET-1, routed nowhere), names under
-  // `.invalid` and `.test`, and a WebDAV listener of this test's own on 127.0.0.1. Each is tried fenced (the bot's Bash)
-  // and, as the control, unfenced; a control that shows nothing makes the probe BLIND, and then nothing is concluded.
-  // Recorded, never asserted. Elevated only (pktmon and the DNS log need it); the standard user's job says so and skips.
-  test("MEASURE (lane WS9): whether a fenced command's network path (SMB, WebDAV, a name lookup) leaves the machine", async () => {
+  // Lane WS10, a MEASUREMENT for the controller (no fix rests on it yet). WS9 found that a fenced command's share NAME
+  // never reaches Windows' name lookup (the DNS client's own log). Open: a share by IP ADDRESS (`//192.0.2.1/x`, no lookup
+  // needed), and WHY the name never resolves (refused before the SMB redirector, or no network logon for the pool account:
+  // the same reason would cover the address). Seen by Windows' packet monitor's own counters (`pktmon counters`, not its
+  // text log) filtered on 192.0.2.1 (TEST-NET-1, routed nowhere), each window fenced and unfenced; a control whose window
+  // shows no packet makes the probe BLIND, and nothing is concluded. The error each `ls` and `Get-ChildItem` prints, fenced
+  // against unfenced, says where the open stops. Dummies only. Recorded, never asserted. Elevated on CI only.
+  test("MEASURE (lane WS10): a fenced command's share by IP address, by packet counts, and why a share name never resolves", async () => {
     const elevated = Bun.spawnSync(["net", "session"]).exitCode === 0;
-    if (!elevated || process.env.CI === undefined) { console.log(`[e2e] MEASURE: SKIPPED (elevated ${elevated}, CI ${process.env.CI !== undefined}): pktmon and the DNS client's log need an administrator on CI's own runner`); return; }
-    const dir = mkdtempSync(join(tmpdir(), "ws9-measure-"));
-    const ps = (script: string, env: Record<string, string> = {}) => {
-      const r = Bun.spawnSync(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], { env: { ...process.env, ...env }, timeout: 120_000 });
-      return { code: r.exitCode, out: r.stdout.toString().trim(), err: r.stderr.toString().trim() };
+    if (!elevated || process.env.CI === undefined) { console.log(`[e2e] MEASURE: SKIPPED (elevated ${elevated}, CI ${process.env.CI !== undefined}): pktmon needs an administrator on CI's own runner`); return; }
+    const pk = (...args: string[]) => { const r = Bun.spawnSync(["pktmon", ...args], { stdin: "ignore", timeout: 120_000 }); return { code: r.exitCode, out: `${r.stdout.toString()}${r.stderr.toString()}`.trim() }; };
+    /** The packets the counters show, summed: from `--json` when this pktmon has it, else every number on a line naming
+     *  packets, in or out. The raw text is printed too (short), so a reading that went wrong is seen. */
+    const counted = (): { total: number; raw: string } => {
+      const json = pk("counters", "--json");
+      if (json.code === 0) {
+        try {
+          let total = 0;
+          const walk = (v: unknown): void => {
+            if (Array.isArray(v)) { v.forEach(walk); return; }
+            if (v !== null && typeof v === "object") for (const [k, x] of Object.entries(v as Record<string, unknown>)) { if (/packet/i.test(k) && typeof x === "number") total += x; else walk(x); }
+          };
+          walk(JSON.parse(json.out));
+          return { total, raw: json.out.replace(/\s+/g, " ").slice(0, 300) };
+        } catch { /* not JSON: the text below */ }
+      }
+      const text = pk("counters");
+      const total = text.out.split(/\r?\n/).filter((l) => /\b(rx|tx|packets?|counter)\b/i.test(l)).flatMap((l) => [...l.matchAll(/\b\d[\d,]*\b/g)].map((m) => Number(m[0].replace(/,/g, "")))).reduce((a, b) => a + b, 0);
+      return { total, raw: text.out.replace(/\s+/g, " ").slice(0, 300) };
     };
-    const pk = (...args: string[]) => { const r = Bun.spawnSync(["pktmon", ...args], { timeout: 120_000 }); return { code: r.exitCode, out: `${r.stdout.toString()}${r.stderr.toString()}`.trim() }; };
-    const dnsLog = "Microsoft-Windows-DNS-Client/Operational";
-    const logWasOn = /enabled:\s*true/i.test(Bun.spawnSync(["wevtutil", "gl", dnsLog]).stdout.toString());
-    const unfenced = (unc: string) => ps("Test-Path -LiteralPath $env:WS9_UNC | Out-Null", { WS9_UNC: unc });
-    const fenced = (unc: string) => call(tools.Bash!, { command: `ls '${unc.replace(/\\/g, "/")}' >/dev/null 2>&1; echo done`, timeout: 90_000 });
+    const windowOf = async (label: string, attempt: () => unknown | Promise<unknown>) => {
+      pk("stop");
+      const started = pk("start", "--capture", "--counters-only");
+      const fallback = started.code === 0 ? started : pk("start", "--capture");
+      try { await attempt(); } finally { /* read before stopping: the counters are the running capture's */ }
+      const c = counted();
+      pk("stop");
+      console.log(`[e2e] MEASURE ${label}: packets to 192.0.2.1 ${c.total} (start ${started.code}/${fallback.code}); counters: ${c.raw}`);
+      return c.total;
+    };
+    // The unfenced control's shells, as the fence runs them (Git for Windows' bash, Windows PowerShell).
+    const shells = windowsShells();
+    const unfenced = (script: string, shell: "bash" | "powershell") => {
+      const argv = shell === "bash" ? [shells.bash ?? "bash.exe", "-c", script] : [shells.powershell ?? "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script];
+      const r = Bun.spawnSync(argv, { stdin: "ignore", timeout: 90_000 });
+      return `${r.stdout.toString()}${r.stderr.toString()}`.trim().replace(/\s+/g, " ").slice(0, 300);
+    };
     try {
-      pk("stop"); pk("filter", "remove");
-      const added = [pk("filter", "add", "WS9SMB", "-i", "192.0.2.1"), pk("filter", "add", "WS9DNSU", "-t", "UDP", "-p", "53"), pk("filter", "add", "WS9DNST", "-t", "TCP", "-p", "53")];
-      console.log(`[e2e] MEASURE pktmon filters: ${added.map((a) => a.code).join(",")} (${added.map((a) => a.out.split(/\r?\n/)[0]).join(" | ").slice(0, 200)})`);
-      // One capture around one attempt: the packets to 192.0.2.1 and to port 53 it saw.
-      const captured = async (label: string, attempt: () => unknown | Promise<unknown>) => {
-        const etl = join(dir, `${label}.etl`), txt = join(dir, `${label}.txt`);
-        const started = pk("start", "--capture", "--pkt-size", "0", "--file-name", etl);
-        try { await attempt(); } finally { pk("stop"); }
-        let conv = pk("etl2txt", etl, "--out", txt);
-        if (conv.code !== 0) conv = pk("format", etl, "-o", txt);
-        const lines = (() => { try { return readFileSync(txt, "utf8").split(/\r?\n/); } catch { return []; } })();
-        const smb = lines.filter((l) => l.includes("192.0.2.1")).length, dns = lines.filter((l) => /[.:]53\b/.test(l)).length;
-        console.log(`[e2e] MEASURE ${label}: packets to 192.0.2.1 ${smb}, to port 53 ${dns} (capture ${started.code}, text ${conv.code})`);
-        return { smb, dns, ok: started.code === 0 && conv.code === 0 };
-      };
-      const quiet = await captured("quiet", () => Bun.sleep(3_000));
-      const smbFenced = await captured("smb-fenced", () => fenced("\\\\192.0.2.1\\x"));
-      const smbControl = await captured("smb-control", () => unfenced("\\\\192.0.2.1\\x"));
-      // The DNS client's own log of the names asked for (on only for this, and put back as it was).
-      Bun.spawnSync(["wevtutil", "sl", dnsLog, "/e:true"]);
-      const names = { fenced: [`ws9-f-${process.pid}.invalid`, `ws9-f-${process.pid}.test`], control: [`ws9-c-${process.pid}.invalid`, `ws9-c-${process.pid}.test`] };
-      const dnsFenced = await captured("dns-fenced", async () => { for (const n of names.fenced) await fenced(`\\\\${n}\\x`); });
-      const dnsControl = await captured("dns-control", () => { for (const n of names.control) unfenced(`\\\\${n}\\x`); });
-      const asked = (n: string) => Number(ps(`@(Get-WinEvent -LogName '${dnsLog}' -ErrorAction SilentlyContinue | Where-Object { $_.Message -like "*$env:WS9_NAME*" }).Count`, { WS9_NAME: n }).out || "0");
-      const loggedFenced = names.fenced.map(asked), loggedControl = names.control.map(asked);
-      console.log(`[e2e] MEASURE dns log: the fenced names asked ${JSON.stringify(loggedFenced)} time(s), the control's ${JSON.stringify(loggedControl)}`);
-      // WebDAV to a listener of this test's own on 127.0.0.1, at a free port.
-      let hits = 0;
-      const server = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { open(s) { hits++; s.end(); }, data() {} } });
-      const webclient = ps("$s = Get-Service WebClient -ErrorAction SilentlyContinue; if ($s) { \"$($s.Status)\" } else { 'not installed' }").out;
-      try {
-        await fenced(`\\\\127.0.0.1@${server.port}\\x`);
-        const fencedHits = hits;
-        unfenced(`\\\\127.0.0.1@${server.port}\\x`);
-        console.log(`[e2e] MEASURE webdav (WebClient ${webclient}): connections to this test's listener from the fenced command ${fencedHits}, from the control ${hits - fencedHits}`);
-      } finally { server.stop(true); }
-      const blindSmb = !smbControl.ok || smbControl.smb === 0, blindDns = dnsControl.dns <= quiet.dns && loggedControl.every((n) => n === 0);
-      console.log(`[e2e] MEASURE summary: smb ${blindSmb ? "BLIND (the control showed no packet)" : `fenced ${smbFenced.smb} packet(s), control ${smbControl.smb}`}; dns ${blindDns ? "BLIND (the control showed nothing)" : `fenced ${dnsFenced.dns} packet(s) and ${JSON.stringify(loggedFenced)} logged, control ${dnsControl.dns} and ${JSON.stringify(loggedControl)}, quiet ${quiet.dns}`}`);
+      pk("filter", "remove");
+      const added = pk("filter", "add", "WS10IP", "-i", "192.0.2.1");
+      console.log(`[e2e] MEASURE pktmon filter: ${added.code} (${added.out.split(/\r?\n/)[0]?.slice(0, 120)})`);
+      const quiet = await windowOf("quiet", () => Bun.sleep(3_000));
+      const fencedIp = await windowOf("ip fenced (the bot's Bash)", () => call(tools.Bash!, { command: "ls //192.0.2.1/x >/dev/null 2>&1; echo done", timeout: 90_000 }));
+      const controlIp = await windowOf("ip unfenced (the control)", () => unfenced("ls //192.0.2.1/x >/dev/null 2>&1; echo done", "bash"));
+      const blind = controlIp <= quiet;
+      console.log(`[e2e] MEASURE ip summary: ${blind ? `BLIND (the control's window showed ${controlIp} packet(s) against ${quiet} quiet)` : `fenced ${fencedIp} packet(s), control ${controlIp}, quiet ${quiet}`}`);
+      // Why a share stops: what each shell says, fenced against unfenced (a name, an address, and a local path as the control
+      // that the fenced shell runs at all).
+      for (const [what, target] of [["name", `//ws10-why-${process.pid}.invalid/x`], ["address", "//192.0.2.1/x"]] as const) {
+        const fb = await call(tools.Bash!, { command: `ls '${target}'; echo "exit $?"`, timeout: 90_000 });
+        const fp = await call(tools.PowerShell!, { command: `try { Get-ChildItem -LiteralPath '${target.replace(/\//g, "\\")}' -ErrorAction Stop | Out-Null; 'ok' } catch { $_.Exception.GetType().Name + ': ' + $_.Exception.Message }`, timeout: 90_000 });
+        const ub = unfenced(`ls '${target}'; echo "exit $?"`, "bash");
+        const up = unfenced(`try { Get-ChildItem -LiteralPath '${target.replace(/\//g, "\\")}' -ErrorAction Stop | Out-Null; 'ok' } catch { $_.Exception.GetType().Name + ': ' + $_.Exception.Message }`, "powershell");
+        console.log(`[e2e] MEASURE why (${what}) fenced bash: ${fb.text.replace(/\s+/g, " ").slice(0, 300)}`);
+        console.log(`[e2e] MEASURE why (${what}) unfenced bash: ${ub}`);
+        console.log(`[e2e] MEASURE why (${what}) fenced powershell: ${fp.text.replace(/\s+/g, " ").slice(0, 300)}`);
+        console.log(`[e2e] MEASURE why (${what}) unfenced powershell: ${up}`);
+      }
     } finally {
       pk("stop"); pk("filter", "remove");
-      if (!logWasOn) Bun.spawnSync(["wevtutil", "sl", dnsLog, "/e:false"]);
-      rmSync(dir, { recursive: true, force: true });
     }
   }, 900_000);
 

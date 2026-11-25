@@ -754,9 +754,9 @@ export class BotSessionDriver implements SessionDriver {
     }
     const changed = r.input !== input.tool_input && r.input !== null && typeof r.input === "object" && !Array.isArray(r.input);
     // Windows (lane WS9): a file tool's path in the disk's one spelling (`windowsFileToolInput`), so the runtime's
-    // read-before-edit check keys a Read and the Edit of the same file alike, whatever spellings the model used.
-    const respelled = windowsFileToolInput(name, changed ? r.input : input.tool_input, this.#ctx.paths.scratch);
-    const updated = respelled ?? (changed ? (r.input as Record<string, unknown>) : undefined);
+    // read-before-edit check keys a Read and the Edit of the same file alike, whatever spellings the model used. The very
+    // input the fence judged above (`openedInput`), never one resolved a second time (the reviewer's nit).
+    const updated = openedInput ?? (changed ? (r.input as Record<string, unknown>) : undefined);
     if (r.ask !== undefined || updated !== undefined) {
       return {
         hookSpecificOutput: {
