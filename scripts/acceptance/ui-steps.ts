@@ -920,27 +920,25 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     // A card page draws in the scheme the app tells it (`data-scheme` on its root, sealed-scheme.ts), the media query only before that;
     // any other page reads its media query.
     const darkOf = async (session: string) => (await cdp.evaluate(session, "(() => { const s = document.documentElement.getAttribute('data-scheme'); return s === 'dark' || s === 'light' ? s === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches; })()").catch(() => undefined)) as boolean | undefined;
-    const schemes = async (cardId: string): Promise<{ main?: boolean; seen: { what: string; dark: boolean; url?: string; drawnDark?: boolean; island?: boolean }[] }> => {
-      const seen: { what: string; dark: boolean; url?: string; drawnDark?: boolean; island?: boolean }[] = [];
+    const schemes = async (cardId: string): Promise<{ main?: boolean; seen: { what: string; dark: boolean; url?: string; drawnDark?: boolean; island?: boolean; under?: string[] }[] }> => {
+      const seen: { what: string; dark: boolean; url?: string; drawnDark?: boolean; island?: boolean; under?: string[] }[] = [];
       let main: boolean | undefined;
-      // The island draws its cards on its own black, in either scheme (the island's tokens have no light form: `island.text` is white, and the
-      // island hands its frames `card.text` from it), so a card frame the ISLAND holds draws light text always; every other card frame draws in the
-      // chosen scheme's colours. The frames the island holds are read from its own frame tree.
-      const onIsland = new Set<string>();
       const docs = await cdp.documents();
-      for (const d of docs.filter((x) => /[?&]surface=island/.test(x.url))) {
-        const tree = (await cdp.send("Page.getFrameTree", {}, d.session).catch(() => undefined)) as { frameTree?: unknown } | undefined;
-        const walk = (n: unknown): void => { const t = n as { frame?: { url?: string }; childFrames?: unknown[] } | undefined; if (t === undefined) return; if (typeof t.frame?.url === "string") onIsland.add(t.frame.url); for (const c of t.childFrames ?? []) walk(c); };
-        walk(tree?.frameTree);
-      }
       for (const d of docs) {
         const what = d.url.startsWith(`moss-sealed://card/${encodeURIComponent(cardId)}/`) ? "card page" : /[?&]surface=(island|pill)/.test(d.url) ? `${/surface=island/.test(d.url) ? "island" : "pill"} page` : d.url.startsWith("moss-plugin://moss/") ? "main window" : d.url.startsWith("moss-core://") ? "core page" : undefined;
         if (what === undefined) continue;
         const dark = await darkOf(d.session);
         if (dark === undefined) continue;
         // What a person sees on a card page: the colour its text is DRAWN in (the page's body), light text on a dark card and dark on a light one.
+        // Where it is drawn: the addresses of the frames that hold it, the nearest first (its target's parents), cut to what names the window.
+        const under = what === "card page" ? (await cdp.ancestry(d.session).catch(() => [])).map((u) => u.replace(/[?#].*$/, (q) => (/surface=[^&#]*/.exec(q)?.[0] !== undefined ? `?${/surface=[^&#]*/.exec(q)![0]}` : "")).slice(0, 70)) : [];
+        // A card frame held under the ISLAND's page draws the island's own colours in either scheme: light text on its black. That is specified,
+        // not accepted because it was seen: `island.text` has no light form (packages/plugin-sdk/src/catalogs/tokens.ts: "The island's words", #FFFFFF,
+        // no dark variant) and the island's sealed UI hands its frames `card.text` from it (plugins/moss/plugins/island/src/ui/sealed.tsx, ISLAND_CARD_SOURCES).
+        // Every other card frame draws the chosen scheme's colours.
+        const onIsland = under.some((u) => /surface=island/.test(u));
         const drawn = what === "card page" ? await cdp.evaluate(d.session, "(() => { const m = /rgba?\\((\\d+), (\\d+), (\\d+)/.exec(getComputedStyle(document.body).color); return m ? (0.2126 * +m[1] + 0.7152 * +m[2] + 0.0722 * +m[3]) / 255 > 0.5 : null; })()").catch(() => undefined) : undefined;
-        seen.push({ what, dark, ...(what === "card page" ? { url: d.url.replace(/[?#].*/, "").replace(/se_[0-9a-f]+/g, "se_").slice(0, 90) } : {}), ...(typeof drawn === "boolean" ? { drawnDark: drawn, ...(onIsland.has(d.url) ? { island: true } : {}) } : {}) });
+        seen.push({ what, dark, ...(what === "card page" ? { url: d.url.replace(/[?#].*/, "").replace(/se_[0-9a-f]+/g, "se_").slice(0, 90) } : {}), ...(typeof drawn === "boolean" ? { drawnDark: drawn, ...(onIsland ? { island: true } : {}) } : {}), ...(under.length > 0 ? { under } : {}) });
         if (what === "main window") main = dark;
       }
       return { ...(main === undefined ? {} : { main }), seen };
@@ -995,7 +993,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
         });
         // The value that arrived AND the colours drawn: a card page whose text is drawn in the other scheme's colour is wrong whatever it was told.
         const wrong = got.seen.filter((x) => x.dark !== dark || (x.drawnDark !== undefined && x.drawnDark !== (x.island === true ? true : dark)));
-        if (wrong.length > 0) fail(`with ${word} chosen, ${wrong.map((x) => x.what).join(", ")} read ${dark ? "light" : "dark"} (${JSON.stringify(got.seen)})`);
+        if (wrong.length > 0) fail(`with ${word} chosen, ${wrong.length} card/window document(s) drew the other scheme: ${wrong.map((x) => `${x.what}${x.url !== undefined ? ` ${decodeURIComponent(x.url.split("/").pop() ?? "")}` : ""} says ${x.dark ? "dark" : "light"}, drew ${x.drawnDark === undefined ? "-" : x.drawnDark ? "light text" : "dark text"}${x.island === true ? " (island)" : ""}${x.under !== undefined ? ` under ${x.under.join(" > ")}` : ""}`).join("; ")} (all: ${JSON.stringify(got.seen).slice(0, 1800)})`);
         note = `${got.seen.filter((x) => x.what === "card page").length} card page doc(s)`;
       });
       return note;

@@ -8,7 +8,7 @@ import { scaled } from "./time-scale";
 /** The address of the app's main window page. */
 export const MAIN_PAGE_URL = "moss-core://app/";
 export interface ConsoleEntry { session: string; url: string; level: string; text: string }
-export interface FrameInfo { session: string; url: string; type: string; targetId?: string }
+export interface FrameInfo { session: string; url: string; type: string; targetId?: string; /** The session this target was attached from: the frame (or page) that holds it. */ parent?: string }
 
 /** What `Cdp.over` needs of a door: `send`, `close`, and `message` events carrying the protocol's JSON text. */
 export interface WsLike {
@@ -83,7 +83,7 @@ export class Cdp {
     if (m.method === "Target.attachedToTarget") {
       const sid: string = m.params.sessionId;
       const info = m.params.targetInfo as { url: string; type: string; targetId?: string };
-      this.frames.set(sid, { session: sid, url: info.url, type: info.type, ...(info.targetId !== undefined ? { targetId: info.targetId } : {}) });
+      this.frames.set(sid, { session: sid, url: info.url, type: info.type, ...(info.targetId !== undefined ? { targetId: info.targetId } : {}), ...(typeof m.sessionId === "string" ? { parent: m.sessionId } : {}) });
       void this.arm(sid);
     } else if (m.method === "Target.targetInfoChanged") {
       // A target attached before its page loaded (a surface window: the island, the pill) was named by its first
@@ -110,6 +110,13 @@ export class Cdp {
     await t("Log.enable");
     await t("Page.enable");
     await t("Runtime.runIfWaitingForDebugger");
+  }
+
+  /** The addresses of the frames that hold a session's document, the nearest first, up to the page: where in which window it is drawn. */
+  async ancestry(session: string): Promise<string[]> {
+    const out: string[] = [];
+    for (let cur = this.frames.get(session)?.parent, n = 0; cur !== undefined && n < 8; cur = this.frames.get(cur)?.parent, n++) out.push(await this.urlOf(cur));
+    return out;
   }
 
   /** The URL a session's document has now. */
