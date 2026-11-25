@@ -100,7 +100,7 @@ describe("the CLI's device doors are the person's alone", () => {
     expect(agentShell).toMatchObject({ kind: "session", sessionKind: "coding" });
     // Started by the daemon (a plugin's or a hook's process) with no session, or inside the sandbox: not even a hello.
     const spawned = resolveMossCaller({ appPeer: "none", binding: { role: "cli" }, peer: { pid: 42, ancestors: [process.pid, 1], probe: {}, floor: "outside-floor" }, processes: new SessionProcesses() });
-    const fenced = resolveMossCaller({ appPeer: "none", binding: { role: "cli" }, peer: { pid: 43, ancestors: [1], probe: {}, floor: "inside-floor" } as PeerFacts, processes: new SessionProcesses() });
+    const fenced = resolveMossCaller({ appPeer: "none", binding: { role: "cli" }, peer: { pid: 43, ancestors: [1], probe: {}, floor: "fenced" } satisfies PeerFacts, processes: new SessionProcesses() });
     expect(spawned).toMatchObject({ code: MOSS_ERR.NOT_THE_USER });
     expect(fenced).toMatchObject({ code: MOSS_ERR.NOT_THE_USER });
     const person = resolveMossCaller({ appPeer: "none", binding: { role: "cli" }, peer: user, processes: p });
