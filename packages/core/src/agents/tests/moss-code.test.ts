@@ -306,7 +306,7 @@ describeWithEmbeddedRuntime("MOSS's coding agent over ACP", (spawn) => {
     const call = async (name: string, command: string) => {
       const before = asked();
       const answer = await seen!.canUseTool!(name, { command }, { signal: new AbortController().signal, toolUseID: `call_${name}_${before}` } as Parameters<CanUseTool>[2]);
-      return { behavior: answer.behavior, asked: asked() > before };
+      return { behavior: answer?.behavior, asked: asked() > before };
     };
     expect(await call("Bash", "ls -la")).toEqual({ behavior: "allow", asked: false });
     expect(await call("Bash", "git status && cat README")).toEqual({ behavior: "allow", asked: false });

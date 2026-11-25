@@ -161,6 +161,21 @@ export function fencedReadOnlyCommand(tool: string, input: unknown): boolean {
   return typeof i.command === "string" && i.command.trim() !== "" && !namesNetworkPath(i.command) && !holdsLiveExpansion(i.command) && isReadOnlyShellCommand(i.command);
 }
 
+/** Whether a `$'…'` (ANSI-C quoting) opens anywhere: a `$` outside single and double quotes, not escaped, followed by
+ *  `'`. A `$'` that only ends a single-quoted span (`grep 'foo$' f`) is a literal dollar and a closing quote, not one. */
+function opensAnsiCQuote(command: string): boolean {
+  let single = false, double = false;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!;
+    if (single) { if (c === "'") single = false; continue; }
+    if (c === "\\") { i++; continue; }
+    if (c === '"') { double = !double; continue; }
+    if (c === "$" && !double && command[i + 1] === "'") return true;
+    if (c === "'" && !double) single = true;
+  }
+  return false;
+}
+
 /** Whether a command line holds a live expansion (the WS9 reviewer's second finding): a `$` outside single quotes and not
  *  escaped, followed by a name character, a digit, `{`, `(`, `'` or one of `@ * # ? ! $ -`; or a backtick outside single
  *  quotes. Text a command builds while it runs (`${x:-/}/host/x`, `x=/; cat $x$x/host`, `y+=/host`, `printf -v`,
@@ -200,7 +215,7 @@ export function holdsLiveExpansion(command: string): boolean {
  *  a slash as `\057`) counts as one. A false positive (`ls $HOME//x` asks) is fine; a miss is not. A `:` is not a word's
  *  start (`http://x` in a pattern, `C://x`, which Windows takes as a drive path). */
 export function namesNetworkPath(command: string): boolean {
-  if (command.includes("$'")) return true;
+  if (opensAnsiCQuote(command)) return true;
   if (/(^|[\s'"=,({[`;|&<>])[\\/]{2}/.test(command)) return true;
   const words: string[] = [];
   let word = "";
