@@ -15,6 +15,15 @@ MOSS's Settings (press **You** at the bottom of the list of bots) list your arch
 
 ## Deleting
 
-Deleting a conversation or a bot removes it from this computer only, not from your other computers. <!-- pending: deletion -->
+Deleting is for good. Open the bot's settings, and under **Delete**:
+
+- **Delete the conversation with** and the bot's name deletes its messages, the files sent to it, its side threads and the agents it started. The bot, its memory and its files stay, and the conversation starts again, empty.
+- **Delete** and the bot's name deletes the bot: its instructions and settings, its conversation, its memory, its scratch files, its routines and the rules you saved for it. Files it wrote in your folders stay, and so do your other bots.
+
+An archived bot is deleted from **Archived bots** in Settings, with **Delete** beside it. Each time, a card says what goes and what stays, and nothing is deleted until you say yes on it.
+
+Deleting removes it from **this computer only**. Your other computers keep their copies until you delete it there too, and this computer never takes them back.
+
+From a terminal, `moss session delete <session>` and `moss bot delete <bot>` do the same, after you type DELETE.
 
 Your bots and conversations are files in `~/.moss`, so you can back them up like any other files.

@@ -54,7 +54,8 @@ export type Blocks = Readonly<Record<string, () => string>>;
 
 /** A sentence that waits on work not merged yet carries `<!-- pending: <what> -->` after it in the Markdown, so the
  *  pending sentences are found with one search (`pending:`). Only these kinds; the mark never reaches a page. */
-export const PENDING_KINDS = ["deletion", "local-provider"] as const;
+// None today: deletion and local model servers merged on 2026-11-25, and their sentences now say what the code does.
+export const PENDING_KINDS: readonly string[] = [];
 const PENDING_MARK = /[ \t]*<!--\s*pending:\s*([a-z-]+)\s*-->/g;
 
 /** The pending marks in a page's Markdown, by kind, in order. */
@@ -63,7 +64,7 @@ export function pendingMarks(source: string): string[] {
 }
 
 export function renderDoc(source: string, file: string, blocks: Blocks = {}): RenderedDoc {
-  for (const kind of pendingMarks(source)) if (!(PENDING_KINDS as readonly string[]).includes(kind)) throw new Error(`${file}: an unknown pending mark, ${kind}: one of ${PENDING_KINDS.join(", ")}`);
+  for (const kind of pendingMarks(source)) if (!(PENDING_KINDS as readonly string[]).includes(kind)) throw new Error(`${file}: an unknown pending mark, ${kind}: ${PENDING_KINDS.length > 0 ? `one of ${PENDING_KINDS.join(", ")}` : "none is known today; add its kind to PENDING_KINDS"}`);
   const { meta, body: marked } = frontMatter(source, file);
   const body = marked.replace(PENDING_MARK, "");
   // Pictures and blocks first: each becomes a placeholder paragraph the renderer leaves alone, and is put back after.

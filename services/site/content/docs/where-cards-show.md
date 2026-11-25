@@ -13,7 +13,7 @@ Every card, from a bot in MOSS or an agent in MOSS Code, goes through one place 
 - **In a strip at the top of the window**, when that window is in front but showing something else. In MOSS, the bot's row in the list also says *Needs you*.
 - **In the window that asked for it**, for a card that belongs to no bot or session: a plugin's OK from a Plugins page, or an update.
 - **On the island**, a small bar at the top of your screen, when neither app is in front: you are working in another app. A MOSS window that is open but not in front, on a second screen say, doesn't move a card off the island.
-- **On your phone**, once the [phone apps](/docs/phones/) are out: a paired phone shows the cards that are waiting, and answers one only when it can show all of it. A computer with no screen of its own, such as a server, sends its cards there.
+- **On your phone**, once the [phone apps](/docs/phones/) are out: a paired phone shows the cards that are waiting, and answers one only once it has shown all of it. A computer with no screen of its own, such as a server, sends its cards there.
 
 On Linux with Wayland, the island is an ordinary window, since Wayland doesn't let a window stay on top of the others. [Install](/docs/install/#linux) says more.
 

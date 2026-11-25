@@ -1,13 +1,13 @@
 ---
 title: The moss command
-description: The commands of `moss`, MOSS's command line, that you can run today: start a coding session, manage plugins, and look after the engine.
+description: The commands of `moss`, MOSS's command line, that you can run today: start a coding session, manage plugins, delete things, and look after the engine.
 ---
 
 > **Not released yet.** This page describes MOSS as it is being built for the first release.
 
 `moss` is the engine's own command line. With MOSS Code installed through Homebrew, or either app from a `.deb` or `.rpm`, it is a command in your terminal. Otherwise it is the engine inside the app: on macOS, `/Applications/MOSS.app/Contents/Resources/daemon/moss-core`.
 
-The plugin commands ask the running engine, as you, and never start MOSS themselves: when it isn't running, they say *MOSS isn't running on this computer: start it, then try again*.
+The plugin and delete commands ask the running engine, as you, and never start MOSS themselves: when it isn't running, they say *MOSS isn't running on this computer: start it, then try again*.
 
 ## Coding sessions
 
@@ -35,6 +35,17 @@ The plugin commands ask the running engine, as you, and never start MOSS themsel
 | `moss plugin validate <folder>` | Checks a plugin folder without running it, and says what its card will say |
 
 `new` and `validate` work without the engine running. [Write your first plugin](/docs/first-plugin/) goes through them.
+
+## Deleting
+
+Each says what goes and what stays, and deletes nothing until you type the word it asks for.
+
+| Command | What it does |
+| :- | :- |
+| `moss session delete <session>` | Deletes a coding session, or a bot's conversation, on this computer, after you type DELETE |
+| `moss bot delete <bot>` | Deletes a bot for good, on this computer, after you type DELETE. Archiving it in the app keeps it instead. |
+| `moss account delete` | Deletes your account at WaifuCave, after you type DELETE ([what goes](/docs/privacy/#paired-devices)) |
+| `moss erase` | Erases everything MOSS keeps on this computer, after you type ERASE. Quit both apps first. ([Removing MOSS](/docs/uninstall/#2-erase-what-moss-keeps-on-this-computer)) |
 
 ## The engine
 

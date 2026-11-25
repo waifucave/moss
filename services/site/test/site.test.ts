@@ -164,8 +164,8 @@ describe("the docs' sources", () => {
         marked.push(`${f}:${kind}`);
       }
     }
-    // Tonight's rules: deleting is this computer only (first-bot, privacy); a local model server counts once running (setup).
-    expect(marked).toEqual(expect.arrayContaining(["first-bot.md:deletion", "privacy.md:deletion", "setup.md:local-provider"]));
+    // Deletion and local model servers merged (2026-11-25): no sentence waits on them any more.
+    expect(marked).toEqual([]);
     expect(allText(r.out)).not.toContain("pending:");
     expect(() => renderDoc("---\ntitle: T\ndescription: D\n---\n\nA sentence. <!-- pending: nonsense -->\n", "z.md")).toThrow();
   }, 60_000);
@@ -378,6 +378,46 @@ describe("removing MOSS, as the page says", () => {
     }
     expect(zap(moss).some((p) => p.includes("LaunchAgents"))).toBe(false);
     expect(zap(code).some((p) => p.includes("LaunchAgents"))).toBe(true);
+  });
+
+  test("Erase everything, and what it leaves, in the engine's and the app's own words", () => {
+    const src = (...p: string[]) => readFileSync(join(REPO_ROOT, ...p), "utf8");
+    const outcome = src("apps", "moss", "src", "main", "erase-outcome.ts");
+    for (const said of ["MOSS is starting fresh on this computer.", "MOSS couldn't erase everything."]) {
+      expect(outcome).toContain(`"${said}"`);
+      expect(page).toContain(`**${said}**`);
+    }
+    // Every kept item but the previous app's folder (its name is an old one, never on the site) is on the page.
+    const keeps = /export const ERASE_KEEPS = \[([\s\S]*?)\] as const;/.exec(src("packages", "core", "src", "deletion", "erase-home.ts"))![1]!;
+    expect(keeps).toContain("the apps' own folders: their browser cookies and the key that signs your approvals");
+    expect(page).toContain("the apps' own folders: their browser cookies and the key that signs your approvals");
+    expect(page).toContain("files your bots or agents wrote outside MOSS's folder");
+    expect(keeps).toContain("files your bots or agents wrote outside MOSS's folder");
+    expect(src("packages", "core", "src", "deletion", "erase-command.ts")).toContain('export const ERASE_WORD = "ERASE"');
+    expect(page).toContain("`moss erase`");
+    expect(src("plugins", "moss", "plugins", "settings", "client", "strings.ts")).toContain('eraseEverything: "Erase everything"');
+  });
+
+  test("deleting, as the archiving page says it", () => {
+    const src = (...p: string[]) => readFileSync(join(REPO_ROOT, ...p), "utf8");
+    const archiving = readFileSync(join(SITE_DIR, "content", "docs", "archiving.md"), "utf8");
+    const settings = src("apps", "moss", "src", "window", "settings", "SettingsPage.tsx");
+    expect(settings).toContain(">Delete the conversation with {rec.name}</button>");
+    expect(settings).toContain(">Delete {rec.name}</button>");
+    expect(settings).toContain('<Card title="Archived bots"');
+    expect(src("packages", "core", "src", "deletion", "session-rpc.ts")).toContain('"Your other computers keep their copies until you delete it there too. This computer never takes them back."');
+    expect(archiving).toContain("Your other computers keep their copies until you delete it there too, and this computer never takes them back.");
+    expect(src("packages", "cli", "src", "delete-cli.ts")).toContain('export const DELETE_WORD = "DELETE"');
+    expect(archiving).toContain("after you type DELETE");
+  });
+
+  test("a local model server, as the setup page says it", () => {
+    const guide = readFileSync(join(REPO_ROOT, "apps", "moss", "src", "window", "setup", "SetupGuide.tsx"), "utf8");
+    const setup = readFileSync(join(SITE_DIR, "content", "docs", "setup.md"), "utf8");
+    expect(guide).toContain('checkAgain: "Check again"');
+    expect(guide).toContain("isn't running: start it, then check again.");
+    expect(setup).toContain("press **Check again**");
+    expect(readFileSync(join(REPO_ROOT, "packages", "core", "src", "setup-state.ts"), "utf8")).toContain("A local server that answers is a provider the person has");
   });
 
   test("the keys are where the page says", () => {

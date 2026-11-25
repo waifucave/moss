@@ -68,7 +68,7 @@ Open a bot's settings from the side panel's settings button, or from your accoun
 
 When you're done with a bot, **Archive** puts it away. Nothing is deleted: its conversation, memory and routines come back with it when you bring it back from Settings.
 
-Deleting a conversation or a bot removes it from this computer only, not from your other computers. <!-- pending: deletion -->
+To delete instead, open the bot's settings: under **Delete**, **Delete the conversation with** and its name empties its conversation, and **Delete** and its name deletes the bot. A card says what goes and what stays before anything is deleted, and it can't be undone. Deleting removes it from this computer only: your other computers keep their copies until you delete it there too. [Archiving and deleting](/docs/archiving/#deleting) has more.
 
 ## Talking out loud
 

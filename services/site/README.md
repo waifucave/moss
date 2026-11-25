@@ -38,11 +38,11 @@ Run from this folder with the repository's Bun (`../../scripts/pinned-bun`):
 ## Sentences that wait on other work
 
 A docs sentence that describes work not merged yet ends with a mark in its Markdown, `<!-- pending: <what> -->`, where
-`<what>` is one of `PENDING_KINDS` in `src/markdown.ts` (today `deletion` and `local-provider`). The build drops the
+`<what>` is one of `PENDING_KINDS` in `src/markdown.ts` (none today: add the kind there first). The build drops the
 mark, so it never reaches a page; `grep -rn "pending:" content/docs` finds every such sentence, to check or remove the
 mark once the work lands.
 
-## Deploying (the owner's steps; nothing here has been deployed)
+## Deploying (the owner's steps: each deploy needs his word)
 
 1. Pick the state in `site.json`, then `../../scripts/pinned-bun run check` in this folder: it must end with `ok`.
 2. With the repository installed (`bun install` at its root), sign in once: `../../node_modules/.bin/wrangler login`, with
