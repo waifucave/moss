@@ -68,3 +68,16 @@ describe("the IPC counter", () => {
     expect(parseIpcLine(line)?.cpu.map((c) => c.percent)).toEqual([5, 66]);
   });
 });
+
+describe("the call detail", () => {
+  test("names the kinds of call and event a part is looping on, after the cpu words, and the line still parses", () => {
+    const stats = new IpcStats();
+    for (let i = 0; i < 5; i++) stats.detail("plugin.layer.call:points.entries");
+    stats.detail("ev:plugin_changed");
+    stats.detail("a b/c id=secret");
+    const line = ipcLine(stats.take(5), [{ type: "Browser", percent: 1 }]);
+    expect(line).toContain("calls (plugin.layer.call:points.entries 5");
+    expect(line).toContain("abcidsecret 1"); // spaces, slashes and equals signs never get through
+    expect(parseIpcLine(line)).toMatchObject({ seconds: 5, cpu: [{ type: "Browser", percent: 1 }] });
+  });
+});

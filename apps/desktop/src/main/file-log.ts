@@ -62,7 +62,7 @@ export const KEEP: RegExp[] = [
   kp(String.raw`ipc: counters on \(every 5 s: messages by channel, CPU by process; no payloads\)`),
   // The counters (ui/ipc-stats.ts `ipcLine`): rates, then the most-sent channels and message types as NAME COUNT pairs (a name is the app's own
   // channel or message type: letters, digits, `-`, `.`, `:`, at most 60 characters; at most 8 pairs a side), then each process type's CPU share.
-  kp(String.raw`ipc: ${DEC} s in ${DEC}/s \(${IPC_PAIRS}\) out ${DEC}/s \(${IPC_PAIRS}\) cpu(?: ${PROC} ${DEC}%){0,24}`),
+  kp(String.raw`ipc: ${DEC} s in ${DEC}/s \(${IPC_PAIRS}\) out ${DEC}/s \(${IPC_PAIRS}\) cpu(?: ${PROC} ${DEC}%){0,24}(?: calls \(${IPC_PAIRS}\))?`),
   kp(String.raw`diag: cpu over ${DEC} s(?: ${PROC}:\d{1,9} -?${DEC}%){1,40}`),
   // the press check and the refusals
   kp(String.raw`send: refused \((?:not a place the user's words go|MOSS Code isn't running|the frame reported no user activation)\)(?: \(\d{1,6} like it left out\))?`),

@@ -8,11 +8,14 @@ export interface IpcWindow {
   seconds: number;
   in: ReadonlyMap<string, number>;
   out: ReadonlyMap<string, number>;
+  /** What the `api` calls and `api-event`s were (method names and event types only), so a part in a loop says which call it is looping on. */
+  detail?: ReadonlyMap<string, number>;
 }
 
 export class IpcStats {
   private inCounts = new Map<string, number>();
   private outCounts = new Map<string, number>();
+  private detailCounts = new Map<string, number>();
 
   /** A window sent main one message on `channel`. */
   received(channel: string): void {
@@ -24,11 +27,20 @@ export class IpcStats {
     this.outCounts.set(type, (this.outCounts.get(type) ?? 0) + 1);
   }
 
+  /** One more of a named kind of call or event (a method name or an event type, never a payload or an id). */
+  detail(name: string): void {
+    const k = name.replace(/[^A-Za-z0-9._:-]/g, "").slice(0, 48);
+    if (k === "") return;
+    this.detailCounts.set(k, (this.detailCounts.get(k) ?? 0) + 1);
+    if (this.detailCounts.size > 64) this.detailCounts.delete(this.detailCounts.keys().next().value!);
+  }
+
   /** The counts since the last take, and a fresh start. */
   take(seconds: number): IpcWindow {
-    const w = { seconds, in: this.inCounts, out: this.outCounts };
+    const w = { seconds, in: this.inCounts, out: this.outCounts, detail: this.detailCounts };
     this.inCounts = new Map();
     this.outCounts = new Map();
+    this.detailCounts = new Map();
     return w;
   }
 }
@@ -73,7 +85,7 @@ export function ipcLine(w: IpcWindow, cpu: readonly ProcessCpu[]): string {
   const inN = total(w.in);
   const outN = total(w.out);
   const procs = cpu.map((p) => `${p.type} ${p.percent.toFixed(1)}%`).join(" ");
-  return `ipc: ${w.seconds} s in ${rate(inN)}/s (${top(w.in)}) out ${rate(outN)}/s (${top(w.out)}) cpu${procs === "" ? "" : ` ${procs}`}`;
+  return `ipc: ${w.seconds} s in ${rate(inN)}/s (${top(w.in)}) out ${rate(outN)}/s (${top(w.out)}) cpu${procs === "" ? "" : ` ${procs}`}${w.detail !== undefined && w.detail.size > 0 ? ` calls (${top(w.detail, 4)})` : ""}`;
 }
 
 /** Counts every message and says each window's line (`every` ms) while the app runs; the stop function ends it. */
