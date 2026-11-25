@@ -77,7 +77,7 @@ export const UNNAMED_CARD = "card:unnamed";
 /** Opens a sealed card and hands back its id with the decision still to come. */
 /** Opens a card. `checked` is the children the answer checked, for a card with a checkbox per child (the group's
  *  cards: the computers to invite, the keys to keep). */
-export type CardOpener = (req: ApprovalRequest, opts?: { signal?: AbortSignal }) => Promise<{ card?: string; allowed: Promise<boolean>; checked?: Promise<readonly string[]> }>;
+export type CardOpener = (req: ApprovalRequest, opts?: { signal?: AbortSignal }) => Promise<{ card?: string; allowed: Promise<boolean>; checked?: Promise<readonly string[]>; answered?: Promise<boolean> }>;
 
 /** The opener over lane C's broker: the card's id comes from its `requested` event, the checked children from its
  *  `resolved` one. */
@@ -96,19 +96,23 @@ export function brokerCardOpener(broker: Pick<ApprovalBroker, "request" | "watch
       }
     });
     let allowed: Promise<boolean> = Promise.resolve(false);
-    allowed = broker.request(req, {
+    // Whether the person answered on the card itself (yes or no), not an expiry, a withdrawal or a cancel (lane XC).
+    let answered: Promise<boolean> = Promise.resolve(false);
+    const decided = broker.request(req, {
       ...(opts?.signal ? { signal: opts.signal } : {}),
       onCard: (id) => {
         if (settled) return;
         settled = true;
         cardId = id;
-        resolve({ card: id, allowed, checked });
+        resolve({ card: id, allowed, checked, answered });
       },
-    }).then((d) => d.allowed);
+    });
+    allowed = decided.then((d) => d.allowed);
+    answered = decided.then((d) => d.by === "card", () => false);
     void allowed.finally(() => {
       if (!settled) {
         settled = true;
-        resolve({ allowed, checked });
+        resolve({ allowed, checked, answered });
       }
       // A card decided without a resolved event that names it (a level, a rule) checked nothing.
       setTimeout(() => {
@@ -256,38 +260,63 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
     if (pairing.get(id)?.status === "words") void askToAdd(id).catch(() => undefined);
   };
 
+  /** A name kept on disk, drawn or logged: through the one name rule and clamped again, whatever the file says. */
+  const shownName = (n: unknown): string => (typeof n === "string" && cleanName(n.slice(0, 63)) ? n.slice(0, 63) : "(a device whose name can't be shown)");
   /** A change made in a terminal with no app or phone connected: one plain line in the engine's log, and kept to show. */
   const noteTerminal = (c: TerminalChange): void => {
-    deps.log?.(`[devices] ${terminalChangeWords(c)}: ${cleanName(c.name) ? c.name : "(a device whose name can't be shown)"}`);
+    deps.log?.(`[devices] ${terminalChangeWords(c)}: ${shownName(c.name)}`);
     if (deps.terminalChanges === undefined) return;
     deps.terminalChanges.add(c);
     watchArrivals();
   };
-  /** Shown once when one of the person's apps or phones is there: each kept change as the engine's own card. A paired
-   *  device's card asks whether to keep it (Remove revokes it); a removed one's only says so. Watched only while one waits. */
+  /** Shown when one of the person's apps or phones connects: each kept change as the engine's own card, until the person
+   *  answers it (Remove it or Keep it; OK for a removal). A card that expires or is dismissed keeps its change, and it comes
+   *  back at the next connection (each time an app or phone arrives where none was), never in a loop while one stays open.
+   *  A paired device's card asks whether to keep it (Remove revokes it). Watched only while a change waits. */
   let arrivals: ReturnType<typeof setInterval> | undefined;
+  let wasPresent = false;
+  const showing = new Set<TerminalChange>();
   const watchArrivals = (): void => {
     if (arrivals !== undefined || deps.terminalChanges === undefined || deps.personAt === undefined) return;
+    wasPresent = false;
     const look = (): void => {
-      if (deps.personAt?.() !== true) return;
-      const shown = deps.terminalChanges!.take();
-      if (arrivals !== undefined) { clearInterval(arrivals); arrivals = undefined; }
-      for (const c of shown) void showTerminalChange(c).catch(() => undefined);
+      const present = deps.personAt?.() === true;
+      const arrived = present && !wasPresent;
+      wasPresent = present;
+      const waiting = deps.terminalChanges!.pending();
+      if (waiting.length === 0 && showing.size === 0) {
+        if (arrivals !== undefined) { clearInterval(arrivals); arrivals = undefined; }
+        return;
+      }
+      if (!arrived) return;
+      for (const c of waiting) {
+        if (showing.has(c)) continue;
+        showing.add(c);
+        void showTerminalChange(c).catch(() => false).then((done) => {
+          showing.delete(c);
+          if (done) deps.terminalChanges!.remove(c);
+        });
+      }
     };
     arrivals = setInterval(look, TERMINAL_CHANGE_LOOK_MS);
     (arrivals as { unref?: () => void }).unref?.();
     look();
   };
-  const showTerminalChange = async (c: TerminalChange): Promise<void> => {
+  /** One change's card; true once the person has answered it. */
+  const showTerminalChange = async (c: TerminalChange): Promise<boolean> => {
     const d = registry.get(c.device);
     const still = c.kind === "paired" && d !== undefined && d.revokedAt === undefined && c.device !== registry.self().id;
+    const name = shownName(c.name);
     const req = changeCard("device-revoke", terminalChangeWords(c), still ? "Remove it if it isn't yours." : undefined, [
-      { label: "The device", value: c.name, name: true },
+      { label: "The device", value: name, name: true },
     ], c.device);
     if (!still) req.options = [{ id: "approve", kind: "approve", label: "OK" }];
     else req.options = [{ id: "approve", kind: "approve", label: "Remove it" }, { id: "deny", kind: "deny", label: "Keep it" }];
     const opened = await deps.openCard(req);
-    if (still && (await opened.allowed)) await revokeDevice({ registry, ...deps.revoke }, c.device, "removed by the user after a pairing made in a terminal");
+    const yes = await opened.allowed;
+    const answered = opened.answered === undefined ? yes : await opened.answered;
+    if (answered && still && yes) await revokeDevice({ registry, ...deps.revoke }, c.device, "removed by the user after a pairing made in a terminal");
+    return answered;
   };
   if ((deps.terminalChanges?.pending().length ?? 0) > 0) watchArrivals();
 

@@ -2,9 +2,13 @@
 // controller's ruling on `moss device`): a command the person approved to run outside the sandbox can start a process the
 // OS owns (launchd's, systemd's), which counts as the person at a terminal; pairing a device is the one thing that is not
 // left silent. Each such change is written to the engine's log as one plain line, kept in `<home>/devices/terminal-changes.json`,
-// and shown once, as the engine's own card, when one of the person's apps or phones next connects: a paired device's card
-// offers to remove it. While an app or phone is connected, a terminal's pairing and removal raise their card at once
-// instead (devices/rpc.ts), and need it answered.
+// and shown, as the engine's own card, when one of the person's apps or phones next connects, until the person answers it:
+// a paired device's card offers to remove it. While an app or phone is connected, a terminal's pairing and removal raise
+// their card at once instead (devices/rpc.ts), and need it answered.
+//
+// The limit, plainly: this catches a process that pairs a device and then leaves things alone. Code running as the person
+// outside the sandbox can also delete this file (or the log line), and then no card comes. The durable truth is the device
+// list itself (Settings' Paired devices, `moss device list`), which shows every paired device whatever this file says.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -63,11 +67,10 @@ export class TerminalChanges {
     return this.#pending;
   }
 
-  /** Takes them all to show (each once): what's taken is gone from the file. */
-  take(): TerminalChange[] {
-    const out = this.#pending;
-    this.#pending = [];
-    if (out.length > 0) this.#save();
-    return out;
+  /** The person answered its card: it is gone from the file. */
+  remove(c: TerminalChange): void {
+    const before = this.#pending.length;
+    this.#pending = this.#pending.filter((x) => x !== c);
+    if (this.#pending.length !== before) this.#save();
   }
 }

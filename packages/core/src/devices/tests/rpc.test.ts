@@ -2,6 +2,7 @@
 // directly, any other client gets a sealed card, a bot never; and a peer's call runs only with a signed answer from
 // a desktop's app-held answer key, bound to exactly that call.
 import { TerminalChanges } from "../terminal-changes";
+import { TERMINAL_CHANGE_LOOK_MS } from "../rpc";
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
@@ -108,7 +109,20 @@ describe("a terminal's pairing and removal, and the person's apps", () => {
     let present = false;
     const home = mkdtempSync(join(tmpdir(), "moss-xc-tc-"));
     const lines: string[] = [];
-    const a = await computer(net, "Server", undefined, undefined, { personAt: () => present, terminalChanges: new TerminalChanges(home), log: (l) => lines.push(l) });
+    // The first later card goes unanswered (as one that expires, or that the app closes over, does); later ones are the broker's.
+    let unanswered = 1;
+    const shownWords: string[] = [];
+    let brokerOpener: CardOpener | undefined;
+    const opener: CardOpener = async (req, o) => {
+      if (req.change === "device-revoke" && unanswered > 0) {
+        unanswered--;
+        shownWords.push(JSON.stringify(req.fields));
+        return { allowed: Promise.resolve(false), answered: Promise.resolve(false) };
+      }
+      return brokerOpener!(req, o);
+    };
+    const a = await computer(net, "Server", undefined, undefined, { personAt: () => present, terminalChanges: new TerminalChanges(home), log: (l) => lines.push(l), openCard: opener });
+    brokerOpener = brokerCardOpener(a.broker);
     const b = await computer(net, "Laptop");
     const view = (await a.call("device.pair.begin", {}, terminal)) as { pairingId: string; qr: string };
     const joined = (await b.call("device.pair.join", { code: view.qr }, terminal)) as { words: string[] };
@@ -120,15 +134,25 @@ describe("a terminal's pairing and removal, and the person's apps", () => {
     // Kept on disk (a restart keeps it), nothing shown yet.
     expect(new TerminalChanges(home).pending().map((c) => c.kind)).toEqual(["paired"]);
     expect(a.broker.cards()).toEqual([]);
-    // An app connects: the card, once, with the engine's own words; Remove revokes the device.
+    // An app connects: the card, with the engine's own words. Withdrawn unanswered (the app went): the change stays, and
+    // comes back at the next connection, never in a loop while the app stays.
     present = true;
-    await waitFor(() => a.broker.cards().length === 1, 5_000);
+    await waitFor(() => shownWords.length === 1, 5_000);
+    expect(shownWords[0]).toContain("A device was paired from a terminal on");
+    // Unanswered: the change stays, and no card comes again while the app stays connected.
+    await Bun.sleep(TERMINAL_CHANGE_LOOK_MS * 2 + 200);
+    expect(a.broker.cards()).toEqual([]);
+    expect(new TerminalChanges(home).pending().map((c) => c.kind)).toEqual(["paired"]);
+    present = false;
+    await Bun.sleep(TERMINAL_CHANGE_LOOK_MS + 200);
+    present = true;
+    await waitFor(() => a.broker.cards().length === 1, 6_000);
     const card = a.broker.cards()[0]!;
-    expect(JSON.stringify(card)).toContain("A device was paired from a terminal on");
-    expect(new TerminalChanges(home).pending()).toEqual([]);
+    // Answered: Remove revokes the device, and the change is gone from the file.
     await approveCard(a, card.id);
     await waitFor(() => a.registry.get(b.key.id)?.revokedAt !== undefined);
-  });
+    await waitFor(() => new TerminalChanges(home).pending().length === 0);
+  }, 30_000);
 });
 
 describe("devices methods", () => {
