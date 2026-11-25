@@ -27,6 +27,9 @@ final class CardGateUITests: XCTestCase {
         let app = launch(["-screen", "cards", "-scenario", "manyPaths"])
         let allow = app.buttons["Allow"].firstMatch
         XCTAssertTrue(allow.waitForExistence(timeout: 10))
+        sleep(2)
+        print("IW probe at start: \(app.staticTexts["iw-probe"].firstMatch.label) title frame \(app.staticTexts["Change nine files?"].firstMatch.frame) window \(app.windows.firstMatch.frame)")
+        for t in app.staticTexts.allElementsBoundByIndex where t.label.contains("first") { print("IW card says at start: \(t.label)") }
         XCTAssertFalse(app.staticTexts["~/.ssh/authorized_keys"].exists, "the ninth path is cut at first")
         XCTAssertFalse(allow.isEnabled, "Allow is disabled while a part is cut")
         XCTAssertTrue(app.buttons["Deny"].firstMatch.isEnabled, "Deny never waits to be read")
@@ -39,6 +42,7 @@ final class CardGateUITests: XCTestCase {
         if !allow.isEnabled {
             // Why it waits, as the card says it (for the log).
             for t in app.staticTexts.allElementsBoundByIndex where t.label.contains("first") { print("IW card says: \(t.label)") }
+            print("IW probe at end: \(app.staticTexts["iw-probe"].firstMatch.label)")
             print("IW title hittable: \(app.staticTexts["Change nine files?"].isHittable)")
         }
         XCTAssertTrue(allow.isEnabled, "every cut part opened and read to its end: Allow answers")

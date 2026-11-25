@@ -44,7 +44,7 @@ public struct CardView: View {
                 // The heading counts as seen by its first line, wholly inside what the bars leave visible: what follows
                 // down to the buttons is passed on the way to them.
                 Text(Sealed.visible(card.title)).font(.headline)
-                    .overlay(alignment: .top) { Color.clear.frame(height: 12).whenSeen(onSighted) }
+                    .overlay(alignment: .top) { Color.clear.frame(height: 12).whenSeen(probe: "heading", onSighted) }
                 if let what = card.what { cutText(what, name: "what", limit: Card.Cut.text).font(.subheadline).foregroundStyle(.secondary) }
             }
             ForEach(shownFields, id: \.0) { name, value in
@@ -203,6 +203,11 @@ public struct CardsScreen: View {
             .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 24)
         }
         .cardViewport()
+        #if DEBUG
+        .overlay(alignment: .bottomLeading) {
+            Text(SeenProbe.shared.last["heading"] ?? "none").font(.system(size: 1)).opacity(0.01).accessibilityIdentifier("iw-probe").allowsHitTesting(false)
+        }
+        #endif
         .background(Color(uiColor: .systemGroupedBackground))
         .overlay {
             if !model.loaded { ProgressView("Loading").controlSize(.large) }
