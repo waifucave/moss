@@ -9,6 +9,9 @@ dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
         google()
+        // Google's mirror of Maven Central (the same artifacts and checksums), before Central itself: Central throttles the
+        // shared CI runners' addresses with 429. Central stays as the fallback.
+        maven("https://maven-central.storage-download.googleapis.com/maven2") { name = "MavenCentralMirror" }
         mavenCentral()
     }
 }
