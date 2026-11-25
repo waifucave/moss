@@ -11,7 +11,7 @@ function rig(over: Partial<ConstructorParameters<typeof OneShotPipes>[0]> & { en
   const listeners = new Map<string, { h: H; stopped: boolean }>();
   const pipes = new OneShotPipes({
     endpoint: "\\\\.\\pipe\\moss-core-abc",
-    handlers: { open: (s) => { opened.push(s); }, close() {}, data() {} } as never,
+    handlers: { open: (s: object) => { opened.push(s); }, close() {}, data() {} } as never,
     adopt: (s, pid) => { adopted.push([s, pid]); },
     closeAtOnce: (s: object) => { closed.push(s); },
     userSid: () => "S-1-5-21-1",
