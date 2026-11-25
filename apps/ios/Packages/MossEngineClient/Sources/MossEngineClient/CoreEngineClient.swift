@@ -227,7 +227,9 @@ public actor CoreEngineClient: EngineClient {
         let qr = code.trimmingCharacters(in: .whitespacesAndNewlines)
         // Only something shaped like a pairing QR (`<scheme>:<version>:<payload>`) reaches the core, which reads it and
         // decides; the scheme's name is the engine's to choose (as on Android).
-        guard qr.wholeMatch(of: /[a-z][a-z-]{0,31}:[0-9]{1,3}:[A-Za-z0-9_-]{16,8192}={0,2}/) != nil else { throw PairingError.unreadableCode }
+        guard qr.range(of: #"^[a-z][a-z-]{0,31}:[0-9]{1,3}:[A-Za-z0-9_-]{16,8192}={0,2}$"#, options: .regularExpression) != nil else {
+            throw PairingError.unreadableCode
+        }
         do {
             let p = try await ensureCore().beginPairing(qr: qr, app: linkApp)
             let id = UUID().uuidString
