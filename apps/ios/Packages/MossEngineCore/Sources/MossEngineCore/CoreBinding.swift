@@ -134,10 +134,10 @@ enum Records {
                                         question: AskedQuestion(callId: q.callId, header: first.header, text: first.question,
                                                                 options: first.options.map(\.label))))
         case .questionResolved(let callId, let by, let skipped, _, let cause):
-            // `by` names who closed it; "aborted" (and the like) is no one's answer: the turn ended or the engine went away.
-            let ended = ["aborted", "expired", "timeout", "cancelled"].contains(by ?? "")
+            // Answered only by the person (`by` is "user", or absent in an older record); anything else closed it without
+            // their answer: the turn ended, a plugin or the engine did, or the engine went away.
             let state: AskedQuestion.State = skipped ? .skipped
-                : !ended ? .answered
+                : (by == nil || by == "user") ? .answered
                 : cause == "engine-stopped" ? .engineStopped : .withdrawn
             return .questionResolved(callId: callId, state: state)
         case .other(let kind): return kind == "turn_started" ? .turnStarted : .other

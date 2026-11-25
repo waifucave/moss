@@ -35,6 +35,9 @@ public actor FakeEngineClient: EngineClient {
         case tallCardChat
         /// This phone has already made the day's 5 bots: the next `createBot` is refused.
         case botLimit
+        /// Paired; Alpha asks a question with four options, and a few seconds after it is first read a question with two
+        /// takes its place (the switch a person may be tapping through).
+        case questionSwitch
     }
 
     public struct Failure: Error, Equatable, Sendable { public var message: String; public init(_ m: String) { message = m } }
@@ -112,6 +115,8 @@ public actor FakeEngineClient: EngineClient {
         case .tallCardChat:
             paired = PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName)
             cardList = [SampleData.tallCard]
+        case .questionSwitch:
+            paired = PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName)
         }
         if paired != nil, scenario != .unreachable, scenario != .empty { paired?.lastSeen = SampleData.now - 20_000 }
     }
@@ -274,8 +279,19 @@ public actor FakeEngineClient: EngineClient {
         return bot
     }
     public func runCommand(session: String, command: String) async throws { try await maybeFail(); commandsRun.append(command) }
+    /// The switch scenario's second question has taken the first one's place.
+    private var switched = false
+    private var switchArmed = false
     public func pendingQuestion(session: String) async throws -> AskQuestion? {
         try await maybeFail()
+        if scenario == .questionSwitch, session == SampleData.bots[0].mainSession {
+            if !switchArmed {
+                switchArmed = true
+                Task { try? await Task.sleep(for: .seconds(6)); await self.switchQuestion(session) }
+            }
+            let q = switched ? SampleData.switchedQuestion : SampleData.fourOptionQuestion
+            return answeredQuestions.contains(q.callId) ? nil : q
+        }
         guard let q = SampleData.questions[session], !answeredQuestions.contains(q.callId) else { return nil }
         return q
     }
@@ -283,6 +299,11 @@ public actor FakeEngineClient: EngineClient {
         try await maybeFail()
         answeredQuestions.insert(question.callId)
         questionsAnswered.append((session, answers))
+    }
+    /// The second question takes the first one's place, and the stream says so.
+    public func switchQuestion(_ session: String) {
+        switched = true
+        emit(.questionChanged(subject: session))
     }
     public private(set) var questionsSkipped: [String] = []
     public func skipQuestion(session: String, question: AskQuestion) async throws {

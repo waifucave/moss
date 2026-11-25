@@ -82,6 +82,11 @@ public enum SampleData {
     ]
 
     /// Questions waiting in a conversation, by session id.
+    /// The switch scenario's two questions: four options, then two (a choice of the 4th must never survive the switch).
+    public static let fourOptionQuestion = AskQuestion(callId: "ask_four", header: "Release", text: "Which day should the release go out?",
+                                                       options: [.init(label: "Monday"), .init(label: "Tuesday"), .init(label: "Wednesday"), .init(label: "Thursday")])
+    public static let switchedQuestion = AskQuestion(callId: "ask_two", header: "Notes", text: "Should the notes be public?",
+                                                     options: [.init(label: "Yes"), .init(label: "No")])
     public static let questions: [String: AskQuestion] = [
         // A tall question with a long preview: the options and Submit stay on screen (the reviewer's rule for computer text).
         "c5": AskQuestion(callId: "ask_3", header: "Header", text: (1...10).map { "Line \($0) of a question that runs on and on, as a computer may send it." }.joined(separator: "\n"),

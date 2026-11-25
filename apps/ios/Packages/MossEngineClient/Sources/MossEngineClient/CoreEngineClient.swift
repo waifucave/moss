@@ -138,10 +138,12 @@ public actor CoreEngineClient: EngineClient {
         case .sessionItem(let session, let seq, let item):
             sessionItem(item, seq: seq, session: session)
         case .botRemoved(let id):
-            for (s, b) in botOfSession where b.id == id { botOfSession[s] = nil }
+            // Its sessions are no longer followed: a reconnect doesn't attach them again.
+            for (s, b) in botOfSession where b.id == id { botOfSession[s] = nil; unfollow(s) }
             emit(.botRemoved(id: id))
         case .sessionRemoved(let id):
             botOfSession[id] = nil
+            unfollow(id)
             emit(.sessionRemoved(id: id))
         case .notification, .tamperedCard, .messageDropped, .lagged, .closed:
             break
@@ -209,6 +211,13 @@ public actor CoreEngineClient: EngineClient {
             let running = rows.first { $0.id == s }.map { $0.motion == .running } ?? false
             emit(.statusLine(subject: s, line: running ? (bot.map { "\($0.name) is thinking" } ?? "Working") : nil))
         }
+    }
+
+    /// Forgets a session it followed (deleted): nothing re-attaches it after a reconnect.
+    private func unfollow(_ session: String) {
+        attached[session] = nil
+        attachOrder.removeAll { $0 == session }
+        oldestSeq[session] = nil
     }
 
     private func follow(_ c: ConnectionLink, _ session: String) async {

@@ -266,7 +266,7 @@ final class ViewModelTests: XCTestCase {
         let m = ConversationModel(source: .session(SampleData.sessions.first { $0.id == "c4" }!), client: c)
         await m.loadComposer()
         XCTAssertNotNil(m.question)
-        let ok = await m.answerQuestion(["Tag colour": "Green"])
+        let ok = await m.answerQuestion(["Tag colour": "Green"], to: m.question!)
         XCTAssertTrue(ok); XCTAssertNil(m.question)
         await m.loadComposer()
         XCTAssertNil(m.question)
@@ -280,7 +280,7 @@ final class ViewModelTests: XCTestCase {
         await m.loadComposer()
         let q = try? XCTUnwrap(m.question)
         XCTAssertNotNil(q)
-        let skipped = await m.skipQuestion()
+        let skipped = await m.skipQuestion(m.question!)
         XCTAssertTrue(skipped); XCTAssertNil(m.question, "skipped: the composer is back")
         let sent = await c.questionsSkipped
         XCTAssertEqual(sent, ["ask_1"])
@@ -338,6 +338,28 @@ final class ViewModelTests: XCTestCase {
             sessions.apply(.sessionRemoved(id: first.id))
             XCTAssertFalse(sessions.sessions.contains { $0.id == first.id }, "a deleted session leaves the list live")
         }
+    }
+
+    /// One question replaced by another while the person is choosing: an answer (or a skip) made for the first is refused,
+    /// nothing reaches the computer, and the second one waits for its own answer.
+    func testAnAnswerForAReplacedQuestionAnswersNothing() async {
+        let c = fake(.questionSwitch)
+        let m = ConversationModel(source: .bot(SampleData.bots[0]), client: c)
+        await m.loadComposer()
+        let first = try? XCTUnwrap(m.question)
+        XCTAssertEqual(first?.callId, "ask_four")
+        await c.switchQuestion(SampleData.bots[0].mainSession)
+        await m.refreshQuestion()
+        XCTAssertEqual(m.question?.callId, "ask_two")
+        let answered = await m.answerQuestion([SampleData.fourOptionQuestion.text: "Thursday"], to: SampleData.fourOptionQuestion)
+        XCTAssertFalse(answered, "an answer chosen for the first question is not sent to the second")
+        let skipped = await m.skipQuestion(SampleData.fourOptionQuestion)
+        XCTAssertFalse(skipped)
+        let sent = await c.questionsAnswered.count
+        let skips = await c.questionsSkipped
+        XCTAssertEqual(sent, 0); XCTAssertTrue(skips.isEmpty)
+        XCTAssertEqual(m.question?.callId, "ask_two", "the second question still waits")
+        XCTAssertNotNil(m.errorText, "the person is told nothing was sent")
     }
 
     func testFileOverTheLimitIsRefusedWithAPlainLine() async {

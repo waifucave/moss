@@ -384,15 +384,17 @@ struct CameraPicker: UIViewControllerRepresentable {
 /// The question box: while a question waits, the composer's place becomes this box, in the composer's own material.
 struct QuestionComposerView: View {
     let question: AskQuestion
-    let onSubmit: ([String: String]) async -> Bool
+    /// Answers the question this view drew (the model refuses if another one has taken its place meanwhile).
+    let onSubmit: (AskQuestion, [String: String]) async -> Bool
     /// Skips it (a bot's question stays open across turns until answered or skipped; nil where skipping isn't offered).
-    var onSkip: (() async -> Bool)? = nil
+    var onSkip: ((AskQuestion) async -> Bool)? = nil
     @State private var selected = Set<Int>()
     @State private var other = ""
     @State private var submitting = false
 
     private var answer: String {
-        var parts = selected.sorted().map { question.options[$0].label }
+        // Only this question's options: a choice is never carried over to another question (its view is keyed on the call).
+        var parts = selected.sorted().filter { question.options.indices.contains($0) }.map { question.options[$0].label }
         let o = other.trimmingCharacters(in: .whitespacesAndNewlines)
         if !o.isEmpty { parts.append(o) }
         return parts.joined(separator: ", ")
@@ -438,7 +440,8 @@ struct QuestionComposerView: View {
                 if let onSkip {
                     Button("Skip") {
                         submitting = true
-                        Task { _ = await onSkip(); submitting = false }
+                        let drawn = question
+                        Task { _ = await onSkip(drawn); submitting = false }
                     }
                     .frame(minHeight: 44).disabled(submitting)
                     .accessibilityHint("Tells the bot you skipped it, then lets you write a message")
@@ -447,7 +450,8 @@ struct QuestionComposerView: View {
                 Button {
                     submitting = true
                     // The engine keys an answer by the question's own text (never its header).
-                    Task { _ = await onSubmit([question.text: answer]); submitting = false }
+                    let drawn = question, chosen = answer
+                    Task { _ = await onSubmit(drawn, [drawn.text: chosen]); submitting = false }
                 } label: {
                     Text("Submit").font(.body.weight(.semibold)).foregroundStyle(Color(uiColor: .systemBackground))
                         .padding(.horizontal, 20).frame(height: 44).background(Color.primary, in: Capsule())

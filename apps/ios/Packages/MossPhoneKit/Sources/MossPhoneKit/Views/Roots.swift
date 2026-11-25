@@ -34,6 +34,7 @@ public struct AppLaunch {
             case "tallCardChat": l.scenario = .tallCardChat
             case "providerConsent": l.scenario = .providerConsent
             case "botLimit": l.scenario = .botLimit
+            case "questionSwitch": l.scenario = .questionSwitch
             default: break
             }
         }

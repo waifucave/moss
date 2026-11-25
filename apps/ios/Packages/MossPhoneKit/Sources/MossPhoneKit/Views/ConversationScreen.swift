@@ -102,8 +102,10 @@ public struct ConversationScreen: View {
                     EmptyView()
                 } else if let q = model.question {
                     // A bot's question doesn't hold the bot: it stays open until answered or skipped, so it can be skipped here.
-                    QuestionComposerView(question: q, onSubmit: { answers in await model.answerQuestion(answers) },
-                                         onSkip: model.kind == .bot ? { await model.skipQuestion() } : nil)
+                    QuestionComposerView(question: q, onSubmit: { drawn, answers in await model.answerQuestion(answers, to: drawn) },
+                                         onSkip: model.kind == .bot ? { drawn in await model.skipQuestion(drawn) } : nil)
+                        // A new question is a new view: nothing picked for one is ever shown, or sent, for another.
+                        .id(q.callId)
                 } else {
                     ComposerView(model: model, placeholder: model.placeholder)
                 }
@@ -248,21 +250,31 @@ struct AskedQuestionRow: View {
         }
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if let h = question.header { Text(verbatim: h).font(.caption.weight(.semibold)).foregroundStyle(.secondary) }
-            Text(verbatim: question.text).font(.subheadline).lineLimit(6)
-            if !question.options.isEmpty {
-                Text(verbatim: question.options.joined(separator: " · ")).font(.footnote).foregroundStyle(.secondary).lineLimit(3)
+        VStack(alignment: .leading, spacing: 0) {
+            // The bot's words, in their own box: nothing in them can pass for the status below.
+            VStack(alignment: .leading, spacing: 6) {
+                if let h = question.header { Text(verbatim: h).font(.caption.weight(.semibold)).foregroundStyle(.secondary) }
+                Text(verbatim: question.text).font(.subheadline).lineLimit(6)
+                if !question.options.isEmpty {
+                    Text(verbatim: question.options.joined(separator: " · ")).font(.footnote).foregroundStyle(.secondary).lineLimit(3)
+                }
             }
-            if let s = status {
-                Label(s.0, systemImage: s.1).font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
-            } else {
-                Text("Waiting for your answer below").font(.footnote).foregroundStyle(.secondary)
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.botBubble.opacity(0.6))
+            // The phone's own footer, apart from the bot's box: how the question ended.
+            Divider()
+            Group {
+                if let s = status { Label(s.0, systemImage: s.1).font(.footnote.weight(.semibold)) }
+                else { Label("Waiting for your answer below", systemImage: "questionmark.bubble").font(.footnote) }
             }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(uiColor: .secondarySystemGroupedBackground))
+            .accessibilityIdentifier("questionStatus")
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.botBubble.opacity(0.6), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.primary.opacity(0.12), lineWidth: 0.5))
         .padding(.trailing, 32)
         .accessibilityElement(children: .combine)

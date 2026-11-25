@@ -194,17 +194,25 @@ public final class ConversationModel {
     }
     public func unstageFile(_ file: StagedFile) { stagedFiles.removeAll { $0 == file } }
     public func unstage(_ image: StagedImage) { staged.removeAll { $0 == image } }
-    public func answerQuestion(_ answers: [String: String]) async -> Bool {
-        guard let q = question else { return false }
-        do { try await client.answerQuestion(session: sessionID, question: q, answers: answers); question = nil; return true }
+    /// Answers `asked`, the question the person saw. Refused when another question has taken its place (a press during the
+    /// switch answers nothing): an answer only ever goes to the question it was chosen for.
+    public func answerQuestion(_ answers: [String: String], to asked: AskQuestion) async -> Bool {
+        guard let q = question, q.callId == asked.callId else { return replaced() }
+        do { try await client.answerQuestion(session: sessionID, question: q, answers: answers); if question?.callId == q.callId { question = nil }; return true }
         catch { await failedOn(q); return false }
     }
-    /// Skips the open question: the bot is told it was skipped, and the composer is back.
+    /// Skips `asked`, the question the person saw: the bot is told it was skipped, and the composer is back. Refused, like
+    /// an answer, when another question has taken its place.
     @discardableResult
-    public func skipQuestion() async -> Bool {
-        guard let q = question else { return false }
-        do { try await client.skipQuestion(session: sessionID, question: q); question = nil; return true }
+    public func skipQuestion(_ asked: AskQuestion) async -> Bool {
+        guard let q = question, q.callId == asked.callId else { return replaced() }
+        do { try await client.skipQuestion(session: sessionID, question: q); if question?.callId == q.callId { question = nil }; return true }
         catch { await failedOn(q); return false }
+    }
+    private func replaced() -> Bool {
+        errorText = question == nil ? "That question was answered or skipped on another device."
+                                    : "Another question took its place: nothing was sent. Read it, then answer."
+        return false
     }
     /// An answer or skip that didn't go: if the question was closed elsewhere meanwhile, say so rather than "still waiting".
     private func failedOn(_ q: AskQuestion) async {

@@ -183,11 +183,11 @@ class EngineFlowTests: XCTestCase {
                 let q = try XCTUnwrap(conversation.question)
                 print("IW question \(q.callId): \(q.text)")
                 if round == "skip" {
-                    let skipped = await conversation.skipQuestion()
+                    let skipped = await conversation.skipQuestion(q)
                     XCTAssertTrue(skipped, conversation.errorText ?? "")
                     try await eventually("drawn as skipped") { conversation.messages.contains { $0.question?.callId == q.callId && $0.question?.state == .skipped } }
                 } else {
-                    let answered = await conversation.answerQuestion([q.text: "Green"])
+                    let answered = await conversation.answerQuestion([q.text: "Green"], to: q)
                     XCTAssertTrue(answered, conversation.errorText ?? "")
                     try await eventually("drawn as answered") { conversation.messages.contains { $0.question?.callId == q.callId && $0.question?.state == .answered } }
                     try await eventually("the person's answer, naming its question") { conversation.messages.contains { $0.role == .user && $0.answersQuestion == q.callId } }
