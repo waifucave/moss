@@ -93,13 +93,24 @@ class EngineFlowTests: XCTestCase {
         cards.start()
         try await eventually("the card waiting at connect on screen") { cards.cards.contains { $0.id == atConnect } }
         let raised = try await harness.run("raiseCard", app == .moss
-            ? ["title": "Raised after connect", "bot": bot?["id"] as? String ?? ""]
-            : ["title": "Raised after connect", "session": codingSession ?? ""]) as! [String: Any]
+            ? ["title": "Raised after connect", "rich": true, "bot": bot?["id"] as? String ?? ""]
+            : ["title": "Raised after connect", "rich": true, "session": codingSession ?? ""]) as! [String: Any]
         let afterConnect = raised["cardId"] as! String
         try await eventually("the card raised after connect on screen") { cards.cards.contains { $0.id == afterConnect } }
+        // The rich card: every field drawn, the nine-item list and the long reason cut; nothing answers until both are open.
+        let rich = try XCTUnwrap(cards.cards.first { $0.id == afterConnect })
+        XCTAssertTrue(rich.drawnWhole)
+        XCTAssertEqual(rich.cutFields, ["paths", "reason"])
+        for f in ["what", "command", "reason", "source", "host", "paths", "detail"] { XCTAssertNotNil(rich.fields[f], "the engine's card carries \(f)") }
+        try await eventually("the new card's wait over") { !cards.settling.contains(afterConnect) }
+        XCTAssertFalse(cards.mayAnswer(rich))
+        await cards.answer(rich, with: rich.options.first { $0.kind == .approve }!)
+        XCTAssertTrue(cards.cards.contains { $0.id == afterConnect }, "nothing was answered while a part was cut")
+        cards.open("paths", of: rich); cards.open("reason", of: rich)
         for id in [atConnect, afterConnect] {
             let shown = cards.cards.first { $0.id == id }!
             let approve = shown.options.first { $0.kind == .approve }!
+            try await eventually("\(id) answerable") { cards.mayAnswer(shown) }
             await cards.answer(shown, with: approve)
             XCTAssertNil(cards.notes[id], "the answer to \(id) was taken")
             let decision = try await harness.run("decision", ["cardId": id]) as? [String: Any]
@@ -177,8 +188,10 @@ class EngineFlowTests: XCTestCase {
 
         // Unpairing leaves nothing of the pairing in the Keychain, the device's own keys included.
         cards.stopListening(); conversation.stopListening()
+        DefaultsPinStore(defaults: .standard).pinned = ["alpha"]
         await client.unpair()
         XCTAssertEqual(try items.count(), 0, "every Keychain item is gone")
+        XCTAssertNil(UserDefaults.standard.object(forKey: DefaultsPinStore.defaultKey), "nothing of the computer stays in the app's settings")
 
         // Pairing again makes a new device; the computer revoking it leaves the phone with nothing of the pairing.
         let phonesBefore = Set(try await harness.run("phones") as? [String] ?? [])

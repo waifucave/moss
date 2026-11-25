@@ -43,9 +43,7 @@ public struct ConversationScreen: View {
                             .padding(.top, prev != nil && prev?.role != m.role ? 6 : 0)
                     }
                     ForEach(waitingCards) { card in
-                        CardView(card: card, busy: cards.answering.contains(card.id), note: cards.note(for: card),
-                                 onAnswer: { o in Task { await cards.answer(card, with: o) } },
-                                 onSettle: { cards.note(for: card) == .failed ? cards.clearFailure(card) : cards.dismiss(card) })
+                        CardView(card: card, in: cards)
                             .padding(.top, 6)
                             .id(card.id)
                     }
@@ -62,9 +60,9 @@ public struct ConversationScreen: View {
             .scrollEdgeEffectStyle(.soft, for: .bottom)
             .defaultScrollAnchor(startsAtTop ? .top : .bottom)
             .task(id: scrollTarget) { if let t = scrollTarget { try? await Task.sleep(for: .seconds(1)); proxy.scrollTo(t, anchor: .top) } }
-            .onChange(of: model.messages.count) { _, _ in if !startsAtTop, scrollTarget == nil { withAnimation { proxy.scrollTo("end") } } }
-            .onChange(of: model.statusLine) { _, _ in if !startsAtTop, scrollTarget == nil { withAnimation { proxy.scrollTo("end") } } }
-            .onChange(of: waitingCards.count) { _, _ in if !startsAtTop, scrollTarget == nil { withAnimation { proxy.scrollTo("end") } } }
+            // Never scrolled by itself while a card's buttons are on screen: nothing moves under the person's finger.
+            .onChange(of: model.messages.count) { _, _ in if !startsAtTop, scrollTarget == nil, waitingCards.isEmpty { withAnimation { proxy.scrollTo("end") } } }
+            .onChange(of: model.statusLine) { _, _ in if !startsAtTop, scrollTarget == nil, waitingCards.isEmpty { withAnimation { proxy.scrollTo("end") } } }
         }
         .safeAreaBar(edge: .bottom, spacing: 0) {
             VStack(spacing: 6) {

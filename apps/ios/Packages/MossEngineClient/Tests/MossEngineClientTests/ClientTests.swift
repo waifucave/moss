@@ -20,7 +20,7 @@ final class CardShelfTests: XCTestCase {
     func testOnlyTheIssuedCardAsDrawnIsAnswerable() throws {
         var shelf = CardShelf(decode: { Doors.card($0) })
         let s = shown("card_aaaaaa")
-        let card = try XCTUnwrap(shelf.issue(s))
+        let card = shelf.issue(s)
         XCTAssertEqual(card.expiresAt, Int64.max, "no expiry: it waits")
         XCTAssertTrue(shelf.shown(for: card) === s)
         var altered = card
@@ -30,12 +30,34 @@ final class CardShelfTests: XCTestCase {
         XCTAssertNil(shelf.shown(for: card), "a resolved card isn't answered from here")
     }
 
-    func testACardThePhoneCantDrawWholeIsNotShown() {
+    func testACardThePhoneCantDrawWholeIsShownAsAnswerOnTheComputer() {
         var shelf = CardShelf(decode: { Doors.card($0) })
-        XCTAssertNil(shelf.issue(shown("card_bbbbbb", json: cardJSON("card_bbbbbb", fields: #"{"title":{"type":"chart","x":1}}"#))))
-        XCTAssertNil(shelf.issue(shown("card_cccccc", json: cardJSON("card_cccccc", options: #"[{"id":"x","kind":"maybe","label":"?"}]"#))))
-        XCTAssertNil(shelf.issue(shown("card_dddddd", hash: "other", json: cardJSON("card_dddddd", hash: "h"))), "the issue's hash and the drawn one agree")
-        XCTAssertTrue(shelf.cards.isEmpty)
+        // A card first drawn whole, then re-issued with content the phone can't read: the stand-in replaces it on screen.
+        let first = shelf.issue(shown("card_bbbbbb"))
+        XCTAssertTrue(first.drawnWhole)
+        let reissued = shelf.issue(shown("card_bbbbbb", json: cardJSON("card_bbbbbb", fields: #"{"title":{"type":"chart","x":1}}"#)))
+        XCTAssertFalse(reissued.drawnWhole)
+        XCTAssertTrue(reissued.options.isEmpty)
+        XCTAssertEqual(shelf.cards.map(\.id), ["card_bbbbbb"])
+        XCTAssertNil(shelf.shown(for: reissued)); XCTAssertNil(shelf.shown(for: first), "the old text is answered nowhere")
+        let c = shelf.issue(shown("card_cccccc", json: cardJSON("card_cccccc", options: #"[{"id":"x","kind":"maybe","label":"?"}]"#)))
+        XCTAssertFalse(c.drawnWhole)
+        let d = shelf.issue(shown("card_dddddd", hash: "other", json: cardJSON("card_dddddd", hash: "h")))
+        XCTAssertFalse(d.drawnWhole, "the issue's hash and the drawn one agree, or nothing is answerable")
+        // A plugin OK's checkboxes aren't drawn on the phone: answered on the computer.
+        let ok = shelf.issue(shown("card_eeeee1", json: cardJSON("card_eeeee1").replacingOccurrences(of: #""kind":"change""#, with: #""kind":"change","children":[{"id":"pack-a","label":"A","checked":true}]"#)))
+        XCTAssertFalse(ok.drawnWhole)
+        XCTAssertNil(shelf.shown(for: ok))
+    }
+
+    func testAResolveKeepsANewerIssueOfTheSameCard() {
+        var shelf = CardShelf(decode: { Doors.card($0) })
+        let old = shown("card_ffff01")
+        _ = shelf.issue(old)
+        let new = shown("card_ffff01", hash: "h2")
+        let card = shelf.issue(new)
+        XCTAssertFalse(shelf.resolve("card_ffff01", ifStill: old), "the answer to the old issue leaves the new one")
+        XCTAssertTrue(shelf.shown(for: card) === new)
     }
 
     func testAnUnknownFieldOfTheCardIsIgnored() throws {
@@ -70,6 +92,7 @@ final class CardShelfTests: XCTestCase {
                     let card = expect.flatMap { Doors.card($0.cardJSON) }
                     if let card { XCTAssertTrue(shelf.shown(for: card) === expect) }
                     XCTAssertEqual(shelf.cards.contains { $0.id == id }, expect != nil)
+                    XCTAssertEqual(Set(shelf.cards.map(\.id)).count, shelf.cards.count, "one card per id")
                 }
             }
         }
@@ -136,8 +159,13 @@ final class FakeConnection: ConnectionLink, @unchecked Sendable {
         }
     }
     func fetchCard(_ id: String) async throws -> ShownCard { shown(id) }
+    var answerTimesOut = false
+    var createTimesOut = false
+    var creates = 0
     func answer(_ card: ShownCard, option: String, children: [String]) async throws -> (accepted: Bool, reason: String?) {
-        answered.append((card, option)); return (accept, accept ? nil : "the card was already answered, or its time ran out")
+        answered.append((card, option))
+        if answerTimesOut { throw LinkError.timeout("no answer") }
+        return (accept, accept ? nil : "the card was already answered, or its time ran out")
     }
     var sent: [(String, String, [String])] = []
     func sendMessage(session: String, text: String, clientMessageId: String, images: [String], files: [String]) async throws -> UInt64 { sent.append((session, text, images)); return 1 }
@@ -149,7 +177,11 @@ final class FakeConnection: ConnectionLink, @unchecked Sendable {
         LinkPage(session: "s1", items: [(3, .message(ChatMessage(id: "s1#3", role: .agent, text: "Hi", at: 1))), (4, .turnEnded)], hasMore: true)
     }
     func markRead(bot: String, at: Int64) async throws {}
-    func createBot(name: String, model: String?) async throws -> Bot { throw notOffered() }
+    func createBot(name: String, model: String?) async throws -> Bot {
+        creates += 1
+        if createTimesOut { throw LinkError.timeout("no answer") }
+        throw notOffered()
+    }
     func sessions() async throws -> [SessionRow] { [] }
     func history(session: String, beforeSeq: Int64?, limit: UInt32) async throws -> LinkPage { LinkPage(session: session, items: [], hasMore: false) }
     func stop(session: String) async throws {}
@@ -234,6 +266,42 @@ final class ClientTests: XCTestCase {
         XCTAssertEqual(page.messages.map(\.role), [.bot])
         XCTAssertTrue(page.hasMore)
         XCTAssertTrue(conn.calls.contains { $0.0 == "session.attach" }, "the conversation is followed live")
+    }
+
+    func testTheEnginesReasonsAreToldApart() {
+        XCTAssertEqual(CoreEngineClient.answerError("the card was already answered, or its time ran out", expired: false), .answeredElsewhere)
+        XCTAssertEqual(CoreEngineClient.answerError("the card was already answered, or its time ran out", expired: true), .expired)
+        XCTAssertEqual(CoreEngineClient.answerError("the card changed since it was shown", expired: false), .changed)
+        XCTAssertEqual(CoreEngineClient.answerError("the answer's time is too far from this computer's", expired: false), .refused("the answer's time is too far from this computer's"))
+    }
+
+    func testATimedOutAnswerCountsOnlyWithTheOptionSent() async throws {
+        let conn = FakeConnection()
+        let (c, _) = client(conn)
+        let stream = await c.events()
+        _ = await c.pairedComputer
+        conn.push(.up)
+        conn.push(.pendingCards([shown("card_t00001")]))
+        var it = stream.makeAsyncIterator()
+        var got: Card?
+        while got == nil, let e = await it.next() { if case .cardRequested(let card) = e { got = card } }
+        let card = try XCTUnwrap(got)
+        conn.answerTimesOut = true
+        conn.answers["card.get"] = #"{"card":{},"outcome":"denied","option":"deny"}"#
+        do { try await c.answer(card: card, option: card.options[0]); XCTFail("another option settled it") } catch let e as CardAnswerError { XCTAssertEqual(e, .answeredElsewhere) }
+    }
+
+    func testATimedOutMakeIsLookedForBeforeAnother() async throws {
+        let conn = FakeConnection()
+        conn.createTimesOut = true
+        let (c, _) = client(conn)
+        do { _ = try await c.createBot(name: "Gamma", model: nil); XCTFail("no answer, nothing listed") } catch is MayHaveReached {}
+        // It turns out it was made: the second tap finds it and makes none.
+        conn.botList = [Bot(id: "gamma", name: "Gamma", mainSession: "b_gamma")]
+        conn.createTimesOut = false
+        let b = try await c.createBot(name: "Gamma", model: nil)
+        XCTAssertEqual(b.id, "gamma")
+        XCTAssertEqual(conn.creates, 1, "one make only")
     }
 
     func testASendNamesItsAttachmentsInTheText() async throws {

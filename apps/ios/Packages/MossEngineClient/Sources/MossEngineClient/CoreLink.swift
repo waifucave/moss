@@ -164,7 +164,10 @@ public struct CoreFactory: Sendable {
     public var make: @Sendable () throws -> CoreLink
     public var wipeStore: @Sendable () throws -> Void
     public var visible: @Sendable (String) -> String
-    public init(make: @escaping @Sendable () throws -> CoreLink, wipeStore: @escaping @Sendable () throws -> Void, visible: @escaping @Sendable (String) -> String = { $0 }) {
-        self.make = make; self.wipeStore = wipeStore; self.visible = visible
+    /// The same rule for a name (a computer's): `visible_text(text, name: true)`.
+    public var visibleName: @Sendable (String) -> String
+    public init(make: @escaping @Sendable () throws -> CoreLink, wipeStore: @escaping @Sendable () throws -> Void, visible: @escaping @Sendable (String) -> String = { $0 },
+                visibleName: @escaping @Sendable (String) -> String = { $0 }) {
+        self.make = make; self.wipeStore = wipeStore; self.visible = visible; self.visibleName = visibleName
     }
 }

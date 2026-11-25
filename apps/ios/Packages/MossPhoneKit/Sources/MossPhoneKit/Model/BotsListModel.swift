@@ -10,6 +10,9 @@ public final class MemoryPinStore: PinStore {
     public init(_ pinned: [String] = []) { self.pinned = pinned }
 }
 public final class DefaultsPinStore: PinStore {
+    public static let defaultKey = "moss.pinnedBots"
+    /// What an unpair leaves of this app's own settings: nothing (the pins named that computer's bots).
+    public static func clear(defaults: UserDefaults = .standard) { defaults.removeObject(forKey: defaultKey) }
     private let key: String
     private let defaults: UserDefaults
     public init(key: String = "moss.pinnedBots", defaults: UserDefaults = .standard) { self.key = key; self.defaults = defaults }

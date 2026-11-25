@@ -1,7 +1,8 @@
 name: iOS apps
 
-# Builds MOSS and MOSS Code for the simulator and runs the shared package's tests. Not gating: it is a separate
-# workflow, and its job may fail without holding a merge.
+# Builds MOSS and MOSS Code for the simulator and runs the shared package's tests, the cards' drawn-button tests and the
+# Release check. A gate: any of these failing fails the job. The accessibility audits report only (the system's own bars
+# trip them), and run apart from the gated tests.
 on:
   push:
     branches: ["lane-int/**", "lane/ia-**", "lane/iw-**"]
@@ -20,7 +21,6 @@ concurrency:
 jobs:
   ios:
     runs-on: macos-26
-    continue-on-error: true
     timeout-minutes: 40
     defaults:
       run:
@@ -28,7 +28,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install XcodeGen
-        run: brew install xcodegen
+        run: |
+          # xcodegen at a fixed release, checked against the release asset's own SHA-256 (GitHub's digest for it).
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" https://github.com/yonaskolb/XcodeGen/releases/download/2.47.0/xcodegen.zip
+          echo "6ef12a3ef5327c2c713397f46d9160550f8b1cdc5c925cd884d65c77c9f696cd  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP/xcodegen"
+          echo "$RUNNER_TEMP/xcodegen/xcodegen/bin" >> "$GITHUB_PATH"
       - name: Pick a simulator
         run: |
           xcrun simctl list devices available | grep -i iphone | head -5
@@ -58,17 +63,21 @@ jobs:
           # Nor the fake engine client or its sample data: a scenario name, a sample bot, the sample pairing code.
           for APP in "$RUNNER_TEMP"/dd-rel/Build/Products/Release-iphonesimulator/*.app; do
             BIN="$APP/$(basename "$APP" .app)"
-            for W in FakeEngineClient SampleData midTurn cardStates sendFails botLimit moss-pair:sample "Use a sample code" Juniper Marlow Sorrel; do
+            for W in FakeEngineClient SampleData midTurn cardStates sendFails botLimit providerConsent manyPaths moss-pair:sample "Use a sample code" Juniper Marlow Sorrel Hazel "Quarterly report.pdf"; do
               if strings -a "$BIN" "$APP"/*.debug.dylib 2>/dev/null | grep -qF -e "$W"; then echo "release build of $(basename "$APP") carries the fake's '$W'"; FOUND=1; fi
             done
           done
           [ "$FOUND" = 0 ] && echo "no launch argument, fake or sample data in either Release build"
           exit $FOUND
+      - name: The cards' drawn buttons (a cut card's Allow waits; the provider is drawn)
+        run: |
+          DEST="platform=iOS Simulator,name=$(xcrun simctl list devices available | grep -o 'iPhone [0-9A-Za-z ]*' | head -1 | sed 's/ *$//')"
+          xcodebuild test -project MOSSPhone.xcodeproj -scheme MOSS -destination "$DEST" -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO -only-testing:MOSSUITests/CardGateUITests 2>&1 | grep -E "Test Case|error:|XCTAssert|Executed|TEST (SUCC|FAIL)" | cut -c1-400 ; exit ${PIPESTATUS[0]}
       - name: Accessibility audits at the default and the largest text size (MOSS)
         continue-on-error: true
         run: |
           DEST="platform=iOS Simulator,name=$(xcrun simctl list devices available | grep -o 'iPhone [0-9A-Za-z ]*' | head -1 | sed 's/ *$//')"
-          xcodebuild test -project MOSSPhone.xcodeproj -scheme MOSS -destination "$DEST" -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$RUNNER_TEMP/ui-moss.log" | grep -E "AUDIT|error:|Executed|TEST (SUCC|FAIL)" | cut -c1-400
+          xcodebuild test -project MOSSPhone.xcodeproj -scheme MOSS -destination "$DEST" -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO -skip-testing:MOSSUITests/CardGateUITests 2>&1 | tee "$RUNNER_TEMP/ui-moss.log" | grep -E "AUDIT|error:|Executed|TEST (SUCC|FAIL)" | cut -c1-400
       - name: Accessibility audits at the default and the largest text size (MOSS Code)
         continue-on-error: true
         run: |

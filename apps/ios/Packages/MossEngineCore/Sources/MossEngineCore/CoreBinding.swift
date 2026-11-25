@@ -280,7 +280,8 @@ public enum MossEngine {
             },
             wipeStore: { try items.deleteAll() },
             // The engine's one rule for a computer's text drawn outside a typed field (a card's sealed text).
-            visible: { visibleText(text: $0, name: false) }
+            visible: { visibleText(text: $0, name: false) },
+            visibleName: { visibleText(text: $0, name: true) }
         )
         return CoreEngineClient(factory: factory, app: app)
     }

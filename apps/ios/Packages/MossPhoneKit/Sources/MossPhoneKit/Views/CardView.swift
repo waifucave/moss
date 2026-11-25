@@ -7,14 +7,28 @@ public struct CardView: View {
     let note: CardNote?
     let onAnswer: (CardOption) -> Void
     let onSettle: () -> Void
-    @State private var expanded = Set<String>()
+    /// Whether the buttons answer now (the model's word: not inside its wait, every cut field opened).
+    let ready: Bool
+    /// The cut fields opened, and opening one (kept in the model, which refuses an answer until all are open).
+    let opened: Set<String>
+    let onOpen: (String) -> Void
     @Environment(\.nowMs) private var nowOverride
     @Environment(\.dynamicTypeSize) private var typeSize
 
     /// `note` says why the card can't be answered (expired, answered elsewhere, failed); `onSettle` then dismisses it (or, after a failure, lets the person try again).
-    public init(card: Card, busy: Bool = false, note: CardNote? = nil, onAnswer: @escaping (CardOption) -> Void, onSettle: @escaping () -> Void = {}) {
-        self.card = card; self.busy = busy; self.note = note; self.onAnswer = onAnswer; self.onSettle = onSettle
+    public init(card: Card, busy: Bool = false, note: CardNote? = nil, ready: Bool = true, opened: Set<String> = [], onOpen: @escaping (String) -> Void = { _ in },
+                onAnswer: @escaping (CardOption) -> Void, onSettle: @escaping () -> Void = {}) {
+        self.card = card; self.busy = busy; self.note = note; self.ready = ready; self.opened = opened; self.onOpen = onOpen
+        self.onAnswer = onAnswer; self.onSettle = onSettle
     }
+    /// A convenience for the cards a `CardsModel` holds: its gates, its opened fields, its answer.
+    public init(card: Card, in model: CardsModel) {
+        self.init(card: card, busy: model.answering.contains(card.id), note: model.note(for: card), ready: model.mayAnswer(card) || model.note(for: card) != nil,
+                  opened: model.opened[card.id] ?? [], onOpen: { model.open($0, of: card) },
+                  onAnswer: { o in Task { await model.answer(card, with: o) } },
+                  onSettle: { model.note(for: card) == .failed ? model.clearFailure(card) : model.dismiss(card) })
+    }
+    private var unopened: Int { card.cutFields.subtracting(opened).count }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -38,6 +52,11 @@ public struct CardView: View {
                 Label("Answer this one on your computer: it carries something this phone can't show.", systemImage: "desktopcomputer")
                     .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else {
+                if unopened > 0 {
+                    // What is approved is what was on screen: every cut part is opened first.
+                    Text(unopened == 1 ? "Open the part cut short above to answer." : "Open the \(unopened) parts cut short above to answer.")
+                        .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
                 (card.options.count > 2 ? AnyLayout(VStackLayout(spacing: 8)) : AnyLayout(HStackLayout(spacing: 8))) {
                     ForEach(card.options) { option in
                         Button { onAnswer(option) } label: {
@@ -46,7 +65,7 @@ public struct CardView: View {
                         .buttonStyle(.bordered)
                         .tint(option.kind == .approve ? Theme.accent : .secondary)
                         .controlSize(.regular)
-                        .disabled(busy || settling)
+                        .disabled(busy || !ready || unopened > 0)
                         .accessibilityLabel(option.rememberAlways ? "\(option.label), and remember" : option.label)
                         .accessibilityHint(option.kind == .approve ? "Approves this request" : "Refuses this request")
                     }
@@ -58,27 +77,21 @@ public struct CardView: View {
         .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Color.primary.opacity(0.14), lineWidth: 0.5))
         .opacity(note == nil || note == .failed ? 1 : 0.75)
         .accessibilityElement(children: .contain)
-        .onChange(of: card) { _, _ in
-            settling = true
-            Task { try? await Task.sleep(for: .milliseconds(1200)); settling = false }
-        }
     }
 
     /// Every field the protocol lists (`CARD_FIELD_NAMES`) after the heading's two, in the desktop's order; `computer` sits in the footer.
     private var shownFields: [(String, SealedValue)] {
         Card.bodyFields.compactMap { name in card.fields[name].map { (name, $0) } }
     }
-    /// A card whose content changed under the same id: its buttons wait a moment, so a press meant for the old text never lands on the new.
-    @State private var settling = false
 
     @ViewBuilder private func field(_ name: String, _ value: SealedValue) -> some View {
         switch value {
         case .text(let t):
             if name == "computer" { EmptyView() }   // shown in the footer
-            else { labelled(name) { cutText(t, name: name, limit: 600).font(.callout) } }
+            else { labelled(name) { cutText(t, name: name, limit: Card.Cut.text).font(.callout) } }
         case .code(let c, _):
             labelled(name) {
-                cutText(c, name: name, limit: 800)
+                cutText(c, name: name, limit: Card.Cut.code)
                     .font(.system(.footnote, design: .monospaced))
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -87,21 +100,24 @@ public struct CardView: View {
         case .list(let items):
             labelled(name) {
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(Array(items.prefix(8).enumerated()), id: \.offset) { _, i in
+                    let open = opened.contains(name) || items.count <= Card.Cut.items
+                    ForEach(Array((open ? items : Array(items.prefix(Card.Cut.items))).enumerated()), id: \.offset) { _, i in
                         Text(Sealed.visible(i)).font(.system(.footnote, design: .monospaced))
                     }
-                    if items.count > 8 { Text("and \(items.count - 8) more").font(.footnote).foregroundStyle(.secondary) }
+                    if !open { showAll(name, "Cut short: \(items.count - Card.Cut.items) more. Show all \(items.count)") }
                 }
             }
         case .rows(let rows):
             labelled(name) { VStack(alignment: .leading, spacing: 4) {
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, r in
+                let open = opened.contains(name) || rows.count <= Card.Cut.items
+                ForEach(Array((open ? rows : Array(rows.prefix(Card.Cut.items))).enumerated()), id: \.offset) { _, r in
                     (typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 0)) : AnyLayout(HStackLayout(alignment: .firstTextBaseline))) {
                         Text(Sealed.visible(r.label)).foregroundStyle(.secondary)
                         if !typeSize.isAccessibilitySize { Spacer(minLength: 12) }
                         Text(Sealed.visible(r.value)).multilineTextAlignment(typeSize.isAccessibilitySize ? .leading : .trailing)
                     }.font(.callout)
                 }
+                if !open { showAll(name, "Cut short: \(rows.count - Card.Cut.items) more. Show all \(rows.count)") }
             } }
         }
     }
@@ -120,12 +136,15 @@ public struct CardView: View {
     @ViewBuilder private func cutText(_ s: String, name: String, limit: Int) -> some View {
         let cut = Sealed.cut(s, limit: limit)
         VStack(alignment: .leading, spacing: 4) {
-            Text(expanded.contains(name) ? Sealed.visible(s) : cut.shown)
-            if cut.hiddenCount > 0 && !expanded.contains(name) {
-                Button("Cut short: \(cut.hiddenCount) more characters. Show all") { expanded.insert(name) }
-                    .font(.footnote).buttonStyle(.plain).foregroundStyle(.secondary).underline()
-            }
+            Text(opened.contains(name) ? Sealed.visible(s) : cut.shown)
+            if cut.hiddenCount > 0 && !opened.contains(name) { showAll(name, "Cut short: \(cut.hiddenCount) more characters. Show all") }
         }
+    }
+    /// Opens a cut field in place.
+    private func showAll(_ name: String, _ label: String) -> some View {
+        Button(label) { onOpen(name) }
+            .font(.footnote).buttonStyle(.plain).foregroundStyle(.secondary).underline()
+            .accessibilityIdentifier("showAll-\(name)")
     }
 
     private var footer: some View {
@@ -160,9 +179,7 @@ public struct CardsScreen: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(who(card)).font(.footnote).foregroundStyle(.secondary).padding(.leading, 6)
                             .accessibilityAddTraits(.isHeader)
-                        CardView(card: card, busy: model.answering.contains(card.id), note: model.note(for: card),
-                                 onAnswer: { option in Task { await model.answer(card, with: option) } },
-                                 onSettle: { model.note(for: card) == .failed ? model.clearFailure(card) : model.dismiss(card) })
+                        CardView(card: card, in: model)
                     }
                 }
             }

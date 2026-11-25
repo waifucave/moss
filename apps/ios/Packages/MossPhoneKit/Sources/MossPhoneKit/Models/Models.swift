@@ -222,13 +222,21 @@ public struct Card: Identifiable, Codable, Hashable, Sendable {
     public var hash: String
     public var fields: [String: SealedValue]
     public var options: [CardOption]
+    /// A plugin OK's checkboxes (`children`): the phone doesn't draw them yet, so such a card is answered on the computer.
+    public var children: [Child]?
+    public struct Child: Codable, Hashable, Sendable {
+        public var id: String
+        public var label: String
+        public var checked: Bool
+        public init(id: String, label: String, checked: Bool) { self.id = id; self.label = label; self.checked = checked }
+    }
 
     public init(id: String, kind: String, computer: String? = nil, session: String? = nil, bot: String? = nil,
                 origin: String? = nil, issuedAt: Int64, expiresAt: Int64, hash: String,
-                fields: [String: SealedValue], options: [CardOption]) {
+                fields: [String: SealedValue], options: [CardOption], children: [Child]? = nil) {
         self.id = id; self.kind = kind; self.computer = computer; self.session = session; self.bot = bot
         self.origin = origin; self.issuedAt = issuedAt; self.expiresAt = expiresAt; self.hash = hash
-        self.fields = fields; self.options = options
+        self.fields = fields; self.options = options; self.children = children
     }
 
     public var title: String { text("title") ?? "Needs your answer" }
@@ -236,11 +244,47 @@ public struct Card: Identifiable, Codable, Hashable, Sendable {
     public static let fieldNames = ["title", "what", "command", "computer", "risk", "reason", "source", "host", "paths", "detail", "expires", "rule"]
     /// The fields drawn under the heading (title and what), in the protocol's order.
     public static var bodyFields: [String] { fieldNames.filter { $0 != "title" && $0 != "what" } }
-    /// Every field it carries is one the phone draws, and the heading's two are text: else it is answered on the computer.
+    /// The phone can draw all of it: every field it carries is one the phone draws, the heading's two are text, it has no
+    /// checkboxes, and it isn't too large to read on a phone. Otherwise it is answered on the computer (no buttons here).
     public var drawnWhole: Bool {
         fields.keys.allSatisfy(Card.fieldNames.contains)
             && fields["title"].map { if case .text = $0 { return true } else { return false } } ?? true
             && fields["what"].map { if case .text = $0 { return true } else { return false } } ?? true
+            && (children ?? []).isEmpty
+            && characters <= Card.tooLargeCharacters
+    }
+
+    /// How much a field shows before it is cut (and says so, offering the rest in place).
+    public enum Cut {
+        public static let text = 600
+        public static let code = 800
+        public static let items = 8
+    }
+    /// A card with more text than this is too long to read on a phone: answered on the computer.
+    public static let tooLargeCharacters = 40_000
+    var characters: Int {
+        fields.values.reduce(0) { n, v in
+            switch v {
+            case .text(let t): return n + t.count
+            case .code(let c, _): return n + c.count
+            case .list(let i): return n + i.reduce(0) { $0 + $1.count }
+            case .rows(let r): return n + r.reduce(0) { $0 + $1.label.count + $1.value.count }
+            }
+        }
+    }
+    /// The fields shown cut, which the person must open once before the card can be answered: what is approved is what was on screen.
+    public var cutFields: Set<String> {
+        var out = Set<String>()
+        for name in Card.bodyFields {
+            guard let v = fields[name] else { continue }
+            switch v {
+            case .text(let t): if name != "computer", Sealed.visible(t).count > Cut.text { out.insert(name) }
+            case .code(let c, _): if Sealed.visible(c).count > Cut.code { out.insert(name) }
+            case .list(let i): if i.count > Cut.items { out.insert(name) }
+            case .rows(let r): if r.count > Cut.items { out.insert(name) }
+            }
+        }
+        return out
     }
     public var what: String? { text("what") }
     private func text(_ name: String) -> String? {
@@ -300,7 +344,17 @@ public enum PhoneApp: String, Hashable, Sendable { case moss, code }
 public enum CardAnswerError: Error, Equatable, Sendable {
     case expired
     case answeredElsewhere
+    /// The card changed on the computer since it was drawn: the new one is drawn in its place.
+    case changed
+    /// The computer turned the answer away for another reason, in its own (cleaned) words.
+    case refused(String)
+    /// The phone can't draw the card whole (or the person hasn't opened every cut field): answered on the computer.
+    case notShownWhole
 }
+
+/// A create (a bot, a session) whose answer never came: it may have been made. The client looked and found none, so the
+/// person may try again knowing that.
+public struct MayHaveReached: Error, Equatable, Sendable { public init() {} }
 
 /// An agent backend a person can start a session with (`agent.backends`, `userStartable` only).
 public struct AgentBackend: Identifiable, Hashable, Sendable {

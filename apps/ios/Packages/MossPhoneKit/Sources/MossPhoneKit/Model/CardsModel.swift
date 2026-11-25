@@ -6,11 +6,14 @@ public enum CardNote: Equatable, Sendable {
     case expired
     case answeredElsewhere
     case failed
+    /// The computer turned the answer away, and said why (its words, cleaned).
+    case refused(String)
     public var text: String {
         switch self {
         case .expired: return "This card expired before it was answered."
         case .answeredElsewhere: return "Already answered on another device."
         case .failed: return "That didn't work. The card is still waiting."
+        case .refused(let why): return "Your computer didn't take that answer: \(why)"
         }
     }
 }
@@ -28,9 +31,52 @@ public final class CardsModel {
     @ObservationIgnored private let now: @Sendable () -> Int64
     @ObservationIgnored private var listener: Task<Void, Never>?
     @ObservationIgnored private var answeredHere: Set<String> = []
+    /// Cards whose buttons wait: just arrived, changed, or moved because one above them left. A press can't land on a
+    /// card that slid under the finger; the model refuses an answer inside the wait, whatever the view shows.
+    public private(set) var settling: Set<String> = []
+    @ObservationIgnored private var settleTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private let settleWait: Duration
+    /// The cut fields the person has opened, per card: a card is answered only once every cut field was on screen.
+    public private(set) var opened: [String: Set<String>] = [:]
 
-    public init(client: EngineClient, app: PhoneApp, now: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }) {
-        self.client = client; self.app = app; self.now = now
+    public init(client: EngineClient, app: PhoneApp, now: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) },
+                settleWait: Duration = .milliseconds(1200)) {
+        self.client = client; self.app = app; self.now = now; self.settleWait = settleWait
+    }
+
+    /// Every cut field of the card has been opened (or it has none).
+    public func seenWhole(_ card: Card) -> Bool { card.cutFields.isSubset(of: opened[card.id] ?? []) }
+    public func open(_ field: String, of card: Card) { opened[card.id, default: []].insert(field) }
+    /// Whether its buttons answer now: drawn whole, every cut field opened, not waiting, not busy, nothing noted.
+    public func mayAnswer(_ card: Card) -> Bool {
+        card.drawnWhole && seenWhole(card) && !settling.contains(card.id) && !answering.contains(card.id) && note(for: card) == nil
+    }
+
+    private func settle(_ ids: some Sequence<String>) {
+        for id in ids {
+            settleTasks[id]?.cancel()
+            settling.insert(id)
+            let wait = settleWait
+            settleTasks[id] = Task { [weak self] in
+                try? await Task.sleep(for: wait)
+                guard !Task.isCancelled else { return }
+                self?.settling.remove(id); self?.settleTasks[id] = nil
+            }
+        }
+    }
+    /// The list became `new`: cards that arrived, changed, or now sit somewhere else wait a moment.
+    private func replace(with new: [Card]) {
+        let old = cards
+        var moved: [String] = []
+        for (i, c) in new.enumerated() {
+            if let j = old.firstIndex(where: { $0.id == c.id }) {
+                if old[j] != c { moved.append(c.id); opened[c.id] = nil }
+                else if j != i { moved.append(c.id) }
+            } else if loaded { moved.append(c.id) }
+        }
+        cards = new
+        for id in Set(old.map(\.id)).subtracting(new.map(\.id)) { opened[id] = nil; settleTasks[id]?.cancel(); settleTasks[id] = nil; settling.remove(id) }
+        settle(moved)
     }
 
     /// Cards still waiting for an answer (not expired, not answered elsewhere).
@@ -48,7 +94,7 @@ public final class CardsModel {
             let all = try await client.cards()
             var mine: [Card] = []
             for c in all where await client.shows(c, in: app) { mine.append(c) }
-            cards = mine
+            replace(with: mine)
             // A card we hold but the engine no longer lists was settled elsewhere.
             loadFailed = false
         } catch { loadFailed = true }
@@ -74,27 +120,36 @@ public final class CardsModel {
         case .cardRequested(let c):
             guard await client.shows(c, in: app) else { break }
             // The same card again with new content replaces the one on screen, in its place (never stale text whose press fails).
-            if let i = cards.firstIndex(where: { $0.id == c.id }) { if cards[i] != c { cards[i] = c; notes[c.id] = nil } }
-            else { cards.append(c) }
+            var next = cards
+            if let i = next.firstIndex(where: { $0.id == c.id }) { if next[i] != c { next[i] = c; notes[c.id] = nil } }
+            else { next.append(c) }
+            replace(with: next)
         case .cardResolved(let id):
-            if answeredHere.contains(id) { cards.removeAll { $0.id == id } }
+            if answeredHere.contains(id) { replace(with: cards.filter { $0.id != id }) }
             else if cards.contains(where: { $0.id == id }) { notes[id] = .answeredElsewhere }
         default: break
         }
     }
 
     public func answer(_ card: Card, with option: CardOption) async {
-        guard !answering.contains(card.id), note(for: card) == nil else { return }
+        // Only the card as it is on screen now, whole, every cut field opened, and not inside its wait.
+        guard cards.contains(card), mayAnswer(card) else { return }
         answering.insert(card.id)
         defer { answering.remove(card.id) }
         do {
             answeredHere.insert(card.id)
             try await client.answer(card: card, option: option)
-            cards.removeAll { $0.id == card.id }
+            replace(with: cards.filter { $0.id != card.id })
             notes[card.id] = nil
         } catch let e as CardAnswerError {
             answeredHere.remove(card.id)
-            notes[card.id] = e == .expired ? .expired : .answeredElsewhere
+            switch e {
+            case .expired: notes[card.id] = .expired
+            case .answeredElsewhere: notes[card.id] = .answeredElsewhere
+            case .refused(let why): notes[card.id] = .refused(why)
+            // The new card is drawn in its place (its event comes with it); nothing is noted on it.
+            case .changed, .notShownWhole: break
+            }
         } catch {
             answeredHere.remove(card.id)
             notes[card.id] = .failed
@@ -103,7 +158,7 @@ public final class CardsModel {
 
     /// Takes a settled card off the screen.
     public func dismiss(_ card: Card) {
-        cards.removeAll { $0.id == card.id }
+        replace(with: cards.filter { $0.id != card.id })
         notes[card.id] = nil
     }
     /// Lets a failed answer be tried again.

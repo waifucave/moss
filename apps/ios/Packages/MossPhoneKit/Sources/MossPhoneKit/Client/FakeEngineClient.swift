@@ -27,6 +27,8 @@ public actor FakeEngineClient: EngineClient {
         case sendFails
         /// Paired; the provider-consent card waits (its provider is in `host` only).
         case providerConsent
+        /// Paired; a card with nine files and a long reason waits: both cut, its buttons wait until both are opened.
+        case manyPaths
         /// This phone has already made the day's 5 bots: the next `createBot` is refused.
         case botLimit
     }
@@ -97,6 +99,9 @@ public actor FakeEngineClient: EngineClient {
         case .providerConsent:
             paired = PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName)
             cardList = [SampleData.providerConsentCard]
+        case .manyPaths:
+            paired = PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName)
+            cardList = [SampleData.manyPathsCard]
         }
         if paired != nil, scenario != .unreachable, scenario != .empty { paired?.lastSeen = SampleData.now - 20_000 }
     }

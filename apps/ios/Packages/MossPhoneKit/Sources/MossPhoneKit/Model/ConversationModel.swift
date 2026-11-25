@@ -163,6 +163,10 @@ public final class ConversationModel {
         let most = offers?.maxFiles ?? StagingLimits.maxFilesPerMessage
         if stagedFiles.count >= most { errorText = "A message can carry \(most) files."; return }
         guard let d = data() else { errorText = "That file couldn't be read."; return }
+        if let limit = offers?.fileLimit, Int64(d.count) > limit {
+            errorText = "That file is too big. The limit is \(ByteCountFormatter.string(fromByteCount: limit, countStyle: .file))."
+            return
+        }
         do { stagedFiles.append(try await client.stageFile(session: sessionID, name: name, data: d)); errorText = nil }
         catch let e as FileTooLarge { errorText = "That file is too big. The limit is \(ByteCountFormatter.string(fromByteCount: e.limit, countStyle: .file))." }
         catch let e as TooManyFiles { errorText = "A message can carry \(e.limit) files." }

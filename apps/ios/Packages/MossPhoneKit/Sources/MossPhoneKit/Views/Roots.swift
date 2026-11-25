@@ -29,6 +29,7 @@ public struct AppLaunch {
             case "loading": l.scenario = .loading
             case "cardStates": l.scenario = .cardStates
             case "sendFails": l.scenario = .sendFails
+            case "manyPaths": l.scenario = .manyPaths
             case "providerConsent": l.scenario = .providerConsent
             case "botLimit": l.scenario = .botLimit
             default: break
@@ -45,7 +46,8 @@ public struct AppLaunch {
         l.composer.focus = args.contains("-focus"); l.composer.picker = args.contains("-picker")
         if let i = args.firstIndex(of: "-scrollTo"), i + 1 < args.count { l.scrollTo = args[i + 1] }
         if l.screen == .pairScan || l.screen == .pairWords { l.scenario = .unpaired }
-        l.explicit = args.contains("-screen") || args.contains("-scenario")
+        // Any of these asks for a picture or a test: the app then runs on the fake (and the real client never sees one).
+        l.explicit = args.contains { ["-screen", "-scenario", "-newBot", "-newBotTry", "-startNew", "-confirmUnpair", "-scrollTop", "-open", "-draft", "-file", "-focus", "-picker", "-scrollTo"].contains($0) }
         return l
         #else
         return AppLaunch()
@@ -115,21 +117,26 @@ public struct MossRoot: View {
     private let real: Bool
 
     /// `engine`: the real client; the fake runs when none is given, or when the launch asks for a screen or a scenario.
-    public init(launch: AppLaunch = .fromProcess(), engine: (any EngineClient)? = nil) {
-        self.launch = launch
+    public init(launch given: AppLaunch = .fromProcess(), engine: (any EngineClient)? = nil) {
         // Release: always the engine given (the real client); Debug: the fake when none is given or a picture asks.
         #if DEBUG
-        let real = engine != nil && !launch.explicit
+        let real = engine != nil && !given.explicit
         #else
         let real = true
         #endif
         self.real = real
+        // Launch arguments drive the fake only: on the real client none of them applies (no bot made, no session started,
+        // no file staged, no draft typed by anything but the person).
+        let launch = real ? AppLaunch() : given
+        self.launch = launch
         _checked = State(initialValue: !real)
         let c: any EngineClient = real ? (engine ?? NoEngineClient()) : Fake.client(launch)
         _client = State(initialValue: c)
         _bots = State(initialValue: BotsListModel(client: c, store: real ? DefaultsPinStore() : MemoryPinStore(Fake.pinned)))
         let nb = NewBotModel(client: c)
+        #if DEBUG
         if launch.newBotTry { nb.name = "Hazel"; Task { await nb.load(); _ = await nb.create() } }
+        #endif
         _newBot = State(initialValue: nb)
         _showNewBot = State(initialValue: launch.newBot)
         _cards = State(initialValue: real ? CardsModel(client: c, app: .moss) : CardsModel(client: c, app: .moss, now: { Fake.now }))
@@ -204,15 +211,18 @@ public struct MossCodeRoot: View {
     private let launch: AppLaunch
     private let real: Bool
 
-    public init(launch: AppLaunch = .fromProcess(), engine: (any EngineClient)? = nil) {
-        self.launch = launch
+    public init(launch given: AppLaunch = .fromProcess(), engine: (any EngineClient)? = nil) {
         // Release: always the engine given (the real client); Debug: the fake when none is given or a picture asks.
         #if DEBUG
-        let real = engine != nil && !launch.explicit
+        let real = engine != nil && !given.explicit
         #else
         let real = true
         #endif
         self.real = real
+        // Launch arguments drive the fake only: on the real client none of them applies (no bot made, no session started,
+        // no file staged, no draft typed by anything but the person).
+        let launch = real ? AppLaunch() : given
+        self.launch = launch
         _checked = State(initialValue: !real)
         let c: any EngineClient = real ? (engine ?? NoEngineClient()) : Fake.client(launch)
         _client = State(initialValue: c)
@@ -273,10 +283,12 @@ public struct MossCodeRoot: View {
             #if DEBUG
             if launch.screen == .pairWords { await pairing.scanned("moss-pair:sample") }
             #endif
+            #if DEBUG
             if launch.startNew {
                 await newSession.load()
                 if let id = await newSession.start() { await sessions.load(); if let row = sessions.sessions.first(where: { $0.id == id }) { path = [row] } }
             }
+            #endif
         }
     }
 }

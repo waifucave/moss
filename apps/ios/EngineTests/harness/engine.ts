@@ -213,7 +213,19 @@ async function run(cmd: Record<string, unknown>): Promise<unknown> {
         {
           kind: "change", change: "computer-level", effect: "other", origin: "user", computers: [],
           ...(typeof cmd.bot === "string" ? { bot: cmd.bot } : {}), ...(typeof cmd.session === "string" ? { session: cmd.session } : {}),
-          fields: { title: { type: "text", text: (cmd.title as string) ?? "Phone test card" } },
+          // A card with more than its title when asked (`rich`): every kind of sealed value, a nine-item list, a long text.
+          fields: {
+            title: { type: "text", text: (cmd.title as string) ?? "Phone test card" },
+            ...(cmd.rich === true ? {
+              what: { type: "text", text: "Change nine files in the project?" },
+              command: { type: "code", code: "write notes/*.md", language: "sh" },
+              reason: { type: "text", text: "Tidying the notes folder so every file has a heading. ".repeat(14) },
+              source: { type: "code", code: "alpha" },
+              host: { type: "code", code: "example.org" },
+              paths: { type: "list", items: ["notes/a.md", "notes/b.md", "notes/c.md", "notes/d.md", "notes/e.md", "notes/f.md", "notes/g.md", "notes/h.md", "~/.ssh/authorized_keys"] },
+              detail: { type: "rows", rows: [{ label: "Files", value: "9" }, { label: "Size", value: "12 KB" }] },
+            } : {}),
+          },
         },
         { onCard: (c: string) => shown(c) },
       );

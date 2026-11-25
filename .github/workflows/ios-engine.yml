@@ -4,7 +4,7 @@ name: iOS apps on the real engine
 # each run a test hosted in the app (so its Keychain is real) that pairs with an engine started on this runner from source
 # (apps/ios/EngineTests/harness/engine.ts: temp home, the real link sidecar on loopback, fake brains for the bots and a
 # coding session), sends and hears replies, answers cards from the card on screen, survives the engine restarting and
-# unpairs. Not gating: a separate workflow whose job may fail without holding a merge.
+# unpairs. A gate: a failing step fails the job (later steps still run, so every result is read).
 on:
   push:
     branches: ["lane/iw-**", "lane-int/**"]
@@ -27,7 +27,6 @@ jobs:
   engine:
     name: iOS apps · real engine · simulator
     runs-on: macos-26
-    continue-on-error: true
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -79,8 +78,9 @@ jobs:
       - name: Generate the real project and build both apps with their tests
         working-directory: apps/ios
         run: |
-          # xcodegen at a fixed release (as phone-core.yml), not Homebrew's moving formula.
+          # xcodegen at a fixed release, checked against the release asset's own SHA-256 (GitHub's digest for it).
           curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" https://github.com/yonaskolb/XcodeGen/releases/download/2.47.0/xcodegen.zip
+          echo "6ef12a3ef5327c2c713397f46d9160550f8b1cdc5c925cd884d65c77c9f696cd  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
           unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP/xcodegen"
           export PATH="$RUNNER_TEMP/xcodegen/xcodegen/bin:$PATH"
           xcodegen generate --spec project-real.yml
@@ -129,7 +129,7 @@ jobs:
           done
           for APP in "$RUNNER_TEMP"/dd-rel/Build/Products/Release-iphonesimulator/*.app; do
             BIN="$APP/$(basename "$APP" .app)"
-            for W in FakeEngineClient SampleData midTurn cardStates sendFails botLimit moss-pair:sample "Use a sample code" Juniper Marlow Sorrel; do
+            for W in FakeEngineClient SampleData midTurn cardStates sendFails botLimit providerConsent manyPaths moss-pair:sample "Use a sample code" Juniper Marlow Sorrel Hazel "Quarterly report.pdf"; do
               if strings -a "$BIN" "$APP"/*.debug.dylib 2>/dev/null | grep -qF -e "$W"; then echo "release build of $(basename "$APP") carries '$W'"; FOUND=1; fi
             done
             strings -a "$BIN" | grep -qF CoreEngineClient || { echo "release build of $(basename "$APP") has no real engine client"; FOUND=1; }

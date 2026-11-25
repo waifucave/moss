@@ -33,7 +33,9 @@ public actor CoreEngineClient: EngineClient {
     private var oldestSeq: [String: Int64] = [:]
     /// What the status line and the message roles need: which sessions are bots' and their bots' names.
     private var botOfSession: [String: Bot] = [:]
-    private var stagedFiles: [String: Int] = [:]
+    /// Creates whose answer never came (a timeout after the call went out): matched against the lists before another goes.
+    private var unsureBots: [(name: String, model: String?, before: Set<String>)] = []
+    private var unsureStarts: [(request: StartRequest, before: Set<String>, at: Int64)] = []
     /// What each conversation's composer offers, as the engine last said (`session.composerOffers`): a picture or a file
     /// goes only where it is offered, within the limits it names.
     private var offers: [String: ComposerOffers] = [:]
@@ -122,7 +124,7 @@ public actor CoreEngineClient: EngineClient {
             for id in gone { emit(.cardResolved(id: id)) }
             for c in cards { emit(.cardRequested(c)) }
         case .cardRequested(let s):
-            if let c = shelf.issue(s) { emit(.cardRequested(c)) }
+            emit(.cardRequested(shelf.issue(s)))
         case .cardResolved(let id, _):
             shelf.resolve(id)
             emit(.cardResolved(id: id))
@@ -210,7 +212,7 @@ public actor CoreEngineClient: EngineClient {
                 guard let c = try core.pairedComputers().last(where: { $0.app == linkApp }) else { return nil }
                 computer = c
                 if conn == nil { await connect(core, c) }
-                return PairedComputer(name: c.name, deviceName: core.deviceName, lastSeen: lastUp)
+                return PairedComputer(name: factory.visibleName(c.name), deviceName: core.deviceName, lastSeen: lastUp)
             } catch LinkError.storageNotAvailable {
                 // The store can't be read yet: still paired as far as anyone knows; the screens show "can't reach".
                 return PairedComputer(name: computer?.name ?? "your computer", deviceName: "", lastSeen: lastUp)
@@ -227,7 +229,7 @@ public actor CoreEngineClient: EngineClient {
             let p = try await ensureCore().beginPairing(qr: qr, app: linkApp)
             let id = UUID().uuidString
             pairings[id] = p
-            return PairingProposal(pairingId: id, computer: p.computerName, words: p.words)
+            return PairingProposal(pairingId: id, computer: factory.visibleName(p.computerName), words: p.words)
         } catch let e as LinkError {
             switch e {
             case .invalid(let r): throw r.localizedCaseInsensitiveContains("expire") ? PairingError.expired : PairingError.unreadableCode
@@ -249,7 +251,7 @@ public actor CoreEngineClient: EngineClient {
         for other in (try? core.pairedComputers()) ?? [] where other.app == linkApp && other.id != c.id { try? core.forgetComputer(other.id) }
         computer = c
         await connect(core, c)
-        return PairedComputer(name: c.name, deviceName: core.deviceName)
+        return PairedComputer(name: factory.visibleName(c.name), deviceName: core.deviceName)
     }
 
     public func cancelPairing(_ proposal: PairingProposal) async {
@@ -272,6 +274,8 @@ public actor CoreEngineClient: EngineClient {
         core = nil
         computer = nil
         try? factory.wipeStore()
+        // Nothing of that computer stays in this app's own settings either (the pinned bots were its bots).
+        DefaultsPinStore.clear()
         shelf.clear()
         attached = [:]; attachOrder = []; oldestSeq = [:]; pairings = [:]
     }
@@ -334,7 +338,6 @@ public actor CoreEngineClient: EngineClient {
         // Never retried here: a timeout may have reached the computer. The person's Retry sends it again under the same
         // client id, which the engine takes as the same message.
         _ = try await c.sendMessage(session: session, text: body, clientMessageId: clientMessageId, images: images, files: files)
-        stagedFiles[session] = nil
     }
 
     public func stop(session: String) async throws { try await link().stop(session: session) }
@@ -349,34 +352,45 @@ public actor CoreEngineClient: EngineClient {
         let listed = Set(ids)
         for held in shelf.order where !listed.contains(held) { shelf.resolve(held) }
         for id in ids where shelf.held[id] == nil {
-            if let s = try? await c.fetchCard(id) { _ = shelf.issue(s) }
+            if let s = try? await c.fetchCard(id) { shelf.issue(s) }
         }
         return shelf.cards
     }
 
     public func answer(card: Card, option: CardOption) async throws {
+        // A card the phone can't draw whole (an unknown field, a plugin OK's checkboxes, too long) is answered on the computer.
+        guard card.drawnWhole else { throw CardAnswerError.notShownWhole }
         // Only the core's own issue of exactly the card on screen is signed; nothing is fetched in between.
         guard let shown = shelf.shown(for: card), card.options.contains(option) else { throw CardNotShown() }
         let c = try await link()
         let r: (accepted: Bool, reason: String?)
         do {
-            // A plugin OK's checkboxes aren't drawn on the phone yet: none is left checked.
             r = try await c.answer(shown, option: option.id, children: [])
-        } catch LinkError.timeout(let r) {
+        } catch LinkError.timeout(let t) {
             // A timeout after the answer began going out may have reached the computer: it is read back, never sent
             // again by itself. Settled with the option this phone sent: taken. Settled any other way: answered elsewhere.
             // Still pending: the timeout stands, and the card stays for the person to try again.
-            guard let back = try? await Doors.cardOutcome(c, id: card.id), back.outcome != nil else { throw LinkError.timeout(r) }
-            shelf.resolve(card.id)
+            guard let back = try? await Doors.cardOutcome(c, id: card.id), back.outcome != nil else { throw LinkError.timeout(t) }
+            shelf.resolve(card.id, ifStill: shown)
             if back.option == option.id { return }
             throw card.expiresAt <= now() ? CardAnswerError.expired : CardAnswerError.answeredElsewhere
-        } catch LinkError.refused {
-            shelf.resolve(card.id)
-            throw card.expiresAt <= now() ? CardAnswerError.expired : CardAnswerError.answeredElsewhere
+        } catch LinkError.refused(let why) {
+            // The core refused to sign: the card is no longer pending, or it is not this connection's issue.
+            shelf.resolve(card.id, ifStill: shown)
+            throw why.localizedCaseInsensitiveContains("pending") ? CardAnswerError.answeredElsewhere : CardAnswerError.refused(why)
         }
-        if r.accepted { shelf.resolve(card.id); return }
-        shelf.resolve(card.id)
-        throw card.expiresAt <= now() ? CardAnswerError.expired : CardAnswerError.answeredElsewhere
+        // A newer issue of the same id that landed while this answer was out is kept (it is the card on screen now).
+        shelf.resolve(card.id, ifStill: shown)
+        if r.accepted { return }
+        throw Self.answerError(r.reason, expired: card.expiresAt <= now())
+    }
+
+    /// The engine's reason for not taking an answer (`card-methods.ts`'s REASONS), as the screens tell them apart.
+    static func answerError(_ reason: String?, expired: Bool) -> CardAnswerError {
+        let r = reason ?? ""
+        if r.contains("already answered") || r.contains("no such card") { return expired ? .expired : .answeredElsewhere }
+        if r.contains("changed since it was shown") { return .changed }
+        return .refused(r.isEmpty ? "it gave no reason" : r)
     }
 
     /// A card belongs to the bot or session that raised it: MOSS shows bots' cards, MOSS Code the others', and both show
@@ -398,11 +412,29 @@ public actor CoreEngineClient: EngineClient {
         var r = request
         // The screens may leave the computer to the client: the one this phone is linked to.
         if r.computer.isEmpty { r.computer = computer?.name ?? "" }
-        do { return try await link().startSession(r) } catch LinkError.rpc(let code, let words, let data) {
+        let c = try await link()
+        // An earlier start of the same folder whose answer never came: looked for first, never a second session blindly.
+        if let i = unsureStarts.firstIndex(where: { $0.request.root == r.root && $0.request.backend == r.backend }) {
+            let u = unsureStarts[i]
+            let rows = try await c.sessions()
+            if let made = Self.started(u.request, in: rows, before: u.before, since: u.at) { unsureStarts.remove(at: i); return made }
+            unsureStarts.remove(at: i)
+        }
+        let before = Set(((try? await c.sessions()) ?? []).map(\.id)), at = now()
+        do { return try await c.startSession(r) } catch LinkError.rpc(let code, let words, let data) {
             if words.localizedCaseInsensitiveContains("not installed") { throw StartError.notInstalled }
             if code == -32602 { throw StartError.folderRefused }
             throw LinkError.rpc(code: code, words: words, dataJSON: data)
+        } catch LinkError.timeout {
+            // It may have reached the computer: read back by folder, agent and time before anything else is started.
+            if let rows = try? await c.sessions(), let made = Self.started(r, in: rows, before: before, since: at) { return made }
+            unsureStarts.append((r, before, at))
+            throw MayHaveReached()
         }
+    }
+    /// A session this request made: new since `before`, in its folder with its agent, started at or after the call (a minute's skew).
+    static func started(_ r: StartRequest, in rows: [SessionRow], before: Set<String>, since: Int64) -> String? {
+        rows.first { !before.contains($0.id) && $0.root == r.root && $0.backend == r.backend && $0.startedAt >= since - 60_000 }?.id
     }
 
     // MARK: Composer
@@ -450,24 +482,41 @@ public actor CoreEngineClient: EngineClient {
         guard let o = offers[session], o.files else { throw NotAvailableYet("session.stageFile") }
         let limit = o.fileLimit ?? StagingLimits.maxFileBytes, most = o.maxFiles ?? StagingLimits.maxFilesPerMessage
         if Int64(data.count) > limit { throw FileTooLarge(limit: limit) }
-        if stagedFiles[session, default: 0] >= most { throw TooManyFiles(limit: most) }
+        _ = most   // a message's count is the conversation's (its staged chips) and the engine's
         let r = try await link().stageFile(session: session, name: name, data: data)
-        stagedFiles[session, default: 0] += 1
         return StagedFile(path: r.path, name: r.name, size: Int64(data.count))
     }
 
     public func newBotOptions() async throws -> NewBotOptions { try await link().models(session: nil) }
     public func createBot(name: String, model: String?) async throws -> Bot {
+        let c = try await link()
+        // An earlier make of this exact bot whose answer never came: looked for first, never a second bot blindly.
+        if let i = unsureBots.firstIndex(where: { $0.name == name && $0.model == model }) {
+            let u = unsureBots[i]
+            let bots = try await c.bots()
+            unsureBots.remove(at: i)
+            if let made = Self.made(name: name, model: model, in: bots, before: u.before) { botOfSession[made.mainSession] = made; return made }
+        }
+        let before = Set(((try? await c.bots()) ?? []).map(\.id))
         do {
-            let b = try await link().createBot(name: name, model: model)
+            let b = try await c.createBot(name: name, model: model)
             botOfSession[b.mainSession] = b
             return b
+        } catch LinkError.timeout {
+            // It may have reached the computer: read back by exact name and model before another is made.
+            if let bots = try? await c.bots(), let made = Self.made(name: name, model: model, in: bots, before: before) { botOfSession[made.mainSession] = made; return made }
+            unsureBots.append((name, model, before))
+            throw MayHaveReached()
         } catch let e as LinkError where e.isNotOffered {
             throw NotAvailableYet("bot.create")
         } catch LinkError.rpc(_, let words, _) {
             // The engine refused (its daily limit for a phone, a name it won't take): shown in its own words, cleaned by the core.
             throw BotCreateRefused(message: words)
         }
+    }
+    /// The bot this make made: new since `before`, with exactly this name, and this model when one was asked for.
+    static func made(name: String, model: String?, in bots: [Bot], before: Set<String>) -> Bot? {
+        bots.first { !before.contains($0.id) && $0.name == name && (model == nil || $0.model == model) }
     }
     public func runCommand(session: String, command: String) async throws { try await link().runCommand(name: command) }
 

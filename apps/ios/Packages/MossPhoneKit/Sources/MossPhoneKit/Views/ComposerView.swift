@@ -63,10 +63,13 @@ struct ComposerView: View {
             composerBody
         }
         .task {
+            // Pictures only (a Debug build on the fake): none of this exists in a Release build.
+            #if DEBUG
             if let d = preset.draft { model.draft = d }
             if preset.file { try? await Task.sleep(for: .milliseconds(700)); await model.stageFile(name: "Quarterly report.pdf", size: 1_240_000, data: Data(count: 1_240_000)) }
             if preset.focus { try? await Task.sleep(for: .milliseconds(600)); focused = true }
             if preset.picker { try? await Task.sleep(for: .milliseconds(900)); withAnimation(.snappy(duration: 0.25)) { isPickerPresented = true } }
+            #endif
         }
         .photosPicker(isPresented: $showPhotos, selection: $photoItem, matching: .images)
         .onChange(of: photoItem) { _, item in
@@ -325,8 +328,27 @@ struct ComposerView: View {
     private func addFile(_ url: URL) async {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        let size = Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
-        await model.stageFile(name: url.lastPathComponent, size: size, data: try? Data(contentsOf: url))
+        let limit = model.offers?.fileLimit ?? StagingLimits.maxFileBytes
+        if let known = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize {
+            // The size is known: over the limit is refused before a byte is read.
+            await model.stageFile(name: url.lastPathComponent, size: Int64(known), data: Self.read(url, upTo: limit))
+        } else {
+            // The size isn't known: read with a running count and stop one byte past the limit, never the whole file.
+            let data = Self.read(url, upTo: limit)
+            await model.stageFile(name: url.lastPathComponent, size: data.map { Int64($0.count) } ?? 0, data: data)
+        }
+    }
+
+    /// At most `limit + 1` bytes of the file, in chunks (one more than the limit says it is over it).
+    static func read(_ url: URL, upTo limit: Int64) -> Data? {
+        guard let h = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? h.close() }
+        var out = Data()
+        while Int64(out.count) <= limit {
+            guard let chunk = try? h.read(upToCount: 512 * 1024), !chunk.isEmpty else { break }
+            out.append(chunk)
+        }
+        return out
     }
 
     private func addPhoto(_ item: PhotosPickerItem) async {

@@ -129,6 +129,19 @@ public enum SampleData {
              ],
              options: [CardOption(id: "approve", kind: .approve, label: "Allow"), CardOption(id: "deny", kind: .deny, label: "Deny")])
 
+    /// A card that lists nine files, the ninth one that matters: the list is cut at eight and its buttons wait until it is opened.
+    public static let manyPathsCard = Card(id: "card_paths0009", kind: "tool", computer: computerName, bot: "alpha", origin: "bot",
+             issuedAt: ago(30), expiresAt: now + 570_000, hash: String(repeating: "d", count: 64),
+             fields: [
+                "title": .text("Change nine files?"),
+                "what": .text("Alpha wants to write to these files."),
+                "paths": .list(["notes/a.md", "notes/b.md", "notes/c.md", "notes/d.md", "notes/e.md", "notes/f.md", "notes/g.md", "notes/h.md", "~/.ssh/authorized_keys"]),
+                "reason": .text(String(repeating: "Tidying the notes folder so every file has a heading. ", count: 14)),
+                "source": .code("alpha", language: nil),
+                "computer": .text(computerName),
+             ],
+             options: [CardOption(id: "approve", kind: .approve, label: "Allow"), CardOption(id: "deny", kind: .deny, label: "Deny")])
+
     public static let cards: [Card] = [
         Card(id: "card_0a1b2c3d", kind: "tool", computer: computerName, session: "s_alpha", bot: "alpha", origin: "routine",
              issuedAt: ago(150), expiresAt: now + 450_000, hash: String(repeating: "a", count: 64),
