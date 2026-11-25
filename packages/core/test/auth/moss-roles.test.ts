@@ -84,3 +84,35 @@ describe("the caller check", () => {
     expect(gateMossRequest("layer", { kind: "plugin", pluginId: "p" }, "ui.set")).toBeNull(); // becomes a sealed card
   });
 });
+
+// Lane XC, `moss device` (packages/cli/src/device-cli.ts): pairing, revoking or renaming a device from a terminal is the
+// person's alone. A bot's shell, a coding agent's shell, a process the daemon started for a plugin or a hook, a process in
+// a sandbox and another computer's call never count as the person, so the CLI role's device doors refuse them.
+describe("the CLI's device doors are the person's alone", () => {
+  const DEVICE_CHANGES = ["device.pair.begin", "device.pair.join", "device.pair.confirm", "device.pair.cancel", "device.revoke", "device.rename"];
+  test("a bot's or a coding agent's shell, a daemon-spawned process, a fenced process, a plugin's layer and a peer: refused; the person's own terminal: let through", () => {
+    const p = new SessionProcesses();
+    p.add(30, { sessionId: "b_luna", sessionKind: "bot", bot: "luna" });
+    p.add(31, { sessionId: "s_code", sessionKind: "coding" });
+    const botShell = resolveMossCaller({ appPeer: "none", binding: { role: "cli" }, peer: { pid: 40, ancestors: [30, 1], probe: {}, floor: "outside-floor" }, processes: p });
+    const agentShell = resolveMossCaller({ appPeer: "none", binding: { role: "cli" }, peer: { pid: 41, ancestors: [31, 1], probe: {}, floor: "outside-floor" }, processes: p });
+    expect(botShell).toMatchObject({ kind: "session", sessionKind: "bot" });
+    expect(agentShell).toMatchObject({ kind: "session", sessionKind: "coding" });
+    // Started by the daemon (a plugin's or a hook's process) with no session, or inside the sandbox: not even a hello.
+    const spawned = resolveMossCaller({ appPeer: "none", binding: { role: "cli" }, peer: { pid: 42, ancestors: [process.pid, 1], probe: {}, floor: "outside-floor" }, processes: new SessionProcesses() });
+    const fenced = resolveMossCaller({ appPeer: "none", binding: { role: "cli" }, peer: { pid: 43, ancestors: [1], probe: {}, floor: "inside-floor" } as PeerFacts, processes: new SessionProcesses() });
+    expect(spawned).toMatchObject({ code: MOSS_ERR.NOT_THE_USER });
+    expect(fenced).toMatchObject({ code: MOSS_ERR.NOT_THE_USER });
+    const person = resolveMossCaller({ appPeer: "none", binding: { role: "cli" }, peer: user, processes: p });
+    expect(person).toEqual({ kind: "user", client: "cli" });
+    for (const method of DEVICE_CHANGES) {
+      for (const who of [botShell, agentShell]) expect([method, gateMossRequest("cli", who as never, method)?.code]).toEqual([method, MOSS_ERR.NOT_THE_USER]);
+      // A plugin's layer: the pairing doors aren't its role's at all; a sensitive change from it is only ever a sealed card.
+      const plugin = gateMossRequest("layer", { kind: "plugin", pluginId: "evil" }, method);
+      if (method.startsWith("device.pair.")) expect([method, plugin?.code]).toEqual([method, MOSS_ERR.ROLE_REFUSED]);
+      // Another computer's call: the peer role has none of them.
+      expect([method, gateMossRequest("peer", { kind: "peer", device: "d_other" }, method)?.code]).toEqual([method, MOSS_ERR.ROLE_REFUSED]);
+      expect([method, gateMossRequest("cli", person as never, method)]).toEqual([method, null]);
+    }
+  });
+});
