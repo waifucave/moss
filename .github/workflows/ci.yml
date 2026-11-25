@@ -1490,7 +1490,7 @@ jobs:
     needs: changes
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.only != 'acceptance-linux' && needs.changes.outputs.acceptance == 'true'
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -1514,6 +1514,23 @@ jobs:
         run: bun install --frozen-lockfile
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # MOSS's coding agent on Windows starts only once `moss-core sandbox setup` has been run (the fence's pool of principals and its launcher), as the
+      # windows-fence workflow's e2e job runs it. The units that never start an agent skip it.
+      - name: Windows fence for the agent · build srt-win from the pinned source
+        if: ${{ !contains(fromJSON('["models","archive","addons","arrivals","browser","bundled-tools","browser-host","host"]'), matrix.unit) }}
+        shell: pwsh
+        run: scripts/ci/windows-fence/build-launcher.ps1
+
+      - name: Windows fence for the agent · build moss-core.exe
+        if: ${{ !contains(fromJSON('["models","archive","addons","arrivals","browser","bundled-tools","browser-host","host"]'), matrix.unit) }}
+        run: bun scripts/build-daemon.ts --target windows-x64
+
+      - name: Windows fence for the agent · sandbox setup, from the protected copy
+        if: ${{ !contains(fromJSON('["models","archive","addons","arrivals","browser","bundled-tools","browser-host","host"]'), matrix.unit) }}
+        timeout-minutes: 40
+        shell: pwsh
+        run: scripts/ci/windows-fence/setup.ps1
 
       - name: Acceptance on Windows · ${{ matrix.unit }}
         run: bun scripts/ci/acceptance-unit.ts ${{ matrix.unit }} "$RUNNER_TEMP/acceptance-windows-${{ matrix.unit }}"
