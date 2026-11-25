@@ -711,8 +711,8 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
         "$sig = 'using System; using System.Runtime.InteropServices; public static class WsTok { [DllImport(\"kernel32.dll\")] public static extern IntPtr GetCurrentProcess(); [DllImport(\"kernel32.dll\")] public static extern bool IsProcessInJob(IntPtr p, IntPtr j, out bool r); [DllImport(\"advapi32.dll\")] public static extern bool OpenProcessToken(IntPtr p, uint a, out IntPtr t); [DllImport(\"advapi32.dll\")] public static extern bool IsTokenRestricted(IntPtr t); }'",
         "try { Add-Type -TypeDefinition $sig -ErrorAction Stop; $inJob = $false; [void][WsTok]::IsProcessInJob([WsTok]::GetCurrentProcess(), [IntPtr]::Zero, [ref]$inJob); $t = [IntPtr]::Zero; [void][WsTok]::OpenProcessToken([WsTok]::GetCurrentProcess(), 8, [ref]$t); \"in a job: $inJob; a restricted token: $([WsTok]::IsTokenRestricted($t))\" } catch { \"token facts: $($_.Exception.Message)\" }",
         "$me = [Security.Principal.WindowsIdentity]::GetCurrent(); \"user: $($me.Name) $($me.User.Value); impersonation: $($me.ImpersonationLevel)\"",
-        "whoami /groups /fo csv /nh | ForEach-Object { $f = $_ -split '\",\"'; ($f[0] -replace '\"','') + ' [' + (($f[3] -replace '\"','') -replace ',\\s*', '|') + ']' }",
-        "whoami /priv /fo csv /nh | ForEach-Object { ($_ -split '\",\"')[0] -replace '\"','' }",
+        "& \"$env:SystemRoot\\System32\\whoami.exe\" /groups /fo csv /nh | ForEach-Object { $f = $_ -split '\",\"'; ($f[0] -replace '\"','') + ' [' + (($f[3] -replace '\"','') -replace ',\\s*', '|') + ']' }",
+        "& \"$env:SystemRoot\\System32\\whoami.exe\" /priv /fo csv /nh | ForEach-Object { ($_ -split '\",\"')[0] -replace '\"','' }",
       ].join("; "), timeout: 120_000 });
       console.log(`[e2e] TOKEN (the pool account under the launcher): ${facts.text.replace(/\r?\n/g, " ; ").slice(0, 3000)}`);
       const sid = /S-1-5-21-[\d-]+/.exec(facts.text)?.[0];
