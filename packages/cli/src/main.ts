@@ -3548,8 +3548,9 @@ if (import.meta.main) {
     const token = await new KeychainSecretStore().get(TOKEN_NAMES.harness).catch(() => undefined);
     if (!token) emit({ code: 1, output: "this terminal can't reach MOSS: its token isn't readable" });
     const conn = await dcli.openDeviceConn(socketPath(), token!);
-    // The person's own typing, in this terminal only: with no terminal there is nothing to ask, and a pairing is refused.
-    const ask = process.stdin.isTTY ? async (question: string): Promise<string | undefined> => {
+    // The person's own typing, in this terminal only (its input and its output a terminal): with none there is nothing to
+    // ask, and a pairing is refused.
+    const ask = process.stdin.isTTY && process.stdout.isTTY ? async (question: string): Promise<string | undefined> => {
       const { createInterface } = await import("node:readline/promises");
       const rl = createInterface({ input: process.stdin, output: process.stdout });
       try { return await rl.question(question); } finally { rl.close(); }
@@ -4677,7 +4678,7 @@ if (import.meta.main) {
   trust <dir> [--list] | trust list | trust remove <path>
   skills                                          list discovered skills for this directory
   mcp                                              list configured MCP servers and their tools
-  device pair [--join <code>] | list | revoke <name>   pair this computer from its terminal (you type the four words), list or remove devices
+  device pair [--join] | list | revoke <name>   pair this computer from its terminal (you type the four words), list or remove devices
   plugin validate [<folder>] [--json] [--upgrade]   a plugin folder's class, contributions, hosts and OK text; non-zero on an error
   plugin list | install <git-url> [name] | enable <name> | disable <name> | remove <name> | restart <name>
   bg list <session> | bg peek <session> <taskId> | bg kill <session> <taskId>

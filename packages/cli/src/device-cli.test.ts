@@ -50,7 +50,9 @@ describe("moss device pair", () => {
     const r = await runDevice(["pair"], d.conn, out);
     expect(r).toEqual({ code: 0, output: "paired" });
     expect(out.printed.join("\n")).toContain("Pairing code: ABCD-EFGH");
-    expect(out.printed.join("\n")).toContain("moss device pair --join 'moss-pair:xyz'");
+    // The payload is printed to paste after `moss device pair --join`, never as an argument (argv is seen by ps and kept in history).
+    expect(out.printed.join("\n")).toContain("On the other computer run: moss device pair --join, then paste this:\nmoss-pair:xyz");
+    expect(out.printed.join("\n")).not.toContain("--join '");
     expect(out.printed.join("\n")).toContain(`these four words: ${WORDS.join(" ")}`);
     // The other device's own name is shown plain: the bidi control is gone.
     expect(out.printed.join("\n")).not.toContain("‮");
@@ -83,9 +85,9 @@ describe("moss device pair", () => {
     expect(d.calls).toEqual([]);
   });
 
-  test("--join takes a code, shows the words the join gave back, and confirms with them typed", async () => {
+  test("--join asks for the code (never from argv), shows the words the join gave back, and confirms with them typed", async () => {
     const d = fakeDaemon();
-    const r = await runDevice(["pair", "--join", "ABCD-EFGH"], d.conn, io(["amber river stone cloud"]));
+    const r = await runDevice(["pair", "--join"], d.conn, io(["ABCD-EFGH", "amber river stone cloud"]));
     expect(r).toEqual({ code: 0, output: "paired" });
     expect(d.calls.find((c) => c.method === "device.pair.join")?.params).toEqual({ code: "ABCD-EFGH" });
     expect(d.calls.find((c) => c.method === "device.pair.confirm")?.params).toEqual({ pairingId: "p2", words: WORDS });
@@ -93,7 +95,8 @@ describe("moss device pair", () => {
 
   test("an ending other than done is said, and a bad argument is the usage; there is no flag that skips the words", async () => {
     expect((await runDevice(["pair"], fakeDaemon({ end: "failed" }).conn, io(["amber river stone cloud"]))).output).toContain("the pairing ended: refused");
-    for (const args of [["pair", "--yes"], ["pair", "--join"], ["pair", "--join", "x", "--yes"], ["pair", "--no-words"]]) {
+    // A code on the command line is the usage too: it would put the pairing's secret in argv.
+    for (const args of [["pair", "--yes"], ["pair", "--join", "ABCD-EFGH"], ["pair", "--join", "x", "--yes"], ["pair", "--no-words"]]) {
       expect((await runDevice(args, fakeDaemon().conn, io(["amber river stone cloud"]))).code).toBe(2);
     }
   });
@@ -110,6 +113,23 @@ describe("moss device list and revoke", () => {
     expect(yes.calls.find((c) => c.method === "device.revoke")?.params).toEqual({ id: "d2" });
     expect((await runDevice(["revoke", "Server"], fakeDaemon().conn, io(["y"]))).output).toBe("that is this computer");
     expect((await runDevice(["revoke", "Nope"], fakeDaemon().conn, io(["y"]))).code).toBe(1);
+    // Two devices of one name: neither is removed, both are listed.
+    const twin = fakeDaemon();
+    const list = twin.conn.request.bind(twin.conn);
+    twin.conn.request = (async (method: string, params?: unknown) => method === "device.list"
+      ? { devices: [{ id: "d2", name: "Laptop", kind: "desktop" }, { id: "d9", name: "Laptop", kind: "phone" }] }
+      : list(method, params)) as typeof twin.conn.request;
+    const both = await runDevice(["revoke", "Laptop"], twin.conn, io(["y"]));
+    expect(both.code).toBe(1);
+    expect(both.output).toContain("2 devices are named Laptop");
+    expect(twin.calls.map((c) => c.method)).not.toContain("device.revoke");
+  });
+
+  test("an error from the engine is shown plain (control and bidi characters folded)", async () => {
+    const d = fakeDaemon();
+    d.conn.request = (async () => { throw new Error("bad\u202e\u0007thing"); }) as typeof d.conn.request;
+    const r = await runDevice(["list"], d.conn, io([]));
+    expect(r.output).toBe("bad thing");
   });
 
   test("typed words fold spaces, commas, dashes and case", () => {

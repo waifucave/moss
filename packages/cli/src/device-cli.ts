@@ -5,7 +5,9 @@
 //   moss device pair                 begins a pairing here: prints the code (when the engine has one) and what the other
 //                                     device can paste to join (the QR's payload, as text); then the four words, which
 //                                     the person TYPES to confirm (`device.pair.confirm`, which checks them)
-//   moss device pair --join <code>   joins another device's pairing by its code or pasted payload; the same four words
+//   moss device pair --join          joins another device's pairing: it asks for the code or the pasted payload (never
+//                                     on the command line: the payload holds the pairing's secret, and argv is seen by
+//                                     `ps` and kept in shell history); the same four words
 //   moss device list                 the paired devices (`device.list`)
 //   moss device revoke <name>        removes one (`device.revoke`), after a y/N question
 //
@@ -31,7 +33,7 @@ export interface DeviceIo {
 
 export interface CliRun { code: number; output: string }
 
-export const DEVICE_USAGE = "usage: moss device pair [--join <code>] | list | revoke <name>";
+export const DEVICE_USAGE = "usage: moss device pair [--join] | list | revoke <name>";
 
 type PairingEvent = { pairingId?: string; step?: string; words?: string[]; peerName?: string; reason?: string };
 type PairingView = { pairingId: string; code?: string; qr?: string; words?: string[] };
@@ -60,8 +62,11 @@ export async function runDevice(args: readonly string[], conn: DeviceConn, io: D
       const name = rest[0];
       if (name === undefined || rest.length !== 1) return { code: 2, output: DEVICE_USAGE };
       const { devices } = await conn.request<{ devices: Device[] }>("device.list", {});
-      const d = devices.find((x) => x.name === name);
-      if (d === undefined) return { code: 1, output: `no paired device is named ${plain(name)}` };
+      const named = devices.filter((x) => x.name === name);
+      if (named.length === 0) return { code: 1, output: `no paired device is named ${plain(name)}` };
+      // Two of one name: which one is meant isn't said, so none is removed.
+      if (named.length > 1) return { code: 1, output: `${named.length} devices are named ${plain(name)}: rename one first (${named.map((x) => `${plain(x.kind ?? "device", 20)} ${plain(x.id, 40)}`).join(", ")})` };
+      const d = named[0]!;
       if (d.isThis === true) return { code: 1, output: "that is this computer" };
       const answer = io.ask === undefined ? undefined : await io.ask(`Remove ${plain(d.name)} from your devices? [y/N] `);
       if (answer === undefined || !/^y(es)?$/i.test(answer.trim())) return { code: 1, output: "not removed" };
@@ -72,20 +77,22 @@ export async function runDevice(args: readonly string[], conn: DeviceConn, io: D
     if (sub === "pair") return await pair(rest, conn, io);
     return { code: 2, output: DEVICE_USAGE };
   } catch (e) {
-    return { code: 1, output: (e instanceof Error ? e.message : String(e)).slice(0, 500) };
+    return { code: 1, output: plain(e instanceof Error ? e.message : String(e), 500) };
   } finally {
     conn.close();
   }
 }
 
 async function pair(rest: readonly string[], conn: DeviceConn, io: DeviceIo): Promise<CliRun> {
-  let code: string | undefined;
-  if (rest.length > 0) {
-    if (rest[0] !== "--join" || rest.length !== 2 || rest[1] === "") return { code: 2, output: DEVICE_USAGE };
-    code = rest[1];
-  }
+  if (rest.length > 1 || (rest.length === 1 && rest[0] !== "--join")) return { code: 2, output: DEVICE_USAGE };
   // The words are typed or there is no pairing: with no terminal, nothing is begun.
   if (io.ask === undefined) return { code: 1, output: "pairing needs you to type the four words: run it in a terminal" };
+  let code: string | undefined;
+  if (rest[0] === "--join") {
+    const pasted = (await io.ask("Paste the other computer's pairing code or line: "))?.trim();
+    if (pasted === undefined || pasted === "") return { code: 1, output: "no code given: nothing joined" };
+    code = pasted;
+  }
   const events: PairingEvent[] = [];
   let wake = () => {};
   conn.onEvent((ev) => {
@@ -109,7 +116,7 @@ async function pair(rest: readonly string[], conn: DeviceConn, io: DeviceIo): Pr
   if (code === undefined) {
     view = await conn.request<PairingView>("device.pair.begin", {});
     if (view.code !== undefined) io.print(`Pairing code: ${view.code}`);
-    if (view.qr !== undefined) io.print(`On the other device, join with: moss device pair --join '${view.qr}'\n(or scan its QR in the app)`);
+    if (view.qr !== undefined) io.print(`On the other computer run: moss device pair --join, then paste this:\n${view.qr}\n(or scan the QR in the app)`);
     io.print("Waiting for the other device…");
   } else {
     view = await conn.request<PairingView>("device.pair.join", { code });
