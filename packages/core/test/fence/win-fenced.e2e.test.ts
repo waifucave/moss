@@ -25,6 +25,7 @@ import { botApprovalCheck } from "../../src/approvals/bot-check";
 import { FakeClock } from "../../src/contracts/fakes/clock";
 import type { BotSessionContext } from "../../src/bots/service";
 import type { CanUseTool } from "@waifucave/clover-agent-sdk";
+import { windowsFileToolInput } from "../../src/approvals/bot-check";
 import { agentShellTools, stopWindowsBackground, windowsShellTools } from "../../src/fence/win-shell-tools";
 import { planFromSettings, profileExcludeCandidates, QUARANTINE_COPY_LIMITS, quarantineWin, watchedReadDenies } from "../../src/fence/win-fenced";
 import { fencedExecutor } from "../../src/computers/fenced-executor";
@@ -497,6 +498,16 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     console.log(`[e2e] 8.3 run-later: ${pluginFile} held ${runLaterByName(pluginFile, homes)}; a project's .moss held ${runLaterByName(join(home, "ws8-short-project", ".moss", "x"), homes)}`);
     expect(runLaterByName(pluginFile, homes)).toBe(false);
     expect(runLaterByName(join(home, "ws8-short-project", ".moss", "x"), homes)).toBe(true);
+    // The same workshop row's next step (lane WS9): the Read by the short name and the Edit by the long one hand the runtime
+    // one path, so its read-before-edit check counts the Read for the Edit.
+    mkdirSync(join(moss, "plugins", "ws-greeter", "host"), { recursive: true });
+    writeFileSync(join(moss, "plugins", "ws-greeter", "host", "index.ts"), "export {};\n");
+    const readAs = windowsFileToolInput("Read", { file_path: pluginFile }, scratch)?.["file_path"] ?? pluginFile;
+    const longFile = join(moss, "plugins", "ws-greeter", "host", "index.ts");
+    const editAs = windowsFileToolInput("Edit", { file_path: longFile.replace(/\\/g, "/") }, scratch)?.["file_path"] ?? longFile;
+    console.log(`[e2e] read set: Read ${pluginFile} -> ${readAs}; Edit ${longFile.replace(/\\/g, "/")} -> ${editAs}; one key ${readAs === editAs}`);
+    expect(readAs).toBe(editAs);
+    rmSync(join(moss, "plugins", "ws-greeter"), { recursive: true, force: true });
     const project = join(home, "ws8-short-project");
     rmSync(project, { recursive: true, force: true });
     mkdirSync(project, { recursive: true });
@@ -518,6 +529,13 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
       console.log(`[e2e] 8.3 Read ${path}: agent refused ${agentWhy !== undefined}; bot refused ${botWhy !== undefined}`);
       expect([path, agentWhy !== undefined, botWhy !== undefined]).toEqual([path, true, true]);
     }
+    // What is opened is what was judged (lane WS9): the spelling a file tool is handed through the junction is the secret
+    // place itself, and that spelling is refused too, by both checks.
+    const opened = windowsFileToolInput("Read", { file_path: join(project, "keys", "id_e2e") }, project)?.["file_path"];
+    console.log(`[e2e] opened as judged: ${join(project, "keys", "id_e2e")} -> ${String(opened)}; refused for the agent ${fileToolRefusal({ tool_name: "Read", tool_input: { file_path: opened } }, agentFence, project) !== undefined}, for the bot ${fileToolFenceRefusal("Read", { file_path: opened }, bot, scratch) !== undefined}`);
+    expect(String(opened).toLowerCase()).toBe(join(home, ".ssh", "id_e2e").toLowerCase());
+    expect(fileToolRefusal({ tool_name: "Read", tool_input: { file_path: opened } }, agentFence, project)).toBeDefined();
+    expect(fileToolFenceRefusal("Read", { file_path: opened }, bot, scratch)).toBeDefined();
     // The control: a plain file in the project is read by both.
     writeFileSync(join(project, "plain.txt"), "plain\n");
     expect(fileToolRefusal({ tool_name: "Read", tool_input: { file_path: join(project, "plain.txt") } }, agentFence, project)).toBeUndefined();
@@ -548,6 +566,53 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     expect([ls?.behavior, lsCards]).toEqual(["allow", 0]);
     expect(cards.length - lsCards).toBe(1);
   });
+  // Lane WS9, a MEASUREMENT for the controller (no fix rests on it yet): does a fenced command's network path leave the
+  // machine? The fence's network filter is keyed to the pool account, but a share is reached by Windows's own SMB
+  // redirector and a WebDAV path by its WebClient service, and the host's name by the DNS client service. Dummies only:
+  // an address nothing answers (10.255.255.1, TEST-NET-like and unrouted on the runner), a `.invalid` name, and a WebDAV
+  // path to a listener of this test's own on a second loopback address. Each is tried fenced (as the bot) and, as the
+  // control, unfenced (as the runner's user). Recorded, never asserted: what it shows goes to the controller.
+  test("MEASURE (lane WS9): whether a fenced command's network path (SMB, WebDAV, a name lookup) leaves the machine", async () => {
+    const seenSyn = async (addr: string, during: () => Promise<unknown>) => {
+      let seen = false, owners = new Set<string>();
+      let going = true;
+      const poll = (async () => {
+        while (going) {
+          const r = Bun.spawnSync(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Get-NetTCPConnection -RemoteAddress $env:WS9_ADDR -ErrorAction SilentlyContinue | ForEach-Object { \"$($_.OwningProcess) $($_.State) $($_.RemotePort)\" }"], { env: { ...process.env, WS9_ADDR: addr } });
+          for (const line of r.stdout.toString().split(/\r?\n/).filter((l) => l.trim() !== "")) { seen = true; owners.add(line.trim()); }
+          await Bun.sleep(300);
+        }
+      })();
+      try { await during(); } finally { going = false; await poll; }
+      return { seen, owners: [...owners].slice(0, 6) };
+    };
+    const syn = async (what: string, run: () => Promise<unknown>) => {
+      const r = await seenSyn("10.255.255.1", run);
+      console.log(`[e2e] MEASURE smb ${what}: a TCP attempt to 10.255.255.1 seen ${r.seen} (pid state port: ${JSON.stringify(r.owners)})`);
+      return r.seen;
+    };
+    const fencedSmb = await syn("fenced (the bot's Bash)", () => call(tools.Bash!, { command: "ls //10.255.255.1/x >/dev/null 2>&1; echo done", timeout: 60_000 }));
+    const controlSmb = await syn("unfenced (the control)", async () => Bun.spawnSync(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Test-Path -LiteralPath '\\\\10.255.255.1\\x' | Out-Null"], { timeout: 60_000 }));
+    // A name lookup: whether the DNS client cached an answer (or a refusal) for a `.invalid` name after the command.
+    const cached = (name: string) => Bun.spawnSync(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "@(Get-DnsClientCache -Name $env:WS9_NAME -ErrorAction SilentlyContinue).Count"], { env: { ...process.env, WS9_NAME: name } }).stdout.toString().trim();
+    const fencedName = `ws9-fenced-${process.pid}.invalid`, controlName = `ws9-control-${process.pid}.invalid`;
+    await call(tools.Bash!, { command: `ls //${fencedName}/x >/dev/null 2>&1; echo done`, timeout: 60_000 });
+    Bun.spawnSync(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", `Test-Path -LiteralPath '\\\\${controlName}\\x' | Out-Null`], { timeout: 60_000 });
+    console.log(`[e2e] MEASURE dns: the DNS client's cache entries for the fenced name ${cached(fencedName) || "?"}, for the control's ${cached(controlName) || "?"}`);
+    // WebDAV to a listener of this test's own (127.0.0.2:80; the WebClient service may not run on the runner: then neither does).
+    let hits = 0;
+    let server: ReturnType<typeof Bun.listen> | undefined;
+    try { server = Bun.listen({ hostname: "127.0.0.2", port: 80, socket: { open(s) { hits++; s.end(); }, data() {} } }); } catch (e) { console.log(`[e2e] MEASURE webdav: no listener on 127.0.0.2:80 (${e instanceof Error ? e.message : String(e)})`); }
+    if (server !== undefined) {
+      await call(tools.Bash!, { command: "ls '//127.0.0.2@80/x' >/dev/null 2>&1; echo done", timeout: 60_000 });
+      const fencedHits = hits;
+      Bun.spawnSync(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Test-Path -LiteralPath '\\\\127.0.0.2@80\\x' | Out-Null"], { timeout: 60_000 });
+      const webclient = Bun.spawnSync(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "(Get-Service WebClient -ErrorAction SilentlyContinue).Status"]).stdout.toString().trim() || "not installed";
+      console.log(`[e2e] MEASURE webdav: connections to 127.0.0.2:80 from the fenced command ${fencedHits}, from the control ${hits - fencedHits}; WebClient service ${webclient}`);
+      server.stop(true);
+    }
+    console.log(`[e2e] MEASURE summary: fenced smb attempt ${fencedSmb}, control smb attempt ${controlSmb}`);
+  }, 600_000);
 
   test("a share back to this computer (lane WS8, the reviewer's finding): whether Windows opens it for this user, and both file tools refuse it", () => {
     let opened = false;

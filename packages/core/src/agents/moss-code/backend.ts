@@ -415,11 +415,12 @@ export class MossCodeBackend implements AgentBackend {
       failClosed: true,
       hooks: [async (input) => {
         const call = input as { tool_name?: unknown; tool_input?: unknown };
-        const why = fileToolRefusal(call, fence, spec.root);
-        if (why !== undefined) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: why } };
         // Windows (lane WS9): the path in the disk's one spelling, so a Read and the Edit of one file are one key in the
-        // runtime's read-before-edit check (`windowsFileToolInput`).
+        // runtime's read-before-edit check (`windowsFileToolInput`); judged in that very spelling, the one opened.
         const respelled = typeof call.tool_name === "string" ? windowsFileToolInput(call.tool_name, call.tool_input, spec.root) : undefined;
+        // Both spellings judged: the one written and the one opened; either refused is refused.
+        const why = fileToolRefusal(call, fence, spec.root) ?? (respelled === undefined ? undefined : fileToolRefusal({ tool_name: call.tool_name, tool_input: respelled }, fence, spec.root));
+        if (why !== undefined) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: why } };
         return respelled === undefined ? {} : { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: respelled } };
       }],
     }];

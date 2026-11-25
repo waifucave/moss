@@ -722,7 +722,13 @@ export class BotSessionDriver implements SessionDriver {
     if (after !== undefined) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: after } };
     // The MOSS home's default-deny for the session's own file tools, on the input a plugin's hook may have changed.
     const changedInput = r.input !== input.tool_input && r.input !== null && typeof r.input === "object" && !Array.isArray(r.input);
-    const fenced = this.#fileFenceRefusal({ tool_name: name, tool_input: changedInput ? r.input : input.tool_input });
+    // Windows (lane WS9): judged in the very spelling the tool will be given (`windowsFileToolInput`, below), so the fence
+    // decides on the path that is opened, never on another spelling of it.
+    // Both spellings are judged, the one written and the one opened: either refused is refused.
+    const writtenInput = changedInput ? r.input : input.tool_input;
+    const openedInput = windowsFileToolInput(name, writtenInput, this.#ctx.paths.scratch);
+    const fenced = this.#fileFenceRefusal({ tool_name: name, tool_input: writtenInput })
+      ?? (openedInput === undefined ? undefined : this.#fileFenceRefusal({ tool_name: name, tool_input: openedInput }));
     if (fenced !== undefined) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: fenced } };
     // A command asking to leave the sandbox always reaches the approval check: the runtime handles a hook's ask
     // before its own allow rules and permission mode, and the check cards every such call. Seen on the input as
