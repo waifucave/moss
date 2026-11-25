@@ -44,7 +44,11 @@ jobs:
       # ~/.m2: that is cached here, keyed on the runner's OS and the Robolectric version.
       - name: Robolectric's version
         id: robolectric
-        run: echo "version=$(grep -E '^robolectric = ' gradle/libs.versions.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+        # The [versions] entry (`robolectric = "4.14.1"`), not the [libraries] one of the same name.
+        run: |
+          v=$(grep -m1 -E '^robolectric = "[0-9.]+"$' gradle/libs.versions.toml | cut -d'"' -f2)
+          test -n "$v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         id: robolectric-cache
         with:
