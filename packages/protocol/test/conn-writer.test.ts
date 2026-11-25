@@ -108,4 +108,35 @@ describe("ConnWriter", () => {
     expect(ends).toBe(1);
     expect(w2.bufferedBytes).toBe(0);
   });
+
+  test("a real socket whose client has left: writes through the ConnWriter never throw, on this OS's transport", async () => {
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "moss-cw-"));
+    const path = process.platform === "win32" ? `\\\\.\\pipe\\moss-cw-${process.pid}-${Date.now()}` : join(dir, "s.sock");
+    const results: string[] = [];
+    let finished!: () => void;
+    const done = new Promise<void>((r) => { finished = r; });
+    const server = Bun.listen({ unix: path, socket: {
+      open(s) {
+        const w = new ConnWriter(s, 1 << 20);
+        void (async () => {
+          await Bun.sleep(400); // the client has gone by now
+          for (let i = 0; i < 8; i++) {
+            try { w.enqueue(new Uint8Array(1 << 16)); results.push("ok"); } catch (e) { results.push(`threw ${(e as { code?: string }).code ?? e}`); }
+            await Bun.sleep(50);
+          }
+          finished();
+        })();
+      },
+      data() {}, close() {}, error() {},
+    } });
+    const client = Bun.spawn([process.execPath, "-e", `const s = await Bun.connect({ unix: ${JSON.stringify(path)}, socket: { data() {} } }); s.terminate(); process.exit(0)`], { stdout: "ignore", stderr: "ignore" });
+    await done;
+    await client.exited;
+    server.stop(true);
+    rmSync(dir, { recursive: true, force: true });
+    expect(results).toEqual(Array(8).fill("ok"));
+  });
 });
