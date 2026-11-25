@@ -7,8 +7,12 @@
 //   person typed themselves is asked wherever it is.
 // * ON DEMAND ONLY: `refresh()` asks, and only when something asks for an answer (the setup state, the model list, the
 //   provider page, a session on a local model). Nothing here polls: an idle engine makes no call.
-// * At most `timeoutMs` (1.5 s) per server, all servers at once; each answer is kept `ttlMs` (30 s), and asks while one
-//   runs share it. A server that stops answering stops counting within that time.
+// * At most `timeoutMs` (1.5 s) per server, all servers at once; an answer is kept `ttlMs` (30 s), a failed ask only
+//   `failureTtlMs` (5 s), so a server started just after is seen at the next ask; asks while one runs share it. An
+//   explicit re-ask (`refresh({ force: true })`: the guide's and the provider page's) asks again at most once a second
+//   per server. A server that stops answering stops counting within the cache time.
+// * A model that can't chat (an embedding model, which Ollama's `/v1/models` lists too) is never a default and never
+//   counts as one to use (`chatModels`).
 // * `answers()` is the last answer, synchronously, for the readers that cannot wait (`keylessProviders`).
 // Model ids and names a server returns are untrusted: `discoverModels` bounds and validates them.
 import type { WinterCatalog } from "@waifucave/clover-provider-catalog";
@@ -35,21 +39,32 @@ export interface LocalServersOptions {
   list?: ListLocalModels;
   now?(): number;
   ttlMs?: number;
+  failureTtlMs?: number;
   timeoutMs?: number;
 }
 
 export const LOCAL_SERVER_TTL_MS = 30_000;
+export const LOCAL_SERVER_FAILURE_TTL_MS = 5_000;
+/** The least time between two asks of one server, a forced re-ask included. */
+export const LOCAL_SERVER_MIN_GAP_MS = 1_000;
 export const LOCAL_SERVER_TIMEOUT_MS = 1_500;
 const MAX_MODELS = 500;
 
-/** Whether a URL names this computer: 127.0.0.0/8, `::1` or `localhost`. Anything unparseable is not. */
+/** Whether a URL names this computer: 127.0.0.0/8 written as four decimal parts, `[::1]` or `localhost`. Anything
+ *  unparseable is not, nor a URL with a user name or password, nor a host the parser had to rewrite (`127.1`, hex or octal
+ *  parts, `[::ffff:127.0.0.1]`): the host as written must be the host as parsed. */
 export function isLoopbackUrl(raw: string): boolean {
-  let host: string;
+  let url: URL;
   try {
-    host = new URL(raw).hostname.toLowerCase();
+    url = new URL(raw);
   } catch {
     return false;
   }
+  if (url.username !== "" || url.password !== "") return false;
+  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+  let host = url.hostname.toLowerCase();
+  const written = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/i.exec(raw)?.[1]?.toLowerCase().replace(/:\d*$/, "");
+  if (written !== host) return false;
   if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
   if (host === "localhost" || host === "::1") return true;
   const parts = host.split(".");
@@ -59,6 +74,25 @@ export function isLoopbackUrl(raw: string): boolean {
 /** Whether a provider is a local server by the catalog: its auth kinds hold `local-none`. */
 export function isLocalServerProvider(catalog: Pick<WinterCatalog, "providers">, providerId: string): boolean {
   return (catalog.providers.find((p) => p.id === providerId)?.authKinds ?? []).includes("local-none");
+}
+
+/** The endpoints to ask, from the model plugins that are on: each local-server provider's, the one the person set
+ *  (`providers.<id>.baseUrl`, `personSet`) else the one its plugin declares. `askable()` then holds a declared one to
+ *  this computer. */
+export function localServerEndpoints(
+  catalog: Pick<WinterCatalog, "providers">,
+  served: Iterable<readonly [string, { input: { entry: unknown } }]>,
+  personSetFor: (provider: string) => string | undefined,
+): LocalServerEndpoint[] {
+  const out: LocalServerEndpoint[] = [];
+  for (const [provider, e] of served) {
+    if (!isLocalServerProvider(catalog, provider)) continue;
+    const personSet = personSetFor(provider);
+    const declared = (e.input.entry as { endpoint?: { baseUrl?: unknown } }).endpoint?.baseUrl;
+    const baseUrl = personSet ?? (typeof declared === "string" ? declared : undefined);
+    if (baseUrl !== undefined) out.push({ provider, baseUrl, personSet: personSet !== undefined });
+  }
+  return out;
 }
 
 /** The SDK's local adapter, asked for its models with no credential, under `timeoutMs`. */
@@ -76,6 +110,15 @@ export const sdkListLocalModels: ListLocalModels = async (endpoint, timeoutMs) =
   });
   return { models: result.models.map((m) => ({ id: m.id, ...(m.displayName !== undefined ? { name: m.displayName } : {}) })) };
 };
+
+/** Ids that plainly name an embedding model, which can't chat: kept short, named in a test. */
+export const EMBEDDING_ID_MARKS: readonly RegExp[] = [/embed/i, /(^|[/:])bge-/i, /(^|[/:])e5-/i];
+
+/** The models of an answer that can chat: an id that plainly names an embedding model is left out (the listing says
+ *  nothing else of what a model does). */
+export function chatModels(answer: LocalServerAnswer | undefined): LocalServerAnswer["models"] {
+  return (answer?.models ?? []).filter((m) => !EMBEDDING_ID_MARKS.some((re) => re.test(m.id)));
+}
 
 interface Entry {
   at: number;
@@ -100,17 +143,24 @@ export class LocalServers {
     return this.#o.endpoints().filter((e) => e.personSet || isLoopbackUrl(e.baseUrl));
   }
 
-  /** Asks every local server whose answer is older than the cache time (or never asked), and waits for them. */
-  refresh(): Promise<void> {
+  /** How long an entry is good for: an answer the cache time, a failed ask a few seconds. */
+  #ttlOf(entry: Entry): number {
+    return entry.answer === undefined ? (this.#o.failureTtlMs ?? LOCAL_SERVER_FAILURE_TTL_MS) : (this.#o.ttlMs ?? LOCAL_SERVER_TTL_MS);
+  }
+
+  /** Asks every local server whose entry is out of date (or never asked), and waits for them. `force` (an explicit
+   *  re-ask): every server not asked within the last second. */
+  refresh(opts: { force?: boolean } = {}): Promise<void> {
     if (this.#running !== undefined) return this.#running;
-    const ttl = this.#o.ttlMs ?? LOCAL_SERVER_TTL_MS;
     const now = this.#now;
     const endpoints = this.askable();
     const known = new Set(endpoints.map((e) => e.provider));
     for (const p of [...this.#entries.keys()]) if (!known.has(p)) this.#entries.delete(p);
     const stale = endpoints.filter((e) => {
       const entry = this.#entries.get(e.provider);
-      return entry === undefined || now - entry.at >= ttl;
+      if (entry === undefined) return true;
+      const age = now - entry.at;
+      return age >= this.#ttlOf(entry) || (opts.force === true && age >= LOCAL_SERVER_MIN_GAP_MS);
     });
     if (stale.length === 0) return Promise.resolve();
     const list = this.#o.list ?? sdkListLocalModels;
@@ -135,16 +185,15 @@ export class LocalServers {
   /** The servers asked within the cache time that did NOT answer: known not running now. A server never asked (or asked
    *  longer ago) is unknown, so a default named on it keeps working until the next ask says otherwise. */
   silent(): ReadonlySet<string> {
-    const ttl = this.#o.ttlMs ?? LOCAL_SERVER_TTL_MS;
     const now = this.#now;
     const out = new Set<string>();
-    for (const [p, entry] of this.#entries) if (entry.answer === undefined && now - entry.at < ttl) out.add(p);
+    for (const [p, entry] of this.#entries) if (entry.answer === undefined && now - entry.at < this.#ttlOf(entry)) out.add(p);
     return out;
   }
 
   /** `refresh()`, then `answers()`. */
-  async ask(): Promise<ReadonlyMap<string, LocalServerAnswer>> {
-    await this.refresh();
+  async ask(opts: { force?: boolean } = {}): Promise<ReadonlyMap<string, LocalServerAnswer>> {
+    await this.refresh(opts);
     return this.answers();
   }
 }
@@ -160,8 +209,27 @@ export function localServers(): LocalServers | undefined {
   return installed;
 }
 
-/** A local server's recommended default: the first model it lists (its listing says nothing of tool use), or none. */
+/** A local server's recommended default: the first model it lists that can chat (its listing says nothing of tool
+ *  use), or none. */
 export function localRecommendation(provider: string, answers: ReadonlyMap<string, LocalServerAnswer> | undefined): { model: string } | undefined {
-  const first = answers?.get(provider)?.models[0];
+  const first = chatModels(answers?.get(provider))[0];
   return first === undefined ? undefined : { model: `${provider}/${first.id}` };
+}
+
+/** Whether a model can be picked by what MOSS knows of its local server now: `offered` unless that server was asked and
+ *  found silent (`not-running`); never refused on an answer that merely expired. Undefined for a model that isn't on a
+ *  local server, or with no prober. */
+export function localModelOffer(catalog: Pick<WinterCatalog, "providers">, model: string): "offered" | "not-running" | undefined {
+  const servers = localServers();
+  const slash = model.indexOf("/");
+  if (servers === undefined || slash <= 0) return undefined;
+  const provider = model.slice(0, slash);
+  if (!isLocalServerProvider(catalog, provider)) return undefined;
+  return servers.silent().has(provider) ? "not-running" : "offered";
+}
+
+/** The words for a model whose local server isn't running. */
+export function notRunningReason(model: string): string {
+  const provider = model.slice(0, Math.max(0, model.indexOf("/")));
+  return `${model} is on ${provider}, which isn't running: start it, then try again`;
 }

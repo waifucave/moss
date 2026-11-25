@@ -15,7 +15,7 @@ import { effectiveDefault, hasProviderOf, settledDefault, setupMissing, type Def
 import { handler, type MethodHandler } from "./rpc/handler";
 import type { CredentialPresence } from "./runtime-sdk/host/selection/runtime-selection";
 import type { PluginAuth } from "./runtime-sdk/plugin-auth";
-import type { LocalServerAnswer } from "./runtime-sdk/model-plugins/local-servers";
+import { chatModels, notRunningReason, type LocalServerAnswer } from "./runtime-sdk/model-plugins/local-servers";
 
 /** The daemon's read of the providers: the credential slots, then the plugins' sign-ins and keyless providers. It is
  *  complete only once the plugins' sign-ins can be read (the registry open, the model plugins started), that read
@@ -51,7 +51,7 @@ export async function readProviders(deps: {
   const local: Record<string, number> = {};
   for (const [p, a] of answering ?? []) {
     present.add(p);
-    local[p] = a.models.length;
+    local[p] = chatModels(a).length;
   }
   return { present, complete: incomplete === undefined, ...(incomplete !== undefined ? { incomplete } : {}), ...(keyless !== undefined ? { keyless } : {}), ...(unsignable !== undefined ? { unsignable } : {}), ...(answering !== undefined ? { local } : {}) };
 }
@@ -60,8 +60,11 @@ export interface SetupDeps {
   /** The providers the person added now (a stored key or a plugin sign-in), by catalog provider id; whether the read
    *  is complete (`incomplete` says why not, an error's class at most), and the keyless providers. */
   readPresent(): Promise<ProvidersRead & { incomplete?: string; local?: Record<string, number> }>;
-  /** Asks the local servers (`LocalServers.refresh`) before `setup.state` reads: on demand only. */
-  askLocal?(): Promise<void>;
+  /** Whether a provider is a local server (`local-none`): a default on one that isn't there "isn't running". */
+  isLocalServer?(provider: string): boolean;
+  /** Asks the local servers (`LocalServers.refresh`) before `setup.state` reads: on demand only; `force`, the guide's
+   *  explicit ask (again at most once a second per server). */
+  askLocal?(opts?: { force?: boolean }): Promise<void>;
   /** The model the settings name as the default, if any, and its effort. */
   storedModel(): string | undefined;
   storedEffort(): string | undefined;
@@ -75,8 +78,9 @@ export interface SetupDeps {
   clearModel(): void;
   dismissed(): boolean;
   writeDismissed(dismissed: boolean): void;
-  /** Whether a model is one a picker offers (`models.list`'s rows), for `models.setDefault`. */
-  offered(model: string): boolean;
+  /** Whether a model is one a picker offers (`models.list`'s rows), for `models.setDefault`; `not-running`: a local
+   *  server's model whose server was asked and found silent. */
+  offered(model: string): boolean | "not-running";
   emit(state: SetupState): void;
   log(line: string): void;
   /** The first set, from the boot's own presence read (never complete: the plugins haven't started). */
@@ -143,15 +147,16 @@ export class SetupService {
       providers,
       ...(answer.model !== undefined && answer.source !== undefined ? { default: { model: answer.model, source: answer.source, ...(answer.effort !== undefined ? { effort: answer.effort } : {}) } } : {}),
       ...(answer.signedOut !== undefined ? { signedOut: answer.signedOut } : {}),
+      ...(answer.signedOut !== undefined && this.deps.isLocalServer?.(answer.signedOut.slice(0, Math.max(0, answer.signedOut.indexOf("/")))) === true ? { signedOutWhy: "not-running" as const } : {}),
       ...(Object.keys(recommended).length > 0 ? { recommended } : {}),
       ...(this.#read.local !== undefined && Object.keys(this.#read.local).length > 0 ? { local: Object.fromEntries(Object.entries(this.#read.local).filter(([p]) => this.#present.has(p))) } : {}),
       dismissed: this.deps.dismissed(),
     };
   }
 
-  /** `setup.state`: the local servers asked (on demand, cached), then `refresh()`. */
-  async ask(): Promise<SetupState> {
-    await this.deps.askLocal?.().catch(() => undefined);
+  /** `setup.state`: the local servers asked (on demand, cached; `force`: asked again), then `refresh()`. */
+  async ask(opts: { force?: boolean } = {}): Promise<SetupState> {
+    await this.deps.askLocal?.(opts).catch(() => undefined);
     return this.refresh();
   }
 
@@ -229,8 +234,11 @@ export class SetupService {
 
   /** The person picks the default model: one a picker offers, whose provider they added. */
   async setDefault(model: string): Promise<SetupState> {
-    await this.refresh();
-    if (!this.deps.offered(model) && !model.startsWith("winter-test/")) throw new ContractError("invalid", `${model} isn't a model MOSS offers: pick another`);
+    // A fresh fact first: the local servers asked again where their answer is out of date (at most 1.5 s).
+    await this.ask();
+    const offered = this.deps.offered(model);
+    if (offered === "not-running") throw new ContractError("invalid", notRunningReason(model));
+    if (!offered && !model.startsWith("winter-test/")) throw new ContractError("invalid", `${model} isn't a model MOSS offers: pick another`);
     if (!hasProviderOf(model, this.#present)) throw new ContractError("invalid", `add ${model.slice(0, model.indexOf("/"))} first (a key or a sign-in), then pick its model`);
     this.deps.writeModel(model, this.deps.effortFor(model));
     this.#announce();
@@ -247,7 +255,7 @@ export class SetupService {
 /** `setup.state`, `setup.dismiss` and `models.setDefault`. */
 export function setupMethods(service: SetupService): Record<string, MethodHandler> {
   return {
-    [SESSIONS_METHODS.setupState.name]: handler(SESSIONS_METHODS.setupState, () => service.ask()),
+    [SESSIONS_METHODS.setupState.name]: handler(SESSIONS_METHODS.setupState, () => service.ask({ force: true })),
     [SESSIONS_METHODS.setupDismiss.name]: handler(SESSIONS_METHODS.setupDismiss, (p) => service.dismiss(p.dismissed)),
     [SESSIONS_METHODS.modelsSetDefault.name]: handler(SESSIONS_METHODS.modelsSetDefault, async (p) => ({ setup: await service.setDefault(p.model) })),
   };

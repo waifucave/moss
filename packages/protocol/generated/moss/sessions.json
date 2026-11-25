@@ -3377,6 +3377,12 @@
                 "minLength": 1,
                 "maxLength": 200
               },
+              "signedOutWhy": {
+                "type": "string",
+                "enum": [
+                  "not-running"
+                ]
+              },
               "recommended": {
                 "type": "object",
                 "propertyNames": {
@@ -3508,6 +3514,12 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200
+          },
+          "signedOutWhy": {
+            "type": "string",
+            "enum": [
+              "not-running"
+            ]
           },
           "recommended": {
             "type": "object",
@@ -3642,6 +3654,12 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200
+          },
+          "signedOutWhy": {
+            "type": "string",
+            "enum": [
+              "not-running"
+            ]
           },
           "recommended": {
             "type": "object",
@@ -4756,6 +4774,12 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 200
+              },
+              "signedOutWhy": {
+                "type": "string",
+                "enum": [
+                  "not-running"
+                ]
               },
               "recommended": {
                 "type": "object",

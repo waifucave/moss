@@ -99,7 +99,7 @@ describe("the guide's provider step says when the default model's provider is si
 });
 
 describe("the guide's provider step counts a local server the engine counts (it answers), with no key (2026-11-24)", () => {
-  const OLLAMA = { id: "moss/model-ollama-local", name: "Ollama (local)", providers: ["ollama-local"], auth: [] };
+  const OLLAMA: { id: string; name: string; providers: string[]; auth: never[]; local?: { running: boolean; models: number } } = { id: "moss/model-ollama-local", name: "Ollama (local)", providers: ["ollama-local"], auth: [] };
   const draw = async (setup: Record<string, unknown>) => {
     const host = document.createElement("div");
     host.id = "moss-page";
@@ -126,5 +126,11 @@ describe("the guide's provider step counts a local server the engine counts (it 
     expect((empty.querySelector("[data-moss-welcome=next]") as HTMLButtonElement).disabled).toBe(false);
     expect(empty.querySelector("[data-moss-local-empty]")?.textContent).toBe('welcome.local-empty {"provider":"Ollama (local)"}');
     empty.remove();
+    // Not running: the row says so, with Check again.
+    OLLAMA.local = { running: false, models: 0 };
+    const stopped = await draw({ ready: false, missing: ["provider"], providers: [], dismissed: false });
+    expect(stopped.querySelector("[data-moss-local-stopped]")?.textContent).toContain('welcome.local-stopped {"provider":"Ollama (local)"}');
+    expect(stopped.querySelector("[data-moss-welcome=check-again]")).not.toBeNull();
+    stopped.remove();
   });
 });

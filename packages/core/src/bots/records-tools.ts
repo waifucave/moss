@@ -31,6 +31,10 @@ export interface RecordToolsDeps {
   approvals?: Pick<ApprovalBroker, "request">;
   /** Whether the person has set a model up: a key or sign-in for it, and a plugin on that offers it. */
   setUp(model: string): boolean;
+  /** Asks the local servers again where their answer is out of date, before the check (at most 1.5 s). */
+  refreshModels?(): Promise<void>;
+  /** Why a model can't be used now though it is set up (a local server that isn't running), or undefined. */
+  unavailable?(model: string): string | undefined;
   /** Whether the session's computer is at the read-only level: then neither tool runs (read-only is absolute, as it is
    *  for the bot's own Write of its instructions). */
   readOnly?(): boolean;
@@ -95,6 +99,9 @@ export function recordToolDefs(deps: RecordToolsDeps, sessionId: string): CoreTo
         const input = parsed.data;
         if (shownCode(input.instructions ?? "").length > CARD_TEXT_MAX) return fail(`Those instructions are too long to show the person on a card (at most about ${CARD_TEXT_MAX} characters); make the bot with shorter ones, then add to them with Write and Edit.`);
         const model = input.model ?? store.get(maker)?.model;
+        if (model !== undefined) await deps.refreshModels?.().catch(() => undefined);
+        const unavailable = model === undefined ? undefined : deps.unavailable?.(model);
+        if (unavailable !== undefined) return fail(`The bot wasn't made: ${unavailable}.`);
         const setUp = model !== undefined && deps.setUp(model) ? [model] : [];
         let asked;
         try {

@@ -251,3 +251,18 @@ test("a provider the user pointed at an endpoint of their own is still its plugi
   expect(allows("google")).toBe(true);
   expect(allows("groq")).toBe(true);
 });
+
+test("a local server's model reaches its runtime by its own name (allowUnlisted); a cloud model's provider never takes one (2026-11-24)", async () => {
+  const home = temp("moss-local-fill-home-");
+  const secrets = new FileSecretStore(temp("moss-local-fill-secrets-"));
+  await writeOpenAiApiKey(secrets, "sk-test-not-real");
+  const { broker } = recordingBroker();
+  const modelPlugins = { sessionOption: () => ({ adapters: [] }) } as unknown as ModelPlugins;
+  const fill = botProviderFill({ home, broker, secrets, modelPlugins: () => modelPlugins });
+  const local: Options = { model: "ollama-local/qwen3:8b", cwd: home, env: { MOSS_HOME: home } };
+  await fillProvider({ provider: (m, o) => fill(m, o, ctx) }, local);
+  expect((local.provider as { providerId: string; allowUnlisted?: boolean })).toMatchObject({ providerId: "ollama-local", allowUnlisted: true });
+  const cloud: Options = { model: "openai/gpt-test-model", cwd: home, env: { MOSS_HOME: home } };
+  await fillProvider({ provider: (m, o) => fill(m, o, ctx) }, cloud);
+  expect((cloud.provider as { allowUnlisted?: boolean }).allowUnlisted).toBeUndefined();
+});

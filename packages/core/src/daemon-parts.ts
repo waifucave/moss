@@ -97,6 +97,8 @@ export interface DaemonBotsInput {
   hasKeyFor?: BotSideOptions["hasKeyFor"];
   /** Whether a model can be set as a bot's (`bot.setUserLayer`; models-list.ts `modelOffer`). */
   modelOffer?: BotSideOptions["modelOffer"];
+  /** Asks the local servers again where their answer is out of date (`LocalServers.refresh`). */
+  refreshModels?: BotSideOptions["refreshModels"];
   /** The models a session may run, as `models.list {session}` lists them: with it, a phone's `session.composerOffers` is served. */
   composerModels?: ComposerSources["models"];
   /** What MOSS's own bundled plugin chose for a bot, from its verified staged bytes (a loaded tag equal to it asks
@@ -528,6 +530,7 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
         ...(broker ? { approvals: broker } : {}),
         ...(b.hasKeyFor ? { hasKeyFor: b.hasKeyFor } : {}),
         ...(b.modelOffer ? { modelOffer: b.modelOffer } : {}),
+        ...(b.refreshModels ? { refreshModels: b.refreshModels } : {}),
         ...(b.bundledChoice ? { bundledChoice: b.bundledChoice } : {}),
         ...(b.workshop ? { workshop: b.workshop } : {}),
         ...(b.appScreenshot ? { appScreenshot: b.appScreenshot } : {}),

@@ -338,6 +338,9 @@ export const SetupState = z.object({
   /** The default model the settings name, kept while its provider isn't signed in (`missing` has `default-provider`):
    *  it is the default again once the key or the sign-in is back. */
   signedOut: utf16(200, 1).optional(),
+  /** Why `signedOut`'s provider isn't there, when it isn't a sign-in: `not-running`, a local server asked and found
+   *  silent (2026-11-24: said as "isn't running", never as signed out). */
+  signedOutWhy: z.enum(["not-running"]).optional(),
   /** Each added provider's recommended default, its family's (a model and its effort), where it has one (the guide's
    *  pre-filled pick). */
   recommended: z.record(utf16(128, 1), z.object({ model: utf16(200, 1), effort: utf16(32, 1).optional() })).optional(),

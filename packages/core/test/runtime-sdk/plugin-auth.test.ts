@@ -9,6 +9,7 @@ import type { PluginRecord } from "../../src/contracts/plugin-registry";
 import { authEntriesOf, createPluginAuth, pluginAuthMethods, type OAuthRun } from "../../src/runtime-sdk/plugin-auth";
 import { modelPluginSlotFor } from "../../src/runtime-sdk/model-plugins/keychain-tokens";
 import { secretStoreCredentials } from "../../src/runtime-sdk/model-plugins/plugin-api";
+import { LocalServers, setLocalServers } from "../../src/runtime-sdk/model-plugins/local-servers";
 
 class DaemonStore implements SecretStore {
   readonly values = new Map<string, string>();
@@ -63,6 +64,35 @@ describe("keylessProviders: only a local server is had with no key (2026-11-24)"
     expect([...auth.keylessProviders()]).toEqual(["ollama-local"]);
     // Neither counts as a provider the person added (a bundled plugin is never "signed in" without a key).
     expect([...await auth.signedInProviders()]).toEqual([]);
+  });
+  test("a local server the prober asked and found silent is not keyless; one not asked yet is; the provider page reads running and its chat models", async () => {
+    const OLLAMA = rec("moss/model-ollama-local", "bundled", { contributes: { models: [{ provider: "ollama-local", endpoint: { protocol: "openai-chat", baseUrl: "http://127.0.0.1:11434/v1" } }] } });
+    const records = new Map([OLLAMA].map((r) => [r.id, r]));
+    const auth = createPluginAuth({
+      registry: { get: (id) => records.get(id) }, host: { invoke: async () => undefined as never },
+      secrets: new DaemonStore(), pluginSecrets: new MemorySecretStore(), changed: () => {}, credentialChanged: () => {},
+      modelProviders: () => [{ provider: "ollama-local", pluginId: OLLAMA.id }],
+    });
+    let up = false;
+    let now = 1_000_000;
+    const servers = new LocalServers({
+      endpoints: () => [{ provider: "ollama-local", baseUrl: "http://127.0.0.1:11434/v1", personSet: false }],
+      now: () => now,
+      list: async () => { if (!up) throw new Error("refused"); return { models: [{ id: "qwen3:8b" }, { id: "nomic-embed-text" }] }; },
+    });
+    setLocalServers(servers);
+    try {
+      expect([...auth.keylessProviders()]).toEqual(["ollama-local"]); // not asked yet: a named default still works
+      expect(await auth.localStatus!(OLLAMA.id)).toEqual({ running: false, models: 0 });
+      expect([...auth.keylessProviders()]).toEqual([]); // asked, silent
+      expect(await auth.localStatus!(GROQ.id)).toBeUndefined();
+      up = true;
+      now += 1_000; // the page's ask is forced: again after a second, though a failure is kept 5 s
+      expect(await auth.localStatus!(OLLAMA.id)).toEqual({ running: true, models: 1 }); // the embedding model isn't counted
+      expect([...auth.keylessProviders()]).toEqual(["ollama-local"]);
+    } finally {
+      setLocalServers(undefined);
+    }
   });
 });
 

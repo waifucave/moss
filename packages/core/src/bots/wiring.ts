@@ -53,6 +53,8 @@ import { sessionDeletionMethods } from "../deletion/session-rpc";
 import { botDeletionMethods } from "../deletion/bot-rpc";
 import { finishSessionDeletions } from "../deletion/session-files";
 import { mossSessions } from "../runtime-sdk/sessions";
+import { activeCatalog } from "../runtime-sdk/model-plugins/catalog-source";
+import { localModelOffer, notRunningReason } from "../runtime-sdk/model-plugins/local-servers";
 
 /** The engine's cards for the person's deletions; without a broker that raises cards, an app's ask is refused (the
  *  person's own terminal still works). */
@@ -138,6 +140,7 @@ export interface BotSideOptions {
   defaultModel: BotServiceOptions["defaultModel"];
   hasKeyFor?: BotServiceOptions["hasKeyFor"];
   modelOffer?: BotServiceOptions["modelOffer"];
+  refreshModels?: BotServiceOptions["refreshModels"];
   bundledChoice?: BotServiceOptions["bundledChoice"];
   assetUrl?: BotServiceOptions["assetUrl"];
   warn?: (message: string) => void;
@@ -288,6 +291,7 @@ export function createBotSide(o: BotSideOptions): BotSide {
     ...(o.userHome === undefined ? {} : { userHome: o.userHome }),
     ...(o.hasKeyFor === undefined ? {} : { hasKeyFor: o.hasKeyFor }),
     ...(o.modelOffer === undefined ? {} : { modelOffer: o.modelOffer }),
+    ...(o.refreshModels === undefined ? {} : { refreshModels: o.refreshModels }),
     ...(o.bundledChoice === undefined ? {} : { bundledChoice: o.bundledChoice }),
     ...(o.assetUrl === undefined ? {} : { assetUrl: o.assetUrl }),
     ...(o.warn === undefined ? {} : { warn: o.warn }),
@@ -369,7 +373,14 @@ export function createBotSide(o: BotSideOptions): BotSide {
       if (records !== undefined && bot !== undefined && records.has(bot) && host.get(sessionId)?.kind !== "agent") {
         defs.push(...recordToolDefs({
           bots, host, ...(o.approvals?.request === undefined ? {} : { approvals: { request: o.approvals.request.bind(o.approvals) } }),
-          setUp: (model) => (o.hasKeyFor?.(model) ?? true) && o.modelOffer?.(model) !== "absent",
+          // A local server's model takes no key: set up while its server isn't known silent (2026-11-24).
+          setUp: (model) => {
+            const offer = o.modelOffer?.(model);
+            if (offer === "absent" || offer === "not-running") return false;
+            return localModelOffer(activeCatalog(), model) === "offered" || (o.hasKeyFor?.(model) ?? true);
+          },
+          ...(o.refreshModels === undefined ? {} : { refreshModels: o.refreshModels }),
+          unavailable: (model) => (o.modelOffer?.(model) === "not-running" ? notRunningReason(model) : undefined),
           // As the approval check reads it: a computer whose level isn't known is read-only.
           readOnly: () => {
             const computer = host.get(sessionId)?.computer ?? o.computer;

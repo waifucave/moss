@@ -28,6 +28,8 @@ export interface ProviderView {
   /** The catalog providers the plugin serves (its manifest's `models[].provider`): added when setup counts one of them
    *  (2026-11-24: a local server that answers, which takes no key). */
   providers?: string[];
+  /** A local server's plugin: whether it answers now, and how many models it lists that can chat. */
+  local?: { running: boolean; models: number };
 }
 
 interface ModelEntry {
@@ -45,7 +47,7 @@ export async function listProviders(client: PageClient, lang: string): Promise<P
   for (const id of ids) {
     const [detail, auth] = await Promise.all([
       client.request<{ plugin: { name: unknown; manifest: Record<string, unknown> } }>("plugin.get", { id }),
-      client.request<{ auth: PluginAuthView[] }>("plugin.auth.list", { id }).catch(() => ({ auth: [] as PluginAuthView[] })),
+      client.request<{ auth: PluginAuthView[]; local?: { running: boolean; models: number } }>("plugin.auth.list", { id }).catch(() => ({ auth: [] as PluginAuthView[] })),
     ]);
     const entries = ((detail.plugin.manifest.contributes as { models?: ModelEntry[] } | undefined)?.models ?? []) as ModelEntry[];
     const first = entries[0];
@@ -56,6 +58,7 @@ export async function listProviders(client: PageClient, lang: string): Promise<P
       id,
       name: textIn(first?.name ?? detail.plugin.name, lang) || id,
       ...(providers.length > 0 ? { providers } : {}),
+      ...("local" in auth && auth.local !== undefined ? { local: { running: auth.local.running === true, models: Number(auth.local.models) || 0 } } : {}),
       ...(terms !== undefined ? { terms } : {}),
       auth: auth.auth.map((a) => ({ index: a.index, method: a.method, state: a.state, ...(a.account !== undefined ? { account: a.account } : {}), ...(helps[a.index] !== undefined ? { help: helps[a.index]! } : {}) })),
     });

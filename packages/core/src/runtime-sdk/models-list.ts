@@ -26,7 +26,7 @@ import { activeCatalog } from "./model-plugins/catalog-source";
 import { modelPluginId } from "./model-plugins/bundled";
 import { installedModelPlugins } from "./model-plugins";
 import { effortVocabularyOf, imagesAcceptedBy, toolsRefusedFor } from "./provider-selection";
-import { isLocalServerProvider, localServers, type LocalServerAnswer } from "./model-plugins/local-servers";
+import { chatModels, isLocalServerProvider, localModelOffer, localServers, type LocalServerAnswer } from "./model-plugins/local-servers";
 
 /** A model as a picker lists it, and the method: the protocol's own (`SESSIONS_METHODS.modelsList`). */
 export { ModelListing };
@@ -80,7 +80,8 @@ export function catalogModelListings(catalog: WinterCatalog, signedIn: ReadonlyS
     const facts = providerFacts(p.id, p.displayName);
     if (local !== undefined && isLocalServerProvider(catalog, p.id)) {
       // Its live models replace its catalog rows; a server that doesn't answer offers none.
-      for (const m of local.get(p.id)?.models ?? []) {
+      // Only models that can chat: an embedding model a server lists too is left out (`chatModels`).
+      for (const m of chatModels(local.get(p.id))) {
         const id = `${p.id}/${m.id}`;
         if (id.length > MAX_LOCAL_ID) continue;
         const name = (m.name ?? m.id).slice(0, MAX_LOCAL_ID);
@@ -111,8 +112,10 @@ export function catalogModelListings(catalog: WinterCatalog, signedIn: ReadonlyS
  *  set an endpoint of their own for its provider (`providers.<id>.baseUrl`) and that provider is on (a local server's
  *  own model names, as the older provider door took them); `starting` when
  *  it isn't listed yet but a plugin that is on contributes its provider and the model plugins haven't finished taking
- *  it in (their start or a rebuild still running: the session reopens on their catalog once it lands); else `absent`. */
-export type ModelOffer = "offered" | "starting" | "absent";
+ *  it in (their start or a rebuild still running: the session reopens on their catalog once it lands); else `absent`.
+ *  A model on a local server (2026-11-24): `offered` unless that server was asked and found silent (`not-running`), so a
+ *  pick made after its answer expired still holds. */
+export type ModelOffer = "offered" | "starting" | "absent" | "not-running";
 
 export function modelOffer(model: string, o: {
   catalog: WinterCatalog;
@@ -123,6 +126,8 @@ export function modelOffer(model: string, o: {
   /** Whether the user's settings set an endpoint of their own for the provider (`providers.<id>.baseUrl`). */
   userEndpoint?(provider: string): boolean;
 }): ModelOffer {
+  const local = localModelOffer(o.catalog, model);
+  if (local !== undefined) return local;
   if (catalogModelListings(o.catalog, new Set()).some((m) => m.id === model)) return "offered";
   const slash = model.indexOf("/");
   const provider = slash > 0 ? model.slice(0, slash) : "";

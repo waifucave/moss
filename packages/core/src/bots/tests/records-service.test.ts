@@ -16,6 +16,9 @@ import { instructionsFile, recordFile } from "../records";
 import { EDIT_BOT_INSTRUCTIONS_TOOL } from "../records-tools";
 import { botSource, DEFAULT_BOT_SOURCE } from "../source";
 import { boot, removeTemps, tempDir } from "./fixtures";
+import { loadCatalog } from "@waifucave/clover-provider-catalog";
+import { modelOffer } from "../../runtime-sdk/models-list";
+import { LOCAL_SERVER_TTL_MS, LocalServers, setLocalServers } from "../../runtime-sdk/model-plugins/local-servers";
 
 afterEach(removeTemps);
 
@@ -412,5 +415,52 @@ describe("read-only is absolute", () => {
     for (let i = 0; i < 4; i++) await make.run({ name: `S${i}` }).catch(() => undefined);
     expect(b.bots.records!.proposals()).toEqual([]);
     await b.shutdown();
+  });
+});
+
+describe("a local server's model (2026-11-24): offered after its answer expires, refused only while it is silent, in its own words", () => {
+  test("bot.create, bot.edit, bot.setUserLayer and a MakeBot proposal on ollama-local/qwen3:8b: past the cache time they hold while it answers; silent, each says it isn't running", async () => {
+    const home = tempDir();
+    const clock = new FakeClock();
+    const broker = new FakeApprovalBroker({ clock });
+    let up = true;
+    let now = 1_000_000;
+    const asks: number[] = [];
+    const servers = new LocalServers({
+      endpoints: () => [{ provider: "ollama-local", baseUrl: "http://127.0.0.1:11434/v1", personSet: false }],
+      now: () => now,
+      list: async () => { asks.push(now); if (!up) throw new Error("refused"); return { models: [{ id: "qwen3:8b" }] }; },
+    });
+    setLocalServers(servers);
+    const catalog = loadCatalog();
+    const offer = (m: string) => modelOffer(m, { catalog, settling: false, contributed: () => [] });
+    const b = await boot({ home, clock, plugins: [], botSource: "records", approvals: broker, modelOffer: offer, refreshModels: () => servers.refresh(), hasKeyFor: () => false });
+    const MODEL = "ollama-local/qwen3:8b";
+    try {
+      await servers.refresh(); // the picker's ask
+      now += LOCAL_SERVER_TTL_MS + 1_000; // the pick comes later than the cache time
+      await b.bots.createBot({ name: "Alpha", model: MODEL }, { kind: "user" });
+      expect(b.bots.get("alpha")).toMatchObject({ model: MODEL });
+      expect(asks.length).toBe(2); // the decision asked again, once
+      await b.bots.editBot("alpha", { model: MODEL });
+      await b.bots.setUserLayer("alpha", { model: MODEL }, USER);
+      // A bot's proposal on it goes to the person's card.
+      const make = b.side.tools("b_alpha").find((t) => t.name === MAKE_BOT_TOOL)!;
+      const running = make.run({ name: "Scout", model: MODEL });
+      await press(broker, clock, "approve");
+      expect(await running).toMatchObject({ isError: false });
+      // Silent now: each is refused, saying it isn't running.
+      up = false;
+      now += LOCAL_SERVER_TTL_MS + 1_000;
+      await expect(b.bots.createBot({ name: "Beta", model: MODEL }, { kind: "user" })).rejects.toThrow("isn't running");
+      await expect(b.bots.editBot("alpha", { model: MODEL })).rejects.toThrow("isn't running");
+      await expect(b.bots.setUserLayer("alpha", { model: MODEL }, USER)).rejects.toThrow("isn't running");
+      const cards = broker.cards().length;
+      expect(await make.run({ name: "Rogue", model: MODEL })).toMatchObject({ isError: true, text: expect.stringContaining("isn't running") });
+      expect(broker.cards().length).toBe(cards);
+    } finally {
+      setLocalServers(undefined);
+      await b.shutdown();
+    }
   });
 });

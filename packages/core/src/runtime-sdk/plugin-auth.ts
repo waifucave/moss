@@ -28,7 +28,7 @@ import type { CardOpener } from "../devices/rpc";
 import { PLUGINS_METHODS, type PluginAuthView } from "@waifucave/moss-protocol";
 import { startXaiLogin, type CredentialStore } from "@waifucave/clover-provider-runtime";
 import { clearCredentialMaterial, readCredentialMaterial, writeCredentialMaterial } from "../auth/credential-material";
-import { isLocalServerProvider, localServers } from "./model-plugins/local-servers";
+import { chatModels, isLocalServerProvider, localServers } from "./model-plugins/local-servers";
 import type { SecretStore as DaemonSecretStore } from "../auth/secret-store";
 import { ContractError } from "../contracts/common";
 import type { PluginHost } from "../contracts/plugin-host";
@@ -428,9 +428,10 @@ export function createPluginAuth(deps: PluginAuthDeps): PluginAuth {
       const catalog = activeCatalog();
       const local = models.map((m) => m.provider).filter((p): p is string => typeof p === "string" && isLocalServerProvider(catalog, p));
       if (local.length === 0) return undefined;
-      const answers = await servers.ask();
+      // The page opening is its explicit ask: asked again (at most once a second per server).
+      const answers = await servers.ask({ force: true });
       const running = local.filter((p) => answers.has(p));
-      return { running: running.length > 0, models: running.reduce((n, p) => n + (answers.get(p)?.models.length ?? 0), 0) };
+      return { running: running.length > 0, models: running.reduce((n, p) => n + chatModels(answers.get(p)).length, 0) };
     },
   };
 }

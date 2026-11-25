@@ -45,6 +45,8 @@ const WORDS = {
   accept: (name: string) => `I accept ${name}'s terms`,
   needOne: "Add one provider to go on.",
   localEmpty: (name: string) => `${name} is running but has no model yet: pull one, then come back.`,
+  localStopped: (name: string) => `${name} isn't running: start it, then check again.`,
+  checkAgain: "Check again",
   ready: (n: number) => (n === 1 ? "1 provider is added." : `${n} providers are added.`),
   modelTitle: "Your default model",
   modelIntro: "Your bots use this model unless you pick another for one of them in its settings.",
@@ -58,6 +60,8 @@ const WORDS = {
   talk: (bot: string) => `Talk to ${bot}`,
   failed: "That didn't work. Try again.",
   signedOut: (model: string, provider: string) => `Your default model, ${model}, needs you signed in to ${provider}.`,
+  notRunning: (model: string, provider: string) => `Your default model, ${model}, is on ${provider}, which isn't running: start it.`,
+  localTools: "A local model may not be able to use tools; if a bot can't act, pick another.",
   signIn: "Sign in",
   devices: "Connect your other devices",
   relayTitle: "Connecting your devices",
@@ -79,7 +83,7 @@ const WORDS = {
 /** One plain line when the default model's provider is signed out (a key removed, a sign-in that lapsed), in the model's and
  *  the provider's own names (any provider: the catalog's row for the tag, else the tag's parts). With `onSignIn`, a button that
  *  takes the person to where they sign in (the guide's provider step). */
-export function SignedOutLine(props: { tag: string; onSignIn?: () => void }) {
+export function SignedOutLine(props: { tag: string; notRunning?: boolean; onSignIn?: () => void }) {
   const [names, setNames] = useState<{ model: string; provider: string } | undefined>(undefined);
   useEffect(() => {
     let live = true;
@@ -92,8 +96,8 @@ export function SignedOutLine(props: { tag: string; onSignIn?: () => void }) {
   if (names === undefined) return null;
   return (
     <p className="setup__signed-out" role="status" data-setup-signed-out={props.tag}>
-      {WORDS.signedOut(names.model, names.provider)}
-      {props.onSignIn !== undefined ? <> <button type="button" className="text-button" onClick={props.onSignIn} data-setup="sign-in">{WORDS.signIn}</button></> : null}
+      {props.notRunning === true ? WORDS.notRunning(names.model, names.provider) : WORDS.signedOut(names.model, names.provider)}
+      {props.onSignIn !== undefined && props.notRunning !== true ? <> <button type="button" className="text-button" onClick={props.onSignIn} data-setup="sign-in">{WORDS.signIn}</button></> : null}
     </p>
   );
 }
@@ -163,7 +167,7 @@ function Providers(props: { setup: SetupRow | undefined; onNext: () => void; onS
     <>
       <h1 id="setup-title">{WORDS.welcome}</h1>
       <p>{WORDS.intro}</p>
-      {props.setup?.signedOut !== undefined ? <SignedOutLine tag={props.setup.signedOut} /> : null}
+      {props.setup?.signedOut !== undefined ? <SignedOutLine tag={props.setup.signedOut} notRunning={props.setup.signedOutWhy === "not-running"} /> : null}
       <p className="muted small">{WORDS.noClaude}</p>
       {rows === undefined ? <p className="muted">{WORDS.loading}</p> : rows === "waiting" || rows.length === 0 ? <p className="muted">{WORDS.none}</p> : (
         <>
@@ -175,7 +179,7 @@ function Providers(props: { setup: SetupRow | undefined; onNext: () => void; onS
           ) : null}
           <ul className="setup__providers">
             {shown.length === 0 ? <li className="muted">{WORDS.noMatch}</li> : shown.map((p) => (
-              <Provider key={p.pluginId} row={p} setup={setup} open={open === p.pluginId || shown.length === 1} onToggle={() => setOpen((o) => (o === p.pluginId ? undefined : p.pluginId))} onChanged={load} />
+              <Provider key={p.pluginId} row={p} setup={setup} onCheck={load} open={open === p.pluginId || shown.length === 1} onToggle={() => setOpen((o) => (o === p.pluginId ? undefined : p.pluginId))} onChanged={load} />
             ))}
           </ul>
         </>
@@ -186,7 +190,7 @@ function Providers(props: { setup: SetupRow | undefined; onNext: () => void; onS
   );
 }
 
-function Provider(props: { row: ProviderRow; setup?: SetupRow; open: boolean; onToggle: () => void; onChanged: () => void }) {
+function Provider(props: { row: ProviderRow; setup?: SetupRow; onCheck?: () => void; open: boolean; onToggle: () => void; onChanged: () => void }) {
   const p = props.row;
   const [accepted, setAccepted] = useState(p.terms === undefined || added(p, props.setup));
   return (
@@ -196,6 +200,11 @@ function Provider(props: { row: ProviderRow; setup?: SetupRow; open: boolean; on
         {added(p, props.setup) ? <span className="chip chip--on">{WORDS.added}</span> : null}
       </button>
       {localEmpty(p, props.setup) ? <p className="muted small" data-setup-local-empty={p.pluginId}>{WORDS.localEmpty(p.name)}</p> : null}
+      {p.local !== undefined && !p.local.running && !added(p, props.setup) ? (
+        <p className="muted small" data-setup-local-stopped={p.pluginId}>
+          {WORDS.localStopped(p.name)} {props.onCheck !== undefined ? <button type="button" className="text-button" onClick={props.onCheck} data-setup="check-again">{WORDS.checkAgain}</button> : null}
+        </p>
+      ) : null}
       {props.open ? (
         <div className="setup__provider-body">
           {p.terms !== undefined ? (
@@ -283,6 +292,12 @@ function Model(props: { setup: SetupRow | undefined; onBack: () => void; onSkip:
             {picker}
           </>
         )}
+      {(() => {
+        // A model on a local server: one honest line (2026-11-24: its listing says nothing of tool use).
+        const shown = current !== undefined && !picking ? current : value;
+        const provider = providerOf(shown);
+        return provider !== undefined && setup?.local?.[provider] !== undefined ? <p className="muted small" data-setup-local-tools>{WORDS.localTools}</p> : null;
+      })()}
       {why !== undefined ? <p className="ma2-why small" role="status">{why}</p> : null}
       <Actions onBack={props.onBack} onSkip={props.onSkip} next={{ label: WORDS.next, disabled: models === undefined || models.length === 0 || value === "", run: () => void next(), data: "next" }} />
     </>

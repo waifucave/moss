@@ -15,6 +15,8 @@ interface ProviderView {
   auth: { index: number; method: "api-key" | "oauth-pkce" | "custom"; state: string; account?: string; help?: string }[];
   /** The catalog providers it serves: added when the engine's setup counts one (a local server that answers). */
   providers?: string[];
+  /** A local server's plugin: whether it answers now. */
+  local?: { running: boolean; models: number };
 }
 
 interface ManagedPlugin {
@@ -80,6 +82,8 @@ interface SetupView {
   dismissed: boolean;
   /** The default model whose provider is signed out, in names a person knows (`welcome.setup`). */
   signedOutAs?: { model: string; provider: string };
+  /** `not-running`: the default's provider is a local server that isn't running. */
+  signedOutWhy?: "not-running";
 }
 
 interface PickView {
@@ -120,7 +124,7 @@ export async function showWelcome(host: HTMLElement, t: Translate, call: Call, d
     page.body.append(signedOut, search, list);
     void (call("welcome.setup") as Promise<SetupView>).then((s) => {
       if (s.signedOutAs === undefined) return;
-      signedOut.textContent = t("welcome.signed-out", { model: s.signedOutAs.model, provider: s.signedOutAs.provider });
+      signedOut.textContent = t(s.signedOutWhy === "not-running" ? "welcome.not-running" : "welcome.signed-out", { model: s.signedOutAs.model, provider: s.signedOutAs.provider });
       signedOut.hidden = false;
     }, () => undefined);
     let all: ProviderView[] = [];
@@ -171,6 +175,9 @@ export async function showWelcome(host: HTMLElement, t: Translate, call: Call, d
       });
       const row = el("article", { class: `moss-page__item moss-page__item--row${open ? " is-open" : ""}`, "data-moss-provider": p.id }, head);
       if (localEmpty(p)) row.append(el("p", { class: "moss-page__note", "data-moss-local-empty": p.id }, t("welcome.local-empty", { provider: p.name })));
+      if (p.local !== undefined && !p.local.running && !isAdded(p)) {
+        row.append(el("p", { class: "moss-page__note", "data-moss-local-stopped": p.id }, t("welcome.local-stopped", { provider: p.name }), " ", button(t("welcome.check-again"), () => void draw(), { class: "moss-page__link", "data-moss-welcome": "check-again" })));
+      }
       if (!open) return row;
       const box = el("div", { class: "moss-page__item-body" });
       row.append(box);
@@ -286,6 +293,12 @@ export async function showWelcome(host: HTMLElement, t: Translate, call: Call, d
     } else {
       page.body.append(el("p", {}, t("welcome.model-pick")), pickerRow);
     }
+    // A model on a local server: one honest line (2026-11-24: its listing says nothing of tool use).
+    const localTools = el("p", { class: "moss-page__note", "data-moss-local-tools": "" }, t("welcome.local-tools"));
+    const showLocal = () => { const id = select.value; localTools.hidden = setup.local?.[id.slice(0, Math.max(0, id.indexOf("/")))] === undefined; };
+    select.addEventListener("change", showLocal);
+    showLocal();
+    if (models.length > 0) page.body.append(localTools);
     page.actions.append(button(t("welcome.back"), () => providersStep(), { "data-moss-welcome": "back" }), skipButton(), next);
   };
 

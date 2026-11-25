@@ -999,7 +999,7 @@ export class MossEngine {
     const rows = await Promise.all(ids.map(async (id): Promise<ProviderRow | undefined> => {
       const [detail, auth] = await Promise.all([
         this.client?.request<{ plugin: { name: string | { en: string }; manifest: { contributes?: { models?: { name?: string | { en: string }; provider?: unknown; terms?: unknown; auth?: { help?: unknown }[] }[] } } } }>("plugin.get", { id }, 10_000).catch(() => undefined),
-        this.client?.request<{ auth: ProviderRow["auth"] }>("plugin.auth.list", { id }, 10_000).catch(() => undefined),
+        this.client?.request<{ auth: ProviderRow["auth"]; local?: { running: boolean; models: number } }>("plugin.auth.list", { id }, 10_000).catch(() => undefined),
       ]);
       if (detail === undefined) return undefined;
       const entries = detail.plugin.manifest.contributes?.models ?? [];
@@ -1012,6 +1012,7 @@ export class MossEngine {
         pluginId: id,
         name: textOf(first?.name ?? detail.plugin.name) || id,
         ...(providers.length > 0 ? { providers } : {}),
+        ...(auth?.local !== undefined ? { local: { running: auth.local.running === true, models: Number(auth.local.models) || 0 } } : {}),
         ...(terms !== undefined ? { terms } : {}),
         auth: (auth?.auth ?? []).map((a) => ({ index: a.index, method: a.method, state: a.state, ...(a.account !== undefined ? { account: a.account } : {}), ...(helps[a.index] !== undefined ? { help: helps[a.index]! } : {}) })),
       };

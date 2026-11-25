@@ -97,7 +97,7 @@ export function App() {
       <div className="middle">
         {banner !== "" ? <p className="banner" role="status">{view.connection.reason ?? banner}</p> : null}
         {/* The default model's provider is signed out and the guide isn't up (skipped before): one plain line, with the way in. */}
-        {view.setup?.signedOut !== undefined && guide !== "open" ? <div className="banner" data-signed-out-banner><SignedOutLine tag={view.setup.signedOut} onSignIn={() => { setGuideStep("providers"); setGuide("open"); }} /></div> : null}
+        {view.setup?.signedOut !== undefined && guide !== "open" ? <div className="banner" data-signed-out-banner><SignedOutLine tag={view.setup.signedOut} notRunning={view.setup.signedOutWhy === "not-running"} onSignIn={() => { setGuideStep("providers"); setGuide("open"); }} /></div> : null}
         {view.notice !== undefined ? <p className="banner banner--notice" role="status" data-notice>{view.notice}</p> : null}
         {shown !== undefined && "page" in shown && shown.page === "plugins" ? <PluginsPage strip={strip} />
           : shown !== undefined && "page" in shown && shown.page === "settings" ? <SettingsPage bots={view.bots} strip={strip} pairing={view.pairing} devicesRev={view.devicesRev ?? 0} onSetupGuide={() => { setGuideStep("providers"); setGuide("open"); }} {...(settingsBot !== undefined ? { bot: settingsBot } : {})} />

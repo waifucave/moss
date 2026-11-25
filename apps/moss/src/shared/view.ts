@@ -100,6 +100,8 @@ export interface SetupRow {
   default?: { model: string; source: "chosen" | "computed"; effort?: string };
   /** The default model the settings name while its provider isn't signed in (`missing` has `default-provider`). */
   signedOut?: string;
+  /** `not-running`: `signedOut`'s provider is a local server that isn't running (said so, never as signed out). */
+  signedOutWhy?: "not-running";
   /** Each added provider's recommended default (its family's model and effort), where it has one. */
   recommended?: Record<string, { model: string; effort?: string }>;
   /** The local servers that answered, each one the person has, with how many models it lists (0: none pulled yet). */
@@ -114,6 +116,8 @@ export interface ProviderRow {
   name: string;
   /** The catalog providers the plugin serves (its manifest's `models[].provider`): added when setup counts one of them. */
   providers?: string[];
+  /** A local server's plugin: whether it answers now, and how many models it lists that can chat. */
+  local?: { running: boolean; models: number };
   terms?: { link: true } | { text: string };
   auth: { index: number; method: "api-key" | "oauth-pkce" | "custom" | "core"; state: string; account?: string; help?: string }[];
 }

@@ -275,7 +275,7 @@ import { DOWNLOAD_LIMITS, httpsFetch, INDEX_FETCH_TIMEOUT_MS } from "./registry/
 import { createPluginAuth, pluginAuthMethods, type PluginAuth } from "./runtime-sdk/plugin-auth";
 import { evictSessionsForCredential, evictSessionsForModelCatalog } from "./runtime-sdk/credentials";
 import { activeCatalog, installedModelPlugins, modelProviderKey, onModelCatalogChange } from "./runtime-sdk/model-plugins";
-import { isLocalServerProvider, localRecommendation, localServers, LocalServers, setLocalServers, type LocalServerEndpoint } from "./runtime-sdk/model-plugins/local-servers";
+import { isLocalServerProvider, localModelOffer, localRecommendation, localServerEndpoints, localServers, LocalServers, setLocalServers } from "./runtime-sdk/model-plugins/local-servers";
 import { catalogModelListings, contributedProviders, listModels, modelOffer, modelsMethods, type ModelsListDeps } from "./runtime-sdk/models-list";
 import { coldResumeRunHomeFor, createMossSessionDrivers, sessionPermissionClassFor, type MossLegDeps, type MossSessionDrivers } from "./runtime-sdk/session-driver";
 import { linkedRouterSupportsRunHome, linkedRunHomeBuilder, runHomeHandleOf, runHomeReportSummary } from "./runtime-sdk/run-home-support";
@@ -3489,18 +3489,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
   // A local server the person has is one that answers (2026-11-24, `local-servers.ts`): asked on demand only (setup
   // state, the model list, the provider page), at the endpoint its plugin declares or the person set.
   const localServerProbe = new LocalServers({
-    endpoints: () => {
-      const out: LocalServerEndpoint[] = [];
-      const catalog = activeCatalog();
-      for (const [provider, e] of installedModelPlugins()?.snapshot?.set.byProvider ?? []) {
-        if (!isLocalServerProvider(catalog, provider)) continue;
-        const personSet = providerBaseUrlFor(settings, provider);
-        const declared = (e.input.entry as { endpoint?: { baseUrl?: unknown } }).endpoint?.baseUrl;
-        const baseUrl = personSet ?? (typeof declared === "string" ? declared : undefined);
-        if (baseUrl !== undefined) out.push({ provider, baseUrl, personSet: personSet !== undefined });
-      }
-      return out;
-    },
+    endpoints: () => localServerEndpoints(activeCatalog(), installedModelPlugins()?.snapshot?.set.byProvider ?? [], (provider) => providerBaseUrlFor(settings, provider)),
   });
   setLocalServers(localServerProbe);
   const setup = new SetupService({
@@ -3508,7 +3497,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     // Complete only once the plugins' sign-ins can be read (the registry open, the model plugins started), that read
     // worked, and no slot's probe failed: only a complete read may change the default on disk (setup-state.ts).
     readPresent: () => readProviders({ presence: () => credentialPresenceFrom(secrets), auth: () => pluginAuth, local: () => localServerProbe.answers() }),
-    askLocal: () => localServerProbe.refresh(),
+    askLocal: (o) => localServerProbe.refresh(o),
+    isLocalServer: (provider) => isLocalServerProvider(activeCatalog(), provider),
     storedModel: () => settings?.provider?.model,
     storedEffort: () => settings?.provider?.reasoningEffort,
     // A local server's: the first model it lists (its listing says nothing of tool use).
@@ -3519,7 +3509,12 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     clearModel: () => writeSettings((s) => clearProviderModel(s)),
     dismissed: () => setupDismissedFrom(settings),
     writeDismissed: (dismissed) => writeSettings((s) => ({ ...s, setup: { ...s.setup, dismissed } })),
-    offered: (model) => catalogModelListings(activeCatalog(), new Set()).some((m) => m.id === model),
+    // A local server's model: offered unless its server was asked and found silent (never refused on an expired answer).
+    offered: (model) => {
+      const local = localModelOffer(activeCatalog(), model);
+      if (local !== undefined) return local === "offered" ? true : "not-running";
+      return catalogModelListings(activeCatalog(), new Set()).some((m) => m.id === model);
+    },
     emit: (state) => void mossServer?.coreEvent({ type: "setup_changed", setup: state }),
     log: (line) => console.error(line),
   });
@@ -4753,6 +4748,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       // A bot's model is one a plugin that is on offers (as the picker lists it), or one whose plugin is on while the
       // model plugins are still taking it in (their start or a rebuild), which the session then reopens on.
       composerModels: (session) => listModels(modelsDeps, { session }),
+      refreshModels: () => localServerProbe.refresh(),
       modelOffer: (model) => modelOffer(model, {
         catalog: activeCatalog(),
         settling: installedModelPlugins() === undefined || installedModelPlugins()!.rebuilding,

@@ -509,7 +509,21 @@ describe("the setup guide (2026-11-20)", () => {
     const e = await withGuide(view({ setup: NOT_SET }), { setupProviders: async () => [OLLAMA], setup: async () => empty });
     expect(e.container.querySelector("[data-setup-local-empty]")?.textContent).toBe("Ollama (local) is running but has no model yet: pull one, then come back.");
     e.unmount();
+ 
+  test("a local server that isn't running: the row says so with Check again, which asks again; a default on it reads isn't running, not signed out (2026-11-24)", async () => {
+    let asked = 0;
+    const OLLAMA = { pluginId: "moss/model-ollama-local", name: "Ollama (local)", providers: ["ollama-local"], local: { running: false, models: 0 }, auth: [] };
+    const OUT = { ...NOT_SET, missing: ["default-provider"] as ("default-provider")[], signedOut: "ollama-local/qwen3:8b", signedOutWhy: "not-running" as const };
+    const r = await withGuide(view({ setup: OUT }), { setupProviders: async () => { asked++; return [OLLAMA]; }, setup: async () => OUT, models: async () => [] });
+    expect(r.container.querySelector("[data-setup-local-stopped]")?.textContent).toContain("Ollama (local) isn't running: start it, then check again.");
+    const before = asked;
+    await act(async () => { (r.container.querySelector("[data-setup=check-again]") as HTMLButtonElement).click(); await new Promise((res) => setTimeout(res, 10)); });
+    expect(asked).toBe(before + 1);
+    expect(r.container.querySelector("[data-setup-signed-out]")?.textContent).toBe("Your default model, ollama-local/qwen3:8b, is on ollama-local, which isn't running: start it.");
+    expect(r.container.querySelector("[data-setup=sign-in]")).toBeNull();
+    r.unmount();
   });
+
 
   test("a home that works, or a guide skipped before, doesn't show it", async () => {
     for (const setup of [{ ...NOT_SET, ready: true, missing: [] }, { ...NOT_SET, dismissed: true }]) {

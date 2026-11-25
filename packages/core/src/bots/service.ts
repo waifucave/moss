@@ -36,6 +36,7 @@
 //
 // The driver of each session comes from `DriverFactory`: lane A's embedded runtime once A-M1 merges; tests use the
 // contracts' FakeSessionDriver.
+import { notRunningReason } from "../runtime-sdk/model-plugins/local-servers";
 import { NO_DEFAULT_MODEL_CODE, noDefaultModelReason } from "../default-model";
 import {
   MOSS_ERR, type BotView, type Caller, type ChangeResult, type Level, type RoutineRunView, type SessionView, type Text, type TurnOrigin, type UserMessageInput,
@@ -203,7 +204,10 @@ export interface BotServiceOptions {
   /** Whether a model can be set as a bot's (`models-list.ts` `modelOffer`): `absent` refuses `bot.setUserLayer` with
    *  words the picker shows; `starting` is accepted (the session reopens on the plugins' catalog once it lands).
    *  Default: every model is offered. */
-  modelOffer?(model: string): "offered" | "starting" | "absent";
+  modelOffer?(model: string): "offered" | "starting" | "absent" | "not-running";
+  /** Asks the local servers again where their answer is out of date (`LocalServers.refresh`, at most 1.5 s), before a
+   *  decision that needs a fresh fact: a bot made or edited on a local model. Default: nothing to ask. */
+  refreshModels?(): Promise<void>;
   /** What MOSS's own bundled plugin chose for a bot, read from its manifest's bytes as staging verified them (the
    *  daemon's: `source` `bundled`, its folder in the staged copy, the manifest's digest the staged one), or undefined
    *  for any other plugin. Asked once per bot load: a loaded model tag equal to the verified bytes' asks
@@ -522,10 +526,9 @@ export class BotService {
     const live = this.#must(id);
     const parsed = parseUserLayerPatch(patch);
     const model = (patch as { model?: unknown } | null)?.model;
+    if (typeof model === "string") await this.#freshModels();
     if (this.#records !== undefined) return this.#setRecordLayer(id, parsed, model);
-    if (typeof model === "string" && this.#o.modelOffer?.(model) === "absent") {
-      throw new ContractError("invalid", `${model} isn't offered by any plugin that is on: turn on its plugin in Settings › Plugins, or pick another model`);
-    }
+    if (typeof model === "string") this.#refuseModel(model, `${model} isn't offered by any plugin that is on: turn on its plugin in Settings › Plugins, or pick another model`);
     this.#layers.set(id, parsed);
     this.#syncMainSession(live);
     this.#emitBot(live);
@@ -598,6 +601,19 @@ export class BotService {
     return this.#records;
   }
 
+  /** A model that can't be set: `absent` with the caller's words, a local server's model whose server isn't running with
+   *  its own (2026-11-24). */
+  #refuseModel(model: string, absent: string): void {
+    const offer = this.#o.modelOffer?.(model);
+    if (offer === "absent") throw new ContractError("invalid", absent);
+    if (offer === "not-running") throw new ContractError("invalid", notRunningReason(model));
+  }
+
+  /** The local servers asked again where their answer is out of date, never failing the change it comes before. */
+  async #freshModels(): Promise<void> {
+    await this.#o.refreshModels?.().catch(() => undefined);
+  }
+
   /** Runs `job` after whatever sync is under way, one at a time, and hands back its result or its error. */
   #serial<T>(job: () => Promise<T>): Promise<T> {
     const run = this.#sync.then(job);
@@ -608,8 +624,9 @@ export class BotService {
   /** `bot.create` (the person's), and a bot's yes'd `MakeBot` (`by` its maker): the bot's conversation is open when
    *  this resolves. */
   async createBot(input: { name: Text; instructions?: string; model?: string; effort?: string; face?: BotFace }, by: BotMaker): Promise<BotRecordView> {
-    if (input.model !== undefined && this.#o.modelOffer?.(input.model) === "absent") {
-      throw new ContractError("invalid", `${input.model} isn't offered by any plugin that is on: pick another model`);
+    if (input.model !== undefined) {
+      await this.#freshModels();
+      this.#refuseModel(input.model, `${input.model} isn't offered by any plugin that is on: pick another model`);
     }
     const made = await this.#need().create(input, by);
     await this.settled();
@@ -618,8 +635,9 @@ export class BotService {
 
   /** `bot.edit`, the person's. */
   async editBot(id: string, patch: BotPatch): Promise<BotRecordView> {
-    if (typeof patch.model === "string" && this.#o.modelOffer?.(patch.model) === "absent") {
-      throw new ContractError("invalid", `${patch.model} isn't offered by any plugin that is on: pick another model`);
+    if (typeof patch.model === "string") {
+      await this.#freshModels();
+      this.#refuseModel(patch.model, `${patch.model} isn't offered by any plugin that is on: pick another model`);
     }
     const v = await this.#need().edit(id, patch);
     await this.settled();
@@ -814,7 +832,7 @@ export class BotService {
     if (parsed.theme !== undefined || parsed.layout !== undefined) {
       throw new ContractError("invalid", "a bot that is engine data has no theme or layout of its own");
     }
-    if (typeof model === "string" && this.#o.modelOffer?.(model) === "absent") throw new ContractError("invalid", `${model} isn't offered by any plugin that is on: pick another model`);
+    if (typeof model === "string") this.#refuseModel(model, `${model} isn't offered by any plugin that is on: pick another model`);
     const patch: BotPatch = {
       ...(parsed.name === undefined || parsed.name === null ? {} : { name: parsed.name }),
       ...(parsed.instructions === undefined ? {} : { instructions: parsed.instructions ?? "" }),
