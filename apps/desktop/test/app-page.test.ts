@@ -22,6 +22,43 @@ describe("the host page", () => {
     new Function("document", "window", "fetch", HOST_SCRIPT)(fakeDoc, fakeWindow, async () => ({ ok: true, json: async () => ({}) }));
     expect(listeners).toContain("message");
   });
+  describe("the relay, run against a fake document in the order the browser makes it", () => {
+    const run = () => {
+      const posted: unknown[] = [];
+      const fetched: unknown[] = [];
+      const win = { postMessage: (m: unknown) => { posted.push(m); } };
+      let frame: { contentWindow: unknown } | null = null;
+      let listener: ((e: { source: unknown; data: unknown }) => Promise<void>) | undefined;
+      const document = { getElementById: () => frame, querySelector: () => ({ content: "tok" }) };
+      const window = { addEventListener: (t: string, f: typeof listener) => { if (t === "message") listener = f; } };
+      const fetchFn = async (_u: string, init: { body: string }) => { fetched.push(JSON.parse(init.body)); return { ok: true, json: async () => ({ messages: [{ jsonrpc: "2.0", id: 1, result: {} }] }) }; };
+      new Function("document", "window", "fetch", HOST_SCRIPT)(document, window, fetchFn);
+      return { posted, fetched, win, say: (e: { source: unknown; data: unknown }) => listener!(e), setFrame: (f: { contentWindow: unknown } | null) => { frame = f; } };
+    };
+    const hello = { jsonrpc: "2.0", id: 1, method: "ui/initialize", params: {} };
+    test("the race: the script ran first, the frame appeared after, and the page's first message is relayed and answered to that frame", async () => {
+      const r = run();
+      await r.say({ source: r.win, data: hello }); // before the frame exists: refused, nothing relayed
+      expect(r.fetched).toHaveLength(0);
+      r.setFrame({ contentWindow: r.win }); // the frame is created
+      await r.say({ source: r.win, data: hello });
+      expect(r.fetched).toEqual([hello]);
+      expect(r.posted).toEqual([{ jsonrpc: "2.0", id: 1, result: {} }]);
+    });
+    test("only a message from the frame's own window is taken, and the answer goes only to it", async () => {
+      const r = run();
+      const other = { postMessage: () => { throw new Error("must not be posted to"); } };
+      r.setFrame({ contentWindow: r.win });
+      await r.say({ source: other, data: hello }); // the top document, another frame, a window the page opened
+      await r.say({ source: null, data: hello });
+      await r.say({ source: r.win, data: { id: 2 } }); // not JSON-RPC 2.0
+      expect(r.fetched).toHaveLength(0);
+      r.setFrame({ contentWindow: other }); // the frame was replaced: the old window is no longer the frame's
+      await r.say({ source: r.win, data: hello });
+      expect(r.fetched).toHaveLength(0);
+      expect(r.posted).toHaveLength(0);
+    });
+  });
   test("its policy allows only its own script, one frame and its own fetch", () => {
     expect(HOST_CSP).toContain("default-src 'none'");
     expect(HOST_CSP).toContain("script-src 'self'");
