@@ -85,6 +85,38 @@ final class CardFieldsTests: XCTestCase {
         XCTAssertFalse(model.mayAnswer(second))
     }
 
+    /// The Android review's card: a 6-line command, a 6-line detail and 8 paths push `host` and `rule` (what "Always" would
+    /// save, the last field) far down. On the phone the card is one column with its buttons last; the buttons answer only
+    /// once its heading has been on screen, so a person who reaches them has scrolled through every field, `rule` included.
+    @MainActor
+    func testATallCardAnswersOnlyOnceItsHeadingWasOnScreen() async {
+        let six = (1...6).map { "line \($0)" }.joined(separator: "\n")
+        let tall = Card(id: "card_tall0001", kind: "tool", bot: "alpha", origin: "bot", issuedAt: SampleData.now, expiresAt: Int64.max,
+                        hash: String(repeating: "e", count: 64),
+                        fields: ["title": .text("Run this?"), "command": .code(six, language: "sh"),
+                                 "detail": .rows((1...6).map { .init(label: "Row \($0)", value: "value \($0)") }),
+                                 "paths": .list((1...8).map { "notes/\($0).md" }), "host": .code("example.org", language: nil),
+                                 "rule": .rows([.init(label: "kind", value: "command"), .init(label: "target", value: "anything in notes/")])],
+                        options: [CardOption(id: "always", kind: .approve, label: "Always allow", rememberAlways: true), CardOption(id: "deny", kind: .deny, label: "Deny")])
+        XCTAssertTrue(tall.drawnWhole)
+        XCTAssertTrue(tall.cutFields.isEmpty, "nothing in it is cut: it is the scrolling that hides host and rule")
+        let fake = FakeEngineClient(scenario: .quiet)
+        let model = CardsModel(client: fake, app: .moss, now: { SampleData.now }, settleWait: .zero, requiresSighting: true)
+        await model.load()
+        await model.apply(.cardRequested(tall))
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertFalse(model.mayAnswer(tall))
+        XCTAssertNotNil(model.waitReason(tall), "a refused press says why in one line")
+        model.sighted(tall)
+        XCTAssertTrue(model.mayAnswer(tall))
+        XCTAssertNil(model.waitReason(tall))
+        // The same card with new content must be seen again from its top.
+        var changed = tall; changed.fields["host"] = .code("other.example", language: nil)
+        await model.apply(.cardRequested(changed))
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertFalse(model.mayAnswer(changed))
+    }
+
     @MainActor
     func testTheSameCardWithNewContentReplacesTheOneOnScreen() async {
         let fake = FakeEngineClient(scenario: .idle)

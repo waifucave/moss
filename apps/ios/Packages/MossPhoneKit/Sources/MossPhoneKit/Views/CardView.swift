@@ -12,19 +12,25 @@ public struct CardView: View {
     /// The cut fields opened, and opening one (kept in the model, which refuses an answer until all are open).
     let opened: Set<String>
     let onOpen: (String) -> Void
+    /// Why the buttons wait, in one line (the model's), and the report that the heading is on screen.
+    let waitReason: String?
+    let onSighted: () -> Void
     @Environment(\.nowMs) private var nowOverride
     @Environment(\.dynamicTypeSize) private var typeSize
 
     /// `note` says why the card can't be answered (expired, answered elsewhere, failed); `onSettle` then dismisses it (or, after a failure, lets the person try again).
     public init(card: Card, busy: Bool = false, note: CardNote? = nil, ready: Bool = true, opened: Set<String> = [], onOpen: @escaping (String) -> Void = { _ in },
+                waitReason: String? = nil, onSighted: @escaping () -> Void = {},
                 onAnswer: @escaping (CardOption) -> Void, onSettle: @escaping () -> Void = {}) {
         self.card = card; self.busy = busy; self.note = note; self.ready = ready; self.opened = opened; self.onOpen = onOpen
+        self.waitReason = waitReason; self.onSighted = onSighted
         self.onAnswer = onAnswer; self.onSettle = onSettle
     }
     /// A convenience for the cards a `CardsModel` holds: its gates, its opened fields, its answer.
     public init(card: Card, in model: CardsModel) {
         self.init(card: card, busy: model.answering.contains(card.id), note: model.note(for: card), ready: model.mayAnswer(card) || model.note(for: card) != nil,
                   opened: model.opened[card.id] ?? [], onOpen: { model.open($0, of: card) },
+                  waitReason: model.waitReason(card), onSighted: { model.sighted(card) },
                   onAnswer: { o in Task { await model.answer(card, with: o) } },
                   onSettle: { model.note(for: card) == .failed ? model.clearFailure(card) : model.dismiss(card) })
     }
@@ -36,6 +42,8 @@ public struct CardView: View {
                 Text(Sealed.visible(card.title)).font(.headline)
                 if let what = card.what { Text(Sealed.visible(what)).font(.subheadline).foregroundStyle(.secondary) }
             }
+            // The heading on screen (most of it): what follows down to the buttons is passed on the way to them.
+            .onScrollVisibilityChange(threshold: 0.6) { visible in if visible { onSighted() } }
             ForEach(shownFields, id: \.0) { name, value in
                 field(name, value)
             }
@@ -52,10 +60,9 @@ public struct CardView: View {
                 Label("Answer this one on your computer: it carries something this phone can't show.", systemImage: "desktopcomputer")
                     .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else {
-                if unopened > 0 {
-                    // What is approved is what was on screen: every cut part is opened first.
-                    Text(unopened == 1 ? "Open the part cut short above to answer." : "Open the \(unopened) parts cut short above to answer.")
-                        .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                // Why the buttons wait, in one line, never silently: what is approved is what was on screen.
+                if let why = waitReason ?? (unopened > 0 ? (unopened == 1 ? "Open the part cut short above first." : "Open the \(unopened) parts cut short above first.") : nil) {
+                    Label(why, systemImage: "hand.raised").font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 (card.options.count > 2 ? AnyLayout(VStackLayout(spacing: 8)) : AnyLayout(HStackLayout(spacing: 8))) {
                     ForEach(card.options) { option in

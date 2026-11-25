@@ -139,7 +139,7 @@ public struct MossRoot: View {
         #endif
         _newBot = State(initialValue: nb)
         _showNewBot = State(initialValue: launch.newBot)
-        _cards = State(initialValue: real ? CardsModel(client: c, app: .moss) : CardsModel(client: c, app: .moss, now: { Fake.now }))
+        _cards = State(initialValue: real ? CardsModel(client: c, app: .moss, requiresSighting: true) : CardsModel(client: c, app: .moss, now: { Fake.now }, requiresSighting: true))
         _pairing = State(initialValue: PairingModel(client: c))
         let st = SettingsModel(client: c, version: SettingsModel.bundleVersion()); st.confirmingUnpair = launch.confirmUnpair
         _settings = State(initialValue: st)
@@ -227,7 +227,7 @@ public struct MossCodeRoot: View {
         let c: any EngineClient = real ? (engine ?? NoEngineClient()) : Fake.client(launch)
         _client = State(initialValue: c)
         _sessions = State(initialValue: SessionsListModel(client: c))
-        _cards = State(initialValue: real ? CardsModel(client: c, app: .code) : CardsModel(client: c, app: .code, now: { Fake.now }))
+        _cards = State(initialValue: real ? CardsModel(client: c, app: .code, requiresSighting: true) : CardsModel(client: c, app: .code, now: { Fake.now }, requiresSighting: true))
         _pairing = State(initialValue: PairingModel(client: c))
         let st = SettingsModel(client: c, version: SettingsModel.bundleVersion()); st.confirmingUnpair = launch.confirmUnpair
         _settings = State(initialValue: st)

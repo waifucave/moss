@@ -39,9 +39,27 @@ public final class CardsModel {
     /// The cut fields the person has opened, per card: a card is answered only once every cut field was on screen.
     public private(set) var opened: [String: Set<String>] = [:]
 
+    /// Cards whose heading has been on screen. A card is one column with its buttons last, so a person who sees the buttons
+    /// and has seen the heading has had every field in between on screen (a tall card, opened at its bottom, has not).
+    public private(set) var sighted: Set<String> = []
+    @ObservationIgnored private let requiresSighting: Bool
+
+    /// `requiresSighting`: the app's screens report each card's heading on screen (`sighted(_:)`); a model without views
+    /// (tests over the client) leaves it off.
     public init(client: EngineClient, app: PhoneApp, now: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) },
-                settleWait: Duration = .milliseconds(1200)) {
-        self.client = client; self.app = app; self.now = now; self.settleWait = settleWait
+                settleWait: Duration = .milliseconds(1200), requiresSighting: Bool = false) {
+        self.client = client; self.app = app; self.now = now; self.settleWait = settleWait; self.requiresSighting = requiresSighting
+    }
+    public func sighted(_ card: Card) { sighted.insert(card.id) }
+
+    /// Why the buttons don't answer now, in one line for the card, or nil when they do.
+    public func waitReason(_ card: Card) -> String? {
+        if !card.drawnWhole || note(for: card) != nil { return nil }
+        if settling.contains(card.id) { return "Wait a moment: this card just arrived or changed." }
+        if requiresSighting && !sighted.contains(card.id) { return "Scroll up to the top of this card first: answer only what you have seen." }
+        let n = card.cutFields.subtracting(opened[card.id] ?? []).count
+        if n > 0 { return n == 1 ? "Open the part cut short above first." : "Open the \(n) parts cut short above first." }
+        return nil
     }
 
     /// Every cut field of the card has been opened (or it has none).
@@ -50,6 +68,7 @@ public final class CardsModel {
     /// Whether its buttons answer now: drawn whole, every cut field opened, not waiting, not busy, nothing noted.
     public func mayAnswer(_ card: Card) -> Bool {
         card.drawnWhole && seenWhole(card) && !settling.contains(card.id) && !answering.contains(card.id) && note(for: card) == nil
+            && (!requiresSighting || sighted.contains(card.id))
     }
 
     private func settle(_ ids: some Sequence<String>) {
@@ -70,12 +89,12 @@ public final class CardsModel {
         var moved: [String] = []
         for (i, c) in new.enumerated() {
             if let j = old.firstIndex(where: { $0.id == c.id }) {
-                if old[j] != c { moved.append(c.id); opened[c.id] = nil }
+                if old[j] != c { moved.append(c.id); opened[c.id] = nil; sighted.remove(c.id) }
                 else if j != i { moved.append(c.id) }
             } else if loaded { moved.append(c.id) }
         }
         cards = new
-        for id in Set(old.map(\.id)).subtracting(new.map(\.id)) { opened[id] = nil; settleTasks[id]?.cancel(); settleTasks[id] = nil; settling.remove(id) }
+        for id in Set(old.map(\.id)).subtracting(new.map(\.id)) { opened[id] = nil; sighted.remove(id); settleTasks[id]?.cancel(); settleTasks[id] = nil; settling.remove(id) }
         settle(moved)
     }
 
