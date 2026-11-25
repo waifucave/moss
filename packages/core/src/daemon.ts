@@ -4727,6 +4727,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
         // A third party's model plugin provider is keyed only when signed in through it, or taking no sign-in (#328).
         const keys = await botKeyPresence(secrets, mossHome, {
           pluginSignedIn: async () => (await pluginAuth?.signedInProviders()) ?? new Set<string>(),
+          keyless: () => pluginAuth?.keylessProviders() ?? new Set<string>(),
           log: (line) => console.error(line),
         });
         offBotKeysWatch?.();

@@ -27,6 +27,9 @@ export interface BotKeyPresenceOptions {
   /** The third parties' model plugin providers signed in through their plugin, or taking no sign-in (lane A's
    *  `PluginAuth.signedInProviders`). */
   pluginSignedIn?(): Promise<ReadonlySet<string>>;
+  /** The bundled providers that take no key (a local server, less one asked and found silent: lane A's
+   *  `PluginAuth.keylessProviders`), read live: a bot on one runs on its own model, not the default (2026-11-24). */
+  keyless?(): ReadonlySet<string>;
   /** Where a failed boot read of the plugins' sign-ins is said (the error's name only, never its text). */
   log?(line: string): void;
   now?(): number;
@@ -64,6 +67,7 @@ export async function botKeyPresence(secrets: SecretStore, home: string, opts: B
     const selection = providerFor(model, home);
     if (selection === undefined) return false;
     if (presence.byProvider[selection.providerId] !== undefined) return true;
+    if (opts.keyless?.().has(selection.providerId) === true) return true;
     // Not one of the built-in slots: a model plugin's provider, keyed when its plugin is signed in (or takes none).
     if (credentialRefFor(selection.providerId, home) !== undefined || !pluginServes(selection.providerId)) return false;
     return signedIn === undefined || signedIn.has(selection.providerId);

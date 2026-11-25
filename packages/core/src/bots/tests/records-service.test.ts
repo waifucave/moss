@@ -434,7 +434,7 @@ describe("a local server's model (2026-11-24): offered after its answer expires,
     setLocalServers(servers);
     const catalog = loadCatalog();
     const offer = (m: string) => modelOffer(m, { catalog, settling: false, contributed: () => [] });
-    const b = await boot({ home, clock, plugins: [], botSource: "records", approvals: broker, modelOffer: offer, refreshModels: () => servers.refresh(), hasKeyFor: () => false });
+    const b = await boot({ home, clock, plugins: [], botSource: "records", approvals: broker, modelOffer: offer, refreshModels: () => servers.refresh(), hasKeyFor: (m) => m.startsWith("ollama-local/") });
     const MODEL = "ollama-local/qwen3:8b";
     try {
       await servers.refresh(); // the picker's ask

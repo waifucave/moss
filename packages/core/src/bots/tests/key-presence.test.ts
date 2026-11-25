@@ -69,6 +69,16 @@ describe("the daemon's hasKeyFor", () => {
     expect(hasKeyFor("anthropic/claude-sonnet-5-5")).toBe(true);
   });
 
+  test("a bundled local server's model counts while the server isn't known silent (keylessProviders, read live): the bot keeps its model (2026-11-24)", async () => {
+    const home = tempDir();
+    const store = new FileSecretStore(join(home, "secrets.json"));
+    const keyless = new Set(["ollama-local"]);
+    const hasKeyFor = await botKeyPresence(store, home, { pluginServes: (p) => p === "ollama-local", pluginSignedIn: async () => new Set<string>(), keyless: () => keyless });
+    expect(hasKeyFor("ollama-local/qwen3:8b")).toBe(true);
+    keyless.delete("ollama-local"); // asked and found silent
+    expect(hasKeyFor("ollama-local/qwen3:8b")).toBe(false);
+  });
+
   test("#328's check: a third party's provider counts only while signed in through its plugin (or taking no sign-in)", async () => {
     const home = tempDir();
     const store = new FileSecretStore(join(home, "secrets.json"));

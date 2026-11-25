@@ -509,7 +509,8 @@ describe("the setup guide (2026-11-20)", () => {
     const e = await withGuide(view({ setup: NOT_SET }), { setupProviders: async () => [OLLAMA], setup: async () => empty });
     expect(e.container.querySelector("[data-setup-local-empty]")?.textContent).toBe("Ollama (local) is running but has no model yet: pull one, then come back.");
     e.unmount();
- 
+  });
+
   test("a local server that isn't running: the row says so with Check again, which asks again; a default on it reads isn't running, not signed out (2026-11-24)", async () => {
     let asked = 0;
     const OLLAMA = { pluginId: "moss/model-ollama-local", name: "Ollama (local)", providers: ["ollama-local"], local: { running: false, models: 0 }, auth: [] };
