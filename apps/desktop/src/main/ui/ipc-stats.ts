@@ -1,3 +1,6 @@
+import { APP_LOG_LINE_MAX } from "../app-log";
+/** The longest the counts part of the line may be before the processes and the calls: the rest of the line is theirs. */
+const HEAD_MAX = 200;
 // What crosses between the main process and the windows, counted by channel, and what each process costs, said in the app's
 // own log every few seconds, when asked for (`MOSS_IPC_STATS=1`, or an `ipc-stats` file in the home; off by default, any build): the
 // acceptance run reads it to hold an idle app to a budget, and a person chasing a hot idle app reads it to see which channel never stops. Counts only: no
@@ -89,10 +92,27 @@ export function cpuMeter(list: () => readonly ProcessCpuTotal[], now: () => numb
  *  The words "ipc: " and the shape are what the acceptance row parses (`parseIpcLine`); keep the two together. */
 export function ipcLine(w: IpcWindow, cpu: readonly ProcessCpu[]): string {
   const rate = (n: number) => (n / w.seconds).toFixed(1);
-  const inN = total(w.in);
-  const outN = total(w.out);
-  const procs = cpu.map((p) => `${p.type} ${p.percent.toFixed(1)}%`).join(" ");
-  return `ipc: ${w.seconds} s in ${rate(inN)}/s (${top(w.in)}) out ${rate(outN)}/s (${top(w.out)}) cpu${procs === "" ? "" : ` ${procs}`}${w.detail !== undefined && w.detail.size > 0 ? ` calls (${top(w.detail, 4)})` : ""}`;
+  const headOf = (n: number) => `ipc: ${w.seconds} s in ${rate(total(w.in))}/s (${top(w.in, n)}) out ${rate(total(w.out))}/s (${top(w.out, n)}) cpu`;
+  // The most pairs (6 at most) whose head leaves room for the processes' words.
+  let n = 6;
+  while (n > 0 && headOf(n).length > HEAD_MAX) n--;
+  const head = headOf(n);
+  // The file keeps a line to APP_LOG_LINE_MAX characters (the timestamp aside) and a cut line is not a kept shape, so the
+  // line is built to fit: processes from the first as many as fit, then the calls' names, most-called first, as many as fit.
+  let line = head;
+  for (const p of cpu) {
+    const next = `${line} ${p.type} ${p.percent.toFixed(1)}%`;
+    if (next.length > APP_LOG_LINE_MAX) break;
+    line = next;
+  }
+  const names = [...(w.detail ?? new Map<string, number>()).entries()].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k, v]) => `${k} ${v}`);
+  let calls = "";
+  for (const n of names) {
+    const next = calls === "" ? n : `${calls}, ${n}`;
+    if (`${line} calls (${next})`.length > APP_LOG_LINE_MAX) break;
+    calls = next;
+  }
+  return calls === "" ? line : `${line} calls (${calls})`;
 }
 
 /** Counts every message and says each window's line (`every` ms) while the app runs; the stop function ends it. */

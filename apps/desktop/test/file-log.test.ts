@@ -361,7 +361,8 @@ describe("what MOSS Code writes to its log file", () => {
     const names = ["sealed-visible-report", "plugin-frame-ready", "shell-provides-changed", "conversation-scroll-state", "tree-call-result", "child-size"];
     const many = ipcLine({ seconds: 5, in: new Map(names.map((n, i) => [`moss:${n}`, 90 - i])), out: new Map(names.map((n, i) => [n, 50 - i])) } as never,
       ["Browser", "Tab", "Tab", "GPU", "Utility", "Sandbox helper", "Pepper Plugin Broker", "Zygote"].map((type, i) => ({ type, percent: i + 0.5 })));
-    expect(many.length).toBeGreaterThan(300);
+    // The writer fits the line to the file's limit, so even the busiest shape is not cut.
+    expect(many.length).toBeLessThanOrEqual(300);
     expect(fileLine(many)).toBe(many);
   });
 
@@ -444,7 +445,7 @@ describe("what MOSS Code writes to its log file", () => {
     test("a line the file cut at its length limit is judged by the whole line the process printed: a cut kept ipc line passes (counted), a cut line of free text fails, and a cut line with no whole copy fails", () => {
       const at = "2026-11-24T10:00:00.000Z ";
       const names = Array.from({ length: 6 }, (_, i) => `a-long-channel-name-${i}`);
-      const whole = ipcLine({ seconds: 5, in: new Map(names.map((n, i) => [n, 90 - i])), out: new Map(names.map((n, i) => [n, 50 - i])) } as never, Array.from({ length: 12 }, () => ({ type: "Tab", percent: 1.5 })));
+      const whole = ipcLine({ seconds: 5, in: new Map(names.map((n, i) => [n, 90 - i])), out: new Map(names.map((n, i) => [n, 50 - i])) } as never, []) + " Tab 1.5%".repeat(20); // an older build's longer line (the writer now fits the limit)
       expect(whole.length).toBeGreaterThan(APP_LOG_LINE_MAX);
       expect(fileLine(whole)).toBe(whole);
       const cut = cleanLogLine(whole);
@@ -494,6 +495,30 @@ describe("the counters line's calls part (written by ipcLine)", () => {
       expect(fileLine(line)).toBe(line);
     }
     expect(written(["plugin.layer.call:files.pickOpen"])).toContain("plugin.layer.call:files.pickOpen 1");
+  });
+  test("the worst line ipcLine can write (longest names, most pairs, most processes, the calls part) is kept whole by the file's cleaner and the keep rule, and parses", () => {
+    const stats = new IpcStats();
+    const long = [...COMPONENT_CALLS].sort((a, b) => b.length - a.length);
+    for (let i = 0; i < 12; i++) { stats.received(`moss:${"chan.name.".repeat(4)}${i}`); stats.sent(`message.type.${"x.".repeat(15)}${i}`); }
+    for (let i = 0; i < 6; i++) for (let k = 0; k <= i; k++) stats.detail(`plugin.layer.call:${long[i]}`, true);
+    const procs = Array.from({ length: 24 }, (_, i) => ({ type: i % 2 === 0 ? "Utility" : "Tab", percent: 100 + i }));
+    for (const cpu of [procs, procs.slice(0, 9), []]) {
+      const s2 = new IpcStats();
+      for (let i = 0; i < 12; i++) { s2.received(`moss:${"chan.name.".repeat(4)}${i}`); s2.sent(`message.type.${"x.".repeat(15)}${i}`); }
+      for (let i = 0; i < 6; i++) for (let k = 0; k <= i; k++) s2.detail(`plugin.layer.call:${long[i]}`, true);
+      const line = ipcLine(s2.take(5), cpu);
+      expect(line.length).toBeLessThanOrEqual(APP_LOG_LINE_MAX);
+      expect(cleanLogLine(line)).toBe(line);
+      expect(fileLine(line)).toBe(line);
+      expect(parseIpcLine(line)?.seconds).toBe(5);
+    }
+    // The real-build line that failed: nine processes and a calls part that would have run past the limit.
+    const real = new IpcStats();
+    for (const [n, c] of [["events.subscribe", 5], ["bot.list", 2], ["card.pending", 1], ["plugin.layer.call:points.entries", 1]] as const) for (let i = 0; i < c; i++) real.detail(n, true);
+    const line = ipcLine(real.take(5), "Browser GPU Utility Tab Tab Tab Tab Tab Tab Utility".split(" ").map((type) => ({ type, percent: 2.4 })));
+    expect(line.length).toBeLessThanOrEqual(APP_LOG_LINE_MAX);
+    expect(fileLine(line)).toBe(line);
+    expect(stats.take(1).detail?.size).toBeGreaterThan(0);
   });
   test("a calls part with a word, a path, a capital, a fifth name or a long name is not kept", () => {
     const base = written(["events.subscribe"]).replace(/ calls \(.*\)$/, "");
