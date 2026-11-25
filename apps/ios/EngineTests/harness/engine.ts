@@ -80,7 +80,10 @@ async function boot(): Promise<void> {
     parts: {
       userHome,
       node: { terminals: { launch: () => ({ cmd: ["/bin/cat"], env: {} }) } },
-      bots: { registry: new FakePluginRegistry({ catalog: catalogPointDecl, plugins: [] }), drivers: () => () => new ReplyDriver(), defaultModel: () => ({ model: "winter-test/calls" }) },
+      bots: { registry: new FakePluginRegistry({ catalog: catalogPointDecl, plugins: [] }), drivers: () => () => new ReplyDriver(), defaultModel: () => ({ model: "winter-test/calls" }),
+        // The composer's model list (a test daemon's bots carry none by default, and without it the engine serves no
+        // `session.composerOffers`): none listed, so the composer offers what the doors give (pictures, files).
+        composerModels: async () => ({ models: [] }) },
       agents: { defaultModel: () => "winter-test/calls", backends: () => [fakeAgent()] },
     },
   });

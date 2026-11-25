@@ -129,6 +129,8 @@ class EngineFlowTests: XCTestCase {
         // A file goes only where the composer offers one, and then rides the next message.
         let offers = try XCTUnwrap(conversation.offers)
         print("IW offers: pictures \(offers.pictures) files \(offers.files) limit \(offers.fileLimit ?? -1)")
+        // The runner's engine offers files to a paired phone (a phone with an answer key, a session this computer runs).
+        XCTAssertTrue(offers.files, "the engine's composer offers files here")
         if offers.files {
             await conversation.stageFile(name: "notes.txt", size: 12, data: Data("hello, file\n".utf8))
             XCTAssertEqual(conversation.stagedFiles.count, 1, conversation.errorText ?? "")
