@@ -8,7 +8,7 @@ import { join } from "node:path";
 import type { Card, Level } from "@waifucave/moss-protocol";
 import { MossApprovalBroker, botDisplayName, type MossApprovalRequest } from "../../src/approvals/broker";
 import {
-  botApprovalCheck, CODE_MAX, fencedReadOnlyCommand, MISPLACED_SANDBOX_FLAG_REFUSAL, namesNetworkPath, OUTSIDE_SANDBOX_SENTENCE, misplacedSandboxFlag,
+  botApprovalCheck, CODE_MAX, fencedReadOnlyCommand, holdsLiveExpansion, MISPLACED_SANDBOX_FLAG_REFUSAL, namesNetworkPath, OUTSIDE_SANDBOX_SENTENCE, misplacedSandboxFlag,
   outsideSandboxFlagOf, outsideSandboxHeadline, outsideSandboxInputError, outsideSandboxTimeoutLine,
 } from "../../src/approvals/bot-check";
 import { mergedHooks, withoutAllow } from "../../src/runtime-sdk/turn-loop/hook-merge";
@@ -343,9 +343,26 @@ describe("a read-only command of the fenced Bash on Windows (lane WS9): no card,
       for (const command of network) expect([command, await judged("Bash", command, level, "up")]).toEqual([command, level === "ask" ? "card" : "deny"]);
     });
   }
-  test("a single slash, a doubled one inside a path, a URL in a pattern, a quoted expansion before one slash: still read-only (no card)", async () => {
+  // A live expansion (the reviewer's second finding): text the command builds while it runs can spell a network path no
+  // reading of the text sees, so no command holding one gets the allowance (the classifier calls these forms read-only).
+  const live = ["cat ${x:-//host/x}", "cat ${x:-/}/host/x", "cat ${x-/}/host/x", "cat /${x:-/host/x}", "cat \"${x:-/}\"/host/x", "cat ${x:-/}${x:-/}host/x",
+    "x=/; cat $x/host/s", "x=/ y=/host/s; cat $x$y", "x=/; cat $x$x/host", "cat ${x}${x}host", "y=/; y+=/host/s; cat $y", "printf -v y %s%s / /host/s; cat $y",
+    "x=${PWD:0:1}; y=$x; y+=$x; y+=host; cat $y", "cat \"it's\" $x/host", "cat `printf %s%s / /host`", "echo $(ls)",
+    // The accepted cost: an ordinary variable asks on Windows too.
+    "ls $HOME/x", "echo $PATH"];
+  for (const level of ["ask", "read-only"] as const) {
+    test(`a command holding a live expansion (\`\${x:-/}\`, \`$x\`, an append, \`printf -v\`, a backtick), at ${level}: ${level === "ask" ? "a card" : "refused"}`, async () => {
+      for (const command of live) expect([command, holdsLiveExpansion(command), await judged("Bash", command, level, "up")]).toEqual([command, true, level === "ask" ? "card" : "deny"]);
+    });
+  }
+  test("a literal `$` stays allowed: in single quotes, before a closing quote or a regex character, at a word's end", async () => {
+    for (const command of ["grep 'foo$' f", "grep \"foo$\" f", "grep -E \"a$|b\" f", "ls src", "echo 'cost: $5'"]) {
+      expect([command, holdsLiveExpansion(command), await judged("Bash", command, "ask", "up")]).toEqual([command, false, "allow"]);
+    }
+  });
+  test("a single slash, a doubled one inside a path, a URL in a pattern: still read-only (no card)", async () => {
     // `a://host` after `=` is not a network path either: a `:` starts no word (Windows takes `C://x` as a drive path).
-    for (const command of ["ls /c/Users", "ls ./a//b", "cat src//index.ts", "grep -r 'http://x' src", "ls \"$HOME\"/x", "grep x --include=a://host"]) {
+    for (const command of ["ls /c/Users", "ls ./a//b", "cat src//index.ts", "grep -r 'http://x' src", "grep x --include=a://host"]) {
       expect([command, await judged("Bash", command, "ask", "up")]).toEqual([command, "allow"]);
     }
   });

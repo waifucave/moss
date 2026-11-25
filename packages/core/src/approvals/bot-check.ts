@@ -158,7 +158,30 @@ export function fencedReadOnlyCommand(tool: string, input: unknown): boolean {
   if (tool !== "Bash" || input === null || typeof input !== "object" || Array.isArray(input)) return false;
   const i = input as Record<string, unknown>;
   if (i.dangerouslyDisableSandbox !== undefined && i.dangerouslyDisableSandbox !== false) return false;
-  return typeof i.command === "string" && i.command.trim() !== "" && !namesNetworkPath(i.command) && isReadOnlyShellCommand(i.command);
+  return typeof i.command === "string" && i.command.trim() !== "" && !namesNetworkPath(i.command) && !holdsLiveExpansion(i.command) && isReadOnlyShellCommand(i.command);
+}
+
+/** Whether a command line holds a live expansion (the WS9 reviewer's second finding): a `$` outside single quotes and not
+ *  escaped, followed by a name character, a digit, `{`, `(`, `'` or one of `@ * # ? ! $ -`; or a backtick outside single
+ *  quotes. Text a command builds while it runs (`${x:-/}/host/x`, `x=/; cat $x$x/host`, `y+=/host`, `printf -v`,
+ *  `${PWD:0:1}`) can spell a network path no reading of the text can see, so such a command gets no allowance: it asks as
+ *  a writing command does. A literal `$` stays allowed: inside single quotes (`grep 'foo$' f`), before a closing quote or
+ *  a regex character (`grep "foo$" f`, `grep -E "a$|b" f`), at a word's end. The cost is accepted (the controller's
+ *  ruling): `ls $HOME/x` and `echo $PATH` ask at ask and are refused at read-only on Windows. If the measurement on
+ *  `lane/ws-9` shows the fence itself keeps a pool account off every share, this can be relaxed to `namesNetworkPath`. */
+export function holdsLiveExpansion(command: string): boolean {
+  let single = false, double = false;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!;
+    if (single) { if (c === "'") single = false; continue; }
+    if (c === "\\") { i++; continue; }
+    if (c === '"') { double = !double; continue; }
+    // A single quote inside double quotes is a letter; outside, it opens a literal span.
+    if (c === "'" && !double) { single = true; continue; }
+    if (c === "`") return true;
+    if (c === "$" && i + 1 < command.length && /[A-Za-z0-9_{('@*#?!$-]/.test(command[i + 1]!)) return true;
+  }
+  return false;
 }
 
 /** Whether a command line names a network path on Windows (the WS9 reviewer's finding): a word starting with two slashes
