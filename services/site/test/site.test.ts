@@ -13,6 +13,9 @@ import { templateFiles } from "../../../packages/plugin-sdk/src/templates/index"
 import { runCodeCommand } from "../../../packages/cli/src/code-cli";
 import { parseRoutine } from "../../../packages/core/src/routines/file";
 import { MOSS_PLUGIN_VERBS, runPluginCommand, runPluginDev, runPluginList } from "../../../packages/cli/src/moss-plugin-cli";
+import { loginEnable, loginRemove, loginStatus, type LoginOsDeps } from "../../../packages/core/src/platform/login/manager";
+import { engineBinaryPath } from "../../../packages/core/src/update/engine-copy";
+import { keychainService } from "../../../packages/core/src/profile";
 
 const root = mkdtempSync(join(tmpdir(), "moss-site-test-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -181,7 +184,7 @@ describe("the commands the docs print", () => {
       [...readFileSync(join(SITE_DIR, "content", "docs", f), "utf8").matchAll(/`(moss [^`]+)`|^(moss .+)$/gm)].map((m) => (m[1] ?? m[2])!.trim())),
     // The engine's own binary inside an app, run by its path (`…/moss-core autostart remove`): the same command line.
     ...[...readdirSync(join(SITE_DIR, "content", "docs"))].flatMap((f) =>
-      [...readFileSync(join(SITE_DIR, "content", "docs", f), "utf8").matchAll(/`\S*\/moss-core ([^`]+)`/g)].map((m) => `moss ${m[1]!.trim()}`)),
+      [...readFileSync(join(SITE_DIR, "content", "docs", f), "utf8").matchAll(/`\S*[\\/]moss-core(?:\.exe)? ([^`]+)`/g)].map((m) => `moss ${m[1]!.trim()}`)),
     // The landing page's own: in <code>, or a line of its developers' block.
     ...[...readFileSync(join(SITE_DIR, "src", "landing.ts"), "utf8").matchAll(/<code>(moss [^<]+)<\/code>|^(moss plugin .+?)(?:<\/code><\/pre>)?$/gm)].map((m) => (m[1] ?? m[2])!.trim()),
   ];
@@ -317,5 +320,71 @@ describe("site.json", () => {
     expect(configProblem(JSON.parse(readFileSync(join(SITE_DIR, "site.json"), "utf8")))).toBeUndefined();
     expect(configProblem({ ...base, release: { ...base.release, state: "soon" } })).toContain("release.state");
     expect(configProblem({ ...base, repository: "https://example.com/x" })).toContain("repository");
+  });
+});
+
+describe("removing MOSS, as the page says", () => {
+  const page = readFileSync(join(SITE_DIR, "content", "docs", "uninstall.md"), "utf8");
+  const cask = (name: string) => readFileSync(join(REPO_ROOT, "packaging", name), "utf8");
+  const zap = (text: string) => [.../zap trash: \[([^\]]*)\]/.exec(text)![1]!.matchAll(/"([^"]+)"/g)].map((m) => m[1]!);
+
+  test("`autostart remove` takes away the login start the page names, through the engine's own login code (the OS faked)", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "site-uninstall-"));
+    try {
+      const calls: string[] = [];
+      const os: LoginOsDeps = {
+        register: async () => { calls.push("register"); return true; },
+        unregister: async () => { calls.push("unregister"); },
+        query: async () => (calls.at(-1) === "register" ? "on" : "absent"),
+      };
+      const home = join(tmp, ".moss");
+      const spec = { os: "darwin" as const, bin: engineBinaryPath(home, "darwin"), home, logsDir: join(home, "logs"), profile: "dist" as const, homedir: tmp };
+      const on = await loginEnable(spec, os);
+      expect(on.unitPath).toBe(join(tmp, "Library", "LaunchAgents", "com.waifucave.moss.core.plist"));
+      expect(existsSync(on.unitPath!)).toBe(true);
+      const off = await loginRemove(spec, os);
+      expect([off.state, existsSync(on.unitPath!), calls.includes("unregister")]).toEqual(["not-installed", false, true]);
+      expect((await loginStatus(spec, os)).state).toBe("not-installed");
+      expect(page).toContain("`~/Library/LaunchAgents/com.waifucave.moss.core.plist`");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+    // What the command prints, as the page quotes it: the CLI's own line (main.ts runs the stop and the remove above).
+    const main = readFileSync(join(REPO_ROOT, "packages", "cli", "src", "main.ts"), "utf8");
+    expect(main).toContain("console.log(`autostart removed (${spec.profile}); the daemon: ${stopped}`);");
+    expect(page).toContain("`autostart removed (dist); the daemon:`");
+  });
+
+  test("the engine's own copy is where the page runs it from, on every system", () => {
+    expect(engineBinaryPath("~/.moss", "darwin")).toBe("~/.moss/bin/daemon/moss-core");
+    expect(engineBinaryPath("~/.moss", "linux")).toBe("~/.moss/bin/daemon/moss-core");
+    expect(page).toContain("`~/.moss/bin/daemon/moss-core autostart remove`");
+    expect(engineBinaryPath("%USERPROFILE%\\.moss", "win32").replaceAll("/", "\\")).toBe("%USERPROFILE%\\.moss\\bin\\daemon\\moss-core.exe");
+    expect(page).toContain("`%USERPROFILE%\\.moss\\bin\\daemon\\moss-core.exe autostart remove`");
+  });
+
+  test("the casks behave as the page says, and every folder their zap removes is on the page", () => {
+    const moss = cask("moss.rb.tmpl");
+    const code = cask("moss-code.rb.tmpl");
+    // MOSS's cask leaves the login start while MOSS Code is installed; MOSS Code's removes it either way.
+    expect(moss).toContain(`[ -d "$2" ] && exit 0; exec "$1" autostart remove`);
+    expect(moss).not.toContain("uninstall launchctl:");
+    expect(code).toContain(`uninstall launchctl: "com.waifucave.moss.core"`);
+    expect(code).not.toContain(`[ -d "$2" ] && exit 0`);
+    for (const path of [...zap(moss), ...zap(code)]) {
+      if (path.includes("LaunchAgents")) { expect(path).toBe("~/Library/LaunchAgents/com.waifucave.moss.core.plist"); continue; }
+      const shown = path.startsWith("~/Library/Caches/") ? path.slice("~/Library/Caches/".length) : path;
+      expect([path, page.includes(`\`${shown}\``) || page.includes(`\`${path}\``)]).toEqual([path, true]);
+    }
+    expect(zap(moss).some((p) => p.includes("LaunchAgents"))).toBe(false);
+    expect(zap(code).some((p) => p.includes("LaunchAgents"))).toBe(true);
+  });
+
+  test("the keys are where the page says", () => {
+    expect(keychainService("dist")).toBe("com.waifucave.moss.core");
+    const store = readFileSync(join(REPO_ROOT, "packages", "core", "src", "secrets", "moss-secret-store.ts"), "utf8");
+    expect(store).toContain("vault(`${o.service}.key`)");
+    expect(page).toContain("`com.waifucave.moss.core.key`");
+    expect(page).toContain("`~/.moss/secrets.enc`");
   });
 });

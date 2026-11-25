@@ -13,7 +13,7 @@ The plugin commands ask the running engine, as you, and never start MOSS themsel
 
 | Command | What it does |
 | :- | :- |
-| `moss code [folder] --computer <name> --backend <agent>` | Starts a coding session with that agent in that folder, on that computer. `--model`, `--effort` and `-p "<prompt>"` set the rest. [MOSS Code and coding agents](/docs/moss-code/#starting-a-session) has an example. |
+| `moss code [folder] --computer <name> --backend <agent>` | Starts a coding session with that agent in that folder. `--computer` is this computer's name in MOSS (or set `MOSS_COMPUTER`); `--model`, `--effort` and `-p "<prompt>"` set the rest. [MOSS Code and coding agents](/docs/moss-code/#starting-a-session) has an example. |
 
 ## Plugins
 
