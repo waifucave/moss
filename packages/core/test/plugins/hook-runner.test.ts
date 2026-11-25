@@ -278,7 +278,9 @@ describe("HookRunner.run", () => {
       expect(elapsed).toBeLessThan(5000); // resolves at the cap (in ms when idle), no hang: a hang never resolves
       // Bounded memory: the fixed path adds only a few MB around run(); the pre-fix ~1GB buffering
       // would blow past this wide ceiling (pre-fix never even reaches this assertion — it hangs first).
-      expect(rssDelta).toBeLessThan(150_000_000);
+      // RSS, not the heap: a runner that has not yet given back what the run touched showed 185 MB with the fixed path; the unbounded
+      // buffering this guards against was ~1 GB, so 400 MB still catches it.
+      expect(rssDelta).toBeLessThan(400_000_000);
     },
     10_000,
   );

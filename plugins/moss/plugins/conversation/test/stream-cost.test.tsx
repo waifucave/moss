@@ -21,13 +21,17 @@ test("one more streamed word costs a few milliseconds at 135 rows, not every row
   let text = "";
   const r = render(view([...history]));
   const N = 60;
-  const t0 = performance.now();
+  const each: number[] = [];
   for (let i = 0; i < N; i++) {
+    const t0 = performance.now();
     text += `word${i} `;
     if (i % 20 === 19) text += "\n\n";
     const items = [...history.map((h) => structuredClone(h)), { ...bot(at(0, 2, 0), text), id: "streaming", streaming: true } as ConversationItem];
     r.rerender(view(items));
+    each.push(performance.now() - t0);
   }
-  const perWord = (performance.now() - t0) / N;
+  // The MEDIAN word: a loaded runner stalls a few words (one run took 1141 ms a word on average against 12), but a return to drawing
+  // every row makes every word slow, which the median still catches.
+  const perWord = [...each].sort((a, b) => a - b)[N >> 1]!;
   expect(perWord).toBeLessThan(12);
 });

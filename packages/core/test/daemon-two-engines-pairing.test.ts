@@ -117,8 +117,10 @@ test("two engines on two temp homes pair without an account, list each other, an
   // A's app hears the step and the other device's name; never the words.
   await until("A's app hearing the step", async () => stepOf(a.app, "words") !== undefined);
   expect(stepOf(a.app, "words")!["peerName"]).toBe("Laptop");
-  expect(JSON.stringify([a.app.heard, b.app.heard])).not.toContain(words[0]!);
-  for (const w of words) for (const c of [a.app, b.app]) expect(JSON.stringify(c.heard)).not.toContain(`"${w}"`);
+  // The words are ordinary words, and a few of them ("card", "step", "name", "area") are also words the events themselves use, so one word
+  // alone proves nothing: what must never be heard is the four together, in any form the engine writes them (the phrase, a list, a joined string).
+  const heardAll = JSON.stringify([a.app.heard, b.app.heard]);
+  for (const form of [words.join(" "), words.join(","), words.join("-"), JSON.stringify(words), words.join(`","`)]) expect(heardAll).not.toContain(form);
   // Nobody asked for a card: the engine drew one on each side, with the four words, and nothing is added yet.
   const brokerA = a.daemon.mossParts.broker()!;
   const brokerB = b.daemon.mossParts.broker()!;
