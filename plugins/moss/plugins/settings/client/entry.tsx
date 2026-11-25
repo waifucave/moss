@@ -408,8 +408,15 @@ export function SettingsEntry({ props }: { props: SettingsEntryProps }) {
         ? {
             onOpenPluginLogs: (id: string) =>
               void core.call("plugin.logs", { id, lines: 200 }).then((r) => setLogs({ name: values.plugins.find((p) => p.id === id)?.name ?? id, lines: r.lines })),
-            // A computer's level and making one the main are not offered here yet (backlog); pairing and removing a device are
-            // (`devices.manage`), each ending in the engine's own sealed card.
+            // Pairing, removing a device, a computer's level and making one the main: each press only asks, and each ends in the
+            // engine's own sealed card (`device.*`, `computer.setLevel` and `main.set` are sensitive changes); the window steps
+            // aside for the card, and Settings, opened again, reads what holds.
+            onRequestLevel: (computer: string, level: string) => {
+              void pairCall("computer.setLevel", { name: computer, level }).then(() => undefined, () => setFailure(S.choiceFailed(S.section.levels)));
+            },
+            onMakeMain: (id: string) => {
+              void pairCall("main.set", { device: id }).then(() => undefined, () => setFailure(S.choiceFailed(S.section.devices)));
+            },
             onPairBegin: () => {
               void pairCall("device.pair.begin", {}).then(
                 (r: { pairingId: string; code?: string; qr?: string; expiresAt?: number }) => {
