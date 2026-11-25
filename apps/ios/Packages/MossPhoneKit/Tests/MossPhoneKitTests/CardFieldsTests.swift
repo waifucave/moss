@@ -6,9 +6,9 @@ import XCTest
 /// field added there fails this test until the phone draws it.
 final class CardFieldsTests: XCTestCase {
     private func protocolFieldNames() throws -> [String] {
-        let here = URL(fileURLWithPath: #filePath)
-        let repo = here.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent()
+        // This file is <repo>/apps/ios/Packages/MossPhoneKit/Tests/MossPhoneKitTests/CardFieldsTests.swift: seven folders up.
+        var repo = URL(fileURLWithPath: #filePath)
+        for _ in 0..<7 { repo = repo.deletingLastPathComponent() }
         let src = try String(contentsOf: repo.appendingPathComponent("packages/protocol/src/approvals.ts"), encoding: .utf8)
         let start = try XCTUnwrap(src.range(of: "export const CARD_FIELD_NAMES = ["))
         let end = try XCTUnwrap(src.range(of: "] as const", range: start.upperBound..<src.endIndex))
