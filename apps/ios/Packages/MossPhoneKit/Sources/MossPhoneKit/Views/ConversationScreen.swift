@@ -98,7 +98,9 @@ public struct ConversationScreen: View {
                     .padding(.horizontal, 20)
                 }
                 if let q = model.question {
-                    QuestionComposerView(question: q) { answers in await model.answerQuestion(answers) }
+                    // A bot's question doesn't hold the bot: it stays open until answered or skipped, so it can be skipped here.
+                    QuestionComposerView(question: q, onSubmit: { answers in await model.answerQuestion(answers) },
+                                         onSkip: model.kind == .bot ? { await model.skipQuestion() } : nil)
                 } else {
                     ComposerView(model: model, placeholder: model.placeholder)
                 }

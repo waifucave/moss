@@ -272,6 +272,29 @@ final class ViewModelTests: XCTestCase {
         XCTAssertNil(m.question)
     }
 
+    /// A question can be skipped (a bot's stays open across turns until answered or skipped), and one closed on another
+    /// device leaves this phone live: the next press says so instead of "still waiting".
+    func testAQuestionIsSkippedHereOrLeavesWhenClosedElsewhere() async {
+        let c = fake()
+        let m = ConversationModel(source: .session(SampleData.sessions.first { $0.id == "c4" }!), client: c)
+        await m.loadComposer()
+        let q = try? XCTUnwrap(m.question)
+        XCTAssertNotNil(q)
+        let skipped = await m.skipQuestion()
+        XCTAssertTrue(skipped); XCTAssertNil(m.question, "skipped: the composer is back")
+        let sent = await c.questionsSkipped
+        XCTAssertEqual(sent, ["ask_1"])
+
+        let c2 = fake()
+        let m2 = ConversationModel(source: .session(SampleData.sessions.first { $0.id == "c4" }!), client: c2)
+        await m2.loadComposer()
+        XCTAssertNotNil(m2.question)
+        await c2.closeQuestionElsewhere(session: "c4", callId: "ask_1")
+        m2.apply(.questionChanged(subject: "c4"))
+        for _ in 0..<50 where m2.question != nil { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertNil(m2.question, "closed on another device: it leaves this phone without a reopen")
+    }
+
     func testFileOverTheLimitIsRefusedWithAPlainLine() async {
         let c = fake()
         let m = ConversationModel(source: .bot(SampleData.bots[0]), client: c)

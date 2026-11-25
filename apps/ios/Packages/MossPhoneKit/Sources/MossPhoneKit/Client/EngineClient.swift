@@ -76,6 +76,8 @@ public protocol EngineClient: AnyObject, Sendable {
     /// The question waiting in a conversation, if any, and `session.answer`.
     func pendingQuestion(session: String) async throws -> AskQuestion?
     func answerQuestion(session: String, question: AskQuestion, answers: [String: String]) async throws
+    /// Skips a bot's open question: no answer; the bot is told it was skipped. Only the person does this.
+    func skipQuestion(session: String, question: AskQuestion) async throws
 
     /// The state of the link now (`events()` tells the changes), and forgetting this computer.
     func connectionState() async -> ConnectionState

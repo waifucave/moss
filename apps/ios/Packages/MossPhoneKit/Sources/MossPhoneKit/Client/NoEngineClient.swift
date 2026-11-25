@@ -34,6 +34,7 @@ public final class NoEngineClient: EngineClient, @unchecked Sendable {
     public func runCommand(session: String, command: String) async throws { throw NoEngine() }
     public func pendingQuestion(session: String) async throws -> AskQuestion? { nil }
     public func answerQuestion(session: String, question: AskQuestion, answers: [String: String]) async throws { throw NoEngine() }
+    public func skipQuestion(session: String, question: AskQuestion) async throws { throw NoEngine() }
     public func connectionState() async -> ConnectionState { .unreachable(since: nil) }
     public func unpair() async {}
     public func events() async -> AsyncStream<EngineEvent> { AsyncStream { _ in } }

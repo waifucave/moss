@@ -44,7 +44,7 @@ public struct CardView: View {
                 // The heading counts as seen by its first line, wholly inside what the bars leave visible: what follows
                 // down to the buttons is passed on the way to them.
                 Text(Sealed.visible(card.title)).font(.headline)
-                    .overlay(alignment: .top) { Color.clear.frame(height: 12).whenSeen(onSighted) }
+                    .overlay(alignment: .top) { Color.clear.frame(height: 12).whenSeen(onSighted).id(card.hash) }
                 if let what = card.what { cutText(what, name: "what", limit: Card.Cut.text).font(.subheadline).foregroundStyle(.secondary) }
             }
             ForEach(shownFields, id: \.0) { name, value in
@@ -155,7 +155,7 @@ public struct CardView: View {
     }
     /// After an opened field: its end, reported once it has been on screen (only then does the field count as read).
     @ViewBuilder private func endMarker(_ name: String) -> some View {
-        if opened.contains(name) { Color.clear.frame(height: 1).whenSeen { onReadEnd(name, $0) } }
+        if opened.contains(name) { Color.clear.frame(height: 1).whenSeen { onReadEnd(name, $0) }.id(card.hash) }
     }
     /// Opens a cut field in place.
     private func showAll(_ name: String, _ label: String) -> some View {

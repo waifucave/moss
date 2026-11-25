@@ -149,7 +149,8 @@ public actor CoreEngineClient: EngineClient {
         case .message(let m): emit(.message(subject: session, role(m, botSession: bot != nil)))
         case .turnStarted: emit(.statusLine(subject: session, line: bot.map { "\($0.name) is thinking" } ?? "Working"))
         case .turnEnded: emit(.statusLine(subject: session, line: nil))
-        case .question, .other: break
+        case .question: emit(.questionChanged(subject: session))
+        case .other: break
         }
     }
 
@@ -530,5 +531,8 @@ public actor CoreEngineClient: EngineClient {
     public func pendingQuestion(session: String) async throws -> AskQuestion? { try await link().pendingQuestion(session: session) }
     public func answerQuestion(session: String, question: AskQuestion, answers: [String: String]) async throws {
         try await link().answerQuestion(session: session, callId: question.callId, answers: answers)
+    }
+    public func skipQuestion(session: String, question: AskQuestion) async throws {
+        try await Doors.skipQuestion(link(), session: session, callId: question.callId)
     }
 }

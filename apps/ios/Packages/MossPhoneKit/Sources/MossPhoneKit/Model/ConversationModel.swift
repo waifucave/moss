@@ -108,6 +108,8 @@ public final class ConversationModel {
             if !messages.contains(where: { $0.id == m.id }) { messages.append(m) }
         case .statusLine(let subject, let line) where subject == sessionID:
             statusLine = line
+        case .questionChanged(let subject) where subject == sessionID:
+            Task { await self.refreshQuestion() }
         default: break
         }
     }
@@ -180,7 +182,24 @@ public final class ConversationModel {
     public func answerQuestion(_ answers: [String: String]) async -> Bool {
         guard let q = question else { return false }
         do { try await client.answerQuestion(session: sessionID, question: q, answers: answers); question = nil; return true }
-        catch { errorText = "That didn't work. The question is still waiting."; return false }
+        catch { await failedOn(q); return false }
+    }
+    /// Skips the open question: the bot is told it was skipped, and the composer is back.
+    @discardableResult
+    public func skipQuestion() async -> Bool {
+        guard let q = question else { return false }
+        do { try await client.skipQuestion(session: sessionID, question: q); question = nil; return true }
+        catch { await failedOn(q); return false }
+    }
+    /// An answer or skip that didn't go: if the question was closed elsewhere meanwhile, say so rather than "still waiting".
+    private func failedOn(_ q: AskQuestion) async {
+        await refreshQuestion()
+        errorText = question?.callId == q.callId ? "That didn't work. The question is still waiting."
+                                                 : "That question was answered or skipped on another device."
+    }
+    /// Re-reads the open question (asked, or closed here or elsewhere). A read that fails keeps what is shown.
+    public func refreshQuestion() async {
+        do { question = try await client.pendingQuestion(session: sessionID) } catch {}
     }
 
     /// Sends the message that failed again.

@@ -385,6 +385,8 @@ struct CameraPicker: UIViewControllerRepresentable {
 struct QuestionComposerView: View {
     let question: AskQuestion
     let onSubmit: ([String: String]) async -> Bool
+    /// Skips it (a bot's question stays open across turns until answered or skipped; nil where skipping isn't offered).
+    var onSkip: (() async -> Bool)? = nil
     @State private var selected = Set<Int>()
     @State private var other = ""
     @State private var submitting = false
@@ -433,6 +435,14 @@ struct QuestionComposerView: View {
                 TextField("Something else", text: $other).padding(.vertical, 12).accessibilityLabel("Something else")
             }
             HStack {
+                if let onSkip {
+                    Button("Skip") {
+                        submitting = true
+                        Task { _ = await onSkip(); submitting = false }
+                    }
+                    .frame(minHeight: 44).disabled(submitting)
+                    .accessibilityHint("Tells the bot you skipped it, then lets you write a message")
+                }
                 Spacer()
                 Button {
                     submitting = true

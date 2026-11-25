@@ -73,8 +73,10 @@ jobs:
         run: |
           DEST="platform=iOS Simulator,name=$(xcrun simctl list devices available | grep -o 'iPhone [0-9A-Za-z ]*' | head -1 | sed 's/ *$//')"
           xcodebuild test -project MOSSPhone.xcodeproj -scheme MOSS -destination "$DEST" -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO -only-testing:MOSSUITests/CardGateUITests -resultBundlePath "$RUNNER_TEMP/cardgate.xcresult" 2>&1 | grep -E "Test Case|error:|XCTAssert|Executed|TEST (SUCC|FAIL)|IW " | cut -c1-400 ; exit ${PIPESTATUS[0]}
+      # The bundle holds only the FAKE app's screens (sample data, no person's words or computer): a screenshot and the
+      # view hierarchy at each failed card test. Kept for pushes and manual runs, never uploaded from a pull request's run.
       - name: Keep the cards' test results (screenshot and view hierarchy at each failure)
-        if: failure()
+        if: failure() && github.event_name != 'pull_request'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cardgate-xcresult

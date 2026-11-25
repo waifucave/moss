@@ -327,6 +327,8 @@ public enum EngineEvent: Hashable, Sendable {
     case cardRequested(Card)
     case cardResolved(id: String)
     case connection(ConnectionState)
+    /// A question was asked or closed (answered or skipped, here or on another device) in this session: re-read what is open.
+    case questionChanged(subject: String)
 }
 
 

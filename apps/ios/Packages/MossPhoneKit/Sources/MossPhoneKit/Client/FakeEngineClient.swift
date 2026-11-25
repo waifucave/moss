@@ -284,6 +284,17 @@ public actor FakeEngineClient: EngineClient {
         answeredQuestions.insert(question.callId)
         questionsAnswered.append((session, answers))
     }
+    public private(set) var questionsSkipped: [String] = []
+    public func skipQuestion(session: String, question: AskQuestion) async throws {
+        try await maybeFail()
+        answeredQuestions.insert(question.callId)
+        questionsSkipped.append(question.callId)
+    }
+    /// The question is closed on another device (answered or skipped there): it leaves, and the event says so.
+    public func closeQuestionElsewhere(session: String, callId: String) {
+        answeredQuestions.insert(callId)
+        emit(.questionChanged(subject: session))
+    }
 
     public func stop(session: String) async throws {
         try await maybeFail()
