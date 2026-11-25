@@ -45,13 +45,23 @@ export class ConnWriter {
   enqueue(buf: Uint8Array): boolean {
     if (this.dead) return false;
     if (this.buffered === 0) {
-      const n = this.socket.write(buf);
+      let n: number;
+      try { n = this.socket.write(buf); } catch { return this.gone(); } // Windows: a pipe whose client has left throws EPIPE from write; the connection is over, the daemon is not
       if (n >= buf.length) return true;
       buf = buf.subarray(Math.max(0, n));
     }
     this.buffered += buf.length;
     this.queue.push(buf);
     return this.bulk ? true : this.checkCap();
+  }
+
+  /** The socket cannot be written to any more: nothing more is queued for it, and the socket is closed. */
+  private gone(): false {
+    this.dead = true;
+    this.queue.length = 0;
+    this.buffered = 0;
+    try { this.socket.end(); } catch { /* already gone */ }
+    return false;
   }
 
   /** False (and the socket ended) when the backlog is past the cap plus any bulk allowance. */
@@ -69,7 +79,8 @@ export class ConnWriter {
     if (this.dead) return;
     while (this.queue.length > 0) {
       const head = this.queue[0]!;
-      const n = this.socket.write(head);
+      let n: number;
+      try { n = this.socket.write(head); } catch { this.gone(); return; }
       const written = Math.max(0, n);
       this.buffered -= written;
       // A drained byte of the bulk backlog is never room again.

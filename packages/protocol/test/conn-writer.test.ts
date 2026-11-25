@@ -91,4 +91,21 @@ describe("ConnWriter", () => {
     expect(w.enqueue(new Uint8Array(1))).toBe(false);
     expect(s.ended).toBe(true);
   });
+
+  test("a write that throws (Windows: EPIPE, the client has left) ends the connection and never throws out", () => {
+    let ended = false;
+    const epipe = Object.assign(new Error("EPIPE: broken pipe, write"), { code: "EPIPE" });
+    const w = new ConnWriter({ write() { throw epipe; }, end() { ended = true; } }, 1024);
+    expect(w.enqueue(new Uint8Array(10))).toBe(false);
+    expect(ended).toBe(true);
+    expect(w.enqueue(new Uint8Array(10))).toBe(false); // dead: nothing more is tried
+    // The same from a drain: the backlog is dropped, not thrown.
+    let blocked = true, ends = 0;
+    const w2 = new ConnWriter({ write() { if (blocked) return 2; throw epipe; }, end() { ends++; } }, 1024);
+    expect(w2.enqueue(new Uint8Array(10))).toBe(true);
+    blocked = false;
+    expect(() => w2.onDrain()).not.toThrow();
+    expect(ends).toBe(1);
+    expect(w2.bufferedBytes).toBe(0);
+  });
 });
