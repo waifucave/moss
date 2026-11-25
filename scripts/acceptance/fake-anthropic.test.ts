@@ -117,6 +117,17 @@ describe("what the fake acts on: the newest directive in the user text", () => {
         ] }),
       });
       expect(JSON.stringify(await cutOff.json())).toContain('"tool_use"');
+      // A message folded into a running turn (a push the child took in at its next request): the result of the tool just run, then the
+      // person's call line. The message is what the request asks, as a real model reads it: a call is made, the result is not answered back.
+      const folded = await fetch(`${fake.url}/v1/messages`, {
+        method: "POST", headers: { "x-api-key": "dummy-key", "content-type": "application/json" },
+        body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 10, tools: [{ name: "mcp__echo__Echo", input_schema: { type: "object" } }], messages: [
+          { role: "user", content: [{ type: "text", text: "ACCEPTANCE-HOLDTOOL-AB12CD keep going" }] },
+          { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "mcp__echo__Echo", input: { text: "acceptance-hold" } }] },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }, { type: "text", text: 'ACCEPTANCE-CALL Echo {"text":"folded in"}' }] },
+        ] }),
+      });
+      expect(JSON.stringify(await folded.json())).toContain('"tool_use"');
       // Any other text after a result is the runtime's own: still a continuation.
       const note = await fetch(`${fake.url}/v1/messages`, {
         method: "POST", headers: { "x-api-key": "dummy-key", "content-type": "application/json" },
@@ -145,7 +156,7 @@ describe("what the fake acts on: the newest directive in the user text", () => {
       expect(fake.requests.at(-1)!.answered).toBe("text");
       const abort = new AbortController();
       const held = send("ACCEPTANCE-SLOW-AB12CD keep going", abort.signal).catch(() => undefined);
-      for (let i = 0; i < 50 && fake.requests.length < 6; i++) await Bun.sleep(20);
+      for (let i = 0; i < 50 && fake.requests.length < 7; i++) await Bun.sleep(20);
       expect(fake.requests.at(-1)!.answered).toBe("slow");
       abort.abort();
       await held;

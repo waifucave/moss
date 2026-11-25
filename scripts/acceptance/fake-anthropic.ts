@@ -199,7 +199,7 @@ export function requestRefusal(body: WireBody, betaHeader: string | null): strin
 export const withoutNotifications = (text: string): string => text
   .replace(/<system-reminder>[\s\S]*?(?:<\/system-reminder>|$)/g, "")
   .replace(/<task-notification[\s\S]*?(?:<\/task-notification>|$)/g, "");
-const DIRECTIVE = /ACCEPTANCE-(?:NETPROBE|NETCMD|ROUTINE|SLOW|STREAM|HOLDTOOL|ECHO|STDIO|FETCH|SEARCH|WRITE|EDIT|BASH|READ|TAG|REPLY|AGENT|CHILD|SHELL|FAIL)\b/;
+const DIRECTIVE = /ACCEPTANCE-(?:CALL|NETPROBE|NETCMD|ROUTINE|SLOW|STREAM|HOLDTOOL|ECHO|STDIO|FETCH|SEARCH|WRITE|EDIT|BASH|READ|TAG|REPLY|AGENT|CHILD|SHELL|FAIL)\b/;
 
 /** The echo plugin's tool on an agent's bridge: `mcp__<the session's bridge, moss_ and 16 hex>__<its server's key>__Echo`. */
 export const BRIDGE_ECHO = /^mcp__moss_[0-9a-f]{16}__acceptance-echo-echo__Echo$/;

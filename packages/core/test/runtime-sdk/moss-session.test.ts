@@ -451,6 +451,74 @@ describe("startMossSession — one incarnation", () => {
     expect(h.session.turnRunning).toBe(false);
   });
 
+  test("a message sent while a turn waits on an approval card runs as the next turn, once, after the card is answered and the turn ends", async () => {
+    const h = harness();
+    await h.session.open();
+    h.q().emit(init(h.q().options));
+    await h.session.send("WRITE", "cli");
+    // the turn's tool call is waiting for its card: the child says nothing more until it is answered
+    h.q().emit({ type: "assistant", message: { content: [{ type: "tool_use", id: "tu_1", name: "Write", input: { file_path: "/x" } }] } });
+    await h.settled();
+    const b = await h.session.send("AWAY", "cli");
+    expect(b.queued).toBe(true);
+    // the card is answered: the tool's result, the reply, the turn's result
+    h.q().emit({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tu_1", content: "ok" }] } });
+    h.q().emit(assistant("done"));
+    await h.settled();
+    expect(h.q().pushed).toEqual(["WRITE"]);
+    h.q().emit(result());
+    await h.settled();
+    expect(h.q().pushed).toEqual(["WRITE", "AWAY"]);
+    expect(h.session.turnRunning).toBe(true);
+    expect(h.session.pendingSends).toEqual([]);
+    h.q().emit(assistant("away done")); h.q().emit(result());
+    await h.settled();
+    expect(h.q().pushed).toEqual(["WRITE", "AWAY"]);
+    expect(seen(h, "turn_started")).toHaveLength(2);
+    expect(seen(h, "turn_completed")).toHaveLength(2);
+    expect(unconsumedUserMessages(h.events)).toEqual([]);
+    expect(h.session.turnRunning).toBe(false);
+  });
+
+  test("two messages sent while a turn runs: each runs as its own turn, in the order sent (a send is never folded; only a steer is)", async () => {
+    const h = harness();
+    await h.session.open();
+    h.q().emit(init(h.q().options));
+    await h.session.send("A", "cli");
+    await h.session.send("B", "cli");
+    await h.session.send("C", "cli");
+    expect(h.session.pendingSends).toEqual(["B", "C"]);
+    h.q().emit(result()); await h.settled();
+    expect(h.q().pushed).toEqual(["A", "B"]);
+    h.q().emit(result()); await h.settled();
+    expect(h.q().pushed).toEqual(["A", "B", "C"]);
+    h.q().emit(result()); await h.settled();
+    expect(seen(h, "turn_started")).toHaveLength(3);
+    expect(seen(h, "turn_completed")).toHaveLength(3);
+    expect(h.session.turnRunning).toBe(false);
+    expect(unconsumedUserMessages(h.events)).toEqual([]);
+  });
+
+  test("the race: a send that begins in the same instant as the turn's result is run exactly once, whichever side of onResult it lands", async () => {
+    for (const order of ["send-first", "result-first", "interleaved"] as const) {
+      const h = harness();
+      await h.session.open();
+      h.q().emit(init(h.q().options));
+      await h.session.send("A", "cli");
+      let p: Promise<{ queued: boolean }>;
+      if (order === "send-first") { p = h.session.send("B", "cli"); h.q().emit(result()); }
+      else if (order === "result-first") { h.q().emit(result()); p = h.session.send("B", "cli"); }
+      else { p = h.session.send("B", "cli"); await Promise.resolve(); h.q().emit(assistant("a")); h.q().emit(result()); }
+      await p; await h.settled();
+      expect(h.q().pushed).toEqual(["A", "B"]);
+      expect(h.session.pendingSends).toEqual([]);
+      expect(seen(h, "turn_started")).toHaveLength(2);
+      h.q().emit(result()); await h.settled();
+      expect(unconsumedUserMessages(h.events)).toEqual([]);
+      expect(h.session.turnRunning).toBe(false);
+    }
+  });
+
   test("P8b-38: a steer begins its OWN turn and pushes immediately; injected reports whether a turn was running", async () => {
     const h = harness();
     await h.session.open();
