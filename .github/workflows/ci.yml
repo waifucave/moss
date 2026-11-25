@@ -1518,16 +1518,18 @@ jobs:
       # MOSS's coding agent on Windows starts only once `moss-core sandbox setup` has been run (the fence's pool of principals and its launcher), as the
       # windows-fence workflow's e2e job runs it. The units that never start an agent skip it.
       - name: Windows fence for the agent · build srt-win from the pinned source
-        if: ${{ !contains(fromJSON('["models","archive","addons","arrivals","browser","bundled-tools","browser-host","host"]'), matrix.unit) }}
+        if: ${{ !contains(fromJSON('["models","archive","browser-host","host"]'), matrix.unit) }}
         shell: pwsh
         run: scripts/ci/windows-fence/build-launcher.ps1
 
       - name: Windows fence for the agent · build moss-core.exe
-        if: ${{ !contains(fromJSON('["models","archive","addons","arrivals","browser","bundled-tools","browser-host","host"]'), matrix.unit) }}
-        run: bun scripts/build-daemon.ts --target windows-x64
+        if: ${{ !contains(fromJSON('["models","archive","browser-host","host"]'), matrix.unit) }}
+        # (the build downloads the pinned bun: GitHub's release host answers 503 now and then, so it is tried three times)
+        shell: bash
+        run: for i in 1 2 3; do bun scripts/build-daemon.ts --target windows-x64 && exit 0; sleep 20; done; exit 1
 
       - name: Windows fence for the agent · sandbox setup, from the protected copy
-        if: ${{ !contains(fromJSON('["models","archive","addons","arrivals","browser","bundled-tools","browser-host","host"]'), matrix.unit) }}
+        if: ${{ !contains(fromJSON('["models","archive","browser-host","host"]'), matrix.unit) }}
         timeout-minutes: 40
         shell: pwsh
         run: scripts/ci/windows-fence/setup.ps1

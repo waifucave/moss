@@ -861,7 +861,9 @@ function sourceApp(): { exe: string; args: string[] } {
   if (!existsSync(join(pkgDir, "path.txt"))) {
     // bun's install doesn't run electron's postinstall, which fetches the binary (or takes it from electron's cache).
     say("fetching the Electron binary (electron/install.js)");
-    const r = spawnSync(process.execPath, [join(pkgDir, "install.js")], { cwd: pkgDir, encoding: "utf8", timeout: 600_000 });
+    let r = spawnSync(process.execPath, [join(pkgDir, "install.js")], { cwd: pkgDir, encoding: "utf8", timeout: 600_000 });
+    // GitHub's release host answers 503 now and then on a shared runner (the Windows runs lost four units to it): the download is tried three times.
+    for (let again = 0; again < 2 && (r.status !== 0 || !existsSync(join(pkgDir, "path.txt"))); again++) r = spawnSync(process.execPath, [join(pkgDir, "install.js")], { cwd: pkgDir, encoding: "utf8", timeout: 600_000 });
     if (r.status !== 0 || !existsSync(join(pkgDir, "path.txt"))) throw new Error(`electron's install.js failed: ${(r.stderr ?? "").trim().slice(0, 300)}`);
   }
   const exe = join(pkgDir, "dist", readFileSync(join(pkgDir, "path.txt"), "utf8").trim());
@@ -3655,7 +3657,9 @@ function mossApp(): { exe: string; args: string[] } {
   const req = createRequire(join(MOSS_APP, "package.json"));
   const pkgDir = dirname(req.resolve("electron/package.json"));
   if (!existsSync(join(pkgDir, "path.txt"))) {
-    const r = spawnSync(process.execPath, [join(pkgDir, "install.js")], { cwd: pkgDir, encoding: "utf8", timeout: 600_000 });
+    let r = spawnSync(process.execPath, [join(pkgDir, "install.js")], { cwd: pkgDir, encoding: "utf8", timeout: 600_000 });
+    // GitHub's release host answers 503 now and then on a shared runner (the Windows runs lost four units to it): the download is tried three times.
+    for (let again = 0; again < 2 && (r.status !== 0 || !existsSync(join(pkgDir, "path.txt"))); again++) r = spawnSync(process.execPath, [join(pkgDir, "install.js")], { cwd: pkgDir, encoding: "utf8", timeout: 600_000 });
     if (r.status !== 0 || !existsSync(join(pkgDir, "path.txt"))) throw new Error(`electron's install.js failed: ${(r.stderr ?? "").trim().slice(0, 300)}`);
   }
   return { exe: join(pkgDir, "dist", readFileSync(join(pkgDir, "path.txt"), "utf8").trim()), args: [MOSS_APP, ...SOFTWARE_GL] };
