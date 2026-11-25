@@ -1662,11 +1662,33 @@ export function describeOk(
   return lines;
 }
 
-/** A program a manifest may name outside the sandbox: a bare name found on the PATH, or an absolute path with no `..`. */
-export function outsideProgramOk(p: string): boolean {
+/** A program a manifest may name outside the sandbox: a bare name found on the PATH, or an absolute path with no `..`. A drive-absolute Windows path
+ *  (`C:\tools\x.exe`, `C:/tools/x.exe`) is accepted only when validating ON Windows (`os`, the running OS by default): a manifest with a `C:\` path is
+ *  refused on macOS and Linux. Refused on Windows: a UNC or device path (`\\server\share`, `\\?\`, `\\.\`), a drive-relative one (`C:foo`), a `..` or `.`
+ *  segment, an empty segment or a trailing separator, a `:` after the drive's (alternate data streams), a segment ending in a dot or a space, a reserved
+ *  device name (CON, PRN, AUX, NUL, COM1 to COM9, LPT1 to LPT9, also with an extension), a character Windows forbids in a name, and a control character. */
+export function outsideProgramOk(p: string, os: string = typeof process !== "undefined" ? process.platform : ""): boolean {
   if (/[\u0000-\u001f\u007f]/.test(p)) return false;
+  if (os === "win32" && /^[\\/][\\/]/.test(p)) return false; // `//server/share`, `//?/`, `//./`: a UNC or device path
   if (p.startsWith("/")) return p.length > 1 && !p.split("/").includes("..") && !p.endsWith("/");
+  if (os === "win32" && /^[A-Za-z]:[\\/]/.test(p)) return windowsProgramPathOk(p);
   return /^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/.test(p);
+}
+
+const WINDOWS_RESERVED = /^(con|prn|aux|nul|conin\$|conout\$|com[0-9\u00b9\u00b2\u00b3]|lpt[0-9\u00b9\u00b2\u00b3])(\..*)?$/i;
+
+/** A drive-absolute Windows path of plain segments (see `outsideProgramOk`). */
+function windowsProgramPathOk(p: string): boolean {
+  if (p.length > 1024) return false;
+  const rest = p.slice(3);
+  if (rest === "" || /[\\/]$/.test(rest)) return false;
+  for (const seg of rest.split(/[\\/]/)) {
+    if (seg === "" || seg === "." || seg === "..") return false;
+    if (/[<>:"|?*]/.test(seg)) return false; // includes a second `:` (an alternate data stream)
+    if (/[. ]$/.test(seg)) return false;
+    if (WINDOWS_RESERVED.test(seg)) return false;
+  }
+  return true;
 }
 
 /** A folder a manifest may name to read outside the sandbox: `~/` and a folder, or an absolute path below `/`, with no

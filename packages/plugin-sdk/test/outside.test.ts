@@ -60,3 +60,27 @@ test("a plugin that runs programs outside its sandbox has no tool that skips the
   expect(readOnlyReachesNetwork({ type: "host" }, { ...tree, runsOutside: true })).toBe(true);
   expect(containedToolsHold({ type: "host" }, { ...tree, runsOutside: true })).toBe(false);
 });
+
+test("a drive-absolute Windows path is a program only when validating on Windows, and nothing looser; POSIX behaviour does not move", () => {
+  const ok = ["C:\\Tools\\x.exe", "c:/Tools/x.exe", "D:\\Program Files\\Thing\\run", "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\clv-acc-1\\outside-bin\\acc-outside-cat"];
+  for (const p of ok) {
+    expect([p, "win32", outsideProgramOk(p, "win32")]).toEqual([p, "win32", true]);
+    for (const os of ["darwin", "linux"]) expect([p, os, outsideProgramOk(p, os)]).toEqual([p, os, false]);
+  }
+  const refused = [
+    "\\\\server\\share\\x.exe", "\\\\?\\C:\\x.exe", "\\\\.\\pipe\\x", "//server/share/x", // UNC and device paths
+    "C:foo", "C:", "C:\\", "C:\\x\\", "C:\\x\\..\\y.exe", "C:\\x\\.\\y.exe", "C:\\x\\\\y.exe", // drive-relative, no file, dot segments, empty segment
+    "C:\\x\\y.exe:stream", "C:\\x:y\\z.exe", // alternate data streams
+    "C:\\x\\y.exe.", "C:\\x \\y.exe", "C:\\x\\y.exe ", // trailing dot or space in a segment
+    "C:\\CON", "C:\\x\\nul.exe", "C:\\x\\COM1", "C:\\LPT9.txt", "C:\\x\\aux", // reserved device names
+    "C:\\x\\a<b.exe", "C:\\x\\a|b", "C:\\x\\a?b", "C:\\x\\a*b", // characters Windows forbids
+    "C:\\x\\a\u0001b", "C:\\x\u007f", // control characters
+    "1:\\x", "CC:\\x", "\\x", // not a drive
+  ];
+  for (const p of refused) expect([p, outsideProgramOk(p, "win32")]).toEqual([p, false]);
+  // Unchanged everywhere: bare names and POSIX absolute paths, on every OS.
+  for (const os of ["win32", "darwin", "linux"]) {
+    for (const p of ["codex", "git", "python3.12", "/usr/local/bin/docker", "/Applications/Some App.app/Contents/MacOS/tool"]) expect([p, os, outsideProgramOk(p, os)]).toEqual([p, os, true]);
+    for (const p of ["", "a b", "../x", "/usr/../bin/sh", "/", "./run", "-x", "/opt/bin/"]) expect([p, os, outsideProgramOk(p, os)]).toEqual([p, os, false]);
+  }
+});
