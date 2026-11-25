@@ -19,7 +19,6 @@ import { keychainService } from "../../../packages/core/src/profile";
 import { SPOTS } from "../../../packages/plugin-sdk/src/catalogs/spots";
 import { AgentBackendSchema, CORE_CONTRIBUTION_KEYS, ManifestSchema, SettingSchema, UiSchema } from "../../../packages/plugin-sdk/src/manifest/schema";
 import { ThemeSchema } from "../../../packages/plugin-sdk/src/formats/theme";
-import { SERVER_USAGE } from "../../../packages/cli/src/server-install";
 
 const root = mkdtempSync(join(tmpdir(), "moss-site-test-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -450,6 +449,8 @@ describe("the reference pages name what the SDK and the engine really have", () 
   });
 
   test("the computers page's server commands are the ones the engine has", () => {
+    // Read from the source, not imported: server-install.ts imports the whole engine, which the site's typecheck doesn't take.
+    const SERVER_USAGE = /export const SERVER_USAGE = "([^"]+)"/.exec(readFileSync(join(REPO_ROOT, "packages", "cli", "src", "server-install.ts"), "utf8"))![1]!;
     expect(SERVER_USAGE).toContain("server install");
     expect(SERVER_USAGE).toContain("server uninstall");
     const page = doc("computers");
