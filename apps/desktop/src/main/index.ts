@@ -433,7 +433,7 @@ async function ready(): Promise<void> {
   runtime = new UiRuntime({
     os, platform: process.platform, safeMode, log,
     sealed,
-    windowChanged: (windowId, closed, document) => replacer.lost(windowId, closed, document),
+    windowChanged: (windowId, closed, document) => replacer.lost(windowId, closed, document === undefined ? undefined : `p:${document.processId}:${document.routingId}`),
     onGone: (mount) => {
       views.drop(mount);
       webViews.drop(mount);
@@ -1259,7 +1259,7 @@ function buttonsInPlace(cardId: string): boolean {
 /** The place a pending card was shown on went away (card-replace.ts): placed again by the same rule as its first place, the net
  *  armed if none runs and no place shows the buttons. */
 const replacer = new CardReplacer({
-  cardsIn: (windowId, closed, document) => sealed.windowGone(windowId, closed, document === undefined ? undefined : `p:${document.processId}:${document.routingId}`),
+  cardsIn: (windowId, closed, documentKey) => sealed.windowGone(windowId, closed, documentKey),
   isPending: (id) => sealed.isPending(id),
   arrived: (id) => cardArrived.has(id),
   placedOnce: (id) => cardPlaces.has(id),

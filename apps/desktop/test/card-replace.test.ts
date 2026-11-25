@@ -2,7 +2,7 @@
 // stood in for is the window's maker (index.ts `showFallbackCard`), which like the real one does nothing without an entry for
 // the card and nothing for a card already open.
 import { describe, expect, test } from "bun:test";
-import { netMove, pressWindowIsOpen, placeFromEngine, windowShowsCard } from "../src/main/card-place";
+import { netMove, pressWindowIsOpen, placeFromEngine, windowShowsCard, type CardPlace } from "../src/main/card-place";
 import { CardReplacer, MAX_REPLACEMENTS } from "../src/main/card-replace";
 import { FallbackNet } from "../src/main/fallback-net";
 import { SealedFrames, type SealedCard } from "../src/main/sealed";
@@ -27,7 +27,7 @@ function world(placed: { kind: "island" } | { kind: "strip"; program: "code"; wi
     closeWindow: (w) => { w.closed = true; },
     isAlive: (w) => !w.closed,
   });
-  const cardPlaces = new Map<string, string>();
+  const cardPlaces = new Map<string, CardPlace>();
   const placeCalls = new Map<string, number>();
   const log: string[] = [];
   const buttonsShown = (id: string) => sealed.buttonsVisible(id, (w) => windowShowsCard(placed, w !== undefined && ISLAND.has(w)));
