@@ -167,9 +167,36 @@ export function fencedReadOnlyCommand(tool: string, input: unknown): boolean {
  *  bracket or brace, or a shell operator. Git for Windows' bash hands such a word to Windows as a share: naming one makes
  *  Windows resolve the host and connect to it, which no card would have shown. A doubled slash inside a path
  *  (`./a//b`) is not a word's start. Text only and cautious: it may hold back a command that never reaches a share
- *  (a quoted `//` in a pattern), which then only asks, as a writing command does. */
+ *  (a quoted `//` in a pattern), which then only asks, as a writing command does.
+ *
+ *  Pessimistic against what the shell removes or expands before the path exists (the controller's hardening): each
+ *  word is taken as the shell splits it (unquoted spaces, tabs, newlines and operators), and from it is deleted all that
+ *  can vanish or is only syntax: both quote characters, a backslash before a newline, every `$name` and `${…}`, and the
+ *  braces and commas of a brace expansion. If what is left (of the word, or of its part after an `=` or a `,`) begins
+ *  with two slashes of either kind, the command names a network path; and any `$'…'` (ANSI-C quoting, which can spell
+ *  a slash as `\057`) counts as one. A false positive (`ls $HOME//x` asks) is fine; a miss is not. A `:` is not a word's
+ *  start (`http://x` in a pattern, `C://x`, which Windows takes as a drive path). */
 export function namesNetworkPath(command: string): boolean {
-  return /(^|[\s'"=,({[`;|&<>])[\\/]{2}/.test(command);
+  if (command.includes("$'")) return true;
+  if (/(^|[\s'"=,({[`;|&<>])[\\/]{2}/.test(command)) return true;
+  const words: string[] = [];
+  let word = "";
+  let quote: "'" | '"' | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!;
+    if (quote === "'") { if (c === "'") quote = null; word += c; continue; }
+    if (c === "\\" && i + 1 < command.length) { word += c + command[i + 1]!; i++; continue; }
+    if (quote === '"') { if (c === '"') quote = null; word += c; continue; }
+    if (c === "'" || c === '"') { quote = c; word += c; continue; }
+    if (/[\s;|&<>()`]/.test(c)) { if (word !== "") words.push(word); word = ""; continue; }
+    word += c;
+  }
+  if (word !== "") words.push(word);
+  const residue = (w: string) => w.replace(/\\\n/g, "").replace(/\$\{[^}]*\}?/g, "").replace(/\$[A-Za-z_][A-Za-z0-9_]*/g, "").replace(/\$[0-9@*#?$!-]/g, "").replace(/['"{},]/g, "");
+  return words.some((w) => {
+    const parts = [w, ...[...w.matchAll(/[=,]/g)].map((m) => w.slice(m.index! + 1))];
+    return parts.some((p) => /^[\\/]{2}/.test(residue(p)));
+  });
 }
 
 export function runLaterFileRefusal(tool: string, path: string): string {

@@ -8,7 +8,7 @@ import { join } from "node:path";
 import type { Card, Level } from "@waifucave/moss-protocol";
 import { MossApprovalBroker, botDisplayName, type MossApprovalRequest } from "../../src/approvals/broker";
 import {
-  botApprovalCheck, CODE_MAX, fencedReadOnlyCommand, MISPLACED_SANDBOX_FLAG_REFUSAL, OUTSIDE_SANDBOX_SENTENCE, misplacedSandboxFlag,
+  botApprovalCheck, CODE_MAX, fencedReadOnlyCommand, MISPLACED_SANDBOX_FLAG_REFUSAL, namesNetworkPath, OUTSIDE_SANDBOX_SENTENCE, misplacedSandboxFlag,
   outsideSandboxFlagOf, outsideSandboxHeadline, outsideSandboxInputError, outsideSandboxTimeoutLine,
 } from "../../src/approvals/bot-check";
 import { mergedHooks, withoutAllow } from "../../src/runtime-sdk/turn-loop/hook-merge";
@@ -326,7 +326,15 @@ describe("a read-only command of the fenced Bash on Windows (lane WS9): no card,
   // What the runtime's rule doesn't call read-only, and a command naming a network path (which Windows would resolve and
   // connect to: the WS9 reviewer's finding), get no allowance: a card at ask, refused at read-only, as a writing command.
   const hostile = ["ls $(rm -rf ~)", "ls `touch x`", "ls > out.txt", "cat a >> b", "ls && rm -rf build", "ls; touch x", "cat x | tee y", "cat <<EOF\n$(rm -rf ~)\nEOF", "git status; git commit -m x", "find . -delete", "ls 'unterminated"];
-  const network = ["ls //host/share", "cat \"//host/share/x\"", "cat \\\\\\\\host\\\\share\\\\x", "grep x --file=//host/x", "cat //./pipe/x", "ls /\\\\host/share", "ls \\\\/host\\\\share", "cat '\\\\\\\\host@SSL\\\\x'", "ls -la //?/UNC/host/x", "echo $(cat //host/x)"];
+  const network = ["ls //host/share", "cat \"//host/share/x\"", "cat \\\\\\\\host\\\\share\\\\x", "grep x --file=//host/x", "cat //./pipe/x", "ls /\\\\host/share", "ls \\\\/host\\\\share", "cat '\\\\\\\\host@SSL\\\\x'", "ls -la //?/UNC/host/x", "echo $(cat //host/x)",
+    // What the shell removes or expands before the path exists (the controller's hardening; agent SDK 0.0.86's classifier
+    // answers read-only for every one of these, so the refusal is MOSS's): quote removal, an empty or unset expansion,
+    // brace expansion, ANSI-C quoting, a backslash-newline, a tab or a newline before the word, a substitution in quotes.
+    "cat /\"\"/host/share/x", "cat /''/host/x", "cat \"/\"/host/x", "cat '/'\"/host/x\"", "cat /${nothing}/host/x", "cat /$nothing/host/x", "cat ${nothing}//host/x",
+    "cat /{/host/share/x,}", "cat {/,}/host/x", "cat $'\\\\057/host/x'", "cat $'\\\\x2f\\\\x2fhost/x'", "cat $'//host/x'", "cat /\\\n/host/x", "cat /\\\\/host/x",
+    "cat\t//host/x", "ls\n//host/x", "echo \"$(cat //host/x)\"", "ls a,//host",
+    // The innocent look-alike, refused on purpose (a false positive is fine, a miss is not).
+    "ls $HOME//x"];
   for (const level of ["ask", "read-only"] as const) {
     test(`a command the runtime's rule doesn't call read-only, at ${level}: ${level === "ask" ? "a card" : "refused"} (a substitution, a redirection, a writer in a chain or a pipe, a here-document that runs one)`, async () => {
       for (const command of hostile) expect([command, await judged("Bash", command, level, "up")]).toEqual([command, level === "ask" ? "card" : "deny"]);
@@ -335,10 +343,15 @@ describe("a read-only command of the fenced Bash on Windows (lane WS9): no card,
       for (const command of network) expect([command, await judged("Bash", command, level, "up")]).toEqual([command, level === "ask" ? "card" : "deny"]);
     });
   }
-  test("a single slash, a doubled one inside a path, a URL in a pattern: still read-only (no card)", async () => {
-    for (const command of ["ls /c/Users", "ls ./a//b", "cat src//index.ts", "grep -r 'http://x' src"]) {
+  test("a single slash, a doubled one inside a path, a URL in a pattern, a quoted expansion before one slash: still read-only (no card)", async () => {
+    // `a://host` after `=` is not a network path either: a `:` starts no word (Windows takes `C://x` as a drive path).
+    for (const command of ["ls /c/Users", "ls ./a//b", "cat src//index.ts", "grep -r 'http://x' src", "ls \"$HOME\"/x", "grep x --include=a://host"]) {
       expect([command, await judged("Bash", command, "ask", "up")]).toEqual([command, "allow"]);
     }
+  });
+  test("`cd / && cat host/share` reaches no share; the classifier doesn't call it read-only (a `cd`), so it asks either way", async () => {
+    expect(namesNetworkPath("cd / && cat host/share")).toBe(false);
+    expect(await judged("Bash", "cd / && cat host/share", "ask", "up")).toBe("card");
   });
   test("what the runtime's classifier answers today for forms that can run a program (pinned, so a change in the SDK is seen)", () => {
     // Each of these is NOT read-only by agent SDK 0.0.86's rule: none gets the allowance, so each asks as a writing command.
