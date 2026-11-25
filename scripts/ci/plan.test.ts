@@ -71,11 +71,15 @@ describe("planFor: the checks and macOS runners a run starts", () => {
     expect(areasFor(["scripts/acceptance/sealed-press.test.ts"]).scriptsmac).toBe(false);
     // the core's Linux shards walk scripts/ (its daemon-spawn pin reads every script); no macOS leg of the core does
     expect(planForFiles(["scripts/ci/weston.sh"]).macos).toBe(0);
-    // ...but the workspaces' own macOS leg runs apps/desktop's file-log test, which reads scripts/acceptance/ (the evidence list, the steps' log needles)
-    expect(planForFiles(["scripts/acceptance/sealed-press.test.ts"]).macos).toBe(1);
+    expect(planForFiles(["scripts/acceptance/sealed-press.test.ts"]).macos).toBe(0);
+    // ...except the one file the workspaces' file-log test loads (the evidence list, which the driver loads too): the workspaces' macOS leg
+    // and every acceptance unit's (the 25 units and that one leg)
+    const evidence = planForFiles(["scripts/acceptance/evidence-lines.ts"]);
+    expect(evidence.units.length).toBe(25);
+    expect(evidence.macos).toBe(26);
     const p = planForFiles(["scripts/acceptance/canvas-step.ts"]);
     expect(p.jobs.find((j) => j.id === "acceptance")!.checks).toBe(1);
-    expect(p.macos).toBe(2);
+    expect(p.macos).toBe(1);
     expect(p.units).toEqual(["canvas"]);
     // The Linux acceptance takes the same one unit.
     expect(p.jobs.find((j) => j.id === "acceptance-linux")!.checks).toBe(1);

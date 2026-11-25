@@ -8,8 +8,15 @@ import { placeLine } from "../src/main/card-place";
 import { KEEP, REDUCE, fileLine } from "../src/main/file-log";
 import { isKnownTreeMethod, loggedMethod } from "../src/main/ui/tree-calls";
 import { ipcLine } from "../src/main/ui/ipc-stats";
-import { APP_LOG_LINE_MAX } from "../../../packages/app-release/src/app-log";
-import { EVIDENCE_LINES, unkeptEvidence } from "../../../scripts/acceptance/evidence-lines";
+import { APP_LOG_LINE_MAX, cleanLogLine } from "../../../packages/app-release/src/app-log";
+
+// The acceptance's evidence list is the one file of scripts/acceptance/ this test depends on; it is loaded by its full path (with its extension) so
+// the CI map's static scan of what a test reads (scripts/ci/test-reads.ts) sees that one file, not the whole folder.
+const EVIDENCE_FILE = join(import.meta.dir, "..", "..", "..", "scripts", "acceptance", "evidence-lines.ts");
+const { EVIDENCE_LINES, unkeptEvidence } = (await import(EVIDENCE_FILE)) as {
+  EVIDENCE_LINES: readonly { for: string; re: RegExp; example: string }[];
+  unkeptEvidence: (text: string, fileLine: (line: string) => string, whole?: readonly string[], stats?: { cut: number }) => { line: string; for: string }[];
+};
 
 const SECRET = "SECRETWORDS";
 const CARD = "card_juniper_book";
@@ -428,15 +435,25 @@ describe("what MOSS Code writes to its log file", () => {
       for (const e of EVIDENCE_LINES) expect([e.example, e.re.test(e.example), /\(text not kept in the file\)$/.test(fileLine(e.example))]).toEqual([e.example, true, false]);
     });
 
-    test("a line the file cut at its length limit is not judged (it ends mid-pair), a whole one just under it is", () => {
+    test("a line the file cut at its length limit is judged by the whole line the process printed: a cut kept ipc line passes (counted), a cut line of free text fails, and a cut line with no whole copy fails", () => {
       const at = "2026-11-24T10:00:00.000Z ";
-      const pairs = (n: number) => Array.from({ length: n }, (_, i) => `name-${i} ${i}`).join(", ");
-      const whole = ipcLine({ seconds: 5, in: new Map(), out: new Map() } as never, []);
-      expect(unkeptEvidence(`${at}${whole}`, fileLine)).toEqual([]);
-      const cut = `ipc: 5 s in 1.0/s (${pairs(8)}) out 1.0/s (${pairs(8)}) cpu ${"Tab 1.0% ".repeat(60)}`.slice(0, APP_LOG_LINE_MAX);
+      const names = Array.from({ length: 6 }, (_, i) => `a-long-channel-name-${i}`);
+      const whole = ipcLine({ seconds: 5, in: new Map(names.map((n, i) => [n, 90 - i])), out: new Map(names.map((n, i) => [n, 50 - i])) } as never, Array.from({ length: 12 }, () => ({ type: "Tab", percent: 1.5 })));
+      expect(whole.length).toBeGreaterThan(APP_LOG_LINE_MAX);
+      expect(fileLine(whole)).toBe(whole);
+      const cut = cleanLogLine(whole);
       expect(cut.length).toBe(APP_LOG_LINE_MAX);
-      expect(unkeptEvidence(`${at}${cut}`, fileLine)).toEqual([]);
-      expect(unkeptEvidence(`${at}${"audio: a reworded line ".padEnd(APP_LOG_LINE_MAX - 1, "x")}`, fileLine).length).toBe(1);
+      // the file's copy is a fragment of a kept line: it passes, because the whole one is kept, and it is counted
+      const stats = { cut: 0 };
+      expect(unkeptEvidence(`${at}${cut}`, fileLine, [whole], stats)).toEqual([]);
+      expect(stats.cut).toBe(1);
+      // a fragment of free text of the same length: its whole copy is not kept, so it fails
+      const free = `audio: ${"a reworded sentence of free text ".repeat(20)}`;
+      expect(free.length).toBeGreaterThan(APP_LOG_LINE_MAX);
+      expect(unkeptEvidence(`${at}${cleanLogLine(free)}`, fileLine, [free]).map((f) => f.for)).toEqual(["sound muted, or not"]);
+      // a cut line whose whole copy was never seen is not skipped unseen
+      expect(unkeptEvidence(`${at}${cut}`, fileLine, []).length).toBe(1);
+      expect(unkeptEvidence(`${at}${cut}`, fileLine, ["ipc: some other line"]).length).toBe(1);
     });
 
     test("a run's log with an evidence line nobody classed fails (a reworded line, with the file's time before it), a classed one and an ordinary unclassed one do not", () => {
@@ -445,30 +462,6 @@ describe("what MOSS Code writes to its log file", () => {
       const found = unkeptEvidence(`${at}audio: a reworded line nobody classed\n${at}layers: a plugin's new sentence`, fileLine);
       expect(found.map((f) => f.line)).toEqual(["audio: a reworded line nobody classed"]);
       expect(found[0]!.for).toBe("sound muted, or not");
-    });
-
-    // The literal strings the steps look for in the app's log (`includes("layers: ...")`): each is a line of the list. A step that starts
-    // relying on a line adds it to scripts/acceptance/evidence-lines.ts and classes it in file-log.ts. What is not a line of its own (an id, a
-    // fragment, a line of the MOSS app, which has its own file filter) is not here; the one line no code writes any more is named.
-    test("every log line a step looks for by its literal text is in the evidence list", () => {
-      const dir = join(import.meta.dir, "..", "..", "..", "scripts", "acceptance");
-      const NOT_A_LINE_OF_THIS_APP = new Set(["the window's strip for x"]);
-      const uncovered: string[] = [];
-      let needles = 0;
-      for (const f of readdirSync(dir).filter((n) => n.endsWith(".ts") && n !== "evidence-lines.ts" && !n.endsWith(".test.ts"))) {
-        for (const l of readFileSync(join(dir, f), "utf8").split("\n")) {
-          if (!/appLog|app\.log/.test(l)) continue;
-          for (const m of l.matchAll(/\.includes\((["`])((?:(?!\1).)*)\1\)/g)) {
-            const needle = m[2]!.replace(/\$\{[^}]*\}/g, "x");
-            if (!/^[a-z][a-z -]{0,24}: /.test(needle) || needle.includes("MOSS's")) continue;
-            needles++;
-            const covered = EVIDENCE_LINES.some((e) => [needle, `${needle}x`, `${needle} x`].some((n) => e.re.test(n)) || e.example.includes(needle));
-            if (!covered && !NOT_A_LINE_OF_THIS_APP.has(needle)) uncovered.push(`${f}: ${needle}`);
-          }
-        }
-      }
-      expect(uncovered).toEqual([]);
-      expect(needles).toBeGreaterThan(8);
     });
   });
 });

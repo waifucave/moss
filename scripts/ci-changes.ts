@@ -82,8 +82,8 @@ const READ_BY_SCRIPTSMAC: readonly Pattern[] = [
   "VERSIONS.json", "apple/ComputerUse/VERSION", "apple/Cowork/", "apple/Winter/project.yml", "packages/cli/src/", "packages/core/src/", "packages/core/test/cowork/",
 ];
 const READ_BY_WORKSPACES: readonly Pattern[] = [
-  // apps/desktop's file-log test reads the acceptance's evidence list and scans the steps' literal log needles (scripts/acceptance/*.ts)
-  "scripts/acceptance/",
+  // apps/desktop's file-log test imports the acceptance's evidence list (the one file; the steps' needle scan is a scripts test)
+  "scripts/acceptance/evidence-lines.ts",
 ];
 const READ_BY_MACHINE: readonly Pattern[] = ["docs/live-gates/", "native/input/macos/screen.mm"];
 const READ_BY_EXTENSION: readonly Pattern[] = ["packages/core/src/computer-use/browser/"];

@@ -11,7 +11,7 @@
 // the app writes. apps/desktop/test/file-log.test.ts holds every example against `fileLine`, and holds this list against the
 // literal needles the steps read (so a step that starts relying on a new line has to add it here, and class it).
 
-import { APP_LOG_LINE_MAX } from "../../packages/app-release/src/app-log";
+import { APP_LOG_LINE_MAX, cleanLogLine } from "../../packages/app-release/src/app-log";
 
 export interface EvidenceLine {
   /** What the steps read it for. */
@@ -60,17 +60,35 @@ const UNKEPT = /\(text not kept in the file\)$/;
 /** The log's lines without the time the file puts before each (a raw line from a test build is `<ISO time> <line>`). */
 export const lineOf = (fileText: string): string => fileText.replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z /, "");
 
-/** The lines of `text` (the raw app log) that an evidence entry reads and that `fileLine` would write as "text not kept". */
-export function unkeptEvidence(text: string, fileLine: (line: string) => string): { line: string; for: string }[] {
+/** What the check counted besides its findings. */
+export interface EvidenceStats {
+  /** Evidence lines the file had cut at its length limit, judged by the whole line the process printed. */
+  cut: number;
+}
+
+/** The lines of `text` (the raw app log) that an evidence entry reads and that `fileLine` would write as "text not kept".
+ *
+ *  The file cuts a line at APP_LOG_LINE_MAX, after a real build's `fileLine` has judged the whole one. A cut line ends mid-pair, so it is
+ *  judged by the WHOLE line it was cut from: `whole` holds the lines the app printed to its process output (which is never cut), and a cut
+ *  line is looked up there by its cut form (`cleanLogLine`, which is what the file wrote). A cut line of an evidence kind with no whole line
+ *  to match is a finding too, so a long line is never skipped unseen, and a long line of free text is judged like any other. */
+export function unkeptEvidence(text: string, fileLine: (line: string) => string, whole: readonly string[] = [], stats?: EvidenceStats): { line: string; for: string }[] {
   const out: { line: string; for: string }[] = [];
+  let byCut: Map<string, string> | undefined;
   for (const raw of text.split("\n")) {
     const line = lineOf(raw);
     if (line === "") continue;
-    // The file cuts a line at APP_LOG_LINE_MAX: a cut line ends mid-pair or mid-word, and `fileLine` (which a real build runs on the whole line,
-    // before the cut) cannot judge it. The whole line is what the check is for, so a cut one is not a finding.
-    if (raw.replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z /, "").length >= APP_LOG_LINE_MAX) continue;
     const hit = EVIDENCE_LINES.find((e) => e.re.test(line));
-    if (hit !== undefined && UNKEPT.test(fileLine(line))) out.push({ line: line.slice(0, 200), for: hit.for });
+    if (hit === undefined) continue;
+    if (line.length < APP_LOG_LINE_MAX) {
+      if (UNKEPT.test(fileLine(line))) out.push({ line: line.slice(0, 200), for: hit.for });
+      continue;
+    }
+    byCut ??= new Map(whole.map((w) => [cleanLogLine(w), w]));
+    const full = byCut.get(line);
+    if (full === undefined) { out.push({ line: `${line.slice(0, 160)} (cut at the file's limit; no whole line of it in the process output)`, for: hit.for }); continue; }
+    if (stats !== undefined) stats.cut++;
+    if (UNKEPT.test(fileLine(full))) out.push({ line: full.slice(0, 200), for: hit.for });
   }
   return out;
 }

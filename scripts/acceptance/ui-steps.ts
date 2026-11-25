@@ -1939,7 +1939,12 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     await sleep(6_000); // what opening her tab starts (her room's few ticks, the stage loading) is not idle
     const logBefore = ctx.appLog();
     await sleep(IDLE_MS);
-    const raw = linesSince(logBefore, ctx.appLog()).filter((l) => l.startsWith("ipc: ") || l.includes(" ipc: "));
+    // The log the row reads is the app's process output (each line whole, `[moss-app] ` before it) and the app.log file (each line again,
+    // with a time before it, cut at 300 characters: a cut counters line loses the windows' CPU at its end, or does not parse at all).
+    // A window is counted once, from the whole copy; the file's copy is read only when the unit has no process output.
+    const ipcLines = linesSince(logBefore, ctx.appLog()).filter((l) => l.startsWith("ipc: ") || l.includes(" ipc: "));
+    const whole = ipcLines.filter((l) => l.startsWith("[moss-app] "));
+    const raw = whole.length > 0 ? whole : ipcLines;
     const lines = raw.flatMap((l) => { const p = parseIpcLine(l); return p === undefined ? [] : [p]; });
     if (lines.length < 2) fail(`the app said ${lines.length} ipc line(s) in ${IDLE_MS / 1000} s (it says one every 5 s when MOSS_IPC_STATS=1) [apps/desktop/src/main/ui/ipc-stats.ts]`);
     const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
