@@ -30,7 +30,11 @@ public struct ConversationScreen: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 4) {
+                // Not lazy: a lazy stack places rows at estimated heights first and the bottom anchor re-places the view
+                // as they are measured, and in those passes a card's heading sat inside the visible part while the person
+                // never saw it (the log: heading 1845 in 1732..2402 at the open, then on screen at y=-25). A plain stack
+                // is laid out at its real heights from the first pass; a page is at most 60 messages.
+                VStack(alignment: .leading, spacing: 4) {
                     if model.hasEarlier {
                         Button("Show earlier messages") { Task { await model.loadEarlier() } }
                             .font(.footnote).frame(maxWidth: .infinity)
