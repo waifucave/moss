@@ -109,6 +109,8 @@ class EngineFlowTests: XCTestCase {
         await cards.answer(rich, with: rich.options.first { $0.kind == .approve }!)
         XCTAssertTrue(cards.cards.contains { $0.id == afterConnect }, "nothing was answered while a part was cut")
         cards.open("paths", of: rich); cards.open("reason", of: rich)
+        XCTAssertFalse(cards.mayAnswer(rich), "opened, not yet read to the end")
+        cards.readEnd("paths", of: rich); cards.readEnd("reason", of: rich)
         for id in [atConnect, afterConnect] {
             let shown = cards.cards.first { $0.id == id }!
             let approve = shown.options.first { $0.kind == .approve }!

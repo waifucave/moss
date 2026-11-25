@@ -15,22 +15,24 @@ public struct CardView: View {
     /// Why the buttons wait, in one line (the model's), and the report that the heading is on screen.
     let waitReason: String?
     let onSighted: () -> Void
+    /// The report that an opened field's last line has been on screen.
+    let onReadEnd: (String) -> Void
     @Environment(\.nowMs) private var nowOverride
     @Environment(\.dynamicTypeSize) private var typeSize
 
     /// `note` says why the card can't be answered (expired, answered elsewhere, failed); `onSettle` then dismisses it (or, after a failure, lets the person try again).
     public init(card: Card, busy: Bool = false, note: CardNote? = nil, ready: @escaping (CardOption) -> Bool = { _ in true }, opened: Set<String> = [], onOpen: @escaping (String) -> Void = { _ in },
-                waitReason: String? = nil, onSighted: @escaping () -> Void = {},
+                waitReason: String? = nil, onSighted: @escaping () -> Void = {}, onReadEnd: @escaping (String) -> Void = { _ in },
                 onAnswer: @escaping (CardOption) -> Void, onSettle: @escaping () -> Void = {}) {
         self.card = card; self.busy = busy; self.note = note; self.ready = ready; self.opened = opened; self.onOpen = onOpen
-        self.waitReason = waitReason; self.onSighted = onSighted
+        self.waitReason = waitReason; self.onSighted = onSighted; self.onReadEnd = onReadEnd
         self.onAnswer = onAnswer; self.onSettle = onSettle
     }
     /// A convenience for the cards a `CardsModel` holds: its gates, its opened fields, its answer.
     public init(card: Card, in model: CardsModel) {
         self.init(card: card, busy: model.answering.contains(card.id), note: model.note(for: card), ready: { model.mayAnswer(card, with: $0) },
                   opened: model.opened[card.id] ?? [], onOpen: { model.open($0, of: card) },
-                  waitReason: model.waitReason(card), onSighted: { model.sighted(card) },
+                  waitReason: model.waitReason(card), onSighted: { model.sighted(card) }, onReadEnd: { model.readEnd($0, of: card) },
                   onAnswer: { o in Task { await model.answer(card, with: o) } },
                   onSettle: { model.note(for: card) == .failed ? model.clearFailure(card) : model.dismiss(card) })
     }
@@ -39,11 +41,12 @@ public struct CardView: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
+                // The heading counts as seen by its first line, wholly inside what the bars leave visible: what follows
+                // down to the buttons is passed on the way to them.
                 Text(Sealed.visible(card.title)).font(.headline)
-                if let what = card.what { Text(Sealed.visible(what)).font(.subheadline).foregroundStyle(.secondary) }
+                    .overlay(alignment: .top) { Color.clear.frame(height: 12).whenSeen(onSighted) }
+                if let what = card.what { cutText(what, name: "what", limit: Card.Cut.text).font(.subheadline).foregroundStyle(.secondary) }
             }
-            // The heading on screen (most of it): what follows down to the buttons is passed on the way to them.
-            .onScrollVisibilityChange(threshold: 0.6) { visible in if visible { onSighted() } }
             ForEach(shownFields, id: \.0) { name, value in
                 field(name, value)
             }
@@ -112,6 +115,7 @@ public struct CardView: View {
                         Text(Sealed.visible(i)).font(.system(.footnote, design: .monospaced))
                     }
                     if !open { showAll(name, "Cut short: \(items.count - Card.Cut.items) more. Show all \(items.count)") }
+                    endMarker(name)
                 }
             }
         case .rows(let rows):
@@ -125,6 +129,7 @@ public struct CardView: View {
                     }.font(.callout)
                 }
                 if !open { showAll(name, "Cut short: \(rows.count - Card.Cut.items) more. Show all \(rows.count)") }
+                endMarker(name)
             } }
         }
     }
@@ -145,7 +150,12 @@ public struct CardView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(opened.contains(name) ? Sealed.visible(s) : cut.shown)
             if cut.hiddenCount > 0 && !opened.contains(name) { showAll(name, "Cut short: \(cut.hiddenCount) more characters. Show all") }
+            endMarker(name)
         }
+    }
+    /// After an opened field: its end, reported once it has been on screen (only then does the field count as read).
+    @ViewBuilder private func endMarker(_ name: String) -> some View {
+        if opened.contains(name) { Color.clear.frame(height: 1).whenSeen { onReadEnd(name) } }
     }
     /// Opens a cut field in place.
     private func showAll(_ name: String, _ label: String) -> some View {
@@ -192,6 +202,7 @@ public struct CardsScreen: View {
             }
             .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 24)
         }
+        .cardViewport()
         .background(Color(uiColor: .systemGroupedBackground))
         .overlay {
             if !model.loaded { ProgressView("Loading").controlSize(.large) }

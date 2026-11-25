@@ -420,13 +420,17 @@ public actor CoreEngineClient: EngineClient {
             if let made = Self.started(u.request, in: rows, before: u.before, since: u.at) { unsureStarts.remove(at: i); return made }
             unsureStarts.remove(at: i)
         }
-        let before = Set(((try? await c.sessions()) ?? []).map(\.id)), at = now()
+        // What exists before, to tell a session this start made from one already there; unknown when the list can't be read.
+        let before: Set<String>? = (try? await c.sessions()).map { Set($0.map(\.id)) }
+        let at = now()
         do { return try await c.startSession(r) } catch LinkError.rpc(let code, let words, let data) {
             if words.localizedCaseInsensitiveContains("not installed") { throw StartError.notInstalled }
             if code == -32602 { throw StartError.folderRefused }
             throw LinkError.rpc(code: code, words: words, dataJSON: data)
         } catch LinkError.timeout {
-            // It may have reached the computer: read back by folder, agent and time before anything else is started.
+            // It may have reached the computer: read back by folder, agent and time before anything else is started. With no
+            // list from before, an existing session can't be told from a new one: nothing is adopted, the person checks.
+            guard let before else { throw MayHaveReached() }
             if let rows = try? await c.sessions(), let made = Self.started(r, in: rows, before: before, since: at) { return made }
             unsureStarts.append((r, before, at))
             throw MayHaveReached()
@@ -497,13 +501,16 @@ public actor CoreEngineClient: EngineClient {
             unsureBots.remove(at: i)
             if let made = Self.made(name: name, model: model, in: bots, before: u.before) { botOfSession[made.mainSession] = made; return made }
         }
-        let before = Set(((try? await c.bots()) ?? []).map(\.id))
+        // What exists before, to tell the bot this make made from one already there; unknown when the list can't be read.
+        let before: Set<String>? = (try? await c.bots()).map { Set($0.map(\.id)) }
         do {
             let b = try await c.createBot(name: name, model: model)
             botOfSession[b.mainSession] = b
             return b
         } catch LinkError.timeout {
-            // It may have reached the computer: read back by exact name and model before another is made.
+            // It may have reached the computer: read back by exact name and model before another is made. With no list from
+            // before, an existing bot of that name can't be told from a new one: nothing is adopted, the person checks.
+            guard let before else { throw MayHaveReached() }
             if let bots = try? await c.bots(), let made = Self.made(name: name, model: model, in: bots, before: before) { botOfSession[made.mainSession] = made; return made }
             unsureBots.append((name, model, before))
             throw MayHaveReached()

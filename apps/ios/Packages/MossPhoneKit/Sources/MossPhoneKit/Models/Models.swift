@@ -284,6 +284,8 @@ public struct Card: Identifiable, Codable, Hashable, Sendable {
             case .rows(let r): if r.count > Cut.items { out.insert(name) }
             }
         }
+        // The heading's `what` is cut like the rest (the title is short by its nature and drawn whole).
+        if case .text(let t)? = fields["what"], Sealed.visible(t).count > Cut.text { out.insert("what") }
         return out
     }
     public var what: String? { text("what") }

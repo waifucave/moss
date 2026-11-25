@@ -142,6 +142,23 @@ public enum SampleData {
              ],
              options: [CardOption(id: "approve", kind: .approve, label: "Allow"), CardOption(id: "deny", kind: .deny, label: "Deny")])
 
+    /// At the foot of Alpha's conversation: eight paths shown, thirty more cut, `~/.ssh/authorized_keys` the fifteenth.
+    public static let longListCard = Card(id: "card_long0038", kind: "tool", computer: computerName, bot: "alpha", origin: "bot",
+             issuedAt: ago(20), expiresAt: now + 580_000, hash: String(repeating: "7", count: 64),
+             fields: ["title": .text("Change these files?"), "what": .text("Alpha wants to write to them."),
+                      "paths": .list((1...38).map { $0 == 15 ? "~/.ssh/authorized_keys" : "notes/file-\($0).md" })],
+             options: [CardOption(id: "approve", kind: .approve, label: "Allow"), CardOption(id: "deny", kind: .deny, label: "Deny")])
+    /// At the foot of Alpha's conversation, taller than the screen: it opens at its bottom, its heading out of sight.
+    public static let tallCard = Card(id: "card_tall0002", kind: "tool", computer: computerName, bot: "alpha", origin: "bot",
+             issuedAt: ago(20), expiresAt: now + 580_000, hash: String(repeating: "8", count: 64),
+             fields: ["title": .text("Run this command?"), "what": .text("Alpha wants to tidy the notes."),
+                      "command": .code((1...6).map { "step \($0) --all notes/" }.joined(separator: "\n"), language: "sh"),
+                      "detail": .rows((1...8).map { .init(label: "Step \($0)", value: "notes/part-\($0)") }),
+                      "paths": .list((1...8).map { "notes/part-\($0).md" }),
+                      "reason": .text(String(repeating: "Every part gets a heading and a date. ", count: 14)),
+                      "host": .code("example.org", language: nil)],
+             options: [CardOption(id: "approve", kind: .approve, label: "Allow"), CardOption(id: "deny", kind: .deny, label: "Deny")])
+
     public static let cards: [Card] = [
         Card(id: "card_0a1b2c3d", kind: "tool", computer: computerName, session: "s_alpha", bot: "alpha", origin: "routine",
              issuedAt: ago(150), expiresAt: now + 450_000, hash: String(repeating: "a", count: 64),

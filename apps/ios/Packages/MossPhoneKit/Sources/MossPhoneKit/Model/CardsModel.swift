@@ -60,12 +60,27 @@ public final class CardsModel {
         if !sighted.contains(Self.key(card)) { return "Scroll up to the top of this card first: answer only what you have seen." }
         let n = card.cutFields.subtracting(opened[card.id] ?? []).count
         if n > 0 { return n == 1 ? "Open the part cut short above first." : "Open the \(n) parts cut short above first." }
+        if !seenWhole(card) { return "Scroll through what you opened, to its end, first." }
         return nil
     }
 
-    /// Every cut field of the card has been opened (or it has none).
-    public func seenWhole(_ card: Card) -> Bool { card.cutFields.isSubset(of: opened[card.id] ?? []) }
-    public func open(_ field: String, of card: Card) { opened[card.id, default: []].insert(field) }
+    /// The cut fields whose LAST line has been on screen after they were opened, by card id, hash and field (the view's
+    /// report). Opening is not enough: what grows out of sight was not read.
+    public private(set) var readToEnd: Set<String> = []
+    private static func key(_ c: Card, _ field: String) -> String { c.id + "#" + c.hash + "#" + field }
+
+    /// Every cut field of the card was opened and read to its end (or it has none).
+    public func seenWhole(_ card: Card) -> Bool { card.cutFields.allSatisfy { readToEnd.contains(Self.key(card, $0)) } }
+    /// The person opened a cut field: it counts only once its end has been on screen, so an approve waits again.
+    public func open(_ field: String, of card: Card) {
+        opened[card.id, default: []].insert(field)
+        readToEnd.remove(Self.key(card, field))
+    }
+    /// The view's report: the end of an opened field of this card (as it is now) has been on screen.
+    public func readEnd(_ field: String, of card: Card) {
+        guard cards.contains(card), opened[card.id]?.contains(field) == true else { return }
+        readToEnd.insert(Self.key(card, field))
+    }
     /// Whether this option answers now. Every option: drawn whole, not inside the moment after it showed or changed, not
     /// busy, nothing noted. An approve also: on screen from its heading (the view's report) and every cut part opened.
     public func mayAnswer(_ card: Card, with option: CardOption) -> Bool {

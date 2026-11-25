@@ -33,7 +33,7 @@ public final class NewBotModel {
         creating = true; defer { creating = false }
         do { let b = try await client.createBot(name: name.trimmingCharacters(in: .whitespacesAndNewlines), model: model); errorText = nil; return b }
         catch let e as BotCreateRefused { errorText = e.message; return nil }
-        catch is MayHaveReached { errorText = "Your computer didn't answer, and the bot doesn't show yet. Create looks for it first before making another."; return nil }
+        catch is MayHaveReached { errorText = "Your computer didn't answer, so the bot may have been made. Check your bots before trying again."; return nil }
         catch { errorText = "The bot wasn't made. Check that your computer is on and try again."; return nil }
     }
 }

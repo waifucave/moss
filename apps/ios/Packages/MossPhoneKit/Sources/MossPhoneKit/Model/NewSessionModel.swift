@@ -77,7 +77,7 @@ public final class NewSessionModel {
         } catch StartError.folderRefused {
             errorText = "That folder can't be used. Pick a folder of your computer's, not MOSS's own."
         } catch is MayHaveReached {
-            errorText = "Your computer didn't answer, and the session doesn't show yet. Start looks for it first before starting another."
+            errorText = "Your computer didn't answer, so the session may have started. Check your sessions before trying again."
         } catch StartError.notInstalled {
             errorText = "That agent isn't installed on \(computer)."
         } catch {

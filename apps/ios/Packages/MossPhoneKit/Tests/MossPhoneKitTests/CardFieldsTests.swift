@@ -52,9 +52,16 @@ final class CardFieldsTests: XCTestCase {
         let none = await fake.answered
         XCTAssertTrue(none.isEmpty, "Allow does nothing while the ninth path is hidden")
         model.open("paths", of: card)
+        XCTAssertFalse(model.mayAnswer(card), "opened is not read: its end hasn't been on screen")
+        model.readEnd("paths", of: card)
         XCTAssertFalse(model.mayAnswer(card), "the long reason is still cut")
         model.open("reason", of: card)
+        model.readEnd("reason", of: card)
         XCTAssertTrue(model.mayAnswer(card))
+        // Opening again (or a field's end reported before it was opened) never counts as read.
+        model.open("paths", of: card)
+        XCTAssertFalse(model.mayAnswer(card), "opening a part makes Allow wait again")
+        model.readEnd("paths", of: card)
         await model.answer(card, with: card.options[0])
         let sent = await fake.answered
         XCTAssertEqual(sent.map(\.card), [card.id])

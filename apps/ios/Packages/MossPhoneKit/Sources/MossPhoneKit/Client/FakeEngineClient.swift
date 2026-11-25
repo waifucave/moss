@@ -29,6 +29,10 @@ public actor FakeEngineClient: EngineClient {
         case providerConsent
         /// Paired; a card with nine files and a long reason waits: both cut, its buttons wait until both are opened.
         case manyPaths
+        /// Paired; a card with 38 paths (one cut list) at the foot of Alpha's conversation.
+        case longCardChat
+        /// Paired; a card taller than the screen at the foot of Alpha's conversation.
+        case tallCardChat
         /// This phone has already made the day's 5 bots: the next `createBot` is refused.
         case botLimit
     }
@@ -102,6 +106,12 @@ public actor FakeEngineClient: EngineClient {
         case .manyPaths:
             paired = PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName)
             cardList = [SampleData.manyPathsCard]
+        case .longCardChat:
+            paired = PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName)
+            cardList = [SampleData.longListCard]
+        case .tallCardChat:
+            paired = PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName)
+            cardList = [SampleData.tallCard]
         }
         if paired != nil, scenario != .unreachable, scenario != .empty { paired?.lastSeen = SampleData.now - 20_000 }
     }

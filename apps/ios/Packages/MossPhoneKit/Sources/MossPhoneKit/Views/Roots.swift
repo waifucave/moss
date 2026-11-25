@@ -30,6 +30,8 @@ public struct AppLaunch {
             case "cardStates": l.scenario = .cardStates
             case "sendFails": l.scenario = .sendFails
             case "manyPaths": l.scenario = .manyPaths
+            case "longCardChat": l.scenario = .longCardChat
+            case "tallCardChat": l.scenario = .tallCardChat
             case "providerConsent": l.scenario = .providerConsent
             case "botLimit": l.scenario = .botLimit
             default: break
