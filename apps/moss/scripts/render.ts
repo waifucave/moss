@@ -47,15 +47,25 @@ const engine = await startFakeEngine({ home, picturePng: await pagePng(), frameM
   running: {
     juniper: { name: "mcp__moss__Browser", argsJson: "{}" },
     brook: { name: "Read", argsJson: JSON.stringify({ file_path: "/Users/someone/Documents/Budget 2026.xlsx" }) },
-    ada: { name: "WebFetch", argsJson: JSON.stringify({ url: "https://www.example.com/lisbon?q=private" }) },
+    ...(process.env.MOSS_RENDER_SCENES === "question" ? {} : { ada: { name: "WebFetch", argsJson: JSON.stringify({ url: "https://www.example.com/lisbon?q=private" }) } }),
   },
 });
 engine.feed.set({ subject: { kind: "bots", id: "brook" }, state: "working", name: "Brook", tool: "Read", since: Date.now() - 20_000 });
-engine.feed.set({ subject: { kind: "bots", id: "ada" }, state: "working", name: "Ada", tool: "WebFetch", since: Date.now() - 20_000 });
+if (process.env.MOSS_RENDER_SCENES !== "question") engine.feed.set({ subject: { kind: "bots", id: "ada" }, state: "working", name: "Ada", tool: "WebFetch", since: Date.now() - 20_000 });
 // Kite's conversation ends with a reply in Markdown and a question she is waiting on (the question scene).
 engine.say("kite", { type: "user_message", text: "Start a Codex agent on a new project and use terra.", clientName: "MOSS" });
 engine.say("kite", { type: "assistant_message", text: "Here is what I can do for you:\n\n- **Start a coding agent for you.** You tell me what to build and where, and I start it in the background.\n- **Look things up.** I search the web and read `notes.txt` when it helps.\n\nRun it later with:\n\n```sh\nnpm test\n```\n\nSee [the docs](https://example.com/docs) for more." });
 engine.say("kite", { type: "question_asked", callId: "call_render_1", questions: [{ question: "Which model should the Codex agent use?", header: "Model", multiSelect: false, options: [{ label: "Codex's default (Recommended)", description: "Whatever Codex picks for itself." }, { label: "Use fable", description: "A Claude model." }, { label: "Use opus", description: "A Claude model." }, { label: "Hold off", description: "Do nothing yet." }] }] });
+// The question card's other states, one bot each (the question scenes; MOSS_RENDER_SCENES=question draws only them):
+// answered (Cobalt), withdrawn when the turn ended (Fern), a question of several lines (Onyx), an option with a long label (Ada).
+const ask = (bot: string, callId: string, questions: unknown[]) => engine.say(bot, { type: "question_asked", callId, questions });
+const opts = (...labels: string[]) => labels.map((label) => ({ label, description: "" }));
+ask("cobalt", "call_render_answered", [{ question: "Should I retry the sync with the backup drive plugged in?", header: "Backup", multiSelect: false, options: [{ label: "Yes, retry", description: "Run the sync again now." }, { label: "Not today", description: "Leave it for later." }] }]);
+engine.say("cobalt", { type: "question_resolved", callId: "call_render_answered", answers: { "Should I retry the sync with the backup drive plugged in?": "Yes, retry" }, by: "user" });
+ask("fern", "call_render_withdrawn", [{ question: "Which folder should the summary go in?", header: "Folder", multiSelect: false, options: [{ label: "Meetings", description: "The meetings folder." }, { label: "Notes", description: "The notes folder." }] }]);
+engine.say("fern", { type: "question_resolved", callId: "call_render_withdrawn", answers: {}, by: "aborted" });
+ask("onyx", "call_render_lines", [{ question: "Before I resume on Monday, three things are unclear.\n\n1. Should the weekly report still go to the whole team?\n2. Do you want the numbers in euros or dollars?\n3. Is the old archive folder still in use?\n\nWhich of these should I settle first?", header: "Resume", multiSelect: false, options: opts("The report's recipients", "The currency", "The archive folder") }]);
+ask("ada", "call_render_long", [{ question: "How should I update the reading list?", header: "Update", multiSelect: false, options: [{ label: "Add the three new books to the end of the list, keep the order I gave you, and mark each one with the month I should start it so that nothing is read twice or skipped", description: "A long label, to see it wrap." }, { label: "Leave it", description: "No change." }] }]);
 const env: NodeJS.ProcessEnv = { ...process.env, MOSS_HOME: home, MOSS_USER_DATA: join(home, "user-data"), MOSS_TEST_FRONT: "1" };
 delete env.MOSS_PROFILE;
 delete env.ELECTRON_RUN_AS_NODE;
