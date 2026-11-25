@@ -208,6 +208,7 @@ export const REDUCE: [RegExp, string | ((m: RegExpExecArray) => string)][] = [
   [/^layers: a message to \S+ was lost\b.*/, "layers: a message to a mount was lost"],
   [/^layers: \S+ \(\S+\): refused a document load \(.*; a fresh address went less than a second ago\)$/, "layers: a document load was refused (a fresh address went less than a second ago)"],
   [/^layers: \S+(?: \(\S+\))? loads again\b.*/, "layers: a mount loads again"],
+  [/^layers: \S+ \(\S+\): not sent another address \(its frame has loaded its address twice three times in 30 s\)$/, "layers: no more addresses sent to a frame that loads its address twice (three times in 30 s)"],
   [/^layers: .* refused \(.*\); frame \d+:\d+, active (true|false)$/, "layers: a plugin's call was refused (reason not kept)"],
   [/^layers: could not stop process \d+\b.*/, "layers: could not stop a process"],
   [/^strings: \S+ could not be read\b.*/, "strings: a plugin's strings could not be read"],

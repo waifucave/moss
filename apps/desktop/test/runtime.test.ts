@@ -667,7 +667,8 @@ describe("sleeping frames, surfaces, and the brokers' part of the runtime", () =
 
   test("a document loaded again for a changed module is sent its address once: a load of the address it replaced, a moment later, sends it no second time (the parent would load the spent one twice)", () => {
     let t = 2_000_000;
-    const { s, item } = withFixtureFrame({ now: () => t });
+    const waits: unknown[] = [];
+    const { s, item } = withFixtureFrame({ now: () => t, later: (fn) => waits.push(fn) });
     const old = new URL(item.url).searchParams.get("mount")!;
     s.sent.length = 0;
     const built = composerFixture().map((p) => ({ ...p, clientEntry: undefined, clientBuild: { base: "/x", file: "index.js", sha256: "cd".repeat(32) } }));
@@ -677,6 +678,42 @@ describe("sleeping frames, surfaces, and the brokers' part of the runtime", () =
     s.sent.length = 0;
     s.rt.serveDocument("fixture-composer", old);
     expect(s.sent.filter((x) => x.m.type === "child-reload")).toEqual([]);
+    // A stale address is nothing to wait for: no fresh address is promised for the end of the second (a stale frame can't make a loop).
+    expect(waits).toEqual([]);
+  });
+
+  function reloadedFixture() {
+    let t = 2_000_000;
+    const later: (() => void)[] = [];
+    const f = withFixtureFrame({ now: () => t, later: (fn) => later.push(fn) });
+    f.s.sent.length = 0;
+    const built = (sha: string) => composerFixture().map((p) => ({ ...p, clientEntry: undefined, clientBuild: { base: "/x", file: "index.js", sha256: sha.repeat(32) } }));
+    f.s.rt.setRegistry([...readUiPlugins([...mossViews(), alphaView()] as never), ...built("cd")]);
+    const reload = () => f.s.sent.filter((x) => x.m.type === "child-reload");
+    const token = new URL((reload()[0]!.m as { url: string }).url).searchParams.get("mount")!;
+    expect(f.s.rt.serveDocument("fixture-composer", token)).toBeDefined();
+    t += 100;
+    expect(f.s.rt.serveDocument("fixture-composer", token)).toBeUndefined();
+    expect(later).toHaveLength(1);
+    return { ...f, t: () => t, advance: (ms: number) => { t += ms; }, later, reload, built };
+  }
+
+  test("a mount dropped while its wait runs gets no address when the wait ends", () => {
+    const f = reloadedFixture();
+    f.s.rt.closeWindow(WIN);
+    f.advance(1_100);
+    f.later.shift()!();
+    expect(f.reload()).toHaveLength(1);
+  });
+
+  test("a mount given a newer address while its wait runs gets no second one when the wait ends", () => {
+    const f = reloadedFixture();
+    f.advance(300);
+    f.s.rt.setRegistry([...readUiPlugins([...mossViews(), alphaView()] as never), ...f.built("ef")]);
+    expect(f.reload()).toHaveLength(2);
+    f.advance(1_100);
+    f.later.shift()!();
+    expect(f.reload()).toHaveLength(2);
   });
 
   test("a window closing, and one of its documents loading again, are told to the app (it places a card again): once each", () => {

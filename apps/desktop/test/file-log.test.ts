@@ -288,6 +288,7 @@ const REDUCED: [string, string][] = [
   [`layers: a message to m3 was lost: ${SECRET}`, "layers: a message to a mount was lost"],
   [`layers: m3 (moss/shell): refused a document load (${SECRET}; a fresh address went less than a second ago)`, "layers: a document load was refused (a fresh address went less than a second ago)"],
   [`layers: m3 loads again (${SECRET})`, "layers: a mount loads again"],
+  [`layers: m3 (moss/shell): not sent another address (its frame has loaded its address twice three times in 30 s)`, "layers: no more addresses sent to a frame that loads its address twice (three times in 30 s)"],
   [`layers: moss/shell: ${SECRET} refused (${SECRET}); frame 3:4, active true`, "layers: a plugin's call was refused (reason not kept)"],
   [`layers: could not stop process 4242: ${SECRET}`, "layers: could not stop a process"],
   [`strings: moss/shell/en.json could not be read: ${SECRET}`, "strings: a plugin's strings could not be read"],
@@ -387,7 +388,7 @@ describe("what MOSS Code writes to its log file", () => {
     expect(counts).toEqual({
       "answer-key.ts": 16, "browser/frame-sender.ts": 2, "host-runtime.ts": 6, "housing.ts": 1, "card-replace.ts": 2, "index.ts": 182, "overlap.ts": 1, "pair/optional-calls.ts": 1,
       "pair/pair.ts": 19, "pair/setup-retry.ts": 2, "prefs.ts": 1, "preview-control.ts": 4, "touch-tap.ts": 5, "tray.ts": 1, "ui/electron.ts": 17, "ui/model.ts": 2,
-      "ui/runtime.ts": 12, "ui/strings.ts": 2, "ui/theme.ts": 5, "ui/web-views.ts": 10,
+      "ui/runtime.ts": 13, "ui/strings.ts": 2, "ui/theme.ts": 5, "ui/web-views.ts": 10,
     });
     // Built elsewhere, each shaped by code that is in the lists above or reduced to its source word: the ternaries of answer-key.ts and the
     // audio line, `placeLine` (card-place.ts), the ipc counter's `ipcLine`, and the pass-throughs of one `log` into another module.
