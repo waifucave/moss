@@ -2,7 +2,7 @@ import { SDK_VERSION } from "@waifucave/clover-agent-sdk";
 
 /** The exact peer versions this daemon was written against (P8b-3). The ^ ranges in package.json
  *  are what INSTALLS; these are what the tests PROVE installed. Bump together with the pins. */
-export const REQUIRED_WINTER_AGENT_SDK = "0.0.85";
+export const REQUIRED_WINTER_AGENT_SDK = "0.0.86";
 /**
  * THE CODING AGENT BINARY, on its own pin since A-M1. Code sessions run embedded and no session spawns
  * it any more; it is lane K's (the coding agent that becomes an ACP agent, spec §9.3), and the tests that
@@ -11,7 +11,11 @@ export const REQUIRED_WINTER_AGENT_SDK = "0.0.85";
  * builds its own.
  */
 export const CODING_AGENT_BINARY_VERSION = "0.0.55";
-/** Bumped to 0.0.85 (2026-11-24): a host tool that takes a built-in's name (MOSS's `Agent`) is offered exactly as the host defined
+/** Bumped to 0.0.86 (2026-11-25): a host tool named like a built-in gets none of the built-in's automatic approvals (MOSS's
+ *  fenced Bash and PowerShell on Windows reach MOSS's own approval handler for every call), and `isReadOnlyShellCommand`
+ *  for a host's own shell; the thinking control is sent in the form each row declares (Gemini 4 and the covered Gemini 3.x
+ *  rows take a named `thinkingLevel`); Gemini 4 Hydrogen on Vertex.
+ *  Earlier: bumped to 0.0.85 (2026-11-24): a host tool that takes a built-in's name (MOSS's `Agent`) is offered exactly as the host defined
  *  it, no built-in decoration added to its schema; the catalog refresh of 2026-11-24 (Gemini 4, Qwen4 Max, Muse Ember and Wonder,
  *  Mistral Large 4, Hy4 and Hy4 Flash on TokenHub, Alibaba prices, uncloseai blocked, the family slots).
  *  Earlier: bumped to 0.0.84 (2026-11-23): the runtime starts and runs a turn on Windows (its temp folder there is the user's own: `TEMP`, then `TMP`, from the
