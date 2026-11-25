@@ -101,8 +101,11 @@ describe("the caller check's OS probe", () => {
     const a = spawnClient(path); // another program, arriving behind x's lingering end
     await until(2);
     await Bun.sleep(300);
-    expect(peers.opened(sockets[1]!)).toBeNull(); // two programs' ends are candidates: refused
-    expect(peers.why).toContain("not owned by an open socket");
+    // x's end either still lingers (two programs' ends are candidates: refused, and the log says why) or is gone already (a is alone, named as itself):
+    // never named as x, and never named by what is left of x.
+    const got = peers.opened(sockets[1]!);
+    expect([null, a.pid]).toContain(got);
+    if (got === null) expect(peers.why).toContain("not owned by an open socket");
     x.kill(); a.kill(); server.stop(true);
   });
 
