@@ -42,6 +42,10 @@ export async function routerStep(ctx: ExampleCtx): Promise<string> {
     const strips = () => ctx.appLog().split("\n").filter((l) => l.includes(`the window's strip for ${ok.id}`)).length;
     if (strips() === 0) fail("the app never drew the OK card as the window's strip");
     if (logHas(new RegExp(`the fallback card for ${ok.id}`))) fail("the app drew the safety net's fallback card for the OK card, though the router placed it in the window's strip");
+    // The strip's own page is drawn a moment after the router's line (it loads, offscreen): the press below prefers it when it is
+    // there and, when it is not yet, takes the island's frame that is still standing (a stale frame of the same card, which the app
+    // accepts), so the row waits for the strip's page, as step 1 does, before it presses (a Linux run answered on the island here).
+    await until("the window's strip drawing the OK card again", 20_000, async () => ((await ownPage(ok.id)) ? true : undefined));
     // The run's app log is two files joined (its own output, then the home's app.log), so a position in it moves: each card's
     // id is unique, and the whole log is read.
     await ctx.pressCard(`${ID}'s OK card`, (c) => c.id === ok.id);
