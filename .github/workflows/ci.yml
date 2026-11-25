@@ -1565,8 +1565,9 @@ jobs:
           if-no-files-found: warn
 
   # The lane gate: what a lane's run has to pass. The same check as `gate`, over every job but the Windows ones (a lane's
-  # known Windows break must not hide a green macOS and Linux), plus the acceptance run. It runs on a push to an
-  # integration branch and on a manual run; `gate` (below) keeps needing every job, Windows included, for pull requests
+  # known Windows break must not hide a green macOS and Linux), plus the acceptance run and one Windows job, the fence's guard
+  # (`windows-fence-guard`: the fence's end-to-end job, for a change to the fence, the approval checks or the launcher).
+  # It runs on a push to an integration branch and on a manual run; `gate` (below) keeps needing every job, Windows included, for pull requests
   # and the merge queue.
   lane-gate:
     name: lane gate

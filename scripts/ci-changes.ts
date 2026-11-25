@@ -124,7 +124,7 @@ export const CI_AREAS: Readonly<Record<CiArea, readonly Pattern[]>> = {
   // the fence and the approval checks, and the Windows launcher's own sources: the windows-fence end-to-end job as a guard IN the lane gate
   // (`windows-fence-guard`, lane WS11), so a change that weakens the fence or its share refusal never reaches the integration branch green
   // (and the guard's own test file: weakening the test weakens the guard)
-  fenceguard: ["packages/core/src/fence/", "packages/core/src/approvals/", "packages/core/test/fence/win-fenced.e2e.test.ts", "scripts/build-srt-win.ps1", "vendor/srt-win/patches/",
+  fenceguard: ["packages/core/src/fence/", "packages/core/src/approvals/", "packages/core/test/fence/win-fenced.e2e.test.ts", ".github/workflows/windows-fence.yml", "scripts/build-srt-win.ps1", "vendor/srt-win/patches/",
     "scripts/ci/windows-fence/build-launcher.ps1"],
   cli: [...CORE, "packages/cli/"],
   // the repo scripts' tests read the core, the CLI, the app, the release inputs and the workflows; its job also runs the

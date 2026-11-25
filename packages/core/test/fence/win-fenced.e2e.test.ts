@@ -762,8 +762,9 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
       const ctl = Bun.spawnSync([shells.bash ?? "bash.exe", "-c", `ls '${target}'; echo "exit $?"`], { stdin: "ignore", timeout: 90_000 });
       await Bun.sleep(2_000);
       console.log(`[e2e] WEBDAV fenced connections ${fenced}; unfenced control: ${connections - fenced} connection(s), ${`${ctl.stdout.toString()}${ctl.stderr.toString()}`.replace(/\s+/g, " ").trim().slice(0, 200)}`);
-      expect(fb.text).toMatch(/exit [1-9]/);
-      expect(fp.text).not.toMatch(/(^|\s)ok\s*$/);
+      // The fence's own refusal, not just a failure: with WebClient absent an unfenced open fails too, and makes no connection.
+      expect(["bash", fb.text]).toEqual(["bash", expect.stringContaining("Permission denied")]);
+      expect(["powershell", fp.text]).toEqual(["powershell", expect.stringMatching(/UnauthorizedAccess|Access is denied/)]);
       expect(fenced).toBe(0);
     } finally {
       listener.stop(true);

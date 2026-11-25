@@ -110,7 +110,7 @@ describe("planFor: the checks and macOS runners a run starts", () => {
   });
 
   test("a change to the fence, the approval checks or the Windows launcher's sources starts the fence's guard (lane WS11), which the lane gate needs; a pull request never does", () => {
-    for (const f of ["packages/core/src/fence/win-fenced.ts", "packages/core/src/approvals/bot-check.ts", "scripts/build-srt-win.ps1", "vendor/srt-win/patches/0001-x.patch", "scripts/ci/windows-fence/build-launcher.ps1"]) {
+    for (const f of ["packages/core/src/fence/win-fenced.ts", "packages/core/src/approvals/bot-check.ts", ".github/workflows/windows-fence.yml", "packages/core/test/fence/win-fenced.e2e.test.ts", "scripts/build-srt-win.ps1", "vendor/srt-win/patches/0001-x.patch", "scripts/ci/windows-fence/build-launcher.ps1"]) {
       expect(planForFiles([f]).areas, f).toContain("fenceguard");
       expect(ids([f]), f).toContain("windows-fence-guard");
       expect(ids([f], "push"), f).toContain("windows-fence-guard");
