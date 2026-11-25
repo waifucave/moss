@@ -10,6 +10,18 @@ describe("the host page", () => {
     expect(doc).toContain('src="moss-app://abc/view"');
     expect(doc.match(/<iframe/g)).toHaveLength(1);
   });
+  test("the relay's script runs before the page's frame exists, and finds the frame only when a message needs it (a first message posted before the listener was lost, and the page waited for ever)", () => {
+    const doc = hostDocument("abc", "tok");
+    expect(doc.indexOf('<script src="/host.js">')).toBeGreaterThan(-1);
+    expect(doc.indexOf('<script src="/host.js">')).toBeLessThan(doc.indexOf("<iframe"));
+    expect(HOST_SCRIPT).not.toMatch(/const frame = document\.getElementById/);
+    // Run it with no frame in the document yet: loading must not throw, and the listener must be attached.
+    const listeners: string[] = [];
+    const fakeDoc = { getElementById: () => null, querySelector: () => ({ content: "tok" }) };
+    const fakeWindow = { addEventListener: (t: string) => { listeners.push(t); } } as Record<string, unknown>;
+    new Function("document", "window", "fetch", HOST_SCRIPT)(fakeDoc, fakeWindow, async () => ({ ok: true, json: async () => ({}) }));
+    expect(listeners).toContain("message");
+  });
   test("its policy allows only its own script, one frame and its own fetch", () => {
     expect(HOST_CSP).toContain("default-src 'none'");
     expect(HOST_CSP).toContain("script-src 'self'");

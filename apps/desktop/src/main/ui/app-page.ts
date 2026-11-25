@@ -28,9 +28,12 @@ export function hostDocument(id: string, token: string): string {
     '<html><head><meta charset="utf-8">',
     `<meta name="moss-app-token" content="${token}">`,
     "<style>html,body{margin:0;height:100%;overflow:hidden;background:transparent}iframe{border:0;display:block;width:100%;height:100%;color-scheme:light dark}</style>",
+    // The relay's script comes BEFORE the frame: the page posts its first message (`ui/initialize`) the moment its own script runs, and a
+    // message posted before the host's listener exists is dropped (nothing queues it), so the page would wait for an answer for ever. A
+    // blocking script in the head has run before the parser creates the frame.
+    '<script src="/host.js"></script>',
     "</head><body>",
     `<iframe id="v" sandbox="allow-scripts" src="${APP_SCHEME}://${id}/view" referrerpolicy="no-referrer"></iframe>`,
-    '<script src="/host.js"></script>',
     "</body></html>",
   ].join("\n");
 }
@@ -39,11 +42,13 @@ export function hostDocument(id: string, token: string): string {
  *  answers; it decides nothing. `__mossTeardown` is the extension's `ui/resource-teardown`, which the app calls before the
  *  view closes and waits briefly for the page's answer. */
 export const HOST_SCRIPT = `(() => {
-  const frame = document.getElementById("v");
+  // The script runs before the frame exists (see hostDocument), so the frame is looked up when a message needs it, never at load.
+  const frameOf = () => document.getElementById("v");
   const token = document.querySelector('meta[name="moss-app-token"]').content;
-  const post = (m) => { try { if (frame.contentWindow) frame.contentWindow.postMessage(m, "*"); } catch (e) {} };
+  const post = (m) => { try { const f = frameOf(); if (f && f.contentWindow) f.contentWindow.postMessage(m, "*"); } catch (e) {} };
   window.addEventListener("message", async (e) => {
-    if (e.source !== frame.contentWindow) return;
+    const frame = frameOf();
+    if (!frame || e.source !== frame.contentWindow) return;
     const d = e.data;
     if (d === null || typeof d !== "object" || d.jsonrpc !== "2.0") return;
     let body;
@@ -61,7 +66,7 @@ export const HOST_SCRIPT = `(() => {
   });
   window.__mossTeardown = () => new Promise((resolve) => {
     const id = "teardown-" + Date.now();
-    const done = (ev) => { if (ev.source === frame.contentWindow && ev.data && ev.data.id === id) { window.removeEventListener("message", done); resolve(); } };
+    const done = (ev) => { const f = frameOf(); if (f && ev.source === f.contentWindow && ev.data && ev.data.id === id) { window.removeEventListener("message", done); resolve(); } };
     window.addEventListener("message", done);
     post({ jsonrpc: "2.0", id, method: "ui/resource-teardown", params: { reason: "the view was closed" } });
     setTimeout(resolve, 250);
