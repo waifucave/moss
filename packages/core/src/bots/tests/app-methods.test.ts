@@ -1,5 +1,6 @@
 // The app's methods with no handler before (K's audit): `session.answer` for a bot's `AskUserQuestion`, the archive of
 // the previous app's sessions (`archive.list`, `archive.history`), and the user's apps' plan readings (`usage.plans`).
+import type { CanUseTool } from "@waifucave/clover-agent-sdk";
 import { afterEach, describe, expect, test } from "bun:test";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -8,7 +9,7 @@ import { flush } from "../../contracts/fakes/clock";
 import { SessionStore, type SessionRow } from "../../sessions/store";
 import { archiveMethods, HISTORY_EVENT_MAX_BYTES, HISTORY_PAGE_BYTES } from "../../sessions/archive-rpc";
 import { readLogRange } from "../../sessions/log-range";
-import { botQuestions, questionTimeoutMs } from "../questions";
+import { ASKED_REPLY, botQuestions, questionTimeoutMs, tooManyOpenReply } from "../questions";
 import { MethodError } from "../rpc";
 import { planReadings, usagePlansMethods, type PlanReaders } from "../../usage/rpc";
 import type { PlanReading } from "../../usage/plan";
@@ -20,70 +21,126 @@ const theUser: Caller = { kind: "user", client: "app" };
 const question = { questions: [{ question: "Which one?", header: "Pick", options: [{ label: "Tea" }, { label: "Coffee" }] }] };
 const caught = (fn: () => unknown) => Promise.resolve().then(fn).catch((e: unknown) => e);
 
-describe("session.answer: a bot's AskUserQuestion", () => {
-  test("the question is the session's (in its log and its needs-you count), and the user's answer reaches the model", async () => {
+describe("session.answer: a bot's AskUserQuestion is an open card, not a wait", () => {
+  const ctx = { signal: new AbortController().signal };
+  const ask = (canUseTool: CanUseTool, id: string, q: Record<string, unknown> = question) => canUseTool("AskUserQuestion", q, { ...ctx, toolUseID: id } as never) as Promise<{ behavior: string; message: string }>;
+  const userInputs = (b: Awaited<ReturnType<typeof boot>>) => b.host.history("b_alpha").flatMap((r) => (r.type === "input" && r.input.from === "user" ? [r.input.text] : []));
+
+  test("the call returns at once with fixed words, the card is open in the log and counted, and nothing is parked", async () => {
     const b = await boot({ home: tempDir(), plugins: (await pluginFromFolder(ALPHA_FOLDER, { bundled: true })).inputs });
     const others: string[] = [];
     const canUseTool = b.side.questions.canUseTool("b_alpha", async (tool) => (others.push(tool), { behavior: "allow", updatedInput: {} }));
     // Another tool goes on to the session's own check.
-    await canUseTool("Bash", { command: "ls" }, { signal: new AbortController().signal, toolUseID: "call_0" } as never);
+    await canUseTool("Bash", { command: "ls" }, { ...ctx, toolUseID: "call_0" } as never);
     expect(others).toEqual(["Bash"]);
-    const asked = canUseTool("AskUserQuestion", question, { signal: new AbortController().signal, toolUseID: "call_1" } as never);
-    await flush();
+    const result = await ask(canUseTool, "call_1");
+    expect(result).toEqual({ behavior: "deny", message: ASKED_REPLY });
     expect(b.host.history("b_alpha").some((r) => r.type === "driver" && r.event.type === "question_asked")).toBe(true);
     expect(b.host.get("b_alpha")?.needsYou?.questions).toBe(1);
-    const methods = b.side.methods({ localDevice: "studio" });
-    const answer = methods[SESSIONS_METHODS.sessionAnswer.name]!;
-    // Not a session's to answer; not a question that isn't waiting.
-    expect(await caught(() => answer({ id: "b_alpha", callId: "call_1", answers: { "Which one?": "Tea" } }, { caller: { kind: "session", sessionId: "b_alpha", sessionKind: "bot", bot: "alpha" } } as never))).toBeDefined();
-    expect(String(await caught(() => answer({ id: "b_alpha", callId: "call_9", answers: {} }, { caller: theUser } as never)))).toContain("no question call_9 is waiting");
-    expect(await answer({ id: "b_alpha", callId: "call_1", answers: { "Which one?": "Tea" } }, { caller: theUser } as never)).toEqual({ ok: true });
-    const result = await asked as { behavior: string; updatedInput: { answers: Record<string, string> } };
-    expect(result.behavior).toBe("allow");
-    expect(result.updatedInput.answers).toEqual({ "Which one?": "Tea" });
-    await flush();
-    expect(b.host.history("b_alpha").some((r) => r.type === "driver" && r.event.type === "question_resolved")).toBe(true);
-    expect(b.host.get("b_alpha")?.needsYou?.questions).toBe(0);
-    // A plugin showing the question may answer one too.
-    const again = canUseTool("AskUserQuestion", question, { signal: new AbortController().signal, toolUseID: "call_2" } as never);
-    await flush();
-    expect(await answer({ id: "b_alpha", callId: "call_2", answers: { "Which one?": "Coffee" } }, { caller: { kind: "plugin", pluginId: "moss/conversation" } } as never)).toEqual({ ok: true });
-    expect(((await again) as unknown as { updatedInput: { answers: Record<string, string> } }).updatedInput.answers).toEqual({ "Which one?": "Coffee" });
-    await flush();
-    const resolved = b.host.history("b_alpha").flatMap((r) => (r.type === "driver" && r.event.type === "question_resolved" ? [r.event as unknown as { callId: string; by: string }] : []));
-    expect(resolved.map((e) => [e.callId, e.by])).toEqual([["call_1", "user"], ["call_2", "plugin:moss/conversation"]]);
+    expect(b.side.questions.broker.pendingCount()).toBe(0);
+    // A malformed question is refused as it always was; asked twice under one call id it is not a second card.
+    expect((await ask(canUseTool, "call_bad", { questions: [] })).message).toContain("was not valid");
+    expect((await ask(canUseTool, "call_1")).behavior).toBe("deny");
+    expect(b.host.get("b_alpha")?.needsYou?.questions).toBe(1);
     await b.shutdown();
   });
 
-  test("refused: a peer's answer, a plugin's for an uninstalled bot, keys the question doesn't ask, and the losing answer of a race", async () => {
+  test("the person's answer is recorded first, then reaches the bot as their message: one user-origin turn with the question, its options and the choice", async () => {
+    const b = await boot({ home: tempDir(), plugins: (await pluginFromFolder(ALPHA_FOLDER, { bundled: true })).inputs });
+    const canUseTool = b.side.questions.canUseTool("b_alpha", async () => ({ behavior: "allow", updatedInput: {} }));
+    await ask(canUseTool, "call_1");
+    const answer = b.side.methods({ localDevice: "studio" })[SESSIONS_METHODS.sessionAnswer.name]!;
+    expect(await answer({ id: "b_alpha", callId: "call_1", answers: { "Which one?": "Tea" } }, { caller: theUser } as never)).toEqual({ ok: true });
+    await flush();
+    const resolved = b.host.history("b_alpha").flatMap((r) => (r.type === "driver" && r.event.type === "question_resolved" ? [r.event as unknown as { callId: string; by: string; answers: Record<string, string>; skipped?: boolean }] : []));
+    expect(resolved).toEqual([{ type: "question_resolved", callId: "call_1", answers: { "Which one?": "Tea" }, by: "user" }] as never);
+    expect(userInputs(b)).toEqual(['My answer to your question "Which one?" (options: Tea / Coffee): Tea']);
+    expect(b.host.get("b_alpha")?.needsYou?.questions).toBe(0);
+    const turns = b.drivers.for("b_alpha").turns;
+    expect(turns).toHaveLength(1);
+    expect(turns[0]!.origin).toBe("user");
+    // Recorded before it was sent: the resolution comes before the message in the log.
+    const log = b.host.history("b_alpha");
+    expect(log.findIndex((r) => r.type === "driver" && r.event.type === "question_resolved")).toBeLessThan(log.findIndex((r) => r.type === "input"));
+    // The second answer of the same card (a second window, a phone) is told it was answered already; nothing is sent twice.
+    expect(String(await caught(() => answer({ id: "b_alpha", callId: "call_1", answers: { "Which one?": "Coffee" } }, { caller: theUser } as never)))).toContain("already answered or skipped");
+    expect(userInputs(b)).toHaveLength(1);
+    await b.shutdown();
+  });
+
+  test("a skip is recorded with its marker and DOES reach the bot, in fixed words", async () => {
+    const b = await boot({ home: tempDir(), plugins: (await pluginFromFolder(ALPHA_FOLDER, { bundled: true })).inputs });
+    const canUseTool = b.side.questions.canUseTool("b_alpha", async () => ({ behavior: "allow", updatedInput: {} }));
+    await ask(canUseTool, "call_1");
+    const answer = b.side.methods({ localDevice: "studio" })[SESSIONS_METHODS.sessionAnswer.name]!;
+    expect(await answer({ id: "b_alpha", callId: "call_1", answers: {}, skipped: true }, { caller: theUser } as never)).toEqual({ ok: true });
+    const resolved = b.host.history("b_alpha").flatMap((r) => (r.type === "driver" && r.event.type === "question_resolved" ? [r.event as unknown as { by: string; skipped?: boolean; answers: object }] : []));
+    expect(resolved[0]).toMatchObject({ by: "user", skipped: true, answers: {} });
+    expect(userInputs(b)).toEqual(['I skipped your question "Which one?" (options: Tea / Coffee). Carry on without an answer.']);
+    expect(b.drivers.for("b_alpha").turns[0]!.origin).toBe("user");
+    await b.shutdown();
+  });
+
+  test("only the person answers or skips an open card: not a plugin, a session, a peer or a nobody; the bot's question text is quoted and cut", async () => {
+    const b = await boot({ home: tempDir(), plugins: (await pluginFromFolder(ALPHA_FOLDER, { bundled: true })).inputs });
+    const canUseTool = b.side.questions.canUseTool("b_alpha", async () => ({ behavior: "allow", updatedInput: {} }));
+    await ask(canUseTool, "call_1");
+    const answer = b.side.methods({ localDevice: "studio" })[SESSIONS_METHODS.sessionAnswer.name]!;
+    for (const caller of [{ kind: "plugin", pluginId: "moss/conversation" }, { kind: "session", sessionId: "b_alpha", sessionKind: "bot", bot: "alpha" }, { kind: "peer", device: "dev_other" }] as const) {
+      const refused = await caught(() => answer({ id: "b_alpha", callId: "call_1", answers: { "Which one?": "Tea" } }, { caller } as never));
+      expect(refused instanceof MethodError && refused.code).toBe(MOSS_ERR.NOT_THE_USER);
+      const skipRefused = await caught(() => answer({ id: "b_alpha", callId: "call_1", answers: {}, skipped: true }, { caller } as never));
+      expect(skipRefused instanceof MethodError && skipRefused.code).toBe(MOSS_ERR.NOT_THE_USER);
+    }
+    // Nothing happened: still open, nothing sent.
+    expect(b.host.get("b_alpha")?.needsYou?.questions).toBe(1);
+    expect(userInputs(b)).toEqual([]);
+    // Keys the card doesn't ask, and an answer with nothing in it, are refused and leave the card open.
+    expect(String(await caught(() => answer({ id: "b_alpha", callId: "call_1", answers: { "Which two?": "Tea" } }, { caller: theUser } as never)))).toContain("doesn't ask \"Which two?\"");
+    expect(String(await caught(() => answer({ id: "b_alpha", callId: "call_1", answers: {} }, { caller: theUser } as never)))).toContain("needs an answer, or to be skipped");
+    expect(b.host.get("b_alpha")?.needsYou?.questions).toBe(1);
+    // A long question is cut and quoted in what the bot is told.
+    const long = "x".repeat(900);
+    await ask(canUseTool, "call_2", { questions: [{ question: long, header: "Long", options: [{ label: "y".repeat(300) }, { label: "z" }] }] });
+    await answer({ id: "b_alpha", callId: "call_2", answers: { [long]: "ok" } }, { caller: theUser } as never);
+    const text = userInputs(b).at(-1)!;
+    expect(text.length).toBeLessThan(700);
+    expect(text).toContain("…");
+    await b.shutdown();
+  });
+
+  test("at most four cards are open in one conversation: a fifth is refused with the plain reason, and one answered frees a place; several open at once each answer on their own", async () => {
     const b = await boot({ home: tempDir(), plugins: (await pluginFromFolder(ALPHA_FOLDER, { bundled: true })).inputs });
     const canUseTool = b.side.questions.canUseTool("b_alpha", async () => ({ behavior: "allow", updatedInput: {} }));
     const answer = b.side.methods({ localDevice: "studio" })[SESSIONS_METHODS.sessionAnswer.name]!;
-    const asked = canUseTool("AskUserQuestion", question, { signal: new AbortController().signal, toolUseID: "call_1" } as never);
+    const q = (n: number) => ({ questions: [{ question: `Question ${n}?`, header: "Q", options: [{ label: "a" }, { label: "b" }] }] });
+    for (let i = 1; i <= 4; i++) expect((await ask(canUseTool, `call_${i}`, q(i))).message).toBe(ASKED_REPLY);
+    expect(b.host.get("b_alpha")?.needsYou?.questions).toBe(4);
+    const fifth = await ask(canUseTool, "call_5", q(5));
+    expect(fifth).toEqual({ behavior: "deny", message: tooManyOpenReply(4) });
+    expect(b.host.get("b_alpha")?.needsYou?.questions).toBe(4);
+    await answer({ id: "b_alpha", callId: "call_3", answers: { "Question 3?": "b" } }, { caller: theUser } as never);
+    expect(b.host.get("b_alpha")?.needsYou?.questions).toBe(3);
+    expect((await ask(canUseTool, "call_6", q(6))).message).toBe(ASKED_REPLY);
+    await answer({ id: "b_alpha", callId: "call_1", answers: {}, skipped: true }, { caller: theUser } as never);
+    expect(userInputs(b)).toEqual(['My answer to your question "Question 3?" (options: a / b): b', 'I skipped your question "Question 1?" (options: a / b). Carry on without an answer.']);
+    expect(b.host.get("b_alpha")?.needsYou?.questions).toBe(3);
+    await b.shutdown();
+  });
+
+  test("a paired phone reads an open card through session.openQuestions (the whole card) and answers it through session.answer, unchanged: a message of the person's reaches the bot", async () => {
+    const b = await boot({ home: tempDir(), plugins: (await pluginFromFolder(ALPHA_FOLDER, { bundled: true })).inputs });
+    const canUseTool = b.side.questions.canUseTool("b_alpha", async () => ({ behavior: "allow", updatedInput: {} }));
+    await ask(canUseTool, "call_1");
+    const methods = b.side.methods({ localDevice: "studio" });
+    const phone: Caller = { kind: "user", client: "phone", device: "phone0000000000000" } as never;
+    const open = (await methods[SESSIONS_METHODS.sessionOpenQuestions.name]!({ id: "b_alpha" }, { caller: phone } as never)) as { open: { callId: string; questions: { question: string; options: { label: string }[] }[] }[] };
+    expect(open.open.map((q) => q.callId)).toEqual(["call_1"]);
+    expect(open.open[0]!.questions[0]).toMatchObject({ question: "Which one?", options: [{ label: "Tea" }, { label: "Coffee" }] });
+    expect(await methods[SESSIONS_METHODS.sessionAnswer.name]!({ id: "b_alpha", callId: "call_1", answers: { "Which one?": "Coffee" } }, { caller: phone } as never)).toEqual({ ok: true });
     await flush();
-    // Another computer is never the user.
-    const peer = await caught(() => answer({ id: "b_alpha", callId: "call_1", answers: { "Which one?": "Tea" } }, { caller: { kind: "peer", device: "dev_other" } } as never));
-    expect(peer instanceof MethodError && peer.code).toBe(MOSS_ERR.NOT_THE_USER);
-    // An answer, or a note, to a question the card didn't ask.
-    expect(String(await caught(() => answer({ id: "b_alpha", callId: "call_1", answers: { "Which two?": "Tea" } }, { caller: theUser } as never)))).toContain("doesn't ask \"Which two?\"");
-    expect(String(await caught(() => answer({ id: "b_alpha", callId: "call_1", answers: { "Which one?": "Tea" }, notes: { "Why?": "x" } }, { caller: theUser } as never)))).toContain("doesn't ask \"Why?\"");
-    expect(b.side.questions.broker.isPending("b_alpha", "call_1")).toBe(true);
-    // Two answers at once: the first wins, the other is told nothing is waiting.
-    const raced = await Promise.all([
-      answer({ id: "b_alpha", callId: "call_1", answers: { "Which one?": "Tea" } }, { caller: theUser } as never).catch((e: unknown) => e),
-      answer({ id: "b_alpha", callId: "call_1", answers: { "Which one?": "Coffee" } }, { caller: { kind: "plugin", pluginId: "moss/conversation" } } as never).catch((e: unknown) => e),
-    ]);
-    expect(raced[0]).toEqual({ ok: true });
-    expect(String(raced[1])).toContain("no question call_1 is waiting");
-    expect(((await asked) as unknown as { updatedInput: { answers: Record<string, string> } }).updatedInput.answers).toEqual({ "Which one?": "Tea" });
-    // A plugin answering for a bot that is no longer installed.
-    const again = canUseTool("AskUserQuestion", question, { signal: new AbortController().signal, toolUseID: "call_2" } as never);
-    await flush();
-    b.registry.remove("alpha");
-    await flush();
-    expect(String(await caught(() => answer({ id: "b_alpha", callId: "call_2", answers: { "Which one?": "Tea" } }, { caller: { kind: "plugin", pluginId: "moss/conversation" } } as never)))).toContain("isn't installed");
-    b.side.questions.broker.respond("b_alpha", "call_2", {}, "aborted");
-    await again;
+    expect(userInputs(b)).toEqual(['My answer to your question "Which one?" (options: Tea / Coffee): Coffee']);
+    expect(b.drivers.for("b_alpha").turns[0]!.origin).toBe("user");
     await b.shutdown();
   });
 
@@ -96,7 +153,7 @@ describe("session.answer: a bot's AskUserQuestion", () => {
     let origin: TurnOrigin | undefined = "routine";
     const recorded: { type: string; by?: string }[] = [];
     const q = botQuestions({
-      host: { get: () => ({}) as never, recordCore: (_id, event) => (recorded.push(event as never), undefined as never), turnOrigin: () => origin },
+      host: { get: () => ({}) as never, recordCore: (_id, event) => (recorded.push(event as never), undefined as never), turnOrigin: () => origin, openQuestions: () => [] },
       unattendedMs: 30,
     });
     const canUseTool = q.canUseTool("b_alpha", async () => ({ behavior: "allow", updatedInput: {} }));

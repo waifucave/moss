@@ -263,6 +263,7 @@ export function ConversationView(props: ConversationViewProps) {
     initialFollow = true,
     initialExpanded,
     onAnswerQuestion,
+    onSkipQuestion,
     onOpenLink,
     onOpenFile,
     onOpenDiff,
@@ -289,7 +290,7 @@ export function ConversationView(props: ConversationViewProps) {
   }, [items, now, format.locale, format.timeZone]); // eslint-disable-line react-hooks/exhaustive-deps
   const latest = useRef(props);
   latest.current = props;
-  const handlers = { onAnswerQuestion, onOpenLink, onOpenFile, onOpenDiff, onOpenThread, onOpenAgent, onCopy, onMessageAction, onTryAgain };
+  const handlers = { onAnswerQuestion, onSkipQuestion, onOpenLink, onOpenFile, onOpenDiff, onOpenThread, onOpenAgent, onCopy, onMessageAction, onTryAgain };
   const present = (Object.keys(handlers) as (keyof typeof handlers)[]).filter((k) => handlers[k] !== undefined).join(",");
   const actions = useMemo<ConversationActions>(() => {
     const out: Record<string, unknown> = {};

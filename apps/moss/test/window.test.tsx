@@ -29,7 +29,7 @@ function view(over: Partial<MossView> = {}): MossView {
 }
 
 let retried: string[] = [];
-let answered: { bot: string; callId: string; answers: Record<string, string>; notes?: Record<string, string> }[] = [];
+let answered: { bot: string; callId: string; answers: Record<string, string>; notes?: Record<string, string>; skipped?: true }[] = [];
 let answerWhy: string | undefined;
 let stopped: string[] = [];
 let opened: string[] = [];
@@ -53,6 +53,7 @@ function stub(v: MossView, page: ConversationPage | { waiting: true }): MossBrid
     botRecord: async () => ({ waiting: true }), botInstructions: async () => ({ waiting: true }), editBot: async () => false, models: async () => ({ waiting: true }),
     setup: async () => ({ waiting: true }), setupProviders: async () => ({ waiting: true }), openTerms: async () => false, setDefaultModel: async () => ({ ok: false, why: "no" }), skipSetup: async () => false,
     archiveBot: async () => false, deleteBot: async () => false, deleteConversation: async () => false, deleteAccount: async () => false, eraseEverything: async () => false, archivedBots: async () => [], restoreBot: async () => false, retry: async (bot) => { retried.push(bot); return { ok: true }; }, pictureInput: () => {},
+    skipQuestion: async (bot, callId) => { answered.push({ bot, callId, answers: {}, skipped: true }); return answerWhy === undefined ? { ok: true } : { ok: false, why: answerWhy }; },
     answer: async (bot, callId, answers, notes) => { answered.push({ bot, callId, answers, ...(notes !== undefined ? { notes } : {}) }); return answerWhy === undefined ? { ok: true } : { ok: false, why: answerWhy }; },
     stop: async (bot) => { stopped.push(bot); return { ok: true }; }, openLink: async (url) => { opened.push(url); return true; },
   };
@@ -186,7 +187,7 @@ describe("MOSS's window", () => {
   });
 
   const QTEXT = "Which model should the Codex agent use?";
-  const question = (state: "pending" | "answered" | "expired" | "withdrawn" = "pending", extra: object = {}): import("../src/shared/view").Message => ({
+  const question = (state: "pending" | "answered" | "skipped" | "expired" | "withdrawn" = "pending", extra: object = {}): import("../src/shared/view").Message => ({
     id: "s:qcall_1", from: "question", text: "", at: Date.now(),
     question: {
       callId: "call_1", state, ...extra,
@@ -251,6 +252,20 @@ describe("MOSS's window", () => {
     r.unmount();
   });
 
+  test("Skip on an open card skips it through the bridge, once; it then reads as skipped and offers nothing more", async () => {
+    answered = []; answerWhy = undefined; messageTo = [];
+    const r = await drawKite(view(), [question()]);
+    const skip = r.container.querySelector<HTMLButtonElement>("[data-question-skip]")!;
+    await press(skip);
+    expect(answered).toEqual([{ bot: "kite", callId: "call_1", answers: {}, skipped: true }]);
+    await act(async () => { for (const f of messageTo) f("kite", question("skipped")); });
+    const done = r.container.querySelector("[data-kind=question]")!;
+    expect(done.getAttribute("data-state")).toBe("skipped");
+    expect(done.textContent).toContain("You skipped this question");
+    expect(done.querySelector("button, input")).toBeNull();
+    r.unmount();
+  });
+
   test("a typed answer of the person's own is sent as it is; a refusal says why and gives the card back", async () => {
     answered = []; answerWhy = "That question isn't waiting any more.";
     const r = await drawKite(view(), [question()]);
@@ -281,19 +296,22 @@ describe("MOSS's window", () => {
     r.unmount();
   });
 
-  test("while a turn runs or waits on a question the composer offers Stop; an idle bot has none; Stop reaches the bridge for that bot", async () => {
+  test("while a turn runs the composer offers Stop; an idle bot has none, and an open question (it waits for no turn) is no turn to stop; Stop reaches the bridge for that bot", async () => {
     stopped = [];
     const idle = await drawKite(view({ bots: [{ id: "kite", name: "Kite", mood: "idle", unread: false }] }), []);
     expect(idle.container.querySelector("[data-stop]")).toBeNull();
     idle.unmount();
-    for (const mood of ["thinking", "working", "asking"] as const) {
+    const open = await drawKite(view({ bots: [{ id: "kite", name: "Kite", mood: "asking", unread: false }] }), [question()]);
+    expect(open.container.querySelector("[data-stop]")).toBeNull();
+    open.unmount();
+    for (const mood of ["thinking", "working"] as const) {
       const r = await drawKite(view({ bots: [{ id: "kite", name: "Kite", mood, unread: false }] }), [question()]);
       const button = r.container.querySelector<HTMLButtonElement>("[data-composer] [data-stop]");
       expect(button?.getAttribute("aria-label")).toBe("Stop");
       await press(button!);
       r.unmount();
     }
-    expect(stopped).toEqual(["kite", "kite", "kite"]);
+    expect(stopped).toEqual(["kite", "kite"]);
   });
 
   test("a conversation the engine doesn't serve yet says so", async () => {

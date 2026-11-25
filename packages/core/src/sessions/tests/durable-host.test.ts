@@ -184,6 +184,154 @@ describe("DurableSessionHost on disk", () => {
     expect(again.history("b_alpha").filter((r) => r.type === "driver" && r.event.type === "tool_result")).toHaveLength(2);
   });
 
+  const asked = (callId: string) => ({ type: "question_asked", callId, questions: [{ question: `Which, ${callId}?`, header: "Pick", options: [{ label: "a" }, { label: "b" }], multiSelect: false }] });
+  const resolvedOf = (host: DurableSessionHost, id: string) => host.history(id).flatMap((r) => (r.type === "driver" && r.event.type === "question_resolved" ? [r.event] : []));
+
+  test("a bot's open question card survives the turn's end, a release and a restart: it is still open, counted, and not resolved by anyone", async () => {
+    const { home, host } = durable();
+    const d = new FakeSessionDriver();
+    host.open({ id: "b_alpha", kind: "bot", bot: "alpha", computer: "Studio" }, d);
+    await host.sendUser("b_alpha", user("ask me"));
+    await flush();
+    d.emit({ type: "tool_call", callId: "q1", name: "AskUserQuestion", input: {} });
+    d.emit(asked("q1"));
+    d.emit({ type: "tool_result", callId: "q1", output: "Asked.", isError: true });
+    d.end({ reason: "completed" } as never);
+    await flush();
+    expect(host.get("b_alpha")?.needsYou?.questions).toBe(1);
+    await host.sendUser("b_alpha", user("something else", 2));
+    await flush();
+    expect(host.get("b_alpha")?.needsYou?.questions).toBe(1);   // a new message does not withdraw it
+    await host.release("b_alpha");
+    for (let round = 0; round < 2; round++) {
+      const again = new DurableSessionHost({ home, clock: new FakeClock() });
+      expect(again.get("b_alpha")?.needsYou?.questions).toBe(1);
+      expect(again.openQuestions("b_alpha").map((q) => q.callId)).toEqual(["q1"]);
+      expect(resolvedOf(again, "b_alpha")).toEqual([]);
+    }
+  });
+
+  test("a crash with a bot's card open (no release, a turn running): the dead turn is closed at the next open and the card is open still", async () => {
+    const { home, host } = durable();
+    const d = new FakeSessionDriver();
+    host.open({ id: "b_alpha", kind: "bot", bot: "alpha", computer: "Studio" }, d);
+    await host.sendUser("b_alpha", user("ask me"));
+    await flush();
+    d.emit(asked("q1"));
+    // The process dies here: nothing else is written.
+    const again = new DurableSessionHost({ home, clock: new FakeClock() });
+    expect(again.get("b_alpha")?.needsYou?.questions).toBe(1);
+    expect(again.history("b_alpha").filter((r) => r.type === "turn_ended")).toHaveLength(1);
+    expect(resolvedOf(again, "b_alpha")).toEqual([]);
+  });
+
+  test("a coding session's blocking question: an engine stop or a crash resolves it with its cause and \"Needs you\" stops counting it; the person's Stop does not set the cause", async () => {
+    const { home, host } = durable();
+    const d = new FakeSessionDriver();
+    host.open({ id: "s_code", kind: "coding", computer: "Studio", backend: "claude-code" }, d);
+    await host.sendUser("s_code", user("go"));
+    await flush();
+    d.emit(asked("q1"));
+    expect(host.get("s_code")?.needsYou?.questions).toBe(1);
+    // The person's Stop: the bridge withdraws it (a driver's own record, no stop of the engine going on).
+    d.emit({ type: "question_resolved", callId: "q1", answers: {}, by: "aborted" });
+    await host.interrupt("s_code");
+    expect(resolvedOf(host, "s_code")).toEqual([{ type: "question_resolved", callId: "q1", answers: {}, by: "aborted" }]);
+    // An engine stop: a question open at the release is resolved, with the cause.
+    const stopped = durable();
+    const d1 = new FakeSessionDriver();
+    stopped.host.open({ id: "s_code", kind: "coding", computer: "Studio", backend: "claude-code" }, d1);
+    await stopped.host.sendUser("s_code", user("again", 3));
+    await flush();
+    d1.emit(asked("q2"));
+    await stopped.host.endTurnsForStop();
+    expect(resolvedOf(stopped.host, "s_code").at(-1)).toEqual({ type: "question_resolved", callId: "q2", answers: {}, by: "aborted", cause: "engine-stopped" });
+    expect(stopped.host.get("s_code")?.needsYou?.questions).toBe(0);
+    // A crash (nothing written at all): the next open resolves what was left, the cause named.
+    const crashed = durable();
+    const d2 = new FakeSessionDriver();
+    crashed.host.open({ id: "s_code", kind: "coding", computer: "Studio", backend: "claude-code" }, d2);
+    await crashed.host.sendUser("s_code", user("go"));
+    await flush();
+    d2.emit(asked("q9"));
+    const restarted = new DurableSessionHost({ home: crashed.home, clock: new FakeClock() });
+    expect(resolvedOf(restarted, "s_code")).toEqual([{ type: "question_resolved", callId: "q9", answers: {}, by: "aborted", cause: "engine-stopped" }]);
+    expect(restarted.get("s_code")?.needsYou?.questions).toBe(0);
+    void home;
+  });
+
+  test("a blocking question the bridge withdraws while the session is being stopped or released carries the cause, whoever writes the withdrawal", async () => {
+    let ran = 0;
+    for (const how of ["stop", "release"] as const) {
+      const { host } = durable();
+      const d = new FakeSessionDriver();
+      d.interrupt = async () => { d.emit({ type: "question_resolved", callId: "q1", answers: {}, by: "aborted" }); };
+      d.stop = async () => { d.emit({ type: "question_resolved", callId: "q1", answers: {}, by: "aborted" }); };
+      host.open({ id: "b_side", kind: how === "stop" ? "coding" : "side-thread", ...(how === "stop" ? { backend: "claude-code" } : { bot: "alpha", routine: "r" }), computer: "Studio" } as never, d);
+      await host.sendUser("b_side", user("go")).catch(() => undefined);
+      if (how === "release") await host.deliver("b_side", { from: "routine", routine: "r", name: "r", sideThread: "b_side", text: "go" } as never).catch(() => undefined);
+      await flush();
+      d.emit(asked("q1"));
+      ran++;
+      if (how === "stop") await host.stop("b_side"); else await host.release("b_side");
+      const out = resolvedOf(host, "b_side");
+      expect(out[0]).toMatchObject({ by: "aborted", cause: "engine-stopped" });
+      expect(out).toHaveLength(1);
+    }
+    expect(ran).toBe(2);
+  });
+
+  describe("a bot's question an engine stop withdrew before bot questions were open cards", () => {
+    /** The old log: the question asked, withdrawn by the bridge's abort, the call closed by the core's own result at the release. */
+    async function oldRecord(after?: (host: DurableSessionHost, d: FakeSessionDriver) => Promise<void>, stopPress = false) {
+      const { home, host } = durable();
+      const d = new FakeSessionDriver();
+      d.interrupt = async () => {};
+      host.open({ id: "b_alpha", kind: "bot", bot: "alpha", computer: "Studio" }, d);
+      await host.sendUser("b_alpha", user("ask me"));
+      await flush();
+      d.emit({ type: "tool_call", callId: "q1", name: "AskUserQuestion", input: {} });
+      d.emit(asked("q1"));
+      d.emit({ type: "question_resolved", callId: "q1", answers: {}, by: "aborted" });
+      if (stopPress) {
+        // A Stop press: the runtime answers the cut call itself before the turn ends.
+        d.emit({ type: "tool_result", callId: "q1", output: "[interrupted]", isError: true, interrupted: true });
+        await host.interrupt("b_alpha");
+        d.end({ reason: "interrupted" } as never);
+        await flush();
+      } else {
+        await host.release("b_alpha");
+      }
+      if (after !== undefined) await after(host, d);
+      return home;
+    }
+
+    test("it is asked again at the next open, once: an open card with its text, counted", async () => {
+      const home = await oldRecord();
+      const again = new DurableSessionHost({ home, clock: new FakeClock() });
+      expect(again.openQuestions("b_alpha").map((q) => q.callId)).toEqual(["q1"]);
+      expect(again.get("b_alpha")?.needsYou?.questions).toBe(1);
+      const asks = again.history("b_alpha").filter((r) => r.type === "driver" && r.event.type === "question_asked");
+      expect(asks).toHaveLength(2);
+      const third = new DurableSessionHost({ home, clock: new FakeClock() });
+      expect(third.history("b_alpha").filter((r) => r.type === "driver" && r.event.type === "question_asked")).toHaveLength(2);
+      expect(third.openQuestions("b_alpha")).toHaveLength(1);
+    });
+
+    test("not when a Stop press withdrew it (the runtime's own [interrupted] result, not the core's)", async () => {
+      const home = await oldRecord(undefined, true);
+      const again = new DurableSessionHost({ home, clock: new FakeClock() });
+      expect(again.openQuestions("b_alpha")).toEqual([]);
+      expect(again.get("b_alpha")?.needsYou?.questions).toBe(0);
+    });
+
+    test("not when the conversation went on after it (a message of the person's)", async () => {
+      const home = await oldRecord(async (host) => { await host.sendUser("b_alpha", user("never mind", 5)); await flush(); });
+      const again = new DurableSessionHost({ home, clock: new FakeClock() });
+      expect(again.openQuestions("b_alpha")).toEqual([]);
+    });
+  });
+
   test("after a user's interrupt the next turn's first events are kept, and a late event of the turn before is dropped", async () => {
     const { clock, host } = durable();
     // A driver that never ends an interrupted turn (the host cuts it loose after the grace), keeping each turn's control.

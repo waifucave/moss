@@ -2232,7 +2232,7 @@
       }
     },
     "session.answer": {
-      "doc": "Answers an `AskUserQuestion`, which plugins may read and show in any form (§5.5).",
+      "doc": "Answers an `AskUserQuestion`, which plugins may read and show in any form (§5.5). A bot's question does not wait for the answer: it stays open until the person answers or skips it (`skipped`), and the answer reaches the bot as the person's message; only the person may answer such a question.",
       "owner": "D",
       "direction": "to-daemon",
       "roles": [
@@ -2277,6 +2277,9 @@
               "type": "string",
               "maxLength": 10000
             }
+          },
+          "skipped": {
+            "type": "boolean"
           }
         },
         "required": [

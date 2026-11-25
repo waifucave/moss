@@ -7,16 +7,22 @@
 // answers back to the model as the tool's `updatedInput.answers`; `question_resolved` follows. `session.answer`
 // resolves the broker. Any other tool call goes on to the session's own `canUseTool`.
 //
+// A BOT'S OWN conversation (kind "bot") is different: its question does not wait. The call returns at once with fixed words (`ASKED_REPLY`),
+// `question_asked` goes in the log, and the card stays open — across turns, a quit, a restart or a crash — until the person answers or
+// skips it (`settleOpen`), which is recorded and then reaches the bot as the person's own message (`answerText`). Nothing is parked in
+// memory, so no 10-minute rule and no long park apply to it; a bot has at most `OPEN_CARDS_MAX` open cards. The blocking bridge below is
+// what a side thread's question (a routine's: nobody is there to answer later) and every coding agent's question still use.
+//
 // The 10-minute rule (§5.5, protocol `UNATTENDED_CARD_TIMEOUT_MS`): a question from a turn the user's own message did
 // not start (a routine's, a plugin's, another session's, a relayed one) is denied when nobody answers it in 10 minutes,
 // so the model gets a typed deny and the turn goes on; one from the user's own turn waits for them. The origin is read
 // when the question is asked, as the dispatch child's `dispatchCardTimeoutMs` reads its own.
-import type { CanUseTool } from "@waifucave/clover-agent-sdk";
+import type { CanUseTool, PermissionResult } from "@waifucave/clover-agent-sdk";
 import { UNATTENDED_CARD_TIMEOUT_MS, type NewSessionEvent, type TurnOrigin } from "@waifucave/moss-protocol";
 import { QuestionBroker } from "../agent/questions";
-import { ASK_USER_QUESTION_TOOL, askUserQuestionBridge } from "../runtime-sdk/question-bridge";
-import type { DurableSessionHost } from "../sessions/durable-host";
-import { cutQuestion } from "./open-questions";
+import { ASK_USER_QUESTION_TOOL, askUserQuestionBridge, askedQuestions } from "../runtime-sdk/question-bridge";
+import type { DurableSessionHost, OpenQuestion as HeldQuestion } from "../sessions/durable-host";
+import { clip, cutQuestion } from "./open-questions";
 
 /** What `answer` makes of an answer: given to the model, or refused (`not_found`: no such question is waiting, the
  *  losing answerer of a race included; `invalid`: it answers, or notes, a question the card didn't ask). */
@@ -43,7 +49,47 @@ export function questionKeys(own: readonly string[], keys: readonly string[]): {
   return { ok: true, of };
 }
 
+/** What a bot's `AskUserQuestion` returns at once: the question is on the person's screen and the turn is not waiting for it. */
+export const ASKED_REPLY = "Asked. The person may answer whenever they like, or skip it; the answer will arrive as a message from them. Carry on with what doesn't depend on it, or end your turn.";
+
+/** How many open question cards one bot conversation may hold; a fifth call is refused with `tooManyOpenReply`. */
+export const OPEN_CARDS_MAX = 4;
+export const tooManyOpenReply = (open: number): string => `Not asked: you already have ${open} questions open that the person has not answered or skipped yet. Wait for one of them, and do not ask the same thing twice.`;
+
+const quote = (text: string, max: number): string => JSON.stringify(clip(text, max));
+
+/** The person's answer to (or skip of) a bot's open question, as the message the bot gets. The question and option words are the bot's own, quoted
+ *  and cut; the answer and notes are the person's. Fixed words around them: what arrived, which question, that it is the person's choice. */
+export function answerText(card: Pick<HeldQuestion, "questions">, answers: Readonly<Record<string, string>>, notes: Readonly<Record<string, string>> | undefined, skipped: boolean): string {
+  const asked = card.questions.slice(0, 4).flatMap((raw) => {
+    const q = raw as { question?: unknown; options?: unknown };
+    if (typeof q.question !== "string" || q.question === "") return [];
+    const options = (Array.isArray(q.options) ? q.options : []).slice(0, 4).flatMap((o) => (typeof (o as { label?: unknown })?.label === "string" ? [clip((o as { label: string }).label, 80)] : []));
+    return [{ text: q.question, options }];
+  });
+  const lines = asked.map((q) => {
+    const opts = q.options.length === 0 ? "" : ` (options: ${q.options.join(" / ")})`;
+    if (skipped) return `${quote(q.text, 300)}${opts}`;
+    const given = answers[q.text];
+    const note = notes?.[q.text];
+    return `${quote(q.text, 300)}${opts}: ${given === undefined ? "(no answer)" : clip(given, 2000)}${note === undefined || note === "" ? "" : ` (note: ${clip(note, 1000)})`}`;
+  });
+  if (skipped) return lines.length === 1 ? `I skipped your question ${lines[0]}. Carry on without an answer.` : `I skipped your questions. Carry on without an answer:\n${lines.map((l) => `- ${l}`).join("\n")}`;
+  return lines.length === 1 ? `My answer to your question ${lines[0]}` : `My answers to your questions:\n${lines.map((l) => `- ${l}`).join("\n")}`;
+}
+
+/** What `settleOpen` makes of an answer or a skip: recorded (`text` is the message to send the bot, `undo` asks the card again if sending it fails),
+ *  or refused (`not_found`: no such open question: answered or skipped already, the losing answerer of a race included; `invalid`: it answers
+ *  a question the card didn't ask). */
+export type SettleOutcome = { ok: true; text: string; undo(): void } | { ok: false; code: "not_found" | "invalid"; message: string };
+
 export interface BotQuestions {
+  /** The open card `callId` of a bot's own conversation, as the log holds it; undefined for anything else (a question still parked on the broker included). */
+  openCard(sessionId: string, callId: string): HeldQuestion | undefined;
+  /** The person's answer or skip of an open card: recorded (`question_resolved`, by "user", `skipped` set for a skip) before anything is sent. */
+  settleOpen(sessionId: string, callId: string, given: { answers: Record<string, string>; notes?: Record<string, string>; skipped: boolean }): SettleOutcome;
+  /** True for an open card this process settled lately (its newest few hundred): a second answer to it is told so, in plain words. */
+  wasSettled(sessionId: string, callId: string): boolean;
   readonly broker: QuestionBroker;
   /** The session's `canUseTool` with its `AskUserQuestion` asked of the user; any other call goes to `inner`. */
   canUseTool(sessionId: string, inner: CanUseTool): CanUseTool;
@@ -58,7 +104,7 @@ export function questionTimeoutMs(origin: TurnOrigin | undefined, unattendedMs: 
 }
 
 export function botQuestions(o: {
-  host: Pick<DurableSessionHost, "get" | "recordCore" | "turnOrigin">;
+  host: Pick<DurableSessionHost, "get" | "recordCore" | "turnOrigin" | "openQuestions">;
   warn?: (message: string) => void;
   /** The 10-minute rule's wait (tests shorten it). */
   unattendedMs?: number;
@@ -67,6 +113,21 @@ export function botQuestions(o: {
   /** The questions each waiting card asks, by `sessionId:callId`: the keys an answer may use. */
   const asked = new Map<string, readonly string[]>();
   const key = (sessionId: string, callId: string) => `${sessionId}:${callId}`;
+  const settledLately = new Set<string>();
+  const openCardOf = (sessionId: string, callId: string): HeldQuestion | undefined => {
+    if (o.host.get(sessionId)?.kind !== "bot" || broker.isPending(sessionId, callId)) return undefined;
+    return o.host.openQuestions(sessionId).find((q) => q.callId === callId);
+  };
+  /** A bot's question: validated as the blocking one is, refused past the cap, put in the log as a card, and answered at once with `ASKED_REPLY`. */
+  const askWithoutWaiting = (sessionId: string, callId: string, input: unknown): PermissionResult => {
+    const asked = askedQuestions(input);
+    if (!asked.ok) return { behavior: "deny", message: asked.message };
+    const open = o.host.openQuestions(sessionId);
+    if (open.some((q) => q.callId === callId)) return { behavior: "deny", message: ASKED_REPLY };
+    if (open.length >= OPEN_CARDS_MAX) return { behavior: "deny", message: tooManyOpenReply(open.length) };
+    o.host.recordCore(sessionId, { type: "question_asked", callId, questions: asked.questions });
+    return { behavior: "deny", message: ASKED_REPLY };
+  };
   return {
     broker,
     canUseTool(sessionId, inner) {
@@ -84,7 +145,37 @@ export function botQuestions(o: {
       });
       return (toolName, input, opts) => {
         if (toolName !== ASK_USER_QUESTION_TOOL) return inner(toolName, input, opts);
+        // A bot's own conversation asks without waiting; a side thread's question (and a bot's agent's) is the blocking one.
+        if (o.host.get(sessionId)?.kind === "bot" && opts.agentID === undefined) return Promise.resolve(askWithoutWaiting(sessionId, opts.toolUseID, input));
         return bridge(opts.toolUseID, input, { signal: opts.signal, ...(opts.agentID === undefined ? {} : { agentID: opts.agentID }) });
+      };
+    },
+    openCard: (sessionId, callId) => openCardOf(sessionId, callId),
+    wasSettled: (sessionId, callId) => settledLately.has(key(sessionId, callId)),
+    settleOpen(sessionId, callId, given) {
+      const card = openCardOf(sessionId, callId);
+      if (card === undefined) return { ok: false, code: "not_found", message: `the question ${callId} was already answered or skipped, or is not open in ${sessionId}` };
+      const own = [...new Set(card.questions.flatMap((q) => (typeof (q as { question?: unknown }).question === "string" ? [(q as { question: string }).question] : [])))];
+      if (!given.skipped && Object.keys(given.answers).length === 0) return { ok: false, code: "invalid", message: `question ${callId} needs an answer, or to be skipped` };
+      const keys = questionKeys(own, [...Object.keys(given.answers), ...Object.keys(given.notes ?? {})]);
+      if (!keys.ok) return { ok: false, code: "invalid", message: `question ${callId} ${keys.message}` };
+      const exact = (m: Record<string, string>): Record<string, string> => Object.fromEntries(Object.entries(m).map(([k, v]) => [keys.of.get(k)!, v]));
+      const answers = given.skipped ? {} : exact(given.answers);
+      const notes = given.skipped || given.notes === undefined ? undefined : exact(given.notes);
+      // Recorded first; from here the question is no longer open, so a second answer finds nothing (first wins).
+      settledLately.add(key(sessionId, callId));
+      if (settledLately.size > 500) settledLately.delete(settledLately.values().next().value as string);
+      o.host.recordCore(sessionId, {
+        type: "question_resolved", callId, answers, by: "user",
+        ...(notes !== undefined && Object.keys(notes).length > 0 ? { notes } : {}),
+        ...(given.skipped ? { skipped: true } : {}),
+      });
+      const asked = card.questions;
+      return {
+        ok: true,
+        text: answerText(card, answers, notes, given.skipped),
+        // The message could not be sent: the card is asked again, as it was, so nothing the person chose is lost or counted as sent.
+        undo: () => { o.host.recordCore(sessionId, { type: "question_asked", callId, questions: asked }); },
       };
     },
     answer(sessionId, callId, answers, by, notes) {

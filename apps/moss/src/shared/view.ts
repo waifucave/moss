@@ -139,12 +139,12 @@ export interface QuestionView {
   placeholder?: string;
 }
 
-/** A bot's question in its conversation: pending while it waits for the person, then answered (with what was chosen),
- *  expired (no answer in time) or withdrawn (its turn ended). */
+/** A bot's question in its conversation: open until the person answers it (with what was chosen) or skips it; it waits for no turn, so it stays
+ *  open across turns, a quit and a restart. Expired and withdrawn are how an older engine ended one. */
 export interface QuestionState {
   callId: string;
   questions: QuestionView[];
-  state: "pending" | "answered" | "expired" | "withdrawn";
+  state: "pending" | "answered" | "skipped" | "expired" | "withdrawn";
   /** Keyed by the question's text. */
   answers?: Record<string, string>;
   notes?: Record<string, string>;
@@ -160,6 +160,8 @@ export interface Message {
   text: string;
   at: number;
   files?: Attachment[];
+  /** The question this bubble answers or skips (the person's answer to a bot's question), drawn small under the words. */
+  quoted?: string;
   /** A note that a turn ended in an error: the conversation offers Try again while it is the last thing there. */
   failed?: true;
   /** A routine's run that failed: its note says why, marked as a failure. */
@@ -393,6 +395,8 @@ export interface MossBridge {
   /** Answers the bot's waiting question (`session.answer`), after the person's own press: the answers are keyed by the
    *  question's text, and a question that no longer waits is refused in plain words. */
   answer(bot: string, callId: string, answers: Record<string, string>, notes?: Record<string, string>): Promise<{ ok: true } | { ok: false; why: string }>;
+  /** Skips the bot's open question (`session.answer` with `skipped`), after the person's own press; the bot is told it was skipped. */
+  skipQuestion(bot: string, callId: string): Promise<{ ok: true } | { ok: false; why: string }>;
   /** Stops the bot's turn now (`session.interrupt`, background tasks keep running), after the person's own press; a question
    *  waiting in it is withdrawn. */
   stop(bot: string): Promise<{ ok: true } | { ok: false; why: string }>;

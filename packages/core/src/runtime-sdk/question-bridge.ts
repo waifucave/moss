@@ -82,6 +82,34 @@ export interface AskUserQuestionDeps {
   timeoutMs?: number | (() => number | undefined);
 }
 
+/** A call's `questions` as the wire carries them, or the refusal the model can act on. A malformed question is the model's bug, not
+ *  the human's: it is refused with a message the model can act on rather than thrown (a throw becomes an opaque runtime deny).
+ *
+ *  MOSS's `QuestionSchema` requires `multiSelect`; the descriptor makes it optional, so the default is `false` (a single choice).
+ *  `options` is ALWAYS emitted (`[]` for a free-text question): a shipped Swift client decodes it as a required array. */
+export function askedQuestions(input: unknown): { ok: true; questions: Question[] } | { ok: false; message: string } {
+  const parsed = AskUserQuestionInput.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, message: `${ASK_USER_QUESTION_TOOL} input was not valid: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}` };
+  }
+  const questions: Question[] = parsed.data.questions.map((q) => {
+    const placeholder = clampPlaceholder(q.placeholder);
+    return {
+      question: q.question,
+      header: q.header,
+      options: (q.options ?? []).map((o) => ({
+        label: o.label,
+        ...(o.description ? { description: o.description } : {}),
+        ...(o.preview ? { preview: o.preview } : {}),
+      })),
+      // A free-text question is never multiple-choice (the runtime forces it false too).
+      multiSelect: (q.options ?? []).length > 0 && (q.multiSelect ?? false),
+      ...(placeholder ? { placeholder } : {}),
+    };
+  });
+  return { ok: true, questions };
+}
+
 /**
  * **The `AskUserQuestion` bridge** — a MOSS child's question over the daemon's EXISTING
  * `QuestionBroker`, `question_asked`/`question_resolved` events and `ask_user.respond` RPC, the
@@ -147,34 +175,12 @@ export function askUserQuestionBridge(deps: AskUserQuestionDeps): AskUserQuestio
       return { behavior: "deny", message: `${ASK_USER_QUESTION_TOOL} was not answered — the turn was aborted before the question could be asked.` };
     }
 
-    const parsed = AskUserQuestionInput.safeParse(input);
-    if (!parsed.success) {
-      // A malformed question is the model's bug, not the human's: refuse it with a message the
-      // model can act on rather than throwing (a throw becomes an opaque runtime deny).
+    const asked = askedQuestions(input);
+    if (!asked.ok) {
       log?.info(`AskUserQuestion: deny session=${sessionId} call=${callId} reason=invalid-input`);
-      return { behavior: "deny", message: `${ASK_USER_QUESTION_TOOL} input was not valid: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}` };
+      return { behavior: "deny", message: asked.message };
     }
-    const raw = parsed.data;
-
-    // MOSS's `QuestionSchema` requires `multiSelect`; MOSS's descriptor makes it optional. The
-    // default is `false` — a single-choice question, which is what an omitted flag means.
-    // `options` is ALWAYS emitted (`[]` for a free-text question): a shipped Swift client decodes it
-    // as a required array (see the protocol's `QuestionSchema`).
-    const questions: Question[] = raw.questions.map((q) => {
-      const placeholder = clampPlaceholder(q.placeholder);
-      return {
-        question: q.question,
-        header: q.header,
-        options: (q.options ?? []).map((o) => ({
-          label: o.label,
-          ...(o.description ? { description: o.description } : {}),
-          ...(o.preview ? { preview: o.preview } : {}),
-        })),
-        // A free-text question is never multiple-choice (the runtime forces it false too).
-        multiSelect: (q.options ?? []).length > 0 && (q.multiSelect ?? false),
-        ...(placeholder ? { placeholder } : {}),
-      };
-    });
+    const questions = asked.questions;
 
     // Supersede guard — the same defect the approval side guards, and the same ordering rule.
     //

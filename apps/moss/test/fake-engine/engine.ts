@@ -432,7 +432,11 @@ export async function startFakeEngine(o: FakeEngineOptions): Promise<FakeEngine>
         const events = bot === undefined ? [] : talk.get(bot) ?? [];
         const asked = events.find((x) => x.type === "question_asked" && x.callId === params.callId);
         if (bot === undefined || asked === undefined || events.some((x) => x.type === "question_resolved" && x.callId === params.callId)) throw new RpcError(-32004, `no question ${String(params.callId)} is waiting`, { code: "not_found" });
-        say(bot, { type: "question_resolved", callId: params.callId, answers: params.answers, ...(params.notes !== undefined ? { notes: params.notes } : {}), by: "user" });
+        say(bot, { type: "question_resolved", callId: params.callId, answers: params.skipped === true ? {} : params.answers, ...(params.notes !== undefined ? { notes: params.notes } : {}), ...(params.skipped === true ? { skipped: true } : {}), by: "user" });
+        // The answer (or the skip) reaches the bot as a message from the person, as the real engine does.
+        const q = (asked.questions as { question?: string }[] | undefined)?.[0]?.question ?? "";
+        const pick = Object.values((params.answers ?? {}) as Record<string, string>)[0] ?? "";
+        say(bot, { type: "user_message", text: params.skipped === true ? `I skipped your question "${q}". Carry on without an answer.` : `My answer to your question "${q}": ${pick}` });
         return { ok: true };
       }
       case "session.interrupt":

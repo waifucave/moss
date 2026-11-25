@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { daemonEndpoint, dial, type DaemonClient } from "../src/main/client";
-import { messageOf, MossEngine } from "../src/main/engine";
+import { answerBubble, messageOf, MossEngine } from "../src/main/engine";
 import { PresenceReporter } from "../src/main/presence";
 import { SealedFrames } from "../src/main/sealed";
 import { mossHello } from "../src/main/connection";
@@ -463,7 +463,7 @@ describe("a bot's question (AskUserQuestion)", () => {
     await until(() => got.length >= 2);
     expect(got.at(-1)).toEqual({ id: got[0]!.id, state: "answered", answers: { [TEXT]: "Use opus" } });
     // It no longer waits: a second answer is refused in words, and the page now reads it answered.
-    expect(await engine.answerQuestion("kite", "call_1", { [TEXT]: "Hold off" })).toEqual({ ok: false, why: "That question isn't waiting any more." });
+    expect(await engine.answerQuestion("kite", "call_1", { [TEXT]: "Hold off" })).toEqual({ ok: false, why: "That question isn't open any more." });
     const [m] = await questionsOf(engine);
     expect(m!.question).toMatchObject({ state: "answered", answers: { [TEXT]: "Use opus" } });
   });
@@ -482,8 +482,12 @@ describe("a bot's question (AskUserQuestion)", () => {
     e.say("kite", { type: "question_resolved", callId: "a", answers: { [TEXT]: "Hold off" }, by: "device:phone" });
     e.say("kite", { type: "question_resolved", callId: "b", answers: {}, by: "timeout" });
     await until(() => states.includes("a:answered") && states.includes("b:expired"));
-    // A turn that ends with a question still open (the engine stopped mid-turn) withdraws it.
-    e.say("kite", { type: "turn_completed", stopReason: "aborted" });
+    // A turn's end does not touch an open question: it stays open until the person answers or skips it.
+    e.say("kite", { type: "turn_completed", stopReason: "end_turn" });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(states).not.toContain("c:withdrawn");
+    // An older engine's abort (a stop) still reads withdrawn.
+    e.say("kite", { type: "question_resolved", callId: "c", answers: {}, by: "aborted" });
     await until(() => states.includes("c:withdrawn"));
     expect(Object.keys(got).length).toBe(3);
     expect(await engine.answerQuestion("kite", "c", { [TEXT]: "Hold off" })).toMatchObject({ ok: false });
@@ -492,13 +496,42 @@ describe("a bot's question (AskUserQuestion)", () => {
     expect(read).toEqual({ a: "answered", b: "expired", c: "withdrawn" });
   });
 
-  test("a question whose turn ended without an answer is withdrawn when the conversation is read, never shown as waiting", async () => {
+  test("a question stays open when its turn ends and when the conversation is read again; an old withdrawal stays withdrawn; one asked again after it is open", async () => {
     const { e, engine } = await setup();
+    e.say("kite", { ...Q, callId: "open" });
+    e.say("kite", { type: "turn_completed", stopReason: "end_turn" });
     e.say("kite", { ...Q, callId: "old" });
-    e.say("kite", { type: "turn_completed", stopReason: "aborted" });
-    e.say("kite", { ...Q, callId: "now" });
+    e.say("kite", { type: "question_resolved", callId: "old", answers: {}, by: "aborted" });
+    e.say("kite", { ...Q, callId: "back" });
+    e.say("kite", { type: "question_resolved", callId: "back", answers: {}, by: "aborted" });
+    e.say("kite", { ...Q, callId: "back" });
     const read = Object.fromEntries((await questionsOf(engine)).map((m) => [m.question!.callId, m.question!.state]));
-    expect(read).toEqual({ old: "withdrawn", now: "pending" });
+    expect(read).toEqual({ open: "pending", old: "withdrawn", back: "pending" });
+  });
+
+  test("a skip goes to the engine as session.answer with skipped; the card reads skipped at once, the bot gets a message from the person, and a second skip is refused", async () => {
+    const { e, engine } = await setup();
+    const got: string[] = [];
+    engine.onMessage((_b, m) => { if (m.from === "question") got.push(m.question!.state); });
+    await engine.conversation("kite");
+    await new Promise((r) => setTimeout(r, 30));
+    e.say("kite", Q);
+    await until(() => got.length === 1);
+    expect(await engine.answerQuestion("kite", "call_1", {}, undefined, true)).toEqual({ ok: true });
+    expect(e.calls().find((c) => c.method === "session.answer")!.params).toMatchObject({ callId: "call_1", skipped: true });
+    await until(() => got.includes("skipped"));
+    expect(await engine.answerQuestion("kite", "call_1", {}, undefined, true)).toMatchObject({ ok: false });
+    const [m] = await questionsOf(engine);
+    expect(m!.question!.state).toBe("skipped");
+  });
+
+  test("the person's answer or skip, which reaches the bot as a message of theirs, is drawn plainly with the question quoted small", () => {
+    const q = JSON.stringify('Which model, "fast" or "slow"?');
+    expect(answerBubble(`My answer to your question ${q} (options: Use opus / Hold off): Use opus (note: soon)`)).toEqual({ text: "Answered: Use opus (note: soon)", quoted: 'Which model, "fast" or "slow"?' });
+    expect(answerBubble(`I skipped your question ${q} (options: a / b). Carry on without an answer.`)).toEqual({ text: "Skipped the question", quoted: 'Which model, "fast" or "slow"?' });
+    expect(messageOf({ type: "user_message", seq: 3, sessionId: "s", ts: 1, text: `I skipped your question ${q}. Carry on without an answer.` })).toMatchObject({ from: "user", text: "Skipped the question", quoted: 'Which model, "fast" or "slow"?' });
+    expect(answerBubble("My answer to your questions:\n- a")).toBeUndefined();
+    expect(answerBubble("hello")).toBeUndefined();
   });
 
   test("Stop interrupts the bot's one conversation", async () => {

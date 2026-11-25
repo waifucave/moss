@@ -2031,6 +2031,13 @@
             "type": "string"
           }
         },
+        "skipped": {
+          "type": "boolean"
+        },
+        "cause": {
+          "type": "string",
+          "const": "engine-stopped"
+        },
         "childSessionId": {
           "type": "string"
         }

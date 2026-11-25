@@ -167,7 +167,7 @@ export function Conversation(props: { bot: BotRow; cards: CardRow[]; strip?: Rea
         {phrase !== undefined && props.cards.length === 0 ? <StatusLine phrase={phrase} /> : null}
         <div ref={end} />
       </div>
-      <Composer bot={props.bot} {...(props.talk !== undefined ? { talk: props.talk } : {})} />
+      <Composer bot={props.bot} waitsOnCard={props.cards.length > 0} {...(props.talk !== undefined ? { talk: props.talk } : {})} />
     </main>
   );
 }
@@ -201,7 +201,7 @@ const Bubble = memo(function Bubble(props: { m: Message; showTime: boolean; /** 
       ))}
       {m.text !== "" && m.from === "bot"
         ? <div className="bubble bubble--bot cl-conv-md" data-bubble="bot"><MarkdownText text={m.text} onOpenLink={openLink} /></div>
-        : m.text !== "" ? <div className={`bubble bubble--${m.from}`} data-bubble={m.from}>{m.text}</div> : null}
+        : m.text !== "" ? <div className={`bubble bubble--${m.from}`} data-bubble={m.from}>{m.text}{m.quoted !== undefined ? <small className="bubble__quoted" data-quoted>{m.quoted}</small> : null}</div> : null}
       {props.showTime ? <span className="bubble__time">{shortTime(m.at)}</span> : null}
     </div>
   );
@@ -229,6 +229,11 @@ function BotQuestion(props: { m: Message; bot: string; name: string }) {
         const r = await bridge().answer(props.bot, callId, answer.answers, answer.notes);
         setWhy(r.ok ? undefined : r.why);
         // The card takes answers again when the answer did not go in (it says so beside the engine's own words).
+        if (!r.ok) throw new Error(r.why);
+      },
+      onSkipQuestion: async (callId) => {
+        const r = await bridge().skipQuestion(props.bot, callId);
+        setWhy(r.ok ? undefined : r.why);
         if (!r.ok) throw new Error(r.why);
       },
       onOpenLink: openLink,
@@ -286,15 +291,16 @@ export function kindOf(name: string): string {
   return ext.toUpperCase();
 }
 
-function Composer(props: { bot: BotRow; talk?: MossView["talk"] }) {
+function Composer(props: { bot: BotRow; waitsOnCard: boolean; talk?: MossView["talk"] }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState<{ id: string; name: string }[]>([]);
   const [files, setFiles] = useState<{ id: string; name: string }[]>([]);
   const [why, setWhy] = useState<string | undefined>(undefined);
   const [holding, setHolding] = useState(false);
-  // A turn is running, or waits on a card or a question: the person may stop it from here (a new message would only fold in
-  // behind the tool call it waits on).
-  const turnLive = props.bot.mood === "thinking" || props.bot.mood === "working" || props.bot.mood === "asking";
+  // A turn is running, or waits on a card of this conversation: the person may stop it from here (a new message would only fold in
+  // behind the tool call it waits on). An open question waits for no turn, so "asking" alone (a question left open while the bot is idle)
+  // is no turn to stop.
+  const turnLive = props.bot.mood === "thinking" || props.bot.mood === "working" || (props.bot.mood === "asking" && props.waitsOnCard);
   const stop = async (): Promise<void> => {
     const r = await bridge().stop(props.bot.id);
     setWhy(r.ok ? undefined : r.why);

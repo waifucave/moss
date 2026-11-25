@@ -893,6 +893,13 @@ function wireBridge(): void {
     if (!personPressed(w)) return { ok: false, why: "A question is answered only right after your own key press or click." };
     return engine.answerQuestion(bot, callId, answers, notes);
   });
+  handle("moss:skip-question", (w, a) => {
+    const bot = str(a.bot, 64);
+    const callId = str(a.callId, 200);
+    if (bot === undefined || callId === undefined) return { ok: false, why: "Not a question." };
+    if (!personPressed(w)) return { ok: false, why: "A question is skipped only right after your own click." };
+    return engine.answerQuestion(bot, callId, {}, undefined, true);
+  });
   // Stop on the composer: the person's own press ends the bot's turn (background tasks keep running).
   handle("moss:stop", (w, a) => {
     const bot = str(a.bot, 64);

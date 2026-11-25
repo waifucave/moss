@@ -35,6 +35,21 @@ export function notServed(err: unknown): boolean {
   return err instanceof RpcCallError && err.code === -32601;
 }
 
+/** The person's answer to (or skip of) a bot's open question reaches the bot as a message in fixed words (the engine's `answerText`); here it
+ *  is drawn plainly: "Answered: <choice>" or "Skipped the question", the question quoted small. Several questions at once stay as written. */
+export function answerBubble(text: string): { text: string; quoted: string } | undefined {
+  const quote = String.raw`("(?:[^"\\]|\\.)*")`;
+  const options = String.raw`(?: \(options: [^\n]*?\))?`;
+  const answered = new RegExp(`^My answer to your question ${quote}${options}: ([\\s\\S]*)$`).exec(text);
+  const skipped = new RegExp(`^I skipped your question ${quote}${options}\\. Carry on without an answer\\.$`).exec(text);
+  const hit = answered ?? skipped;
+  if (hit === null) return undefined;
+  let question: unknown;
+  try { question = JSON.parse(hit[1]!); } catch { return undefined; }
+  if (typeof question !== "string") return undefined;
+  return { text: answered !== null ? `Answered: ${answered[2]!.trim()}` : "Skipped the question", quoted: question };
+}
+
 /** One bot conversation event as a message, or undefined for what the window doesn't show as a bubble. The text stays
  *  text: it is drawn as a text node, never as markup. */
 export function messageOf(e: Record<string, unknown>): Message | undefined {
@@ -45,6 +60,8 @@ export function messageOf(e: Record<string, unknown>): Message | undefined {
     const files = Array.isArray(e.files) ? (e.files as { path?: unknown }[]).flatMap((f) => typeof f.path === "string" ? [{ name: baseName(f.path), kind: "file" as const }] : []) : [];
     const images = Array.isArray(e.images) ? (e.images as { path?: unknown }[]).flatMap((f) => typeof f.path === "string" ? [{ name: baseName(f.path), kind: "image" as const }] : []) : [];
     const all = [...files, ...images];
+    const said = answerBubble(e.text);
+    if (said !== undefined) return { id, from: "user", text: said.text, quoted: said.quoted, at };
     return { id, from: "user", text: stripTokens(e.text), at, ...(all.length > 0 ? { files: all } : {}) };
   }
   if (e.type === "assistant_message" && typeof e.text === "string" && e.text.trim() !== "") return { id, from: "bot", text: e.text, at };
@@ -919,23 +936,23 @@ export class MossEngine {
     }
   }
 
-  /** The person's answer to the bot's waiting question (`session.answer`); a question that no longer waits is said so. */
-  async answerQuestion(bot: string, callId: string, answers: Record<string, string>, notes?: Record<string, string>): Promise<{ ok: true } | { ok: false; why: string }> {
+  /** The person's answer to (or skip of) the bot's open question (`session.answer`); a question that is no longer open is said so. */
+  async answerQuestion(bot: string, callId: string, answers: Record<string, string>, notes?: Record<string, string>, skipped = false): Promise<{ ok: true } | { ok: false; why: string }> {
     const client = this.client;
     const session = this.records.get(bot)?.mainSession;
     if (client === undefined || session === undefined) return { ok: false, why: "MOSS isn't connected to its engine." };
     const asks = this.questions.waiting(session, callId);
-    if (asks === undefined) return { ok: false, why: "That question isn't waiting any more." };
+    if (asks === undefined) return { ok: false, why: "That question isn't open any more." };
     if (Object.keys({ ...answers, ...notes }).some((k) => !asks.includes(k))) return { ok: false, why: "That isn't what the question asked." };
     try {
-      await client.request("session.answer", { id: session, callId, answers, ...(notes !== undefined && Object.keys(notes).length > 0 ? { notes } : {}) }, 15_000);
+      await client.request("session.answer", { id: session, callId, answers, ...(notes !== undefined && Object.keys(notes).length > 0 ? { notes } : {}), ...(skipped ? { skipped: true } : {}) }, 15_000);
     } catch (err) {
       if (notServed(err)) return { ok: false, why: "Answering isn't served by this engine yet." };
-      if (err instanceof RpcCallError && (err.data as { code?: unknown } | undefined)?.code === "not_found") return { ok: false, why: "That question isn't waiting any more." };
-      return { ok: false, why: "The engine didn't take the answer. Try again." };
+      if (err instanceof RpcCallError && (err.data as { code?: unknown } | undefined)?.code === "not_found") return { ok: false, why: "That question was already answered or skipped." };
+      return { ok: false, why: skipped ? "The engine didn't take the skip. Try again." : "The engine didn't take the answer. Try again." };
     }
-    // The question reads answered at once; the engine's own `question_resolved` follows and says the same.
-    const m = this.questions.answered(session, callId, answers, notes);
+    // The question reads answered (or skipped) at once; the engine's own `question_resolved` follows and says the same.
+    const m = this.questions.answered(session, callId, answers, notes, skipped);
     if (m !== undefined) for (const l of this.messageListeners) l(bot, m);
     return { ok: true };
   }

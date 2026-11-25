@@ -44,6 +44,19 @@ function Answered({ item }: { item: QuestionItem }) {
   );
 }
 
+/** A question the person skipped: the question, small, and one quiet line. */
+function Skipped({ item }: { item: QuestionItem }) {
+  return (
+    <section className="cl-conv-question" data-kind="question" data-state="skipped">
+      <div className="cl-conv-question__head">
+        <IconQuestion />
+        <span dir="auto"><bdi>{item.questions[0]?.question}</bdi></span>
+      </div>
+      <div className="cl-conv-question__closed">{S.questionSkipped}</div>
+    </section>
+  );
+}
+
 function Closed({ item, ctx }: { item: QuestionItem; ctx: MessageContext }) {
   const text =
     item.state === "expired"
@@ -154,6 +167,7 @@ export function QuestionMessage({
   const [sent, setSent] = useState(false);
   const [failed, setFailed] = useState(false);
   if (item.state === "answered") return <Answered item={item} />;
+  if (item.state === "skipped") return <Skipped item={item} />;
   if (item.state !== "pending") return <Closed item={item} ctx={ctx} />;
 
   const answers = item.questions.map((q, i) => answerOf(q, drafts[i] ?? emptyDraft()));
@@ -172,6 +186,18 @@ export function QuestionMessage({
     setFailed(false);
     const result = ctx.actions.onAnswerQuestion?.(item.callId, { answers: keyed });
     // A host that reports delivery gets the card back if the answer didn't go through.
+    if (result && typeof (result as Promise<unknown>).then === "function") {
+      (result as Promise<unknown>).then(undefined, () => {
+        setSent(false);
+        setFailed(true);
+      });
+    }
+  };
+  const skip = () => {
+    if (sent || ctx.actions.onSkipQuestion === undefined) return;
+    setSent(true);
+    setFailed(false);
+    const result = ctx.actions.onSkipQuestion(item.callId);
     if (result && typeof (result as Promise<unknown>).then === "function") {
       (result as Promise<unknown>).then(undefined, () => {
         setSent(false);
@@ -199,6 +225,11 @@ export function QuestionMessage({
       ))}
       <div className="cl-conv-question__footer">
         {minutes !== undefined && <span className="cl-conv-question__deadline">{S.questionGoesOnIn(ctx.botName, minutes)}</span>}
+        {ctx.actions.onSkipQuestion !== undefined && (
+          <button type="button" className="cl-conv-question__skip" data-question-skip disabled={sent} onClick={skip}>
+            {S.questionSkip}
+          </button>
+        )}
         <button type="button" className="cl-conv-question__send" disabled={!canSend} onClick={send}>
           {S.questionSubmit}
         </button>

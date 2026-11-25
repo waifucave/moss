@@ -103,7 +103,7 @@ describe("session.answer by the text session.openQuestions gave", () => {
   /** A bot-side question broker with a stub host, and one waiting call asking `questions`. */
   async function waiting(questions: { question: string; header?: string; options?: { label: string }[] }[]) {
     const recorded: { type: string }[] = [];
-    const q = botQuestions({ host: { get: () => ({}) as never, recordCore: (_id, e) => (recorded.push(e as never), undefined as never), turnOrigin: () => "user" } });
+    const q = botQuestions({ host: { get: () => ({}) as never, recordCore: (_id, e) => (recorded.push(e as never), undefined as never), turnOrigin: () => "user", openQuestions: () => [] } });
     const canUseTool = q.canUseTool("s_code", async () => ({ behavior: "allow", updatedInput: {} }));
     const input = { questions: questions.map((x) => ({ header: "Pick", options: [{ label: "Yes" }, { label: "No" }], ...x })) };
     const done = canUseTool("AskUserQuestion", input, { signal: new AbortController().signal, toolUseID: "call_1" } as never) as Promise<{ behavior: string; updatedInput?: { answers: Record<string, string> } }>;

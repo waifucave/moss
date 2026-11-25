@@ -3020,9 +3020,10 @@ async function main(): Promise<void> {
       }, 1_000).catch((err: unknown) => fail(`${why(err)}; the app log's lines about it: ${readLog(join(logs, "app.log")).split("\n").filter((l) => l.includes(pageId)).slice(-6).join(" | ").slice(0, 600) || "none"}`));
       const checked = checkPageReport(page, { siteBody: PAGE_SITE_BODY });
       wrong.push(...checked.wrong.map((w) => `its page: ${w}`));
-      // `conversation.answer` from the page: the bot asks a question in Alpha's conversation, the run names it in the
-      // page's `pageQuestion` setting, and the page answers it through the member (its `conversation.post`); the
-      // question resolves with that answer and the turn goes on with it as the tool's result.
+      // `conversation.answer` from the page: the bot asks a question in Alpha's conversation (an open card: the call returns at once), the run
+      // names it in the page's `pageQuestion` setting, and the page tries to answer it through the member (its `conversation.post`). Only the
+      // PERSON answers a bot's open card, so the engine refuses the plugin and the card stays open; the person's own answer (the run's app
+      // connection) then reaches the bot as a message of theirs and starts a turn.
       const qTag = `ACCEPTANCE-PAGEQ-${randomBytes(3).toString("hex").toUpperCase()}`;
       const question = `Which tide for ${qTag}?`;
       const answerLabel = "High tide";
@@ -3031,17 +3032,18 @@ async function main(): Promise<void> {
       await c.request("session.send", { id: botSession, message: { text: `ACCEPTANCE-CALL AskUserQuestion ${qInput}`, clientMessageId: `pageq-${qTag}` } }, 30_000);
       const asked = await until("the bot's question in Alpha's conversation", 90_000, async () => (await history(c, botSession)).find((e) => e.type === "question_asked" && JSON.stringify(e.questions ?? "").includes(qTag)));
       await c.request("plugin.settings.set", { id: pageId, key: "pageQuestion", value: JSON.stringify({ session: botSession, callId: asked.callId, question, answer: answerLabel }) });
-      const resolved = await until("the question answered by the page", 60_000, async () => (await history(c, botSession)).find((e) => e.type === "question_resolved" && e.callId === asked.callId)).catch(async (err: unknown) => {
-        const r = (await c.request<{ result: { answer?: string } }>("command.run", { name: `${pageId}.report`, args: {} }).catch(() => ({ result: {} as { answer?: string } }))).result;
-        return fail(`${why(err)} (the page said ${JSON.stringify(r.answer ?? "nothing")})`);
-      });
-      // The page hands its outcome to its host half once its call has come back, which is after the question resolved.
-      const pageAnswer = await until("the page's own word of its answer", 15_000, async () => (await c.request<{ result: { answer?: string } }>("command.run", { name: `${pageId}.report`, args: {} })).result.answer, 300).catch(() => "");
-      const resolvedAnswers = (resolved.answers ?? {}) as Record<string, string>;
-      if (!pageAnswer.startsWith("answered ") || resolvedAnswers[question] !== answerLabel) wrong.push(`its page's conversation.answer: the page said ${JSON.stringify(pageAnswer)}, the question resolved with ${JSON.stringify(resolvedAnswers)}`);
+      const pageAnswer = await until("the page's own word of its answer", 60_000, async () => (await c.request<{ result: { answer?: string } }>("command.run", { name: `${pageId}.report`, args: {} })).result.answer, 300).catch(() => "");
+      const stillOpen = !(await history(c, botSession)).some((e) => e.type === "question_resolved" && e.callId === asked.callId);
+      if (pageAnswer.startsWith("answered ") || pageAnswer === "" || !stillOpen) wrong.push(`its page's conversation.answer on a bot's open question: the page said ${JSON.stringify(pageAnswer)} and the card is ${stillOpen ? "open" : "resolved"}, not refused and open`);
       else {
-        await until("the turn gone on with the page's answer", 90_000, async () => ((fake?.requests ?? []).slice(qSeen).some((r) => r.toolResult?.text.includes(answerLabel)) ? true : undefined));
-        checked.said.push("conversation.answer (a question answered, the turn went on with it)");
+        await c.request("session.answer", { id: botSession, callId: asked.callId, answers: { [question]: answerLabel } }, 30_000);
+        const resolved = await until("the question answered by the person", 60_000, async () => (await history(c, botSession)).find((e) => e.type === "question_resolved" && e.callId === asked.callId));
+        const resolvedAnswers = (resolved.answers ?? {}) as Record<string, string>;
+        if (resolved.by !== "user" || resolvedAnswers[question] !== answerLabel) wrong.push(`the person's answer to the bot's open question resolved as ${JSON.stringify(resolved)}`);
+        else {
+          await until("the bot's turn on the person's answer", 90_000, async () => ((fake?.requests ?? []).slice(qSeen).some((r) => r.lastUserText.includes("My answer to your question") && r.lastUserText.includes(answerLabel)) ? true : undefined));
+          checked.said.push("conversation.answer (refused for a plugin on a bot's open question, which then took the person's answer as their message)");
+        }
       }
       const pageSaid = `${pageId}'s page reached ${checked.said.join(", ")}`;
       await c.request("plugin.remove", { id: pageId, deleteData: true }).catch((err: unknown) => wrong.push(`${pageId} wasn't removed: ${why(err)}`));

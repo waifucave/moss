@@ -495,9 +495,11 @@ export const SESSIONS_METHODS = {
       id: SessionId, callId: utf16(128, 1),
       answers: z.record(z.string(), utf16(10_000)),
       notes: z.record(z.string(), utf16(10_000)).optional(),
+      /** The person skips a bot's open question: no answers, and the bot is told it was skipped. Only the person (never a plugin) may skip or answer an open one. */
+      skipped: z.boolean().optional(),
     }),
     result: Ok,
-    doc: "Answers an `AskUserQuestion`, which plugins may read and show in any form (§5.5).",
+    doc: "Answers an `AskUserQuestion`, which plugins may read and show in any form (§5.5). A bot's question does not wait for the answer: it stays open until the person answers or skips it (`skipped`), and the answer reaches the bot as the person's message; only the person may answer such a question.",
   }),
   sessionSetModel: defineMethod({
     name: "session.setModel", owner: "D", roles: ["app", "cli", "remote"], userOnly: true,

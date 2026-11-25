@@ -91,6 +91,8 @@ export const S = {
   questionTypeAnswer: "Type your answer",
   questionSubmit: "Send answer",
   questionAnswered: "You answered",
+  questionSkip: "Skip",
+  questionSkipped: "You skipped this question",
   questionExpired: (bot: string) => `No answer in time; ${bot} went on without it.`,
   questionWithdrawn: "Withdrawn when the turn ended",
   questionWithdrawnInterrupt: "Withdrawn when you interrupted",

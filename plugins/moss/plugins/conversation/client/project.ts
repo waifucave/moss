@@ -237,7 +237,7 @@ export function project(events: readonly CoreEvent[], options: ProjectOptions = 
       case "question_resolved": {
         const item = byId.get(`q${str(e.callId)}`);
         if (item?.kind !== "question") break;
-        item.state = "answered";
+        item.state = e.skipped === true ? "skipped" : "answered";
         if (e.answers && typeof e.answers === "object") item.answers = e.answers as Record<string, string>;
         if (e.notes && typeof e.notes === "object") item.notes = e.notes as Record<string, string>;
         if (turn.phase === "waiting") turn = { running: true, phase: "working" };

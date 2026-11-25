@@ -93,16 +93,14 @@ describe("the update gate", () => {
     expect(updates.sources.size).toBe(0);
     expect(updates.reopenListeners.size).toBe(0);
   });
-  test("a bot's question still waiting for its answer keeps an update waiting too", async () => {
+  test("a bot's question waits for nothing: an open card keeps no update waiting (the answer comes later as a message)", async () => {
     const updates = new FakeUpdateGate();
     const b = await boot({ home: tempDir(), plugins: (await pluginFromFolder(ALPHA_FOLDER, { bundled: true })).inputs, updateGate: updates });
     const canUseTool = b.side.questions.canUseTool("b_alpha", async () => ({ behavior: "allow", updatedInput: {} }));
-    const asked = canUseTool("AskUserQuestion", { questions: [{ question: "Now?", header: "Now", options: [{ label: "Yes" }, { label: "No" }] }] }, { signal: new AbortController().signal, toolUseID: "call_1" } as never);
-    await flush();
-    expect(updates.busy()).toBe(1);
-    await b.side.methods({ localDevice: "studio" })[M.sessionAnswer.name]!({ id: "b_alpha", callId: "call_1", answers: { "Now?": "Yes" } }, { caller: theUser });
-    await asked;
+    const asked = await canUseTool("AskUserQuestion", { questions: [{ question: "Now?", header: "Now", options: [{ label: "Yes" }, { label: "No" }] }] }, { signal: new AbortController().signal, toolUseID: "call_1" } as never);
+    expect(asked?.behavior).toBe("deny");
     expect(updates.busy()).toBe(0);
+    expect(b.host.get("b_alpha")?.needsYou?.questions).toBe(1);
     await b.shutdown();
     expect(updates.sources.size).toBe(0);
   });

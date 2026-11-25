@@ -185,7 +185,7 @@ export interface QuestionItem extends ItemBase {
   kind: "question";
   callId: string;
   questions: Question[];
-  state: "pending" | "answered" | "expired" | "withdrawn";
+  state: "pending" | "answered" | "skipped" | "expired" | "withdrawn";
   /** Keyed by question text: the chosen labels (joined with ", " for several), or the typed text. */
   answers?: Record<string, string>;
   notes?: Record<string, string>;
@@ -325,6 +325,8 @@ export interface ActionOutcome {
 export interface ConversationActions {
   /** May return a promise: if it rejects, the card takes answers again. */
   onAnswerQuestion?: (callId: string, answer: QuestionAnswer) => void | Promise<unknown>;
+  /** The person skips a question that does not wait for them (a bot's): the card shows a Skip button only where a host gives this. */
+  onSkipQuestion?: (callId: string) => void | Promise<unknown>;
   /** Open a link in the user's browser; the view never navigates itself. */
   onOpenLink?: (url: string) => void;
   onOpenFile?: (path: string) => void;

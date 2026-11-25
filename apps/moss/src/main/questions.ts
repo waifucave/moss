@@ -1,14 +1,16 @@
 // A bot's question (`AskUserQuestion`, spec §5.5) as the conversation draws it: one message per `callId`, which reads
-// pending while the question waits, and answered (with what was chosen), expired (no answer in time) or withdrawn (the turn
-// was stopped or ended, another question took its place) once the engine's log says so. The engine's events are the only
-// truth: a question already waiting when the window opens is in the page the engine serves, one answered in MOSS Code,
-// on a phone or in the terminal arrives as the same `question_resolved`, and a question whose turn ended without one
-// (the engine stopped mid-turn) is withdrawn, never shown as waiting for ever.
+// pending (an open card) until the engine's log says it was answered (with what was chosen) or skipped. It waits for no
+// turn: it stays open across turns, a quit and a restart, and a new message of the person's does not withdraw it. Expired and
+// withdrawn are how an older engine ended one (no answer in 10 minutes, another question took its place, an abort). The
+// engine's events are the only truth: a question already open when the window opens is in the page the engine serves, one
+// answered on a phone or in another window arrives as the same `question_resolved`.
 //
 // Plain data only: the strings are the model's and are drawn as text (and markdown for none of them).
 import type { Message, QuestionView } from "../shared/view";
 
-type Outcome = { state: "answered" | "expired" | "withdrawn"; answers?: Record<string, string>; notes?: Record<string, string> };
+/** `seq` is the resolving event's place in the log: a question asked AGAIN after it (an engine stop withdrew an older one that comes back as an open card) reads
+ *  open, because the resolution is older than that asking. */
+type Outcome = { state: "answered" | "skipped" | "expired" | "withdrawn"; answers?: Record<string, string>; notes?: Record<string, string>; seq?: number };
 
 /** Entries kept in each table: the newest; a conversation's old questions are read from its pages again. */
 const KEPT = 500;
@@ -51,8 +53,6 @@ export class QuestionLog {
   /** Each question's message, by message id: what a later event updates in place. */
   private asked = new Map<string, Message>();
   private outcomes = new Map<string, Outcome>();
-  /** The newest turn end read, by session: a question asked before it, with no resolution, is not waiting any more. */
-  private turnEnd = new Map<string, number>();
   /** The session of each question, by message id. */
   private sessionOf = new Map<string, string>();
 
@@ -67,11 +67,16 @@ export class QuestionLog {
     for (const e of events) {
       if (e.type === "question_resolved") {
         const id = QuestionLog.idOf(e);
-        if (id !== undefined) remember(this.outcomes, id, outcomeOf(e));
-      } else if (e.type === "turn_completed" && typeof e.seq === "number" && typeof e.sessionId === "string") {
-        this.turnEnd.set(e.sessionId, Math.max(this.turnEnd.get(e.sessionId) ?? -1, e.seq));
+        if (id !== undefined) this.keep(id, { ...outcomeOf(e), ...(typeof e.seq === "number" ? { seq: e.seq } : {}) });
       }
     }
+  }
+
+  /** The newest resolution of a question, by its place in the log (a page is read newest first and its older page after). */
+  private keep(id: string, out: Outcome): void {
+    const had = this.outcomes.get(id);
+    if (had?.seq !== undefined && out.seq !== undefined && had.seq > out.seq) return;
+    remember(this.outcomes, id, out);
   }
 
   /** The message for a `question_asked`, in the state the log says now. */
@@ -82,9 +87,10 @@ export class QuestionLog {
     if (id === undefined || callId === undefined || questions.length === 0) return undefined;
     const session = String(e.sessionId ?? "s");
     const seq = typeof e.seq === "number" ? e.seq : undefined;
-    const out = this.outcomes.get(id);
-    const ended = out === undefined && seq !== undefined && (this.turnEnd.get(session) ?? -1) > seq;
-    const state = out?.state ?? (ended ? "withdrawn" : "pending");
+    const found = this.outcomes.get(id);
+    // A resolution older than this asking is not this question's: it was asked again (an engine stop's withdrawal is undone at load).
+    const out = found !== undefined && !(found.seq !== undefined && seq !== undefined && found.seq < seq) ? found : undefined;
+    const state = out?.state ?? "pending";
     const m: Message = {
       id, from: "question", text: "", at: typeof e.ts === "number" ? e.ts : 0,
       question: { callId, questions, state, ...(out?.answers !== undefined ? { answers: out.answers } : {}), ...(out?.notes !== undefined ? { notes: out.notes } : {}) },
@@ -104,20 +110,10 @@ export class QuestionLog {
     if (e.type === "question_resolved") {
       const id = QuestionLog.idOf(e);
       if (id === undefined) return [];
-      const out = outcomeOf(e);
-      remember(this.outcomes, id, out);
+      const out: Outcome = { ...outcomeOf(e), ...(typeof e.seq === "number" ? { seq: e.seq } : {}) };
+      this.keep(id, out);
       const m = this.changed(id, out);
       return m === undefined ? [] : [m];
-    }
-    if (e.type === "turn_completed" && typeof e.sessionId === "string") {
-      this.learn([e]);
-      const out: Message[] = [];
-      for (const [id, m] of this.asked) {
-        if (this.sessionOf.get(id) !== e.sessionId || m.question?.state !== "pending") continue;
-        const w = this.changed(id, { state: "withdrawn" });
-        if (w !== undefined) out.push(w);
-      }
-      return out;
     }
     return [];
   }
@@ -129,9 +125,9 @@ export class QuestionLog {
   }
 
   /** The person's answer went in: the question reads answered at once; the engine's own `question_resolved` follows. */
-  answered(session: string, callId: string, answers: Record<string, string>, notes?: Record<string, string>): Message | undefined {
+  answered(session: string, callId: string, answers: Record<string, string>, notes?: Record<string, string>, skipped = false): Message | undefined {
     const id = `${session}:q${callId}`;
-    const out: Outcome = { state: "answered", answers, ...(notes !== undefined ? { notes } : {}) };
+    const out: Outcome = skipped ? { state: "skipped" } : { state: "answered", answers, ...(notes !== undefined ? { notes } : {}) };
     remember(this.outcomes, id, out);
     return this.changed(id, out);
   }
@@ -153,6 +149,7 @@ function outcomeOf(e: Record<string, unknown>): Outcome {
   const by = typeof e.by === "string" ? e.by : "";
   const answers = record(e.answers);
   const notes = record(e.notes);
+  if (e.skipped === true && by === "user") return { state: "skipped" };
   if (by === "timeout") return { state: "expired" };
   if (by === "aborted" || by === "superseded" || by === "emit-failure") return { state: "withdrawn" };
   return { state: "answered", ...(answers !== undefined ? { answers } : {}), ...(notes !== undefined && Object.keys(notes).length > 0 ? { notes } : {}) };

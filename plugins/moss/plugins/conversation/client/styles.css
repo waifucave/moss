@@ -1095,6 +1095,25 @@ button.cl-conv-diff:hover {
   cursor: pointer;
 }
 
+.cl-conv-question__skip {
+  padding: 7px 12px;
+  border: none;
+  border-radius: var(--moss-radius-round);
+  background: transparent;
+  color: var(--moss-color-text-muted);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.cl-conv-question__skip:hover:not(:disabled) {
+  color: var(--moss-color-text);
+}
+
+.cl-conv-question__skip:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
 .cl-conv-question__send:disabled {
   background: var(--moss-color-control);
   color: var(--moss-color-text-muted);

@@ -56,7 +56,7 @@ export interface SessionsMethodsDeps {
   /** `session.setConfig` on an agent or coding session (`AgentManager.setOption`). */
   setAgentOption?(id: string, option: string, value: string): Promise<void>;
   /** The bot side's questions (questions.ts): `session.answer` resolves the one waiting. Without it, none waits. */
-  questions?: Pick<BotQuestions, "answer">;
+  questions?: Pick<BotQuestions, "answer" | "openCard" | "settleOpen" | "wasSettled">;
   /** A plugin's capabilities in force (its OK's), for what it may hear of `session.links`; without it a plugin hears none. */
   capabilitiesOf?(pluginId: string): readonly string[];
   /** Whether the paired phone `device` may act on this computer now (`mayStartSessions` over the device registry's record of
@@ -386,10 +386,30 @@ export function sessionsMethods(deps: SessionsMethodsDeps): Record<string, Metho
 
     // The answer to a session's `AskUserQuestion` (§5.5): the user's, from any of their clients, or a plugin's that
     // shows the question (`conversation.post`); never a session's, so no bot answers its own or another's.
-    [M.sessionAnswer.name]: handler(M.sessionAnswer, async ({ id, callId, answers, notes }, ctx) => {
+    [M.sessionAnswer.name]: handler(M.sessionAnswer, async ({ id, callId, answers, notes, skipped }, ctx) => {
       const caller = ctx.caller;
       if (caller.kind !== "user" && caller.kind !== "plugin") throw new MethodError(MOSS_ERR.NOT_THE_USER, "only the user, or a plugin showing the question, answers it");
-      reachable(id);
+      const v = reachable(id);
+      // A bot's own question does not wait: it is an open card, and the answer (or the skip) becomes the person's message to the bot. Only the
+      // person starts that turn, so a plugin that shows the question may not answer it, and nothing but a user connection (an app or a phone) may.
+      const card = deps.questions?.openCard(id, callId);
+      if (card !== undefined) {
+        const user = requireUser(ctx, "answer or skip a bot's question");
+        refuseWhileUpdating(deps.updateGate);
+        if (v.bot === undefined || bots.mainSession(v.bot) !== id) throw new ContractError("not_found", `no question ${callId} is open in ${id}`);
+        if (!bots.botsRunHere().includes(v.bot)) throw new ContractError("not_main", `this computer doesn't run ${v.bot}'s conversation now: answer on the computer that does`);
+        const settled = deps.questions!.settleOpen(id, callId, { answers, ...(notes === undefined ? {} : { notes }), skipped: skipped === true });
+        if (!settled.ok) throw new ContractError(settled.code, settled.message);
+        const message = { text: settled.text, clientMessageId: `question-${callId}`, sentAt: deps.clock.now() };
+        try {
+          await bots.sendUserTo(v.bot, { text: message.text, device: user.device ?? deps.localDevice, sentAt: message.sentAt, clientMessageId: message.clientMessageId }, message);
+        } catch (err) {
+          settled.undo();
+          throw err;
+        }
+        return { ok: true as const };
+      }
+      if (deps.questions?.wasSettled(id, callId) === true) throw new ContractError("not_found", "That question was already answered or skipped.");
       const by = caller.kind === "user" ? "user" : `plugin:${caller.pluginId}`;
       const outcome = deps.questions?.answer(id, callId, answers, by, notes)
         ?? { ok: false as const, code: "not_found" as const, message: `no question ${callId} is waiting in ${id}` };

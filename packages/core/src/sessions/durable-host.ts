@@ -65,6 +65,7 @@ import type { TitleSource } from "../contracts/session-titles";
 import type { ApprovalBroker } from "../contracts/approval-broker";
 import { compareStamps, type Clock } from "../contracts/clock";
 import { ContractError, Listeners, type Unsubscribe } from "../contracts/common";
+import { CUT_QUESTION_TAIL, engineCutQuestion } from "./cut-questions";
 import {
   originOf,
   type AgentStopReason, type DeliveredInput, type Disposition, type SessionDriver, type SessionHost, type SessionRecord,
@@ -931,6 +932,7 @@ export class DurableSessionHost implements SessionHost {
     if (s.driver) await this.#bounded(s, s.driver, (d) => d.stop(), "stop");
     if (running && s.running === running) {
       this.#closeOpenCalls(s, running.openCalls);
+      this.#closeOpenQuestions(s);
       this.#tryRecord(s, { type: "turn_ended", end: { reason: "stopped" } });
       delete s.running;
     }
@@ -994,6 +996,7 @@ export class DurableSessionHost implements SessionHost {
       running.abort.abort("released");
       this.#approvals?.withdrawSession(s.meta.id);
       this.#closeOpenCalls(s, running.openCalls);
+      this.#closeOpenQuestions(s);
       this.#ended(s, running, { reason: "interrupted" });
     }
     const ids = attached.filter((s) => s.meta.kind === "bot" || s.meta.kind === "side-thread").map((s) => s.meta.id);
@@ -1014,6 +1017,7 @@ export class DurableSessionHost implements SessionHost {
         // Each call still open gets its interrupted result first, as a restart's would (`#load`): the turn has ended,
         // so no boot repair closes it later, and a result the driver sends late is dropped (`ctl.record`).
         this.#closeOpenCalls(s, running.openCalls);
+        this.#closeOpenQuestions(s);
         this.#ended(s, running, { reason: "interrupted" });
         if (s.driver) await this.#bounded(s, s.driver, (d) => d.interrupt(), "interrupt");
       }
@@ -1741,6 +1745,16 @@ export class DurableSessionHost implements SessionHost {
     open.clear();
   }
 
+  /** The blocking questions a stop, a release or a restart left open (nothing is parked on them any more): each is resolved
+   *  "aborted" with its cause, so "Needs you" stops counting what nobody can answer. A bot's questions are not blocking (they
+   *  stay open as cards until the person answers or skips them), so a bot's are left. */
+  #closeOpenQuestions(s: Hosted): void {
+    if (s.meta.kind === "bot") return;
+    for (const callId of [...s.questions.keys()]) {
+      this.#tryRecord(s, { type: "driver", event: { type: "question_resolved", callId, answers: {}, by: "aborted", cause: "engine-stopped" } });
+    }
+  }
+
   /** A subagent the session's agent reported (§9.5 "Subagents"): the driver marks the call that started it
    *  (`subagentOfEvent`); its end is that call's end. */
   #trackSubagent(s: Hosted, event: { type: string; [key: string]: unknown }, at: number): void {
@@ -1990,12 +2004,35 @@ export class DurableSessionHost implements SessionHost {
       this.#closeOpenCalls(s, replay.openCalls);
       this.#tryRecord(s, { type: "turn_ended", end: { reason: "interrupted" } });
     }
+    // Nothing waits on a question after a restart: a blocking one is withdrawn (its cause is the engine's going away), so "Needs you"
+    // counts only what can still be answered. A bot's questions are open cards and stay; one an engine stop withdrew before they
+    // were (and nothing followed) is asked again, once.
+    this.#closeOpenQuestions(s);
+    if (meta.kind === "bot" && !isEnded(s.view.status)) this.#reopenCutQuestion(s, log);
     if (s.view.status === "prompting" || s.view.status === "cancelling" || s.view.status === "starting") this.#setStatus(s, "idle");
     // Ended before its meta said so (a crash between the two writes, or an older home): the next start skips its log.
     if (isEnded(s.view.status) && meta.ended === undefined) this.#markEnded(s);
   }
 
+  /** A bot's question an engine stop withdrew before bot questions became open cards, with nothing after it: asked again (the same
+   *  call and the same questions), so it is an open card. The tail of the log is read; once asked again it is no longer withdrawn. */
+  #reopenCutQuestion(s: Hosted, log: SessionLogFile): void {
+    try {
+      const from = Math.max(0, log.length - CUT_QUESTION_TAIL);
+      const cut = engineCutQuestion(log.read(from, log.length));
+      if (cut === undefined) return;
+      this.#tryRecord(s, { type: "driver", event: { type: "question_asked", callId: cut.callId, questions: cut.questions } });
+    } catch (err) {
+      this.#warn(`session ${s.meta.id}: its last question wasn't read for asking again: ${errorText(err)}`);
+    }
+  }
+
   #record(s: Hosted, body: SessionRecordBody): SessionRecord {
+    // A blocking question the engine's going away withdrew says so (`cause`), whoever wrote the withdrawal: the person's Stop and a turn
+    // that failed do not set `stopping` or `releasing`.
+    if (body.type === "driver" && body.event.type === "question_resolved" && body.event["by"] === "aborted" && body.event["cause"] === undefined && (s.stopping === true || s.releasing === true)) {
+      body = { ...body, event: { ...body.event, cause: "engine-stopped" } };
+    }
     const log = this.#logOf(s);
     const epoch = this.#epoch?.();
     let record = {

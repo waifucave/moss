@@ -483,6 +483,12 @@ export const QuestionResolvedEvent = ThreadBase.extend({
   // CC AskUserQuestion parity: free-text notes ("press n to add notes"), keyed by question text
   // like `answers`. Optional/additive — older-shaped resolutions without notes still parse.
   notes: z.record(z.string(), z.string()).optional(),
+  // A bot's question that the person SKIPPED (`answers` is empty, `by` is "user"): additive, so an older client draws it as an
+  // answer with nothing chosen.
+  skipped: z.boolean().optional(),
+  // Why a blocking question ended with `by: "aborted"` when the ENGINE went away while it waited (a stop, an update's
+  // restart, a crash), rather than the person pressing Stop or the turn ending: additive; an older client still draws it as withdrawn.
+  cause: z.literal("engine-stopped").optional(),
   // Dispatch relay (Phase 7): see approval_requested.
   childSessionId: z.string().optional(),
 });
