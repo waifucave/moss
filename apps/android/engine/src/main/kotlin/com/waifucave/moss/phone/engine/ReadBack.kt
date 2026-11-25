@@ -48,18 +48,16 @@ internal object ReadBack {
     }
 
     /**
-     * The bot a create made, read back: the one bot that wasn't there before the call, whose name is the one asked for in
-     * the form the core hands names back (`clean`: the visible-text rule; the engine may also cut a long name, so a name
-     * that is the asked one's start, of [NAME_CUT] characters or more, counts too).
+     * The bot a create made, read back: the one bot that wasn't there before the call whose name is exactly the name sent,
+     * in the form the core hands names back. The engine keeps a name as it was sent (no trim, no cut: an empty one or one
+     * over 200 characters is refused, `bots/records.ts`), and the core returns it escaped by the visible-text rule
+     * (`clean`, `engine.rs` `text(name, 200)`). Its id is derived from the name and the ids taken, so the phone can't know
+     * it before the answer. Another bot made meanwhile under the same name makes two candidates: none is taken.
      */
     fun madeBot(before: Set<String>, now: List<Bot>, name: String, clean: (String) -> String = { it }): Bot? {
-        val asked = clean(name.trim())
-        return now.filter { it.id !in before }.filter { b ->
-            val got = b.name.trim()
-            got == asked || (got.length >= NAME_CUT && asked.startsWith(got.removeSuffix("…")))
-        }.singleOrNull()
+        val sent = clean(name)
+        return now.filter { it.id !in before && it.name == sent }.singleOrNull()
     }
-    const val NAME_CUT = 32
 
     /**
      * The message text as the engine takes it with attachments: each picture and file is named in the text by its number

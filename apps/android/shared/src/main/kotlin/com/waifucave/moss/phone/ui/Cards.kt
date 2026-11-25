@@ -62,12 +62,14 @@ object Sealed {
  * Every sealed field the protocol names (`CARD_FIELD_NAMES`, `packages/protocol/src/approvals.ts`), in its order; a test
  * reads that list from the protocol, so a new field fails it until it is drawn here. A card is drawn with every field it
  * carries: the title and what it asks at the top, the rest each under the label the desktop's card gives it
- * (`FIELD_TITLES` in apps/desktop/src/main/sealed-pages.ts; `rule` has none there and reads "Rule").
+ * (`FIELD_TITLES` in apps/desktop/src/main/sealed-pages.ts). `rule` has no title there: it is what an "always" answer
+ * would store, how far it reaches (approvals.ts), which the desktop says as an "Always allow: …" sentence (card-summary.ts
+ * `ruleSentence`); here it heads the rows as "What "Always allow" covers".
  */
 val CARD_FIELDS = listOf("title", "what", "command", "computer", "risk", "reason", "source", "host", "paths", "detail", "expires", "rule")
 val CARD_FIELD_LABELS = mapOf(
     "title" to "What", "what" to "Tool", "command" to "Command", "computer" to "Computer", "risk" to "Risk", "reason" to "Why",
-    "source" to "From", "host" to "Site", "paths" to "Files", "detail" to "Everything it sends", "expires" to "Expires", "rule" to "Rule",
+    "source" to "From", "host" to "Site", "paths" to "Files", "detail" to "Everything it sends", "expires" to "Expires", "rule" to "What \"Always allow\" covers",
 )
 
 /** How long a card new to the screen holds its buttons back. */

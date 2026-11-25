@@ -51,10 +51,9 @@ const val PNG_1PX = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mN
 /** What another app puts in the extras: never on the real build's screen. */
 const val INJECTED = "INJECTED BY ANOTHER APP"
 
-/** The call timeout this test's client uses, and how long the runner holds the computer's replies (under the link's idle
- *  limit of 20 s, so the link stays up and only the call times out). */
+/** The call timeout this test's client uses, and how late the runner's engine answers a call it has already done. */
 const val CALL_TIMEOUT_MS = 8_000L
-const val HOLD_MS = 14_000L
+const val LATE_MS = 14_000L
 
 /** Polls until `cond` holds, or fails naming what it waited for. */
 suspend fun eventually(what: String, ms: Long = 60_000, cond: suspend () -> Boolean) {
@@ -135,17 +134,17 @@ class MossEndToEndTest {
             eventually("the new bot in the list") { list.load(); list.rows.any { it.id == hazel.id } }
             Log.i(TAG, "made a bot")
 
-            // A bot made while the computer's reply is held past the call's timeout: the phone reads the bots back, finds
+            // A bot made while the computer answers only after the call's timeout: the phone reads the bots back, finds
             // the one it asked for (in the core's form of its name), and counts it as made. The computer holds it once.
             val botsBefore = Runner.json("/counts").getInt("bots")
-            Runner.text("/hold?ms=$HOLD_MS")
+            Runner.text("/late?what=bot&ms=$LATE_MS")
             val t1 = System.currentTimeMillis()
             val heldBot = client.createBot("Juniper", null)
             assertTrue("the call timed out first", System.currentTimeMillis() - t1 >= CALL_TIMEOUT_MS)
             assertEquals("Juniper", heldBot.name)
-            delay(HOLD_MS)
+            delay(LATE_MS)
             assertEquals("one bot made", botsBefore + 1, Runner.json("/counts").getInt("bots"))
-            Log.i(TAG, "a bot whose reply was held was read back as made")
+            Log.i(TAG, "a bot the computer answered late was read back as made")
 
             // A card the engine raises, answered from the card the model holds (the one the screen draws).
             val cards = CardsModel(client, PhoneApp.moss)
@@ -168,15 +167,15 @@ class MossEndToEndTest {
             val forged = heldCard.copy(fields = heldCard.fields + ("title" to SealedValue.Text("Something else")))
             assertTrue("a changed card is refused", runCatching { client.answer(forged, once) }.isFailure)
             assertTrue("still waiting on the computer", client.cards().any { it.id == heldId })
-            // The computer takes the answer but its reply is held past the call's timeout: the phone reads the card back
+            // The computer takes the answer but answers only after the call's timeout: the phone reads the card back
             // (card.get), finds it answered with this very option, and counts the answer as given. Nothing is sent twice.
-            Runner.text("/hold?ms=$HOLD_MS")
+            Runner.text("/late?what=card&ms=$LATE_MS")
             val t0 = System.currentTimeMillis()
             client.answer(heldCard, once)
             assertTrue("the call timed out first", System.currentTimeMillis() - t0 >= CALL_TIMEOUT_MS)
             val heldDecision = Runner.json("/decision?card=$heldId").getJSONObject("decision")
             assertTrue("approved after the read-back: $heldDecision", heldDecision.getBoolean("allowed"))
-            Log.i(TAG, "an answer whose reply was held was read back as given")
+            Log.i(TAG, "an answer the computer answered late was read back as given")
 
             // Another app starts the real build's activity with every extra the fake build reads (a scenario that sends on
             // open, a draft, a file to stage, a session to start, a screen, a pairing code): the real build reads none of them.

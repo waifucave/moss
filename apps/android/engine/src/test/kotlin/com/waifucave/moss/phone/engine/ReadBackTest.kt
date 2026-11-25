@@ -65,7 +65,7 @@ class ReadBackTest {
     @Test
     fun aBotThatWasMadeIsReadBackByItsNewIdAndName() = runTest {
         val made = ReadBack.afterUncertain({ throw Timeout() }, uncertain) {
-            ReadBack.madeBot(setOf("alpha"), listOf(bot("alpha", "Alpha"), bot("hazel", "Hazel")), " Hazel ")
+            ReadBack.madeBot(setOf("alpha"), listOf(bot("alpha", "Alpha"), bot("hazel", "Hazel")), "Hazel")
         }
         assertEquals("hazel", made.id)
         assertNull(ReadBack.madeBot(setOf("alpha", "hazel"), listOf(bot("alpha", "Alpha"), bot("hazel", "Hazel")), "Hazel"))
@@ -73,9 +73,9 @@ class ReadBackTest {
         // The name in the core's form: escaped as the core escapes it, and cut when long.
         val escape = { t: String -> t.replace("\u202E", "\\u{202E}") }
         assertEquals("e", ReadBack.madeBot(emptySet(), listOf(bot("e", "Ha\\u{202E}zel")), "Ha\u202Ezel", escape)?.id)
-        val long = "A".repeat(80)
-        assertEquals("l", ReadBack.madeBot(emptySet(), listOf(bot("l", "A".repeat(64))), long)?.id)
-        assertNull(ReadBack.madeBot(emptySet(), listOf(bot("s", "A".repeat(10))), long))
+        // Exactly the name sent: never a bot whose name only starts it, or one that differs by spaces.
+        assertNull(ReadBack.madeBot(emptySet(), listOf(bot("p", "Hazel")), "Hazel the second"))
+        assertNull(ReadBack.madeBot(emptySet(), listOf(bot("q", "Hazel")), " Hazel "))
     }
 
     @Test
