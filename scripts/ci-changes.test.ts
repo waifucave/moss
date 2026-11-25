@@ -338,12 +338,16 @@ describe("CI for the lanes", () => {
     expect((ci.on.workflow_dispatch!.inputs!.scope as { default: string }).default).toBe("all");
   });
 
-  test("the lane gate is the gate without the Windows jobs, plus the acceptance run", () => {
+  test("the lane gate is the gate without the Windows jobs, plus the acceptance run and the fence's guard", () => {
     const windows = Object.keys(ci.jobs).filter((id) => runnersOf(ci.jobs[id]!).some((r) => r.startsWith("windows")));
-    expect(windows.sort()).toEqual(["acceptance-windows", "installers-windows", "link-windows", "machine-windows", "sealed-core-windows", "tree-windows", "windows-fence"]);
+    expect(windows.sort()).toEqual(["acceptance-windows", "installers-windows", "link-windows", "machine-windows", "sealed-core-windows", "tree-windows", "windows-fence", "windows-fence-guard"]);
     const gate = needsOf("gate");
     const lane = needsOf("lane-gate");
-    expect(lane.sort()).toEqual([...gate.filter((id) => !windows.includes(id)), "acceptance"].sort());
+    // The one Windows job in the lane gate (lane WS11): the fence's end-to-end guard, for a change to the fence, the approval
+    // checks or the Windows launcher's sources, so one that weakens the fence can't reach an integration branch green.
+    expect(lane.sort()).toEqual([...gate.filter((id) => !windows.includes(id)), "acceptance", "windows-fence-guard"].sort());
+    expect(ci.jobs["windows-fence-guard"]!.if).toContain("needs.changes.outputs.fenceguard == 'true'");
+    expect((ci.jobs["windows-fence-guard"] as { with?: Record<string, unknown> }).with).toEqual({ only: "e2e" });
     // Every job the full gate needs is a Windows job or the lane gate's too: nothing weakens `gate`.
     // (`acceptance-windows` is the one Windows job in neither gate: the Windows acceptance run is evidence, not a requirement, until its rows are classed)
     for (const id of windows.filter((x) => x !== "acceptance-windows")) expect([id, gate.includes(id)]).toEqual([id, true]);
@@ -431,10 +435,16 @@ describe("the path-to-area map", () => {
     { name: "a fixture of the acceptance", files: ["scripts/acceptance/fixtures/acceptance-ui/moss.json"], areas: ["typecheck", "corelinux", "scripts", "acceptance"], units: "all" },
     { name: "the unit runner", files: ["scripts/ci/acceptance-unit.ts"], areas: ["typecheck", "corelinux", "scripts", "acceptance"], units: "all" },
     // CI's own scripts take no macOS leg of the scripts' darwin tests: none reads them.
-    { name: "the lane script", files: ["scripts/ci/lane"], areas: ["workspaces", "daemon", "app", "packages", "gallery", "typecheck", "lockfiles", "extension", "core", "corelinux", "windows", "cli", "scripts", "scriptsmac", "codegen", "verify", "tree", "link", "linuxrepo", "adapters", "acceptance"], units: "all" },
+    { name: "the lane script", files: ["scripts/ci/lane"], areas: ["workspaces", "daemon", "app", "packages", "gallery", "typecheck", "lockfiles", "extension", "core", "corelinux", "windows", "fenceguard", "cli", "scripts", "scriptsmac", "codegen", "verify", "tree", "link", "linuxrepo", "adapters", "acceptance"], units: "all" },
     { name: "the Windows fence's CI scripts", files: ["scripts/ci/windows-fence/hold-account.ts", "scripts/ci/windows-fence/remove.ps1"], areas: ["typecheck", "corelinux", "windows", "scripts"], units: [] },
     // The sources of the Windows-only core tests (the windows-fence unit job's step for the plugin host, the guard, the ACL read-back and the secrets store) start the `windows` area as well as the core's.
     { name: "a source the Windows-only core tests exercise", files: ["packages/core/src/platform/win-acl.ts", "packages/core/src/plugin-host/link.ts"], areas: ["workspaces", "daemon", "packages", "typecheck", "core", "windows", "cli", "scripts", "scriptsmac", "verify", "acceptance"], units: "all" },
+    // The fence, the approval checks and the Windows launcher's sources start the fence's guard (lane WS11): the windows-fence end-to-end job IN the lane gate.
+    { name: "the fence's source", files: ["packages/core/src/fence/win-fenced.ts"], areas: ["workspaces", "daemon", "packages", "typecheck", "core", "fenceguard", "cli", "scripts", "scriptsmac", "verify", "acceptance"], units: "all" },
+    { name: "the approval checks", files: ["packages/core/src/approvals/bot-check.ts"], areas: ["workspaces", "daemon", "packages", "typecheck", "core", "fenceguard", "cli", "scripts", "scriptsmac", "verify", "acceptance"], units: "all" },
+    { name: "the Windows launcher's build script", files: ["scripts/build-srt-win.ps1"], areas: ["typecheck", "corelinux", "fenceguard", "scripts", "scriptsmac"], units: [] },
+    { name: "the Windows launcher's patches", files: ["vendor/srt-win/patches/0001-x.patch"], areas: ["fenceguard", "scripts"], units: [] },
+    { name: "the Windows launcher's CI build", files: ["scripts/ci/windows-fence/build-launcher.ps1"], areas: ["typecheck", "corelinux", "windows", "fenceguard", "scripts"], units: [] },
     { name: "a script the macOS tests read", files: ["scripts/embed-runtimes.sh"], areas: ["typecheck", "corelinux", "scripts", "scriptsmac"], units: [] },
     // The shared packages start everything that builds on them.
     { name: "the protocol", files: ["packages/protocol/src/agents.ts", "packages/protocol/generated/moss/agents.json"], areas: ["workspaces", "daemon", "packages", "gallery", "typecheck", "core", "cli", "scripts", "codegen", "verify", "link", "acceptance"], units: "all" },
@@ -542,7 +552,7 @@ describe("regression list: the lanes of this week", () => {
     { lane: "devices and pairing settings", what: "DV: pairing by QR, device names, the relay choice", files: ["apps/moss/src/main/engine.ts","apps/moss/src/shared/view.ts","apps/moss/src/window/settings/SettingsPage.tsx","apps/moss/test/ma2-pages.test.tsx","docs/devices-map.md","packages/protocol/src/devices.ts","plugins/moss/plugins/settings/client/SettingsModal.tsx","packages/core/src/devices/names.ts","packages/core/src/ipc/device-links.ts","packages/core/src/links/pairing.ts","packages/core/test/ipc/device-links.test.ts","apps/desktop/src/main/ui/tree-calls.ts","apps/desktop/test/runtime.test.ts","apps/desktop/test/tree-calls.test.ts"],
       areas: ["workspaces","daemon","app","packages","gallery","typecheck","core","corelinux","cli","scripts","scriptsmac","codegen","verify","link","acceptance"], units: "all", macos: true },
     { lane: "Windows fence WS5/WS6", what: "WS: sandbox remove on Windows", files: ["packages/cli/src/main.ts","packages/core/src/fence/win-fenced.ts","packages/core/src/index.ts","packages/core/test/fence/win-fenced.e2e.test.ts","scripts/ci/windows-fence/remove.ps1","scripts/ci/windows-fence/hold-account.ts"],
-      areas: ["workspaces","daemon","packages","typecheck","core","corelinux","windows","cli","scripts","scriptsmac","verify","acceptance"], units: "all", macos: true },
+      areas: ["workspaces","daemon","packages","typecheck","core","corelinux","windows","fenceguard","cli","scripts","scriptsmac","verify","acceptance"], units: "all", macos: true },
     { lane: "push service", what: "the push service's topics per phone app", files: ["services/push/wrangler.jsonc","services/push/src/apns.ts","services/push/src/env.ts","services/push/src/fcm.ts","services/push/src/index.ts","services/push/src/push-do.ts","services/push/test/fake-log.ts","services/push/test/node/fakes.ts","services/push/test/notifier-integration.test.ts","services/push/test/push.test.ts","services/push/test/routing.test.ts","services/push/vitest.config.ts"],
       areas: ["workspaces","typecheck","scripts"], units: [], macos: true },
     { lane: "phone push routing", what: "the notifier, the registry and the engine's pairing record", files: ["plugins/moss/plugins/push/src/notifier.ts","packages/core/src/daemon.ts","packages/core/src/notify/core-updates.ts","packages/plugin-sdk/src/api/plugin-api.ts","packages/protocol/src/push-routing.ts","packages/protocol/test/push-routing.test.ts","plugins/moss/plugins/notifications/src/notifier.ts","packages/core/src/contracts/device-registry.ts","packages/core/src/devices/registry.ts","packages/core/src/identity/sas.ts","packages/core/src/links/pairing.ts","packages/core/test/ipc/link-clients.test.ts","packages/plugin-sdk/src/views.ts","packages/protocol/generated/moss/core.json"],
@@ -552,7 +562,7 @@ describe("regression list: the lanes of this week", () => {
     { lane: "agents early start", what: "the idle timer of an early-started agent", files: ["packages/core/src/agents/driver.ts"],
       areas: ["workspaces","daemon","packages","typecheck","core","cli","scripts","scriptsmac","verify","adapters","acceptance"], units: "all", macos: true },
     { lane: "CI lane wait", what: "scripts/ci/lane polls once a minute", files: ["scripts/ci/lane"],
-      areas: ["workspaces","daemon","app","packages","gallery","typecheck","lockfiles","extension","core","corelinux","windows","cli","scripts","scriptsmac","codegen","verify","tree","link","linuxrepo","adapters","acceptance"], units: "all", macos: true },
+      areas: ["workspaces","daemon","app","packages","gallery","typecheck","lockfiles","extension","core","corelinux","windows","fenceguard","cli","scripts","scriptsmac","codegen","verify","tree","link","linuxrepo","adapters","acceptance"], units: "all", macos: true },
     { lane: "composer model read", what: "the composer's model read and acceptance row 11", files: ["plugins/moss/plugins/composer/client/entry.tsx","scripts/acceptance/ui-steps.ts"],
       areas: ["workspaces","app","gallery","typecheck","corelinux","scripts","acceptance"], units: "all", macos: true },
     { lane: "core test only", what: "one engine test file", files: ["packages/core/test/fence/win-fenced.test.ts"],
@@ -584,14 +594,14 @@ describe("the scope a run states", () => {
 
   test("a scoped run says SCOPED RUN, how many areas ran and were skipped, and the acceptance units; a full one says FULL RUN", () => {
     const s = all(["apps/ios/project.yml"]);
-    expect(s.scope).toBe("SCOPED RUN: 1 of 24 areas ran, 23 skipped as untouched; 0 of 25 acceptance units (1 file(s) changed since 8ce5aef0b; a manual scoped run)");
+    expect(s.scope).toBe("SCOPED RUN: 1 of 25 areas ran, 24 skipped as untouched; 0 of 25 acceptance units (1 file(s) changed since 8ce5aef0b; a manual scoped run)");
     expect(s.ran).toEqual(["scripts"]);
     expect(s.skipped).toContain("acceptance");
     expect(all(undefined).scope).toStartWith("FULL RUN: every area, 25 of 25 acceptance units");
     // ... and it says the parked areas stayed out, and how to run them.
     expect(all(undefined).scope).toContain("parked, not run (none of their own sources changed): swift cowork; lane start --parked runs them");
     // CI's own definition runs every area but the installers and the parked ones: still a scoped run, which says so.
-    expect(all([".github/workflows/ci.yml"]).scope).toStartWith("SCOPED RUN: 21 of 24 areas ran, 3 skipped as untouched; 25 of 25 acceptance units");
+    expect(all([".github/workflows/ci.yml"]).scope).toStartWith("SCOPED RUN: 22 of 25 areas ran, 3 skipped as untouched; 25 of 25 acceptance units");
     expect(all([".github/workflows/ci.yml", "packaging/linux/after-install.sh"]).scope).toStartWith("FULL RUN: every area, 25 of 25 acceptance units, as the 2 file(s) changed since 8ce5aef0b touched them all");
     // A change to a parked area's own sources runs it, and the full run then has nothing left out but the installers' kind of skips.
     expect(all(["apple/ComputerUse/WinterBrowserHost/Sources/Host.swift"]).ran).toContain("swift");

@@ -116,6 +116,7 @@ jobs:
       acceptance: ${{ steps.areas.outputs.acceptance }}
       cowork: ${{ steps.areas.outputs.cowork }}
       windows: ${{ steps.areas.outputs.windows }}
+      fenceguard: ${{ steps.areas.outputs.fenceguard }}
       corelinux: ${{ steps.areas.outputs.corelinux }}
       # The acceptance units this run starts (a JSON list: the matrix of `acceptance` and `acceptance-linux`) and what the run says
       # about its own size (printed by `lane gate`, so a green gate is never mistaken for a full run).
@@ -804,11 +805,25 @@ jobs:
   # Windows Bash and PowerShell under MOSS's fence (lane WS; spec §4, §14.1 item 2), on windows-latest: the Windows
   # fence's unit tests, and setup, a bot's Bash and PowerShell and the node's Bash fenced for real, and remove
   # (.github/workflows/windows-fence.yml). Like the other Windows jobs: not on a pull request, and not in the lane gate.
+  # When the fence guard runs (below), its end-to-end job is that one's, not run twice.
   windows-fence:
     name: windows fence
     needs: changes
     if: github.event_name != 'pull_request' && (needs.changes.outputs.core == 'true' || needs.changes.outputs.cli == 'true' || needs.changes.outputs.windows == 'true')
     uses: ./.github/workflows/windows-fence.yml
+    with:
+      skip_e2e: ${{ needs.changes.outputs.fenceguard == 'true' }}
+
+  # The fence's guard IN the lane gate (lane WS11): for a change to the fence, the approval checks or the Windows launcher's sources,
+  # the windows-fence end-to-end job alone (the fence for real, the share refusal's guard, every refusal against a positive control),
+  # so a change that weakens the fence cannot reach an integration branch on a green lane gate. Not on a pull request.
+  windows-fence-guard:
+    name: windows fence guard
+    needs: changes
+    if: github.event_name != 'pull_request' && needs.changes.outputs.fenceguard == 'true'
+    uses: ./.github/workflows/windows-fence.yml
+    with:
+      only: e2e
 
   # The link sidecar (native/link, lane H's moss-link, iroh) on Windows and Linux, x64 and arm64: it is built, and
   # the core's link tests run over it on loopback (src/links/tests/sidecar.test.ts: pairing, a request, a 3 MiB
@@ -1556,7 +1571,7 @@ jobs:
   lane-gate:
     name: lane gate
     if: ${{ always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
-    needs: [changes, names, machine, sealed-core, workspaces-pr, packages, installers, tree, link, linux-repo-signatures, gallery, typecheck, lockfiles, test-extension, macos, core-linux, scripts, protocol-codegen, swift, acceptance, agent-adapters]
+    needs: [changes, names, machine, sealed-core, workspaces-pr, packages, installers, tree, link, linux-repo-signatures, gallery, typecheck, lockfiles, test-extension, macos, core-linux, scripts, protocol-codegen, swift, acceptance, agent-adapters, windows-fence-guard]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -1703,7 +1718,7 @@ jobs:
   gate:
     name: gate
     if: always()
-    needs: [changes, names, machine, machine-windows, sealed-core, sealed-core-windows, workspaces-pr, packages, installers, installers-windows, tree, tree-windows, link, link-windows, linux-repo-signatures, gallery, typecheck, lockfiles, test-extension, macos, core-linux, scripts, protocol-codegen, swift, windows-fence, agent-adapters]
+    needs: [changes, names, machine, machine-windows, sealed-core, sealed-core-windows, workspaces-pr, packages, installers, installers-windows, tree, tree-windows, link, link-windows, linux-repo-signatures, gallery, typecheck, lockfiles, test-extension, macos, core-linux, scripts, protocol-codegen, swift, windows-fence, agent-adapters, windows-fence-guard]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

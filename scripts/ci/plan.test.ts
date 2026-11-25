@@ -109,6 +109,16 @@ describe("planFor: the checks and macOS runners a run starts", () => {
     }
   });
 
+  test("a change to the fence, the approval checks or the Windows launcher's sources starts the fence's guard (lane WS11), which the lane gate needs; a pull request never does", () => {
+    for (const f of ["packages/core/src/fence/win-fenced.ts", "packages/core/src/approvals/bot-check.ts", "scripts/build-srt-win.ps1", "vendor/srt-win/patches/0001-x.patch", "scripts/ci/windows-fence/build-launcher.ps1"]) {
+      expect(planForFiles([f]).areas, f).toContain("fenceguard");
+      expect(ids([f]), f).toContain("windows-fence-guard");
+      expect(ids([f], "push"), f).toContain("windows-fence-guard");
+      expect(ids([f], "pull_request"), f).not.toContain("windows-fence-guard");
+    }
+    for (const f of ["packages/core/src/daemon.ts", ".github/workflows/ios.yml", "vendor/srt-win/README.md"]) expect(ids([f]), f).not.toContain("windows-fence-guard");
+  });
+
   test("a change to the Cowork launcher takes its Swift job and the patch queue's; nothing else does", () => {
     expect(ids(["apple/Cowork/WinterCoworkLauncher/Package.swift"])).toEqual(expect.arrayContaining(["swift-cowork-launcher", "libkrun-queue"]));
     expect(ids(["packages/core/src/daemon.ts"])).not.toContain("swift-cowork-launcher");

@@ -24,7 +24,7 @@ import { ON_GITHUB } from "./ci/acceptance-units";
 export type CiArea =
   | "workspaces" | "daemon" | "app" | "packages" | "installers" | "gallery" | "typecheck" | "lockfiles"
   | "extension" | "core" | "cli" | "scripts" | "scriptsmac" | "codegen" | "swift" | "verify" | "tree" | "link" | "linuxrepo" | "adapters"
-  | "acceptance" | "cowork" | "windows" | "corelinux";
+  | "acceptance" | "cowork" | "windows" | "corelinux" | "fenceguard";
 
 /** A path pattern: `dir/` is a prefix, a `*` matches within one segment, `**` across segments, else an exact path. A `!` in front
  *  takes the paths it matches back out of the patterns before it in the same list (an area's list only). */
@@ -121,6 +121,11 @@ export const CI_AREAS: Readonly<Record<CiArea, readonly Pattern[]>> = {
   // (and the sources of the Windows-only core tests that job runs: the plugin host's pipe link and process, the plugin guard's run folder, the ACL read-back, the caller probe, the secrets store)
   windows: [...WINDOWS_CI, "packages/core/src/plugin-host/", "packages/core/src/registry/plugin-run.ts", "packages/core/src/platform/win-acl.ts", "packages/core/src/platform/caller-probe.ts",
     "packages/core/src/secrets/", "packages/core/test/platform/win-acl.test.ts"],
+  // the fence and the approval checks, and the Windows launcher's own sources: the windows-fence end-to-end job as a guard IN the lane gate
+  // (`windows-fence-guard`, lane WS11), so a change that weakens the fence or its share refusal never reaches the integration branch green
+  // (and the guard's own test file: weakening the test weakens the guard)
+  fenceguard: ["packages/core/src/fence/", "packages/core/src/approvals/", "packages/core/test/fence/win-fenced.e2e.test.ts", "scripts/build-srt-win.ps1", "vendor/srt-win/patches/",
+    "scripts/ci/windows-fence/build-launcher.ps1"],
   cli: [...CORE, "packages/cli/"],
   // the repo scripts' tests read the core, the CLI, the app, the release inputs and the workflows; its job also runs the
   // repo-wide source scans (the native channel's anti-wiring test reads every package's src/ and scripts/), so any
