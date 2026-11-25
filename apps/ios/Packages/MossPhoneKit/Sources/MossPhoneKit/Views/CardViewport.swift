@@ -20,6 +20,13 @@ private struct CardViewportReader: ViewModifier {
     func body(content: Content) -> some View {
         content
             .environment(\.cardViewport, viewport)
+            // From the first layout on (a list that never scrolls has a viewport too): the scroll view's size less the
+            // bars it runs under (its safe area there).
+            .onGeometryChange(for: CGRect.self) { g in
+                CGRect(x: 0, y: g.safeAreaInsets.top, width: g.size.width,
+                       height: max(0, g.size.height - g.safeAreaInsets.top - g.safeAreaInsets.bottom))
+            } action: { new in viewport = new }
+            // And as it scrolls: what the bars cover, as the scroll view adjusts for it.
             .onScrollGeometryChange(for: CGRect.self) { g in
                 // `contentInsets` holds what the bars cover (the safe area the scroll view adjusts for).
                 CGRect(x: 0, y: g.contentInsets.top, width: g.containerSize.width,
