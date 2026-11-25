@@ -53,6 +53,7 @@ import { checkSegment, foldName, foldPath, hostOs, mayBeShortName } from "./name
 import { fdRealPath, isReparsePoint } from "./nofollow";
 import { FolderWatches, type TreeWatchEvent } from "./watch";
 import { judgePeer } from "./judge";
+import { peerReadRefusal, peerWriteRefusal } from "../fence/peer-floor";
 
 /** Who a call is for, and what a peer's change carries (review N2). */
 export interface HolderCall {
@@ -257,6 +258,12 @@ export class LocalHolder implements Holder {
   /** Makes the folders above an entry `realEntry` gave for a write, safely (inside its area, never through a link). */
   async makeParents(entry: { real: string; root: string }, path: string): Promise<void> {
     await this.#mkdirs(entry.root, dirname(entry.real), path);
+  }
+
+  /** Throws unless `call` may write the real path `real` here (an entry a transfer is about to land): the same
+   *  refusals a write of that path through the tree meets (`#fenced`: the memory rule, the peer floor, the fence). */
+  mayLand(real: string, call: HolderCall): void {
+    this.#fenced({ op: "write", path: real }, call);
   }
 
   /** Whether `call` may see (and so take) a real path here: the fence's read-denied items are hidden. */
@@ -938,6 +945,14 @@ export class LocalHolder implements Holder {
     if (op.op === "write" || op.op === "delete" || op.op === "move") {
       for (const p of op.op === "move" ? [op.path, op.to] : [op.path]) this.#asciiUnderMossHome(p);
     }
+    if (as.kind === "peer") {
+      const floor = { userHome: this.#o.home, mossHome: this.#o.mossHome ?? join(this.#o.home, MOSS_HOME_NAME), os: this.os };
+      const writes = op.op === "write" || op.op === "delete" || op.op === "move";
+      for (const p of op.op === "move" ? [op.path, op.to] : [op.path]) {
+        const why = writes ? peerWriteRefusal(p, floor) : peerReadRefusal(p, floor);
+        if (why !== undefined) throw new ContractError("fenced", `${why}: ${p}`, { computer: this.#o.name(), reason: "peer-floor" });
+      }
+    }
     const verdict = this.#check(op, as);
     if (!verdict.allowed) {
       throw new ContractError("fenced", fencedOutText(as, verdict.path), { computer: this.#o.name(), reason: verdict.reason });
@@ -1022,6 +1037,17 @@ export class LocalHolder implements Holder {
 
   /** The fence's verdict, as is and folded (review B1): refused when either refuses. */
   #check(op: FenceOp, as: Caller): FenceVerdict {
+    // Another computer's call: never more than a bot here (fence/peer-floor.ts, the same rule its Bash is held to): no
+    // write, removal or move onto a place that runs later, and none of the user's secret places, read or written.
+    if (as.kind === "peer") {
+      const floor = { userHome: this.#o.home, mossHome: this.#o.mossHome ?? join(this.#o.home, MOSS_HOME_NAME), os: this.os };
+      const writes = op.op === "write" || op.op === "delete" || op.op === "move";
+      for (const p of op.op === "move" ? [op.path, op.to] : [op.path]) {
+        const why = writes ? peerWriteRefusal(p, floor) : peerReadRefusal(p, floor);
+        // As the fence's own run-later kind (the verdict's closed list has no peer kind; `#fenced` says the real reason).
+        if (why !== undefined) return { allowed: false, path: p, reason: "login-start" };
+      }
+    }
     const fence = this.#o.fence;
     if (!fence) return { allowed: true };
     // The caller's reach for the pattern items (`bot-memory`, `sessions-runtime`), as `Fence.forCaller` binds it, and

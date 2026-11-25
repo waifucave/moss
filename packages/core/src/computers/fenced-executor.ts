@@ -4,11 +4,14 @@
 // unsandboxed: there is no fallback to a plain shell, and a spawner that can't start a fenced process here refuses
 // each call. The daemon's parts build it over their one MossFence (lane XC).
 //
-// The run is the caller's (`who`): a bot's own session gets its bot's reach, a coding session its own, and another
-// computer's call (a peer) the fence's floor. The child's environment is built here, whole: a fixed PATH, the user's
-// home and a temp folder (TMPDIR: a bot's own scratch folder for its own runs, the fence's temp folder for the rest),
-// nothing inherited from the daemon (no keys, no tokens).
-import { lstatSync } from "node:fs";
+// The run is the caller's (`who`): a bot's own session gets its bot's reach, a coding session its own. Another
+// computer's call (a peer) gets never more than a bot here (fence/peer-floor.ts): a fresh temp folder of its own for
+// the call, its one write root and its TMPDIR, removed after it; the user's secret places unread; the fence's set,
+// closed doors and network rule as for anyone. The child's environment is built here, whole: a fixed PATH, the user's
+// home and a temp folder (TMPDIR: a bot's own scratch folder for its own runs, the peer's own folder for a peer's,
+// the fence's temp folder for the rest), nothing inherited from the daemon (no keys, no tokens).
+import { lstatSync, mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import type { Caller, Os } from "@waifucave/moss-protocol";
 import { fenceContextFor, ownFoldersOf } from "../contracts/fence";
 import { mkdirNoLinks } from "../fence/fenced-process";
@@ -33,6 +36,10 @@ export interface FencedExecutorOptions {
    *  side thread runs with it as `TMPDIR`. */
   mossHome?: string;
   os: Os;
+  /** Another computer's call (a `peer`): the fenced process it runs on, built for its own fresh temp folder `root`, its
+   *  one write root (`peerFence`, fence/peer-floor.ts). The folder is made under `temp` for the call and removed
+   *  after it. Without it, a peer's command is refused here. */
+  peerSpawner?: (root: string) => FencedSpawner;
 }
 
 /** The PATH a fenced Bash call sees: the system's standard places, never the daemon's own PATH. */
@@ -64,13 +71,25 @@ export function fencedExecutor(o: FencedExecutorOptions): ToolExecutor {
       const timeoutMs = Math.min(asked, BASH_MAX_TIMEOUT_MS);
       if (ctx.signal.aborted) return { output: { stdout: "", stderr: "", code: null, aborted: true }, isError: true };
       let r: FencedRunResult;
+      // Another computer's call: its own fresh temp folder, its only write root (fence/peer-floor.ts), gone after it.
+      let peerRoot: string | undefined;
       try {
-        const tmp = tempFor(ctx.as);
+        let spawner = o.spawner;
+        let tmp: string | undefined;
+        if (ctx.as.kind === "peer") {
+          if (o.peerSpawner === undefined || o.temp === undefined) return { output: { error: "refused: this computer runs no commands for other computers" }, isError: true };
+          mkdirNoLinks(o.temp);
+          peerRoot = mkdtempSync(join(o.temp, "peer-"));
+          spawner = o.peerSpawner(peerRoot);
+          tmp = peerRoot;
+        } else tmp = tempFor(ctx.as);
         const env = { ...base, ...(tmp === undefined ? {} : { TMPDIR: tmp }) };
-        r = await o.spawner.run({ command: i.command, cwd: ctx.cwd, env, timeoutMs, signal: ctx.signal, who: { caller: ctx.as } });
+        r = await spawner.run({ command: i.command, cwd: ctx.cwd, env, timeoutMs, signal: ctx.signal, who: { caller: ctx.as } });
       } catch (e) {
         // A spawner that throws ran nothing we can vouch for: refused, with the reason.
         return { output: { error: `this computer's fenced process failed to start: ${e instanceof Error ? e.message : String(e)}` }, isError: true };
+      } finally {
+        if (peerRoot !== undefined) rmSync(peerRoot, { recursive: true, force: true });
       }
       if (r.kind === "refused") return { output: { error: `refused: ${r.reason}` }, isError: true };
       // The fenced process gives its output at the end; it goes to the caller's stream once, in order.

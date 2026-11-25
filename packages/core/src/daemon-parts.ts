@@ -29,6 +29,7 @@ import type { HookSource } from "./runtime-sdk/turn-loop/hooks";
 import type { CanUseTool, Options, SandboxSettingsConfig, SpawnClaudeCodeProcess } from "@waifucave/clover-agent-sdk";
 import type { AgentDefView, Caller } from "@waifucave/moss-protocol";
 import { fencedSpawner } from "./fence/fenced-process";
+import { peerFence } from "./fence/peer-floor";
 import { agentShellTools } from "./fence/win-shell-tools";
 import { browserAppHandlers } from "./browser/app-port";
 import { browserRpcHandlers } from "./browser/rpc-handlers";
@@ -184,6 +185,9 @@ export interface DaemonPartsInput {
    *  for none (Bash on the tree refused). Never unsandboxed: a spawner that can't fence here (no Seatbelt, no
    *  bubblewrap, a Windows fence not set up) refuses each call with the reason. A test's own `node.executor` wins. */
   spawner?: FencedSpawner | false;
+  /** Test seam: the fenced process for another computer's command, given its own write root. Default:
+   *  `fencedSpawner` over `peerFence(fence, root)`. */
+  peerSpawner?: (root: string) => FencedSpawner;
   /** The daemon's update gate: the bot side's running turns keep an update waiting. */
   updateGate?: BotSideOptions["updateGate"];
   /** Lane K's agents over the bot side's host; false for none. They need the node (the folder tree) and the bot side. */
@@ -388,7 +392,12 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
         ...(input.reviewer ? { reviewer: input.reviewer } : {}),
         // `temp`: the one fence's temp folder, which the fence lets every runner write: TMPDIR for every Bash run here
         // except a bot's own, which gets its scratch folder instead (`fencedExecutor`, from `mossHome`).
-        ...(input.spawner === false ? {} : { bash: { spawner: input.spawner ?? fencedSpawner({ fence }), home: input.userHome, mossHome: input.mossHome, temp: fence.temp } }),
+        // Another computer's command runs on a view of the same fence whose one write root is the call's own temp folder
+        // (fence/peer-floor.ts): never more than a bot here gets.
+        ...(input.spawner === false ? {} : { bash: {
+          spawner: input.spawner ?? fencedSpawner({ fence }), home: input.userHome, mossHome: input.mossHome, temp: fence.temp,
+          peerSpawner: input.peerSpawner ?? ((root: string) => fencedSpawner({ fence: peerFence(fence, root, { userHome: input.userHome, mossHome: input.mossHome, os: hostOs() }) })),
+        } }),
         answers: { devices: nodeLinks.devices, mossHome: input.mossHome, clock: input.clock },
         log: (line) => log(`[computers] ${line}`),
       });

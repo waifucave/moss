@@ -62,21 +62,26 @@ describe("fencedExecutor over a spawner", () => {
     expect(s.runs[0]!.env).toEqual({ PATH: fencedPath("macos"), HOME: "/Users/me", LANG: "en_US.UTF-8", TERM: "dumb", TMPDIR: "/private/tmp" });
   });
 
-  test("a bot's own run gets its own scratch folder as TMPDIR (made when missing); a link there, or another caller, gets the fence's", async () => {
+  test("a bot's own run gets its own scratch folder as TMPDIR (made when missing); a link there, or a coding session, gets the fence's; a peer its own fresh folder", async () => {
     const moss = join(temp("lane-j-exec-scratch-"), ".moss");
+    const shared = temp("lane-j-exec-temp-");
     const s = fake(() => ({ kind: "exited", code: 0, stdout: "", stderr: "", shell: "sh" }));
-    const exec = fencedExecutor({ spawner: s, home: "/Users/me", temp: "/private/tmp", mossHome: moss, os: "macos" });
+    const peerRoots: string[] = [];
+    const exec = fencedExecutor({ spawner: s, home: "/Users/me", temp: shared, mossHome: moss, os: "macos", peerSpawner: (root) => { peerRoots.push(root); return s; } });
     await exec.run("Bash", { command: "true" }, ctx());
     expect(s.runs[0]!.env.TMPDIR).toBe(`${moss}/scratch/luna`);
     expect(lstatSync(join(moss, "scratch", "luna")).isDirectory()).toBe(true);
     await exec.run("Bash", { command: "true" }, ctx({ as: { kind: "session", sessionId: "s_code", sessionKind: "coding" } }));
-    expect(s.runs[1]!.env.TMPDIR).toBe("/private/tmp");
+    expect(s.runs[1]!.env.TMPDIR).toBe(shared);
+    // Lane XC: a peer's own folder under the fence's temp folder, its one write root, made for the call and gone after.
     await exec.run("Bash", { command: "true" }, ctx({ as: PEER }));
-    expect(s.runs[2]!.env.TMPDIR).toBe("/private/tmp");
+    expect(s.runs[2]!.env.TMPDIR).toBe(peerRoots[0]);
+    expect(peerRoots[0]!.startsWith(join(shared, "peer-"))).toBe(true);
+    expect(existsSync(peerRoots[0]!)).toBe(false);
     // A link where a bot's scratch folder should be: never followed, the fence's temp folder instead.
     symlinkSync(temp("lane-j-exec-elsewhere-"), join(moss, "scratch", "alpha"));
     await exec.run("Bash", { command: "true" }, ctx({ as: { kind: "session", sessionId: "s_a", sessionKind: "bot", bot: "alpha" } }));
-    expect(s.runs[3]!.env.TMPDIR).toBe("/private/tmp");
+    expect(s.runs[3]!.env.TMPDIR).toBe(shared);
     // A link in a parent (`scratch/` itself) is refused too: nothing is made through it.
     const other = join(temp("lane-j-exec-parent-"), ".moss");
     mkdirSync(other, { recursive: true });
@@ -90,7 +95,7 @@ describe("fencedExecutor over a spawner", () => {
 
   test("another computer's call runs as that peer; a timeout asked for is capped", async () => {
     const s = fake(() => ({ kind: "exited", code: 3, stdout: "", stderr: "", shell: "sh" }));
-    const r = await fencedExecutor({ spawner: s, home: "/home/me", os: "linux" }).run("Bash", { command: "false", cwd: "home/Studio", timeoutMs: 24 * 3600 * 1000 }, ctx({ as: PEER }));
+    const r = await fencedExecutor({ spawner: fake(() => ({ kind: "refused", reason: "not this one" })), home: "/home/me", temp: temp("lane-j-exec-ptemp-"), os: "linux", peerSpawner: () => s }).run("Bash", { command: "false", cwd: "home/Studio", timeoutMs: 24 * 3600 * 1000 }, ctx({ as: PEER }));
     expect(r.isError).toBe(true);
     expect(s.runs[0]).toMatchObject({ timeoutMs: BASH_MAX_TIMEOUT_MS, who: { caller: PEER } });
     expect(s.runs[0]!.env.PATH).toBe(fencedPath("linux"));

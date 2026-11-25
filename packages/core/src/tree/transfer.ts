@@ -30,7 +30,7 @@ import type { FileHandle } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path";
 import { z } from "zod";
 import { FencingToken, Level, SessionId, SignedCardAnswer, TreePath, type Caller, type TurnOrigin } from "@waifucave/moss-protocol";
-import { ContractError, type Unsubscribe } from "../contracts/common";
+import { ContractError, isContractError, type Unsubscribe } from "../contracts/common";
 import type { Link, LinkStream, LinkTransport } from "../contracts/link-transport";
 import { transferChange, transferEndsHold } from "../contracts/tree";
 import { checkActFence, fenceParam, type ActFence } from "./fencing";
@@ -382,6 +382,19 @@ async function placeInto(staging: string, real: string, label: string, root?: st
   await fsp.rename(staging, real);
 }
 
+/** Every entry of what arrived in `staging`, judged at the real path it will have under `real` as the holder judges a
+ *  write there for `call` (`LocalHolder.mayLand`); the first refused one refuses the whole transfer. */
+async function landingsAllowed(holder: LocalHolder, call: HolderCall, staging: string, real: string): Promise<void> {
+  const walk = async (dir: string, rel: string): Promise<void> => {
+    const final = rel === "" ? real : join(real, rel);
+    holder.mayLand(final, call);
+    const st = await fsp.lstat(dir);
+    if (!st.isDirectory()) return;
+    for (const name of await fsp.readdir(dir)) await walk(join(dir, name), rel === "" ? name : join(rel, name));
+  };
+  await walk(staging, "");
+}
+
 /** The deepest folder above `real` that exists already: what a failure leaves in place. */
 async function existingAbove(real: string): Promise<string> {
   let d = dirname(real);
@@ -523,11 +536,14 @@ export function serveTransfer(o: TransferOptions): { receiveHere: (p: ReceivePar
     let got: { sendId: string; files: number; bytes: number };
     try {
       got = await receive(stream, staging);
+      // Each entry where it will land, as a write there: a folder that brings a `.git/hooks/…` or a shell's start file
+      // into a peer's reach is refused whole, as a peer's write of that one file is (fence/peer-floor.ts).
+      await landingsAllowed(o.holder, call, staging, dst.real);
       await placeInto(staging, dst.real, p.to, dst.root);
       o.holder.changedAt(dst.real);
     } catch (e) {
       await cleanUp(staging, above);
-      throw offlineAs(src.computer, e);
+      throw isContractError(e, "fenced") ? e : offlineAs(src.computer, e);
     }
     // In place: the source may let go of what it sent. A source that doesn't hear this keeps it (two copies, never none).
     let kept = 0;
