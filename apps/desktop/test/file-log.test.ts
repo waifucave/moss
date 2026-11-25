@@ -8,6 +8,7 @@ import { placeLine } from "../src/main/card-place";
 import { KEEP, REDUCE, fileLine } from "../src/main/file-log";
 import { isKnownTreeMethod, loggedMethod } from "../src/main/ui/tree-calls";
 import { ipcLine } from "../src/main/ui/ipc-stats";
+import { APP_LOG_LINE_MAX } from "../../../packages/app-release/src/app-log";
 import { EVIDENCE_LINES, unkeptEvidence } from "../../../scripts/acceptance/evidence-lines";
 
 const SECRET = "SECRETWORDS";
@@ -425,6 +426,17 @@ describe("what MOSS Code writes to its log file", () => {
   describe("the lines the acceptance run reads as evidence are lines the real build writes", () => {
     test("every evidence entry's example matches its pattern and is kept or reduced to its fixed part, never \"text not kept\"", () => {
       for (const e of EVIDENCE_LINES) expect([e.example, e.re.test(e.example), /\(text not kept in the file\)$/.test(fileLine(e.example))]).toEqual([e.example, true, false]);
+    });
+
+    test("a line the file cut at its length limit is not judged (it ends mid-pair), a whole one just under it is", () => {
+      const at = "2026-11-24T10:00:00.000Z ";
+      const pairs = (n: number) => Array.from({ length: n }, (_, i) => `name-${i} ${i}`).join(", ");
+      const whole = ipcLine({ seconds: 5, in: new Map(), out: new Map() } as never, []);
+      expect(unkeptEvidence(`${at}${whole}`, fileLine)).toEqual([]);
+      const cut = `ipc: 5 s in 1.0/s (${pairs(8)}) out 1.0/s (${pairs(8)}) cpu ${"Tab 1.0% ".repeat(60)}`.slice(0, APP_LOG_LINE_MAX);
+      expect(cut.length).toBe(APP_LOG_LINE_MAX);
+      expect(unkeptEvidence(`${at}${cut}`, fileLine)).toEqual([]);
+      expect(unkeptEvidence(`${at}${"audio: a reworded line ".padEnd(APP_LOG_LINE_MAX - 1, "x")}`, fileLine).length).toBe(1);
     });
 
     test("a run's log with an evidence line nobody classed fails (a reworded line, with the file's time before it), a classed one and an ordinary unclassed one do not", () => {

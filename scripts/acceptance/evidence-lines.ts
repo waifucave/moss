@@ -11,6 +11,8 @@
 // the app writes. apps/desktop/test/file-log.test.ts holds every example against `fileLine`, and holds this list against the
 // literal needles the steps read (so a step that starts relying on a new line has to add it here, and class it).
 
+import { APP_LOG_LINE_MAX } from "../../packages/app-release/src/app-log";
+
 export interface EvidenceLine {
   /** What the steps read it for. */
   readonly for: string;
@@ -64,6 +66,9 @@ export function unkeptEvidence(text: string, fileLine: (line: string) => string)
   for (const raw of text.split("\n")) {
     const line = lineOf(raw);
     if (line === "") continue;
+    // The file cuts a line at APP_LOG_LINE_MAX: a cut line ends mid-pair or mid-word, and `fileLine` (which a real build runs on the whole line,
+    // before the cut) cannot judge it. The whole line is what the check is for, so a cut one is not a finding.
+    if (raw.replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z /, "").length >= APP_LOG_LINE_MAX) continue;
     const hit = EVIDENCE_LINES.find((e) => e.re.test(line));
     if (hit !== undefined && UNKEPT.test(fileLine(line))) out.push({ line: line.slice(0, 200), for: hit.for });
   }
