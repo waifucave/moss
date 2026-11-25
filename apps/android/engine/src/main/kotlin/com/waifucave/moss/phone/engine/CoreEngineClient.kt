@@ -7,6 +7,7 @@ import android.util.Log
 import com.waifucave.moss.phone.client.EngineClient
 import com.waifucave.moss.phone.client.MessagePage
 import com.waifucave.moss.phone.model.*
+import com.waifucave.moss.phone.ui.drawable
 import com.waifucave.moss.phonecore.AnswerKeyHolder
 import com.waifucave.moss.phonecore.CardView
 import com.waifucave.moss.phonecore.ConnEvent
@@ -26,6 +27,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
@@ -310,13 +312,31 @@ class CoreEngineClient(
     )
 
     override suspend fun beginPairing(code: String): PairingProposal = io {
-        // The core reads the code and refuses anything that isn't a pairing QR (`Invalid` -> unreadable).
+        // The core reads the code and refuses anything that isn't a pairing QR (`Invalid` -> unreadable). A code that isn't
+        // even shaped like one (`<name>:<version>:<base64url>`) is refused here, before the core exists, so nothing is written.
         val qr = code.trim()
-        if (qr.isEmpty()) throw PairingException(PairingError.unreadableCode)
-        val pairing = try { phoneCore().beginPairing(qr, coreApp) } catch (e: CancellationException) { throw e } catch (e: Exception) { throw pairingError(e) }
+        if (!ReadBack.looksLikePairingCode(qr)) throw PairingException(PairingError.unreadableCode)
+        // Making the core makes this phone's keys and saves them. A first pairing that then fails leaves nothing behind:
+        // the store is wiped again, as it was.
+        val wasEmpty = core == null && store.itemCount() == 0
+        val pairing = try { phoneCore().beginPairing(qr, coreApp) } catch (e: CancellationException) {
+            if (wasEmpty) forgetIdentity(); throw e
+        } catch (e: Exception) {
+            if (wasEmpty) forgetIdentity(); throw pairingError(e)
+        }
         val id = UUID.randomUUID().toString()
         synchronized(this) { pairings[id] = pairing }
         PairingProposal(id, visibleText(pairing.computerName(), true), pairing.words())
+    }
+
+    /** The phone's keys, made for a first pairing that didn't happen, go again: the store is as it was before. */
+    private suspend fun forgetIdentity() = withContext(NonCancellable) {
+        lock.withLock {
+            if (conn != null) return@withLock
+            core?.let { c -> runCatching { c.shutdown() }; c.destroy() }
+            core = null
+            store.wipe()
+        }
     }
 
     override suspend fun confirmPairing(proposal: PairingProposal): PairedComputer = io {
@@ -376,6 +396,8 @@ class CoreEngineClient(
         // The card the screen drew must be exactly what this view draws: same hash, same content, the option one of its own.
         if (view.hash() != card.hash || cardOf(view) != card) throw IllegalStateException("the card on screen isn't the one the core issued")
         if (option.id !in view.options() || card.options.none { it == option }) throw IllegalArgumentException("not one of the card's options")
+        // A card holding something this phone can't draw is answered on the computer (the screen shows it with no buttons).
+        if (!card.drawable()) throw IllegalStateException("this card is answered on the computer")
         if (!view.pending()) throw CardAnswerException(if (view.outcome() == "expired") CardAnswerError.expired else CardAnswerError.answeredElsewhere)
         val outcome = try {
             c.answerCard(view, option.id, emptyList())

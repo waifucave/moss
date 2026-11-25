@@ -268,6 +268,19 @@ Bun.serve({
           return json({ decision: await Promise.race([d, Bun.sleep(60_000).then(() => "timeout")]) });
         }
         case "/restart": await restart(); return json({ ok: true });
+        case "/counts": {
+          // What a phone could have changed on this computer: the person's messages in the test bot's conversation and
+          // the coding session, the sessions, the bots, and files a phone staged (its uploads' folders).
+          const userMessages = async (id: string) => {
+            const r = await ok<{ events: { type: string }[] }>("session.history", { id, limit: 500 });
+            return r.events.filter((e) => e.type === "user_message").length;
+          };
+          const b = await bot();
+          const c = await coding();
+          const sessions = (await ok<{ sessions: unknown[] }>("session.list", {})).sessions.length;
+          const bots = (await ok<{ bots: unknown[] }>("bot.list", {})).bots.length;
+          return json({ botMessages: await userMessages(b.mainSession), codingMessages: await userMessages(c), sessions, bots });
+        }
         case "/phones": {
           const r = await ok<{ devices: { id: string; kind: string; app?: string }[] }>("device.list", {});
           return json(r.devices.filter((d) => d.kind === "phone").map((d) => ({ id: d.id, app: d.app ?? null })));

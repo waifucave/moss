@@ -41,6 +41,8 @@ class FakeEngineClient(
         tallQuestion,
         /** Paired; this phone already made its 5 bots today. */
         botLimit,
+        /** Paired; the one card waiting is the provider-consent card, whose provider is only in its `host` field. */
+        providerConsent,
     }
 
     class Failure(message: String) : Exception(message)
@@ -98,6 +100,7 @@ class FakeEngineClient(
                 paired = here.copy(lastSeen = SampleData.now - 30_000)
                 botList = mutableListOf(); summaryList = mutableListOf(); sessionList.clear(); cardList = mutableListOf()
             }
+            Scenario.providerConsent -> cardList = mutableListOf(SampleData.providerConsentCard)
             Scenario.cardStates -> {
                 // The first card ran out of time; the third one is answered on another device.
                 val i = cardList.indexOfFirst { it.id == "card_0a1b2c3d" }

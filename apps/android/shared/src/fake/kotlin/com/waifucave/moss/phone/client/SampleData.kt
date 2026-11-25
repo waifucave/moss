@@ -110,6 +110,20 @@ object SampleData {
         else -> listOf(ChatMessage("$id-1", MessageRole.agent, "Ready when you are.", ago(5000)))
     }
 
+    /** The engine's provider-consent card (`bots/provider-consent.ts`): the provider whose key gets used is only in `host`. */
+    val providerConsentCard = Card("card_9c8b7a6f", "change", computer = computerName, bot = "luna", origin = "user",
+        issuedAt = ago(30), expiresAt = Long.MAX_VALUE, hash = "c".repeat(64),
+        fields = linkedMapOf(
+            "title" to SealedValue.Text("Let this bot use a provider its plugin chose?"),
+            "what" to SealedValue.Text("This bot's plugin, not you, chose a model whose provider uses your stored key. A yes lets this bot use that provider with your key, and no other bot or provider."),
+            "reason" to SealedValue.Text("You can choose the model yourself in the bot's settings instead: then nothing asks."),
+            "source" to SealedValue.Code("luna"),
+            "host" to SealedValue.Code("fireworks"),
+            "command" to SealedValue.Code("fireworks/kimi-k3"),
+        ),
+        options = listOf(CardOption("deny", CardOption.Kind.deny, "No"), CardOption("approve", CardOption.Kind.approve, "Yes")),
+    )
+
     val cards: List<Card> = listOf(
         Card("card_0a1b2c3d", "tool", computer = computerName, session = "s_alpha", bot = "alpha", origin = "routine",
             issuedAt = ago(150), expiresAt = now + 450_000, hash = "a".repeat(64),

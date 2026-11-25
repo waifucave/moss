@@ -3,6 +3,8 @@ package com.waifucave.moss.phone.engine
 import com.waifucave.moss.phone.model.*
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.fail
@@ -85,5 +87,14 @@ class ReadBackTest {
         assertEquals("look", ReadBack.withTokens("look", 0, 0))
         assertEquals("look [Image #1] [File #1] [File #2]", ReadBack.withTokens("look", 1, 2))
         assertEquals("see [File #1] and this [Image #1]", ReadBack.withTokens("see [File #1] and this", 1, 1))
+    }
+
+    @Test fun onlyACodeShapedLikeAPairingQrMakesTheCore() {
+        assertTrue(ReadBack.looksLikePairingCode("moss-pair:1:" + "A".repeat(40)))
+        assertFalse(ReadBack.looksLikePairingCode(""))
+        assertFalse(ReadBack.looksLikePairingCode("hello"))
+        assertFalse(ReadBack.looksLikePairingCode("moss-pair:sample"))
+        assertFalse(ReadBack.looksLikePairingCode("moss-pair:1:short"))
+        assertFalse(ReadBack.looksLikePairingCode("https://example.com/x:1:" + "A".repeat(40)))
     }
 }

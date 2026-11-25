@@ -31,7 +31,6 @@ jobs:
   emulator:
     name: android apps · real engine · emulator
     runs-on: ubuntu-24.04
-    continue-on-error: true
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -85,6 +84,29 @@ jobs:
           :moss:assembleFakeDebug :code:assembleFakeDebug
           :moss:assembleRealDebug :code:assembleRealDebug
           :moss:assembleRealDebugAndroidTest :code:assembleRealDebugAndroidTest
+      # The real build must carry none of the fake build's test hooks: no fake client or sample data, no scenario, no sample
+      # message, file or pairing code. Its classes and resources are searched as bytes (dex strings are plain for ASCII).
+      - name: The real build holds no test hooks
+        working-directory: apps/android
+        run: |
+          set -euo pipefail
+          hooks=(FakeEngineClient SampleData FakeLaunch FakeComposer sendFails cardStates tallQuestion botLimit providerConsent midTurn
+                 "Can you also look at the invoice?" "Quarterly report.pdf" "Site backup.zip" "moss-pair:sample")
+          bad=0
+          for apk in moss/build/outputs/apk/real/debug/*.apk code/build/outputs/apk/real/debug/*.apk; do
+            dir=$(mktemp -d); unzip -qq "$apk" -d "$dir"
+            for h in "${hooks[@]}"; do
+              if grep -rlaF -- "$h" "$dir" >/dev/null; then echo "::error::$apk holds \"$h\""; bad=1; fi
+            done
+            rm -rf "$dir"
+          done
+          # The fake build is searched the same way, so the search is known to find what it looks for.
+          for apk in moss/build/outputs/apk/fake/debug/*.apk; do
+            dir=$(mktemp -d); unzip -qq "$apk" -d "$dir"
+            grep -rlaF -- "moss-pair:sample" "$dir" >/dev/null || { echo "::error::the search found nothing in the fake build"; bad=1; }
+            rm -rf "$dir"
+          done
+          exit $bad
       - name: Build moss-link
         run: cargo build --release --locked --manifest-path native/link/Cargo.toml
       - name: Install dependencies

@@ -19,6 +19,14 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     buildFeatures { compose = true }
+    // The engine client the screens run on: `real` (the real build's: no fake client, no sample data, nothing read from an
+    // Intent) or `fake` (FakeEngineClient, SampleData and FakeLaunch, for pictures, JVM tests and the fake build). The
+    // apps' flavours of the same name pick the matching one.
+    flavorDimensions += "engine"
+    productFlavors {
+        create("real") { dimension = "engine" }
+        create("fake") { dimension = "engine" }
+    }
     testOptions {
         unitTests {
             isIncludeAndroidResources = true

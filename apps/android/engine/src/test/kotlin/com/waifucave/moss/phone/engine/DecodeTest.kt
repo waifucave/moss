@@ -1,6 +1,7 @@
 package com.waifucave.moss.phone.engine
 
 import com.waifucave.moss.phone.model.*
+import com.waifucave.moss.phone.ui.drawable
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -35,9 +36,13 @@ class DecodeTest {
     }
 
     @Test
-    fun aCardWithAFieldOrOptionThePhoneCantDrawIsRefusedWhole() {
+    fun aCardWithAFieldThePhoneCantDrawIsShownWithoutButtonsAndAnUnreadableOptionDropsIt() {
         val field = """{"id":"card_123456","kind":"tool","issuedAt":1,"fields":{"title":{"type":"hologram"}},"options":[{"id":"a","kind":"approve","label":"A"}]}"""
-        assertNull(Decode.card(field, "x"))
+        val kept = Decode.card(field, "x")!!
+        assertEquals(SealedValue.Unsupported, kept.fields["title"])
+        assertTrue(!kept.drawable())
+        val unnamed = """{"id":"card_123456","kind":"tool","issuedAt":1,"fields":{"newfield":{"type":"text","text":"t"}},"options":[{"id":"a","kind":"approve","label":"A"}]}"""
+        assertTrue(!Decode.card(unnamed, "x")!!.drawable())
         val option = """{"id":"card_123456","kind":"tool","issuedAt":1,"fields":{},"options":[{"id":"a","kind":"maybe","label":"A"}]}"""
         assertNull(Decode.card(option, "x"))
         assertNull(Decode.card("not json", "x"))

@@ -57,8 +57,26 @@ object Sealed {
     }
 }
 
-private val ORDER = listOf("command", "paths", "detail", "reason", "risk", "computer")
-private val LABELS = mapOf("risk" to "Risk", "reason" to "Why", "paths" to "Files", "detail" to "Details")
+/**
+ * Every sealed field the protocol names (`CARD_FIELD_NAMES`, `packages/protocol/src/approvals.ts`), in its order; a test
+ * reads that list from the protocol, so a new field fails it until it is drawn here. A card is drawn with every field it
+ * carries: the title and what it asks at the top, the rest each under the label the desktop's card gives it
+ * (`FIELD_TITLES` in apps/desktop/src/main/sealed-pages.ts; `rule` has none there and reads "Rule").
+ */
+val CARD_FIELDS = listOf("title", "what", "command", "computer", "risk", "reason", "source", "host", "paths", "detail", "expires", "rule")
+val CARD_FIELD_LABELS = mapOf(
+    "title" to "What", "what" to "Tool", "command" to "Command", "computer" to "Computer", "risk" to "Risk", "reason" to "Why",
+    "source" to "From", "host" to "Site", "paths" to "Files", "detail" to "Everything it sends", "expires" to "Expires", "rule" to "Rule",
+)
+
+/** Whether this build can draw all of a card: every field one it knows, every value of a kind it draws. */
+fun Card.drawable(): Boolean = fields.all { (name, v) -> name in CARD_FIELDS && v !is SealedValue.Unsupported }
+
+/** What heads the card: its title and what it asks, when they are plain text (anything else is drawn as a labelled field). */
+private fun Card.headedBy(name: String): Boolean = (name == "title" || name == "what") && fields[name] is SealedValue.Text
+
+/** The computer goes in the footer when it is plain text. */
+private fun Card.footerComputer(): SealedValue.Text? = fields["computer"] as? SealedValue.Text
 
 /** A pending card: small, never raw JSON. Its title, what it asks, the command or paths it covers, and its sealed buttons. */
 @Composable
@@ -72,42 +90,44 @@ fun CardView(card: Card, busy: Boolean, note: CardNote?, onAnswer: (CardOption) 
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text(Sealed.visible(card.title), style = MossType.title, color = c.text, modifier = Modifier.semantics { heading() })
-            card.what?.let { Text(Sealed.visible(it), style = MossType.line, color = c.secondary) }
+            Text(Sealed.visible(if (card.headedBy("title")) card.title else "Needs your answer"), style = MossType.title, color = c.text, modifier = Modifier.semantics { heading() })
+            if (card.headedBy("what")) card.what?.let { Text(Sealed.visible(it), style = MossType.line, color = c.secondary) }
         }
-        for (name in ORDER) {
+        for (name in CARD_FIELDS) {
             val value = card.fields[name] ?: continue
-            when (value) {
-                is SealedValue.Text -> if (name != "computer") Labelled(name) {
-                    CutText(value.text, 600, expanded.contains(name), { expanded = expanded + name }, MossType.body)
-                }
-                is SealedValue.Code -> Box(Modifier.fillMaxWidth().background(c.code, RoundedCornerShape(10.dp)).padding(10.dp)) {
-                    CutText(value.code, 800, expanded.contains(name), { expanded = expanded + name }, MossType.footnote.copy(fontFamily = FontFamily.Monospace))
-                }
-                is SealedValue.ListOf -> Labelled(name) {
-                    Column {
-                        value.items.take(8).forEach { Text(Sealed.visible(it), style = MossType.footnote.copy(fontFamily = FontFamily.Monospace), color = c.text) }
-                        if (value.items.size > 8) Text("and ${value.items.size - 8} more", style = MossType.footnote, color = c.secondary)
+            if (card.headedBy(name) || (name == "computer" && card.footerComputer() != null)) continue
+            Labelled(name) {
+                when (value) {
+                    is SealedValue.Text -> CutText(value.text, 600, expanded.contains(name), { expanded = expanded + name }, MossType.body)
+                    is SealedValue.Code -> Box(Modifier.fillMaxWidth().background(c.code, RoundedCornerShape(10.dp)).padding(10.dp)) {
+                        CutText(value.code, 800, expanded.contains(name), { expanded = expanded + name }, MossType.footnote.copy(fontFamily = FontFamily.Monospace))
                     }
-                }
-                is SealedValue.Rows -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    value.rows.forEach { r ->
-                        if (large) Column {
-                            Text(Sealed.visible(r.label), style = MossType.body, color = c.secondary)
-                            Text(Sealed.visible(r.value), style = MossType.body, color = c.text)
-                        } else Row {
-                            Text(Sealed.visible(r.label), style = MossType.body, color = c.secondary)
-                            Spacer(Modifier.width(12.dp).weight(1f))
-                            Text(Sealed.visible(r.value), style = MossType.body, color = c.text)
+                    is SealedValue.ListOf -> Column {
+                        val shown = if (expanded.contains(name)) value.items else value.items.take(8)
+                        shown.forEach { Text(Sealed.visible(it), style = MossType.footnote.copy(fontFamily = FontFamily.Monospace), color = c.text) }
+                        if (shown.size < value.items.size) TextButton(onClick = { expanded = expanded + name }, contentPadding = PaddingValues(0.dp)) {
+                            Text("and ${value.items.size - shown.size} more. Show all", style = MossType.footnote.copy(textDecoration = TextDecoration.Underline), color = c.secondary)
                         }
                     }
+                    is SealedValue.Rows -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        value.rows.forEach { r ->
+                            if (large) Column {
+                                Text(Sealed.visible(r.label), style = MossType.body, color = c.secondary)
+                                Text(Sealed.visible(r.value), style = MossType.body, color = c.text)
+                            } else Row {
+                                Text(Sealed.visible(r.label), style = MossType.body, color = c.secondary)
+                                Spacer(Modifier.width(12.dp).weight(1f))
+                                Text(Sealed.visible(r.value), style = MossType.body, color = c.text)
+                            }
+                        }
+                    }
+                    SealedValue.Unsupported -> Text("Can't be shown on the phone", style = MossType.footnote, color = c.secondary)
                 }
-                else -> {}
             }
         }
         // The footer: which computer, and how long the card has left.
         Row(verticalAlignment = Alignment.CenterVertically) {
-            (card.fields["computer"] as? SealedValue.Text)?.let {
+            card.footerComputer()?.let {
                 Icon(Icons.Outlined.DesktopWindows, null, tint = c.secondary, modifier = Modifier.size(14.dp))
                 Spacer(Modifier.width(4.dp))
                 Text("on ${Sealed.visible(it.text)}", style = MossType.caption, color = c.secondary)
@@ -116,7 +136,11 @@ fun CardView(card: Card, busy: Boolean, note: CardNote?, onAnswer: (CardOption) 
             val left = (card.expiresAt - now) / 1000
             if (left > 0) Text("Expires in ${left / 60} min", style = MossType.caption, color = c.secondary)
         }
-        if (note != null) {
+        if (!card.drawable()) {
+            // A field this build can't draw: the person would approve less than what they were asked. No buttons.
+            Text("Answer this one on your computer: it holds something this phone can't show.", style = MossType.footnote, color = c.secondary,
+                modifier = Modifier.semantics { contentDescription = "Answer this one on your computer" })
+        } else if (note != null) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(if (note == CardNote.failed) Icons.Outlined.ErrorOutline else Icons.Outlined.TimerOff, null, tint = c.secondary, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
@@ -149,7 +173,7 @@ fun CardView(card: Card, busy: Boolean, note: CardNote?, onAnswer: (CardOption) 
 @Composable
 private fun Labelled(name: String, content: @Composable () -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        LABELS[name]?.let { Text(it, style = MossType.caption, color = MossTheme.colors.secondary) }
+        Text(CARD_FIELD_LABELS[name] ?: name, style = MossType.caption, color = MossTheme.colors.secondary)
         content()
     }
 }

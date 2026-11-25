@@ -3,6 +3,8 @@ package com.waifucave.moss.code.android
 import android.util.Log
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -42,6 +44,9 @@ object Runner {
     }
     fun json(path: String): JSONObject = JSONObject(text(path))
 }
+
+/** What another app puts in the extras: never on the real build's screen. */
+const val INJECTED = "INJECTED BY ANOTHER APP"
 
 /** Polls until `cond` holds, or fails naming what it waited for. */
 suspend fun eventually(what: String, ms: Long = 60_000, cond: suspend () -> Boolean) {
@@ -108,10 +113,25 @@ class CodeEndToEndTest {
             assertTrue("approved: $decision", decision.getBoolean("allowed"))
             Log.i(TAG, "the card was answered")
 
-            val scenario = ActivityScenario.launch(MainActivity::class.java)
+            // Another app starts the real build's activity with every extra the fake build reads (a scenario that sends on
+            // open, a draft, a file to stage, a session to start, a screen, a pairing code): the real build reads none of them.
+            val before = Runner.text("/counts")
+            val hostile = android.content.Intent(ctx, MainActivity::class.java).apply {
+                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                putExtra("scenario", "sendFails"); putExtra("draft", INJECTED); putExtra("file", true); putExtra("bigFile", true)
+                putExtra("startNew", true); putExtra("screen", "session"); putExtra("open", "$sessionId"); putExtra("newBotName", INJECTED)
+            }
+            val scenario = ActivityScenario.launch<MainActivity>(hostile)
             compose.waitUntil(60_000) { compose.onAllNodes(hasContentDescription("Phone test session.", substring = true)).fetchSemanticsNodes().isNotEmpty() }
+            // The person opens the conversation, as the hostile scenario wanted: nothing is sent, typed or staged.
+            compose.onAllNodes(hasContentDescription("Phone test session.", substring = true))[0].performClick()
+            delay(4_000)
+            compose.waitForIdle()
+            assertTrue("no injected draft", compose.onAllNodes(hasText(INJECTED, substring = true)).fetchSemanticsNodes().isEmpty())
+            assertTrue("no sample file", compose.onAllNodes(hasText("Quarterly", substring = true)).fetchSemanticsNodes().isEmpty())
+            assertEquals("nothing reached the engine", before, Runner.text("/counts"))
             scenario.close()
-            Log.i(TAG, "the app's screen shows the session")
+            Log.i(TAG, "the app's screen shows the session, and no extra reached the engine")
 
             Runner.text("/restart")
             eventually("the sessions again after the restart", 180_000) {

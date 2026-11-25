@@ -124,12 +124,13 @@ fun SettingsScreen(model: SettingsModel, appName: String, onUnpaired: () -> Unit
 }
 
 /**
- * First run: scan the code shown on the computer, check the four words, confirm. The same screen in both apps. With
- * `codeEntry` (the real engine client, until the camera scanner exists), the pairing code is pasted into a field instead
- * of the sample code's button.
+ * First run: scan the code shown on the computer, check the four words, confirm. The same screen in both apps. Until the
+ * camera scanner exists the pairing code is pasted into a field; the fake build's pictures pass a `sampleCode` and show
+ * the sample code's button instead.
  */
 @Composable
-fun PairingScreen(model: PairingModel, appName: String, codeEntry: Boolean = false, onPaired: (PairedComputer) -> Unit) {
+fun PairingScreen(model: PairingModel, appName: String, sampleCode: String? = null, onPaired: (PairedComputer) -> Unit) {
+    val codeEntry = sampleCode == null
     val c = MossTheme.colors
     val scope = rememberCoroutineScope()
     Scaffold(
@@ -168,7 +169,7 @@ fun PairingScreen(model: PairingModel, appName: String, codeEntry: Boolean = fal
                             Spacer(Modifier.height(10.dp))
                             Text("No camera here.", style = MossType.footnote, color = c.secondary)
                             Spacer(Modifier.height(10.dp))
-                            if (!codeEntry) FilledTonalButton(onClick = { scope.launch { model.scanned("moss-pair:sample") } }) { Text("Use a sample code") }
+                            sampleCode?.let { code -> FilledTonalButton(onClick = { scope.launch { model.scanned(code) } }) { Text("Use a sample code") } }
                         }
                         if (step == PairingModel.Step.Checking) CircularProgressIndicator(color = c.text)
                     }

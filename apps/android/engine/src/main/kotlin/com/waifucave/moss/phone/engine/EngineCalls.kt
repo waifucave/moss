@@ -40,21 +40,23 @@ object Decode {
             "code" -> o["code"].str()?.let { SealedValue.Code(clean(it), o["language"].str()?.let(clean)) }
             "list" -> SealedValue.ListOf(o["items"].arr().mapNotNull { it.str()?.let(clean) })
             "rows" -> SealedValue.Rows(o["rows"].arr().mapNotNull { r -> r["label"].str()?.let { l -> r["value"].str()?.let { SealedValue.Row(clean(l), clean(it)) } } })
-            else -> null
+            else -> SealedValue.Unsupported
         }
     }
 
     /**
      * A `Card` as the screens draw it, read from a card's JSON exactly as the core checked it (`CardView.card_json`), every
-     * string through `clean`. A card with a field or an option this phone can't draw is refused whole (`null`): a card is
-     * shown entire or not at all. `expiresAt: null` (a card the user's own turn raised never expires) reads as never.
+     * string through `clean`. A field of a kind this phone can't draw is kept as `Unsupported`, and a field the protocol
+     * doesn't name is kept as it is: the screen then shows the card with no buttons ("answer this one on your computer",
+     * `Card.drawable`), and the client refuses to answer it. An option this phone can't read drops the card (`null`).
+     * `expiresAt: null` (a card the user's own turn raised never expires) reads as never.
      */
     fun card(cardJson: String, hash: String, clean: (String) -> String = { it }): Card? {
         val o = parse(cardJson).obj() ?: return null
         val id = o["id"].str() ?: return null
         val kind = o["kind"].str() ?: return null
         val fields = linkedMapOf<String, SealedValue>()
-        for ((name, v) in o["fields"].obj() ?: JsonObject(emptyMap())) fields[name] = sealed(v, clean) ?: return null
+        for ((name, v) in o["fields"].obj() ?: JsonObject(emptyMap())) fields[name] = sealed(v, clean) ?: SealedValue.Unsupported
         val options = o["options"].arr().map { op ->
             val oid = op["id"].str() ?: return null
             val k = when (op["kind"].str()) { "approve" -> CardOption.Kind.approve; "deny" -> CardOption.Kind.deny; else -> return null }

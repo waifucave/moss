@@ -41,7 +41,7 @@ jobs:
         # The fake variants: the real ones need the shared core's native library and binding, built by android-engine.yml.
         run: gradle --no-daemon --stacktrace :moss:assembleFakeDebug :code:assembleFakeDebug
       - name: Tests and pictures
-        run: gradle --no-daemon --stacktrace :shared:recordRoborazziDebug
+        run: gradle --no-daemon --stacktrace :shared:recordRoborazziFakeDebug
       - name: Upload the pictures
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

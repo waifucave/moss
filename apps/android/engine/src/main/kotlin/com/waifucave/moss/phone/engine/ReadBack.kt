@@ -56,6 +56,9 @@ internal object ReadBack {
         return if (missing.isEmpty()) text else text + " " + missing.joinToString(" ")
     }
 
+    /** A pairing QR's shape (`<name>:<version>:<base64url>`): anything else is refused before the core is made. */
+    fun looksLikePairingCode(code: String): Boolean = Regex("^[a-z][a-z-]{0,31}:[0-9]{1,3}:[A-Za-z0-9_-]{16,8192}={0,2}$").matches(code)
+
     enum class Answer { accepted, stillPending, expired, answeredElsewhere }
 
     /**

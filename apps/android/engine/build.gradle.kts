@@ -16,6 +16,8 @@ android {
     compileSdk = 35
     defaultConfig {
         minSdk = 26
+        // :shared's real flavour: the engine client is the real build's alone.
+        missingDimensionStrategy("engine", "real")
         consumerProguardFiles("consumer-rules.pro")
     }
     sourceSets["main"].java.srcDir("phonecore/kotlin")

@@ -41,9 +41,12 @@ import kotlinx.coroutines.launch
 /** For pictures: what the composer starts with (real runs pass none). */
 data class ComposerPreset(
     val draft: String? = null, val focus: Boolean = false, val picker: Boolean = false,
-    /** Stage a sample file at the start; [bigFile] one over the limit, for the refusal. */
-    val file: Boolean = false, val bigFile: Boolean = false,
+    /** A sample file staged at the start; [bigFile] one over the limit, for the refusal (the fake build's pictures). */
+    val file: PresetFile? = null, val bigFile: PresetFile? = null,
 )
+
+/** A file a picture stages: a name and a size; its bytes are zeros (never read from anywhere). */
+data class PresetFile(val name: String, val size: Long)
 
 private sealed class Item {
     data class Divider(val key: String, val text: String) : Item()
@@ -68,8 +71,8 @@ fun ConversationScreen(model: ConversationModel, cards: CardsModel, onBack: () -
     LaunchedEffect(preset.draft) { preset.draft?.let { model.draft = it } }
     LaunchedEffect(model.offers != null) {
         if (model.offers == null) return@LaunchedEffect
-        if (preset.file && model.stagedFiles.isEmpty()) model.stageFile("Quarterly report.pdf", 1_240_000) { ByteArray(1_240_000) }
-        if (preset.bigFile) model.stageFile("Site backup.zip", 60_000_000) { null }
+        preset.file?.let { f -> if (model.stagedFiles.isEmpty()) model.stageFile(f.name, f.size) { ByteArray(f.size.toInt()) } }
+        preset.bigFile?.let { f -> model.stageFile(f.name, f.size) { null } }
     }
 
     val waitingCards = cards.cards.filter { card ->

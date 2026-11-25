@@ -98,6 +98,8 @@ sealed class SealedValue {
     data class ListOf(val items: List<String>) : SealedValue()
     data class Rows(val rows: List<Row>) : SealedValue()
     data class Row(val label: String, val value: String)
+    /** A value of a kind this build can't draw: the card is answered on the computer, never here. */
+    data object Unsupported : SealedValue()
 }
 
 /** A sealed button. The label is a plain string or a map by language on the wire; the phone keeps the one it shows. */

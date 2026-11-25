@@ -3,6 +3,8 @@ package com.waifucave.moss.android
 import android.util.Log
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -45,6 +47,9 @@ object Runner {
 
 /** A 1x1 PNG, for the picture a message carries. */
 const val PNG_1PX = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+
+/** What another app puts in the extras: never on the real build's screen. */
+const val INJECTED = "INJECTED BY ANOTHER APP"
 
 /** Polls until `cond` holds, or fails naming what it waited for. */
 suspend fun eventually(what: String, ms: Long = 60_000, cond: suspend () -> Boolean) {
@@ -138,19 +143,40 @@ class MossEndToEndTest {
             assertTrue("approved: $decision", decision.getBoolean("allowed"))
             Log.i(TAG, "the card was answered: $decision")
 
-            // The app's own screen on the same client shows the bot (a list row speaks as one description).
-            val scenario = ActivityScenario.launch(MainActivity::class.java)
+            // Another app starts the real build's activity with every extra the fake build reads (a scenario that sends on
+            // open, a draft, a file to stage, a session to start, a screen, a pairing code): the real build reads none of them.
+            val before = Runner.text("/counts")
+            val hostile = android.content.Intent(ctx, MainActivity::class.java).apply {
+                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                putExtra("scenario", "sendFails"); putExtra("draft", INJECTED); putExtra("file", true); putExtra("bigFile", true)
+                putExtra("startNew", true); putExtra("screen", "conversation"); putExtra("open", "$botId"); putExtra("newBotName", INJECTED)
+            }
+            val scenario = ActivityScenario.launch<MainActivity>(hostile)
             compose.waitUntil(60_000) { compose.onAllNodes(hasContentDescription("Echo.", substring = true)).fetchSemanticsNodes().isNotEmpty() }
+            // The person opens the conversation, as the hostile scenario wanted: nothing is sent, typed or staged.
+            compose.onAllNodes(hasContentDescription("Echo.", substring = true))[0].performClick()
+            delay(4_000)
+            compose.waitForIdle()
+            assertTrue("no injected draft", compose.onAllNodes(hasText(INJECTED, substring = true)).fetchSemanticsNodes().isEmpty())
+            assertTrue("no sample file", compose.onAllNodes(hasText("Quarterly", substring = true)).fetchSemanticsNodes().isEmpty())
+            assertEquals("nothing reached the engine", before, Runner.text("/counts"))
             scenario.close()
-            Log.i(TAG, "the app's screen shows the bot")
+            Log.i(TAG, "the app's screen shows the bot, and no extra reached the engine")
 
             // The engine restarts: the link comes back by itself, and the conversation goes on.
+            val sentBefore = Runner.json("/counts").getInt("botMessages")
             Runner.text("/restart")
+            eventually("the link back after the restart", 180_000) { client.connectionState() == ConnectionState.Connected }
+            // A send that fails is tried again only after the engine is read: a retry keeps the message's id, and the
+            // engine must hold the message once, however many tries it took.
+            conv.draft = "again after a restart"
             eventually("a message after the restart", 180_000) {
-                conv.draft = "again after a restart"
-                conv.send()
+                Runner.json("/counts").getInt("botMessages") > sentBefore || conv.send()
             }
             eventually("the reply after the restart", 120_000) { conv.messages.any { it.text == "Echo: again after a restart" } }
+            delay(3_000)
+            assertEquals("exactly one message arrived", sentBefore + 1, Runner.json("/counts").getInt("botMessages"))
+            assertEquals("one reply shown", 1, conv.messages.count { it.text == "Echo: again after a restart" })
             assertEquals(ConnectionState.Connected, client.connectionState())
             Log.i(TAG, "survived the restart")
             listening.cancel(); cardsListening.cancel()
