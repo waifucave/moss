@@ -601,7 +601,7 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     console.log(`[e2e] MEASURE dns: the DNS client's cache entries for the fenced name ${cached(fencedName) || "?"}, for the control's ${cached(controlName) || "?"}`);
     // WebDAV to a listener of this test's own (127.0.0.2:80; the WebClient service may not run on the runner: then neither does).
     let hits = 0;
-    let server: ReturnType<typeof Bun.listen> | undefined;
+    let server: import("bun").TCPSocketListener<undefined> | undefined;
     try { server = Bun.listen({ hostname: "127.0.0.2", port: 80, socket: { open(s) { hits++; s.end(); }, data() {} } }); } catch (e) { console.log(`[e2e] MEASURE webdav: no listener on 127.0.0.2:80 (${e instanceof Error ? e.message : String(e)})`); }
     if (server !== undefined) {
       await call(tools.Bash!, { command: "ls '//127.0.0.2@80/x' >/dev/null 2>&1; echo done", timeout: 60_000 });
