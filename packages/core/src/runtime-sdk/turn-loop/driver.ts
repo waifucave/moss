@@ -272,7 +272,7 @@ export interface BotDriverDeps {
     tools?: Pick<TreeTools, "run">;
     /** This computer's own floor for a call on another computer, before it goes there: why it is refused (a file tool's
      *  write to a place that runs later, by name: `runLaterByName`), or undefined. */
-    remoteFloor?: (tool: string, input: unknown) => string | undefined;
+    remoteFloor?: (tool: string, input: unknown, cwd?: string) => string | undefined;
   };
   /** The plugin registry, for `Glossary`'s skills, agent definitions, plugins and points. */
   registry?: GlossaryDeps["registry"];
@@ -658,6 +658,11 @@ export class BotSessionDriver implements SessionDriver {
    *  gone, while the card was open, and an allow given then must not run the call. */
   #gatedCanUseTool(inner: CanUseTool): CanUseTool {
     return async (name, input, opts) => {
+      // A call the hand-off answered (lane XC) ran on its holder, judged there: this computer's check never judges it (it
+      // would read another computer's path as one in this session's folder). Reached only when a hook asks after an
+      // answer, which none of this driver's does for such a call (#preTool sends a plugin's ask to the holder, and the
+      // session loads no settings' hooks); denying now would only misreport a call already run.
+      if (opts.toolUseID !== undefined && this.#remoteCalls.has(opts.toolUseID)) return { behavior: "allow", updatedInput: input };
       const r = await inner(name, input, opts);
       if (r === null || r.behavior !== "allow") {
         this.#dropCallId(name, opts.toolUseID);
@@ -789,7 +794,7 @@ export class BotSessionDriver implements SessionDriver {
         if (!route.online) return answer(`Error: computer offline: ${route.computer} is offline`, true);
         // This computer's own floors for the call, before anything runs there (the review's should-fix 3): a write by a
         // file tool to a place that runs later is refused by name, as bot-check refuses it for a path it can't resolve.
-        const floor = this.#d.tree?.remoteFloor?.(name, input.tool_input);
+        const floor = this.#d.tree?.remoteFloor?.(name, input.tool_input, route.cwd);
         if (floor !== undefined) return deny(floor);
         // The pause and the lease again, right before the call goes (the earlier hooks took time).
         const held = await this.#gate(signal);

@@ -155,6 +155,7 @@ import { endWindowsBackgroundOf, endWindowsBackgroundOn, stopWindowsBackground, 
 import { botCoreTools } from "./runtime-sdk/turn-loop/wiring";
 import { defaultTreeRoot } from "./tree/root";
 import { hostOs } from "./tree/names";
+import { treePathFor } from "./tree/tools";
 import { homedir, hostname } from "node:os";
 import { SystemClock } from "./clock/system-clock";
 import { DispatchChildren } from "./agent/dispatch-children";
@@ -5007,9 +5008,12 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
             // This computer's floor before a call goes to another (lane XC): a file tool's write to a place that runs
             // later is refused by its name, as bot-check refuses one whose path it can't resolve here; the holder
             // refuses it on its own disk too (fence/peer-floor.ts).
-            remoteFloor: (tool: string, input: unknown) => {
-              const path = (input as { file_path?: unknown } | null)?.file_path;
-              if ((tool !== "Write" && tool !== "Edit") || typeof path !== "string") return undefined;
+            remoteFloor: (tool: string, input: unknown, cwd?: string) => {
+              const given = (input as { file_path?: unknown } | null)?.file_path;
+              if ((tool !== "Write" && tool !== "Edit") || typeof given !== "string") return undefined;
+              // The path as the tree path it routes to (a relative one from the session's tree folder).
+              let path: string;
+              try { path = treePathFor(given, cwd); } catch { return undefined; }
               const rest = path.split("/").slice(2).join("/");
               // `home/<Other>/.moss/…` is that computer's MOSS home: its own fence decides there.
               return runLaterByName(`/tree/${rest}`, { os: hostOs(), userHome: "/tree", mossHome: "/tree/.moss" })

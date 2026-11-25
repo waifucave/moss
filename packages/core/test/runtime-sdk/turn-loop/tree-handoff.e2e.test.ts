@@ -183,7 +183,7 @@ describeWithEmbeddedRuntime("a bot's tools on another computer's files (lane XC,
         return { input };
       },
     };
-    const { driver } = driverOn(alpha, { hooks });
+    const { ctx, driver } = driverOn(alpha, { hooks });
     try {
       const r = results(await driver.turn(user([
         call("Write", { file_path: "home/Beta/scrubbed.md", content: "SECRET-TOKEN-123" }),
@@ -194,6 +194,7 @@ describeWithEmbeddedRuntime("a bot's tools on another computer's files (lane XC,
       expect(phone.shown.map((s) => s.computer)).toEqual(["Beta"]);
       expect(r[1]?.isError).toBe(false);
       expect(readFileSync(join(beta.home, "asked.md"), "utf8")).toBe("asked");
+      expect(existsSync(join(ctx.paths.scratch, "home"))).toBe(false);
     } finally {
       await driver.stop();
     }
@@ -201,7 +202,7 @@ describeWithEmbeddedRuntime("a bot's tools on another computer's files (lane XC,
 
   darwinTest("a read-only session (a routine's level) writes nothing on Beta, whatever Beta's level", async () => {
     const { alpha, beta } = await twoComputers();
-    const { driver } = driverOn(alpha, { level: "read-only" });
+    const { ctx, driver } = driverOn(alpha, { level: "read-only" });
     try {
       const r = results(await driver.turn(user([
         call("Write", { file_path: "home/Beta/x.md", content: "no" }),
@@ -212,6 +213,7 @@ describeWithEmbeddedRuntime("a bot's tools on another computer's files (lane XC,
       expect(r[1]?.isError).toBe(true);
       expect(existsSync(join(beta.home, "x.md"))).toBe(false);
       expect(existsSync(join(beta.home, "made-by-bash"))).toBe(false);
+      expect(existsSync(join(ctx.paths.scratch, "home"))).toBe(false);
     } finally {
       await driver.stop();
     }
@@ -220,11 +222,12 @@ describeWithEmbeddedRuntime("a bot's tools on another computer's files (lane XC,
   darwinTest("a bot whose level on Alpha is read-only writes nothing on Beta", async () => {
     const { alpha, beta } = await twoComputers();
     await alpha.node.registry.setLevel("Alpha", "read-only", { via: "terminal" });
-    const { driver } = driverOn(alpha);
+    const { ctx, driver } = driverOn(alpha);
     try {
       const r = results(await driver.turn(user(call("Write", { file_path: "home/Beta/y.md", content: "no" })), control()));
       expect(r[0]?.isError).toBe(true);
       expect(existsSync(join(beta.home, "y.md"))).toBe(false);
+      expect(existsSync(join(ctx.paths.scratch, "home"))).toBe(false);
     } finally {
       await driver.stop();
     }
@@ -236,13 +239,15 @@ describeWithEmbeddedRuntime("a bot's tools on another computer's files (lane XC,
     const may = { act: true };
     // The person pauses the bots while the card is open (the phone records the card as it shows it), then answers yes.
     phone.shown.push = (...cards) => { may.act = false; return Array.prototype.push.apply(phone.shown, cards); };
-    const { driver } = driverOn(alpha, { may });
+    const { ctx, driver } = driverOn(alpha, { may });
     try {
       const r = results(await driver.turn(user(call("Write", { file_path: "home/Beta/paused.md", content: "no" })), control()));
       expect(phone.shown).toHaveLength(1);
-      // The pause's own word for the call (the driver's, as for a local call held by the pause), and nothing written.
-      expect(r[0]?.content).toContain("Stopped");
+      // The hand-off's own error: the pause asked again after the yes, nothing written there, nothing here.
+      expect(r[0]?.isError).toBe(true);
+      expect(r[0]?.content).toContain("Error: Beta: Stopped");
       expect(existsSync(join(beta.home, "paused.md"))).toBe(false);
+      expect(existsSync(join(ctx.paths.scratch, "home"))).toBe(false);
     } finally {
       await driver.stop();
     }
@@ -251,11 +256,20 @@ describeWithEmbeddedRuntime("a bot's tools on another computer's files (lane XC,
   darwinTest("a file tool's write on Beta to a place that runs later is refused before it goes", async () => {
     const { alpha, beta } = await twoComputers();
     mkdirSync(join(beta.home, "repo", ".git"), { recursive: true });
-    const { driver } = driverOn(alpha);
+    const { ctx, driver } = driverOn(alpha);
     try {
-      const r = results(await driver.turn(user(call("Write", { file_path: "home/Beta/repo/.git/config", content: "[core]\n" })), control()));
+      const r = results(await driver.turn(user([
+        call("Write", { file_path: "home/Beta/repo/.git/config", content: "[core]\n" }),
+        // A file tool's relative path is the session's own folder (the runtime's), never the tree folder a Bash moved
+        // to (step 1a's design): after `cd home/Beta/repo` it doesn't reach Beta. (Here the approval is a stub that
+        // allows all; on a real computer bot-check refuses a run-later write in the session's folder too.)
+        call("Bash", { command: "cd home/Beta/repo" }),
+        call("Write", { file_path: ".git/config", content: "[core]\n" }),
+      ].join("\n")), control()));
       expect(r[0]?.content).toContain("runs later");
+      expect(r[2]?.content).not.toContain(beta.home);
       expect(existsSync(join(beta.home, "repo", ".git", "config"))).toBe(false);
+      expect(existsSync(join(ctx.paths.scratch, "home"))).toBe(false);
     } finally {
       await driver.stop();
     }
