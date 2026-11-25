@@ -5018,7 +5018,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
               // session's own folder.
               const req = botToolRequest(q.ctx, q.origin ?? "bot", q.tool, input, { localComputer: q.computer });
               const said = (s: string, n: number) => {
-                const one = s.toWellFormed().replace(/[\u0000-\u001f\u007f-\u009f\s]+/g, " ").trim();
+                // Control characters, and the bidi controls that would reorder what the card shows (U+202A to U+202E, U+2066 to U+2069), folded to spaces.
+                const one = s.toWellFormed().replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069\s]+/g, " ").trim();
                 return one.length > n ? `${one.slice(0, n - 1)}…` : one;
               };
               const plugin = q.plugin === undefined ? "A plugin" : said(q.plugin, 80);

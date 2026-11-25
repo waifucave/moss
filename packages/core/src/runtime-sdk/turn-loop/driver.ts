@@ -388,6 +388,8 @@ const TOOL_HOOK_TIMEOUT_S = 3600;
 /** The test-build define (scripts/build-daemon.ts): `false` in a release build, a label in a test build, undeclared from
  *  source. */
 declare const __MOSS_TEST_BUILD__: string | false | undefined;
+/** The longest answer the hand-off gives (agent SDK 0.0.87's `toolOutputReplacement` bound). */
+const TREE_ANSWER_MAX = 100_000;
 /** The most calls marked for the hand-off at once (lane XC): far above a turn's concurrent calls. */
 const REMOTE_MARKS_MAX = 256;
 /** How long a tool call waits for the pause to lift before it's refused, saying why (a minute inside the hook's hour). */
@@ -825,7 +827,11 @@ export class BotSessionDriver implements SessionDriver {
         // The one way out with a result: recorded on the mark as it answers (`#gatedCanUseTool` lets through only a call
         // answered here, never one merely marked), and kept for a second pass.
         const answer = (text: string, isError: boolean) => {
-          const out = { hookSpecificOutput: { hookEventName: "PreToolUse", toolResult: { content: text, isError } } };
+          // Clamped to what the runtime takes as a tool's answer (agent SDK 0.0.87, 100,000 characters) before it is kept.
+          // The kept answer stays bound to this first pass's input: a second pass (the runtime's re-evaluation) gets this
+          // answer whatever input it carries, and nothing runs again on the holder.
+          const content = text.length > TREE_ANSWER_MAX ? `${text.slice(0, TREE_ANSWER_MAX - 40)}\n… (cut at ${TREE_ANSWER_MAX} characters)` : text;
+          const out = { hookSpecificOutput: { hookEventName: "PreToolUse", toolResult: { content, isError } } };
           mark.answered = true;
           mark.result = out;
           return out;
