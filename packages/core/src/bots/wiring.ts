@@ -433,6 +433,8 @@ export function createBotSide(o: BotSideOptions): BotSide {
       // A session deletion a stop cut short is finished before anything opens (the deletion lane).
       await finishSessionDeletions({ home: o.home, ...deletionFiles(o.home), ...(o.warn ? { log: o.warn } : {}) });
       await bots.start();
+      // An answer the person gave that was recorded but not yet sent when the engine stopped is sent now, once.
+      for (const id of bots.botsRunHere()) await questions.replayUnsent(bots.mainSession(id)).catch((err: unknown) => o.warn?.(`${id}: replaying an unsent answer failed: ${err instanceof Error ? err.message : String(err)}`));
       await routines?.start();
       if (o.routines?.ingress?.poll !== false) ingress?.start();
     },

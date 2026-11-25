@@ -527,9 +527,12 @@ describe("a bot's question (AskUserQuestion)", () => {
 
   test("the person's answer or skip, which reaches the bot as a message of theirs, is drawn plainly with the question quoted small", () => {
     const q = JSON.stringify('Which model, "fast" or "slow"?');
-    expect(answerBubble(`My answer to your question ${q} (options: Use opus / Hold off): Use opus (note: soon)`)).toEqual({ text: "Answered: Use opus (note: soon)", quoted: 'Which model, "fast" or "slow"?' });
-    expect(answerBubble(`I skipped your question ${q} (options: a / b). Carry on without an answer.`)).toEqual({ text: "Skipped the question", quoted: 'Which model, "fast" or "slow"?' });
-    expect(messageOf({ type: "user_message", seq: 3, sessionId: "s", ts: 1, text: `I skipped your question ${q}. Carry on without an answer.` })).toMatchObject({ from: "user", text: "Skipped the question", quoted: 'Which model, "fast" or "slow"?' });
+    const ask = 'Which model, "fast" or "slow"?';
+    expect(answerBubble(`My answer to your question ${q} (options: "Use opus" / "Hold off"): chose "Use opus" (their note: soon)`)).toEqual({ text: "Answered: Use opus", quoted: ask });
+    expect(answerBubble(`My answer to your question ${q} (options: "a" / "b"): chose "a", "b"`)).toEqual({ text: "Answered: a, b", quoted: ask });
+    expect(answerBubble(`My answer to your question ${q}: their own words: terra`)).toEqual({ text: "Answered: terra", quoted: ask });
+    expect(answerBubble(`I skipped your question ${q} (options: "a" / "b"). Carry on without an answer.`)).toEqual({ text: "Skipped the question", quoted: ask });
+    expect(messageOf({ type: "user_message", seq: 3, sessionId: "s", ts: 1, text: `I skipped your question ${q}. Carry on without an answer.` })).toMatchObject({ from: "user", text: "Skipped the question", quoted: ask });
     expect(answerBubble("My answer to your questions:\n- a")).toBeUndefined();
     expect(answerBubble("hello")).toBeUndefined();
   });

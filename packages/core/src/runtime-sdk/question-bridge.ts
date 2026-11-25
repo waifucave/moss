@@ -40,7 +40,8 @@ export const AskUserQuestionInput = z.object({
     // In UTF-16 units under any zod (`utf16`), the strictest count: a header this takes is one the executor takes.
     header: utf16(12, 1),
     options: z.array(z.object({
-      label: z.string().min(1),
+      // One line: a label is written into the person's answer message, so a newline or control character in it is refused at ask time.
+      label: z.string().min(1).refine((l) => !/[\u0000-\u001f\u007f\u0085\u2028\u2029]/.test(l), { message: "an option's label is one line: no newline or control character" }),
       description: z.string().optional(),
       preview: z.string().optional(),
     })).max(4).refine((options) => options.length !== 1, {

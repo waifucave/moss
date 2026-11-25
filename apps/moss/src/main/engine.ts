@@ -40,14 +40,19 @@ export function notServed(err: unknown): boolean {
 export function answerBubble(text: string): { text: string; quoted: string } | undefined {
   const quote = String.raw`("(?:[^"\\]|\\.)*")`;
   const options = String.raw`(?: \(options: [^\n]*?\))?`;
-  const answered = new RegExp(`^My answer to your question ${quote}${options}: ([\\s\\S]*)$`).exec(text);
+  const answered = new RegExp(`^My answer to your question ${quote}${options}: (chose ("(?:[^"\\\\]|\\\\.)*"(?:, "(?:[^"\\\\]|\\\\.)*")*)|their own words: ([\\s\\S]*?))(?: \\(their note: [\\s\\S]*\\))?$`).exec(text);
   const skipped = new RegExp(`^I skipped your question ${quote}${options}\\. Carry on without an answer\\.$`).exec(text);
   const hit = answered ?? skipped;
   if (hit === null) return undefined;
   let question: unknown;
   try { question = JSON.parse(hit[1]!); } catch { return undefined; }
   if (typeof question !== "string") return undefined;
-  return { text: answered !== null ? `Answered: ${answered[2]!.trim()}` : "Skipped the question", quoted: question };
+  if (answered === null) return { text: "Skipped the question", quoted: question };
+  let said: string;
+  if (answered[3] !== undefined) {
+    try { said = (JSON.parse(`[${answered[3]}]`) as string[]).join(", "); } catch { return undefined; }
+  } else said = (answered[4] ?? "").trim();
+  return { text: `Answered: ${said}`, quoted: question };
 }
 
 /** One bot conversation event as a message, or undefined for what the window doesn't show as a bubble. The text stays
