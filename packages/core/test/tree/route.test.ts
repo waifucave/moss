@@ -26,7 +26,7 @@ async function two(join_ = true): Promise<{ a: TestComputer; b: TestComputer }> 
 }
 
 function routerOn(c: TestComputer, as: Caller = LUNA): TreeRouter {
-  return new TreeRouter({ directory: c.node.peers.directory(), resolve: (p, who) => c.node.tree.resolve(p, who) }, as);
+  return new TreeRouter({ directory: c.node.peers.directory(), resolve: (p, who) => c.node.tree.resolve(p, who), names: () => c.node.registry.list().map((x) => x.name) }, as);
 }
 
 describe("tree routes: local calls are untouched", () => {
@@ -36,8 +36,12 @@ describe("tree routes: local calls are untouched", () => {
     const local: [string, Record<string, unknown>][] = [
       ["Read", { file_path: "/etc/hosts" }],
       ["Read", { file_path: "notes.md" }],
-      ["Read", { file_path: "home/Nobody/x.txt" }],
       ["Read", { file_path: "homes/Beta/x.txt" }],
+      ["Read", { file_path: "bots/main.py" }],
+      ["Write", { file_path: "bots/helper/x.py", content: "x" }],
+      ["Glob", { pattern: "src/**/*.ts" }],
+      ["Glob", { pattern: "home*/x" }],
+      ["Grep", { pattern: "x", glob: "*.md" }],
       ["Write", { file_path: "out/a.txt", content: "x" }],
       ["Edit", { file_path: "/tmp/a", old_string: "a", new_string: "b" }],
       ["Glob", { pattern: "**/*.ts" }],
@@ -73,6 +77,60 @@ describe("tree routes: this computer's part of the tree", () => {
     const write = routerOn(a).route("Write", { file_path: "home/memory/people.md", content: "x" }) as Extract<TreeRoute, { kind: "here" }>;
     expect(write.input).toEqual({ file_path: join(a.mossHome, "bots", "luna", "memory", "people.md"), content: "x" });
     expect(routerOn(a, CODING).route("Read", { file_path: "home/memory/MEMORY.md" }).kind).toBe("refused");
+  });
+
+  test("home/Memory/ in any case is the memory, never a scratch folder of that name", async () => {
+    const { a } = await two();
+    for (const p of ["home/Memory/x.md", "home/MEMORY/x.md", "home/mEmOrY/x.md"]) {
+      const r = routerOn(a).route("Write", { file_path: p, content: "x" }) as Extract<TreeRoute, { kind: "here" }>;
+      expect([p, r.kind, r.input?.file_path]).toEqual([p, "here", join(a.mossHome, "bots", "luna", "memory", "x.md")]);
+    }
+  });
+
+  test("a name under home/ that no computer has is refused, naming the computers", async () => {
+    const { a } = await two();
+    const r = routerOn(a).route("Write", { file_path: "home/Studoi/x.md", content: "x" });
+    expect(r.kind).toBe("refused");
+    expect((r as { reason: string }).reason).toContain("no computer is called Studoi");
+    expect((r as { reason: string }).reason).toContain("Alpha");
+    expect((r as { reason: string }).reason).toContain("Beta");
+  });
+
+  test("bots/<bot>/ is the tree only for a bot the tree knows; a project's own bots/ folder stays local", async () => {
+    const { a } = await two();
+    const r = routerOn(a);
+    expect(r.route("Read", { file_path: "bots/luna/notes.md" })).toEqual({ kind: "here", input: { file_path: join(a.mossHome, "bots", "luna", "notes.md") } });
+    expect(r.route("Read", { file_path: "bots/helper/main.py" })).toEqual({ kind: "local" });
+  });
+
+  test("Glob with no path and a pattern that begins with a tree path searches that folder; Grep's glob too", async () => {
+    const { a } = await two();
+    const r = routerOn(a);
+    const mem = join(a.mossHome, "bots", "luna", "memory");
+    expect(r.route("Glob", { pattern: "home/memory/**/*.md" })).toEqual({ kind: "here", input: { pattern: "**/*.md", path: mem } });
+    expect(r.route("Glob", { pattern: "home/Memory/MEMORY.md" })).toEqual({ kind: "here", input: { pattern: "MEMORY.md", path: mem } });
+    expect(r.route("Grep", { pattern: "Ada", glob: "home/memory/*.md" })).toEqual({ kind: "here", input: { pattern: "Ada", glob: "*.md", path: mem } });
+    expect(r.route("Glob", { pattern: "home/Beta/src/*.ts" })).toEqual({ kind: "other", computer: "Beta", online: true });
+    expect(r.route("Glob", { pattern: "home/Studoi/*" }).kind).toBe("refused");
+  });
+
+  test("a plain mv or cp with both ends here runs on their real paths", async () => {
+    const { a } = await two();
+    const mem = join(a.mossHome, "bots", "luna", "memory");
+    expect(routerOn(a).route("Bash", { command: "mv home/memory/a.md home/memory/b.md" })).toEqual({ kind: "here", input: { command: `mv ${shellQuote(join(mem, "a.md"))} ${shellQuote(join(mem, "b.md"))}` } });
+    expect(routerOn(a).route("Bash", { command: "cp -r home/Alpha/site home/memory/site" })).toEqual({ kind: "here", input: { command: `cp -R ${shellQuote(join(a.home, "site"))} ${shellQuote(join(mem, "site"))}` } });
+  });
+
+  test("once a command has moved the shell's folder, its relative paths are that folder's, not the tree's (but another computer's cd still goes there)", async () => {
+    const { a } = await two();
+    const r = routerOn(a);
+    r.settled({ kind: "local" }, undefined, "cd /work/project && ls");
+    expect(r.route("Bash", { command: "cd bots/luna && ls" })).toEqual({ kind: "local" });
+    expect(r.route("Bash", { command: "mv home/memory/a home/memory/b" })).toEqual({ kind: "local" });
+    expect(r.route("Bash", { command: "cd home/Studoi && ls" })).toEqual({ kind: "local" });
+    expect(r.route("Bash", { command: "cd home/Beta/x && ls" })).toEqual({ kind: "other", computer: "Beta", online: true });
+    // The file tools' relative paths are always the start folder's.
+    expect(r.route("Read", { file_path: "home/memory/MEMORY.md" }).kind).toBe("here");
   });
 
   test("a tree path with . or .. or an empty part is refused, never resolved", async () => {
@@ -144,7 +202,7 @@ describe("tree routes: another computer", () => {
     const r = routerOn(a);
     expect(r.route("Bash", { command: "mv home/Alpha/report home/Beta/" })).toEqual({ kind: "other", computer: "Beta", online: true, cwd: "home/Alpha" });
     expect(r.route("Bash", { command: "cp -r home/Beta/site home/Alpha/site" })).toEqual({ kind: "other", computer: "Beta", online: true, cwd: "home/Alpha" });
-    expect(r.route("Bash", { command: "mv home/Alpha/a home/Alpha/b" })).toEqual({ kind: "local" });
+    expect(r.route("Bash", { command: "mv home/Alpha/a home/Alpha/b" })).toEqual({ kind: "here", input: { command: `mv ${shellQuote(join(a.home, "a"))} ${shellQuote(join(a.home, "b"))}` } });
     // An end that isn't written as a tree path is this computer's own: the runtime's Bash runs it, as before.
     expect(r.route("Bash", { command: "mv home/Alpha/../a home/Beta/" })).toEqual({ kind: "local" });
     expect(r.route("Bash", { command: "mv notes home/Beta/" })).toEqual({ kind: "local" });

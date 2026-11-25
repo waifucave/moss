@@ -224,7 +224,9 @@ describe("the main computer (§6.4, the lease faked until H-M2)", () => {
     const paths = botPaths(studio.home, "alpha");
     // Memory is named by its tree path, home/memory/ (stored in paths.memory, which the tree maps there); no memory tool.
     expect(block).toContain("- Your memory folder: home/memory/");
-    expect(block).not.toContain(`${paths.memory}/`);
+    // Lane XC: the real folder is named only as the spelling a shell command needs (a command doesn't know tree paths).
+    expect(block).toContain(`Inside a shell command it is ${paths.memory}/`);
+    expect(block.split(`${paths.memory}/`).length - 1).toBe(1);
     expect(block).toContain("write and edit them with Write and Edit");
     expect(block).toContain(`${paths.agents}/`);
     expect(block).toContain(`${paths.scratch}/ on Studio`);

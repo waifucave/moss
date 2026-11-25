@@ -53,7 +53,7 @@ export function memoryBlock(o: { paths: BotPaths; computer: string }): string {
   const lines = [
     "<memory>",
     "You keep a persistent memory of your own, across every conversation and restart, kept the same on all of the user's computers: Markdown files in one folder of your folder tree. Read them with Read, and write and edit them with Write and Edit; only your own conversation and side threads can reach it.",
-    `- Your memory folder: ${MEMORY_TREE_PATH}/`,
+    `- Your memory folder: ${MEMORY_TREE_PATH}/ (in Read, Write, Edit, Glob and Grep). Inside a shell command it is ${paths.memory}/: the shell doesn't know folder-tree paths other than a leading \`cd\`.`,
     `  ${MEMORY_INDEX} there is its index: one line for each memory file, with a link to it. Read the files it links to when they bear on what you are doing. When you learn something worth keeping (about the user, what they want, how they work, what you agreed), write it to a memory file and link it from ${MEMORY_INDEX}; when a memory turns out wrong, fix or remove it. Keep ${MEMORY_INDEX} short: only its first ${MEMORY_INDEX_MAX_LINES} lines are shown to you here.`,
     `- Your background agents' transcripts: ${paths.agents}/ (each task notification names its file).`,
     `- Scratch, for working files: ${paths.scratch}/ on ${o.computer}. It is never synced and isn't memory.`,

@@ -697,7 +697,9 @@ export class BotSessionDriver implements SessionDriver {
     if (this.#router === undefined) return { kind: "local" };
     try {
       const route = this.#router.route(name, toolInput);
-      if (name === "Bash" && route.kind !== "other" && route.kind !== "refused") this.#router.settled(route);
+      if (name === "Bash" && route.kind !== "other" && route.kind !== "refused") {
+        this.#router.settled(route, undefined, typeof (toolInput as { command?: unknown } | null)?.command === "string" ? (toolInput as { command: string }).command : undefined);
+      }
       return route;
     } catch (e) {
       return { kind: "refused", reason: `MOSS couldn't tell which computer this call runs on: ${e instanceof Error ? e.message : String(e)}` };
