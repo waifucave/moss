@@ -120,3 +120,14 @@ each `moss.json` `availability`). Every bundled host half now reads only the plu
   (`DEVICES_MANAGE`), `packages/plugin-sdk/src/catalogs/capabilities.ts`, `packages/core/src/devices/rpc.ts` (`askToAdd`, `drive`), `packages/core/src/ipc/core-events.ts` (`TERMINAL_ONLY_FIELDS`).
 - Proofs: see "Proven" under Pairing above. A live proof is owed for: a real network pair, the n0 relays, the short code through a
   deployed handshake service, and scanning the Settings QR with a real phone.
+
+## Calls on another computer: where the checks run
+
+With agent SDK 0.0.87 a call on another computer is answered inside PreToolUse, so the holder acts before the calling
+computer's final decision. The calling computer makes its checks first: the pause and the lease (again after any card);
+the plugins' tool.before (deny, rewrite, and an ask that raises the calling computer's own card for every tool); the tree
+router's refusals; the run-later floor for a file tool's write; and a level never wider than the session's own, the bot's
+on its computer, or the holder's. No later deny can come: the bot session's hooks are all MOSS's (no settings' hooks), the
+hand-off is the last of them, the session never runs in plan mode, the computer's saved rules and Tools-tab settings don't
+cover built-in tools, and the approval check passes only a call the hand-off answered. (Lane XC; the code:
+`packages/core/src/runtime-sdk/turn-loop/driver.ts`, `#treeHandOff`.)
