@@ -4,6 +4,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import type { Caller } from "@waifucave/moss-protocol";
+import { ContractError } from "../../src/contracts/common";
 import { TreeRouter, shellQuote, type TreeRoute } from "../../src/tree/route";
 import { Cluster, type TestComputer } from "./cluster-support";
 
@@ -118,7 +119,7 @@ describe("tree routes: this computer's part of the tree", () => {
     const { a } = await two();
     const mem = join(a.mossHome, "bots", "luna", "memory");
     expect(routerOn(a).route("Bash", { command: "mv home/memory/a.md home/memory/b.md" })).toEqual({ kind: "here", input: { command: `mv ${shellQuote(join(mem, "a.md"))} ${shellQuote(join(mem, "b.md"))}` } });
-    expect(routerOn(a).route("Bash", { command: "cp -r home/Alpha/site home/memory/site" })).toEqual({ kind: "here", input: { command: `cp -R ${shellQuote(join(a.home, "site"))} ${shellQuote(join(mem, "site"))}` } });
+    expect(routerOn(a).route("Bash", { command: "cp -r home/Alpha/site home/memory/site" })).toEqual({ kind: "here", input: { command: `cp -r ${shellQuote(join(a.home, "site"))} ${shellQuote(join(mem, "site"))}` } });
   });
 
   test("once a command has moved the shell's folder, its relative paths are that folder's, not the tree's (but another computer's cd still goes there)", async () => {
@@ -131,6 +132,44 @@ describe("tree routes: this computer's part of the tree", () => {
     expect(r.route("Bash", { command: "cd home/Beta/x && ls" })).toEqual({ kind: "other", computer: "Beta", online: true });
     // The file tools' relative paths are always the start folder's.
     expect(r.route("Read", { file_path: "home/memory/MEMORY.md" }).kind).toBe("here");
+  });
+
+  test("the review's nits: cp and mv keep their options as written; a .. in a split pattern's kept part is refused", async () => {
+    const { a } = await two();
+    const mem = join(a.mossHome, "bots", "luna", "memory");
+    const r = routerOn(a);
+    expect(r.route("Bash", { command: "cp -a home/memory/x home/memory/y" })).toEqual({ kind: "here", input: { command: `cp -a ${shellQuote(join(mem, "x"))} ${shellQuote(join(mem, "y"))}` } });
+    expect(r.route("Bash", { command: "cp -rf home/memory/x home/memory/y" })).toEqual({ kind: "here", input: { command: `cp -rf ${shellQuote(join(mem, "x"))} ${shellQuote(join(mem, "y"))}` } });
+    expect(r.route("Bash", { command: "mv -f home/memory/x home/memory/y" })).toEqual({ kind: "here", input: { command: `mv -f ${shellQuote(join(mem, "x"))} ${shellQuote(join(mem, "y"))}` } });
+    expect(r.route("Glob", { pattern: "home/memory/*/../../*.md" }).kind).toBe("refused");
+    expect(r.route("Grep", { pattern: "x", glob: "home/memory/**/../*" }).kind).toBe("refused");
+  });
+
+  test("after our own cd into this computer's tree, another leading cd into it still works; after the bot's own cd it is the shell's", async () => {
+    const { a } = await two();
+    const r = routerOn(a);
+    const first = "cd home/Alpha/p && ls";
+    const one = r.route("Bash", { command: first });
+    expect(one.kind).toBe("here");
+    r.settled(one, undefined, first);
+    expect(r.route("Bash", { command: "cd home/Alpha/q && ls" })).toEqual({ kind: "here", input: { command: `cd ${shellQuote(join(a.home, "q"))} && ls` } });
+    // Transfers aren't the tree's there: their relative ends are that folder's.
+    expect(r.route("Bash", { command: "mv home/memory/a home/memory/b" })).toEqual({ kind: "local" });
+    r.settled({ kind: "local" }, undefined, "cd /tmp && ls");
+    expect(r.route("Bash", { command: "cd home/Alpha/q && ls" })).toEqual({ kind: "local" });
+  });
+
+  test("bots/<a bot> whose computer hasn't said where its home is yet names the tree: refused or offline, never a local folder of that name", () => {
+    const offline = new ContractError("computer_offline", "Beta hasn't said where its home folder is yet", { computer: "Beta" });
+    const r = new TreeRouter({
+      directory: { self: () => "Alpha", get: (n) => (n === "Alpha" ? { name: "Alpha", aliases: [], online: true, level: "ask-risky" as never } : undefined) },
+      resolve: (p) => {
+        if (p.startsWith("bots/sol")) throw offline;
+        throw new ContractError("not_found", `no bot ${p.split("/")[1]}`);
+      },
+    }, LUNA);
+    expect(r.route("Write", { file_path: "bots/sol/x.md", content: "x" })).toEqual({ kind: "other", computer: "Beta", online: false });
+    expect(r.route("Write", { file_path: "bots/helper/x.md", content: "x" })).toEqual({ kind: "local" });
   });
 
   test("a tree path with . or .. or an empty part is refused, never resolved", async () => {

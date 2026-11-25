@@ -74,8 +74,10 @@ export class TreeRouter {
   readonly #as: Caller;
   /** Bash's folder on another computer, when a call left it there. */
   #treeCwd: string | undefined;
-  /** Whether a command of this session may have moved the runtime's shell out of its start folder. */
-  #shellMoved = false;
+  /** Where the runtime's shell is: its start folder; a folder of this computer's tree that our own rewritten `cd` put
+   *  it in (a leading `cd home/<this computer>/y` still names the tree there: no such folder is under it); or
+   *  anywhere, after a command of the bot's own that may have moved it. */
+  #shellAt: "start" | "tree" | "moved" = "start";
 
   constructor(deps: TreeRouteDeps, as: Caller) {
     this.#d = deps;
@@ -96,12 +98,14 @@ export class TreeRouter {
       if (name!.toLowerCase() === MEMORY_FOLDER) return `home/${MEMORY_FOLDER}${path.slice(head[0].length)}`;
       return this.#d.directory.get(name!) !== undefined ? path : "unknown";
     }
-    // `bots/<name>` only for a bot the tree knows (a project's own `bots/` folder stays the project's).
+    // `bots/<name>` only for a bot the tree knows (a project's own `bots/` folder stays the project's). A known bot
+    // whose computer hasn't said where its home is yet still names the tree (`#place` refuses it with the reason),
+    // never a folder of that name here.
     try {
       this.#d.resolve(`bots/${name}`, this.#as);
       return path;
-    } catch {
-      return undefined;
+    } catch (e) {
+      return isContractError(e) && e.code === "computer_offline" ? path : undefined;
     }
   }
 
@@ -148,6 +152,10 @@ export class TreeRouter {
     const split = splitPattern(i[key] as string);
     if (split === undefined) return LOCAL;
     const route = this.#fileRoute({ ...i, [key]: split.rest }, "path", split.root);
+    // The kept part searches below the tree folder: a `..` in it would climb out.
+    if (route.kind !== "local" && split.rest.split("/").includes("..")) {
+      return { kind: "refused", reason: `${i[key] as string}: a search pattern in the folder tree takes no ".." parts` };
+    }
     return route.kind === "local" ? LOCAL : route;
   }
 
@@ -159,9 +167,10 @@ export class TreeRouter {
     return { kind: "other", computer: p.other, online: p.online };
   }
 
-  /** A relative path in a command names the tree only while the shell is in the session's start folder. */
-  #bashPlace(path: string): Place | null {
-    return this.#shellMoved ? null : this.#place(path);
+  /** A relative path in a command names the tree only while the shell is in the session's start folder; a leading
+   *  `cd` also while our own `cd` put the shell in a tree folder. */
+  #bashPlace(path: string, leadingCd = false): Place | null {
+    return this.#shellAt === "start" || (leadingCd && this.#shellAt === "tree") ? this.#place(path) : null;
   }
 
   #bash(i: Record<string, unknown>): TreeRoute {
@@ -173,7 +182,7 @@ export class TreeRouter {
       // Into another computer's folder, a `cd` goes there wherever the shell is (the spec's `cd home/Studio/x && …`;
       // nothing of this computer's is touched). Into this computer's tree, only from the start folder.
       const anywhere = this.#place(folder);
-      const p = anywhere !== null && "other" in anywhere ? anywhere : this.#bashPlace(folder);
+      const p = anywhere !== null && "other" in anywhere ? anywhere : this.#bashPlace(folder, true);
       if (p === null) {
         // A `cd` to a folder that isn't in the tree: this computer's own, as before. A relative one while the folder
         // is on another computer is relative to that folder, as in a shell.
@@ -201,7 +210,9 @@ export class TreeRouter {
       // Both ends here: the same command on their real paths.
       if (ends.every((e) => e !== null && "here" in e)) {
         const [from, to] = ends as { here: string }[];
-        return { kind: "here", input: { ...i, command: `${t.move ? "mv" : `cp${t.recursive ? " -R" : ""}`} ${shellQuote(from!.here)} ${shellQuote(to!.here)}` } };
+        // The verb and its options exactly as written (`transferCommand` takes only -r, -R, -a and -f).
+        const head = /^\s*(mv|cp)((?:\s+-[rRaf]+)*)/.exec(command)!;
+        return { kind: "here", input: { ...i, command: `${head[1]}${head[2]} ${shellQuote(from!.here)} ${shellQuote(to!.here)}` } };
       }
     }
     return LOCAL;
@@ -225,9 +236,18 @@ export class TreeRouter {
     }
     if (route.kind !== "here" && route.kind !== "local") return;
     this.#treeCwd = undefined;
-    // The command as it ran here: a `cd` (ours to a real folder, or the bot's own) moves the shell out of its start folder.
+    // The command as it ran here. Our own leading `cd` to a tree folder, with nothing after it that moves the shell,
+    // leaves it in a known tree folder; any other `cd`, `pushd` or `popd` leaves it anywhere.
+    if (route.kind === "here" && typeof command === "string") {
+      const m = LEADING_CD.exec(command);
+      const rest = m?.[6] ?? "";
+      if (m && !MOVES_FOLDER.test(rest)) {
+        if (this.#shellAt !== "moved") this.#shellAt = "tree";
+        return;
+      }
+    }
     const ran = route.kind === "here" ? route.input.command : command;
-    if (typeof ran === "string" && MOVES_FOLDER.test(ran)) this.#shellMoved = true;
+    if (typeof ran === "string" && MOVES_FOLDER.test(ran)) this.#shellAt = "moved";
   }
 }
 
