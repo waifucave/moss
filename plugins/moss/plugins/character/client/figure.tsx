@@ -189,11 +189,17 @@ export function Figure({ place, session }: { place: "panel" | "screen"; session?
   const state = now?.state;
   const names = link.report?.names;
   const canPace = format?.capabilities.includes("pace") === true;
+  // Keyed by the format's NAME, never the object: `useFigure` makes the format list again at every render, so keyed by the object
+  // this ran at every render and sent every cue each time; each cue makes the renderer report (names, box), which renders again,
+  // which sent the cues again: a loop that held the plugin at its calls-per-second cap and starved its other reads (the pick
+  // changing to another renderer's format never took).
+  const formatName = format?.format;
+  const hasFormat = format !== undefined;
   useEffect(() => {
-    if (state === undefined || format === undefined) return;
+    if (state === undefined || !hasFormat) return;
     for (const c of cuesFor(state, names, canPace)) send(c);
     // A new state (or a model that loaded) plays its cues once.
-  }, [state, names, canPace, format]);
+  }, [state, names, canPace, formatName, hasFormat]);
 
   if (!ready) return null;
   const portrait = shown?.portrait === undefined ? undefined : <img className="cl-figure__portrait" src={shown.portrait} alt="" />;

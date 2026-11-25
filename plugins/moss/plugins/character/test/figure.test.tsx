@@ -161,6 +161,26 @@ describe("the figure in its panel", () => {
   });
 });
 
+describe("a figure that renders again plays nothing again (a loop that starved the format switch)", () => {
+  test("renders caused by other sessions' activity, a renderer's box reports and a settings read send no cue: a state's cues play once, not once per render", async () => {
+    const m = await mount({ packs: [pack("p", "a", "/_t/p/a.model3.json", "live2d")], formats: [format("moss/live2d", "live2d", ["expressions", "pace"])], activity: [{ subject: { kind: "sessions", id: "s1" }, state: "idle", since: 1 }] });
+    const mountId = m.drawn()!.mount as string;
+    await act(async () => { m.api.deliver(RENDERER, "moss/live2d", { mount: mountId, names: { expressions: ["Happy"], motions: [], outfits: [] } }); await settle(4); });
+    const cues = () => m.api.sent.filter((s) => s.point === RENDERER && (s.value as { cue?: unknown }).cue !== undefined).length;
+    const before = cues();
+    expect(before).toBeGreaterThan(0);
+    for (let i = 0; i < 20; i++) {
+      await act(async () => {
+        m.activity({ subject: { kind: "sessions", id: `other${i}` }, state: "working", since: 10 + i });
+        m.api.deliver(RENDERER, "moss/live2d", { mount: mountId, box: { canvas: { width: 300 + i, height: 500 }, figure: { x: 0, y: 0, width: 100 + i, height: 200 } } });
+        await settle(2);
+      });
+    }
+    // The state the panel follows did not change, and neither did the model's names: no cue goes out again.
+    expect(cues()).toBe(before);
+  });
+});
+
 describe("what a state asks of the figure", () => {
   test("the expression the model has by a usual name (any case), and the pace only where the renderer does it", () => {
     expect(cuesFor("done", { expressions: ["Smile", "Joy"], motions: [], outfits: [] }, true)).toEqual([{ type: "expression", name: "Joy" }, { type: "pace", calm: true }]);

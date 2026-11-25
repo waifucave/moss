@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { IpcStats, cpuMeter, ipcLine, ipcStatsOn, parseIpcLine, startIpcStats } from "../src/main/ui/ipc-stats";
+import { IpcStats, NAMED_EVENTS, cpuMeter, ipcLine, ipcStatsOn, parseIpcLine, startIpcStats } from "../src/main/ui/ipc-stats";
 
 describe("the IPC counter", () => {
   test("counts by channel and message type, and a take starts a fresh window", () => {
@@ -70,14 +70,17 @@ describe("the IPC counter", () => {
 });
 
 describe("the call detail", () => {
-  test("names the kinds of call and event a part is looping on, after the cpu words, and the line still parses", () => {
+  test("names only the app's own fixed method and event names, after the cpu words, and the line still parses", () => {
     const stats = new IpcStats();
-    for (let i = 0; i < 5; i++) stats.detail("plugin.layer.call:points.entries");
-    stats.detail("ev:plugin_changed");
-    stats.detail("a b/c id=secret");
+    for (let i = 0; i < 5; i++) stats.detail("plugin.layer.call:points.entries", true);
+    stats.detail("ev:plugin_changed", NAMED_EVENTS.has("plugin_changed"));
+    stats.detail("a b/c id=secret", false); // a name the app did not fix: counted as `other`, its text dropped
+    stats.detail("ev:my_plugin_chose_this", NAMED_EVENTS.has("my_plugin_chose_this"));
     const line = ipcLine(stats.take(5), [{ type: "Browser", percent: 1 }]);
     expect(line).toContain("calls (plugin.layer.call:points.entries 5");
-    expect(line).toContain("abcidsecret 1"); // spaces, slashes and equals signs never get through
+    expect(line).toContain("other 2");
+    expect(line).not.toContain("secret");
+    expect(line).not.toContain("my_plugin_chose_this");
     expect(parseIpcLine(line)).toMatchObject({ seconds: 5, cpu: [{ type: "Browser", percent: 1 }] });
   });
 });

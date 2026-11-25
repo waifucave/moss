@@ -7,7 +7,7 @@
 // With none picked (or the pick gone), the first pack whose format a renderer draws stands in.
 import type { PointEntry } from "@waifucave/moss-plugin-sdk";
 import { usePluginApi } from "@waifucave/moss-plugin-sdk/ui";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { cleanFigureCapabilities, type FigureCapability } from "./figure-cues";
 
 export const RENDERER_SPOT = "moss.character.renderer";
@@ -134,8 +134,11 @@ export function useFigure(): { choices: FigureChoice[]; formats: FormatDecl[]; s
   const packs = usePoint(PACKS_POINT);
   const formatEntries = usePoint(FORMATS_POINT);
   const pick = useSetting<string>("figure") ?? "";
-  const own = ownModelsOf(useSetting<string>("ownModels"));
-  const formats = formatsOf(formatEntries ?? []);
-  const choices = choicesOf(packs ?? [], own);
-  return { choices, formats, shown: chosen(pick, choices, formats), pick, ready: packs !== undefined && formatEntries !== undefined };
+  const ownRaw = useSetting<string>("ownModels");
+  // Made again only when what they come from changes: a new list at every render made everything keyed by them run again.
+  const own = useMemo(() => ownModelsOf(ownRaw), [ownRaw]);
+  const formats = useMemo(() => formatsOf(formatEntries ?? []), [formatEntries]);
+  const choices = useMemo(() => choicesOf(packs ?? [], own), [packs, own]);
+  const shown = useMemo(() => chosen(pick, choices, formats), [pick, choices, formats]);
+  return { choices, formats, shown, pick, ready: packs !== undefined && formatEntries !== undefined };
 }

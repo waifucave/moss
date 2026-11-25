@@ -20,7 +20,8 @@ import { iconRequest } from "./plugin-icon";
 import { routeComposer } from "./composer-calls";
 import { cleanReport, hearsShell, providedNow, routeShell } from "./shell-calls";
 import type { UiPlugin } from "./model";
-import type { IpcStats } from "./ipc-stats";
+import { NAMED_EVENTS, NAMED_METHODS, type IpcStats } from "./ipc-stats";
+import { isComponentCall } from "@waifucave/moss-plugin-sdk";
 import type { AppNote } from "./web-views";
 import { mayPlaceAppView } from "./app-page";
 
@@ -503,7 +504,7 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
     const f = webFrameMain.fromId(frame.processId, frame.routingId);
     if (f === undefined || f === null || f.detached) return;
     stats?.sent(message.type);
-    if (stats !== undefined && message.type === "api-event") { const t = (message as { params?: { type?: unknown } }).params?.type; if (typeof t === "string") stats.detail(`ev:${t}`); }
+    if (stats !== undefined && message.type === "api-event") { const t = (message as { params?: { type?: unknown } }).params?.type; if (typeof t === "string") stats.detail(`ev:${t}`, NAMED_EVENTS.has(t)); }
     f.send("moss:message", message);
   };
   const handle = (channel: string, fn: (event: IpcMainInvokeEvent, arg: Record<string, unknown>) => unknown) =>
@@ -733,7 +734,11 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
     const mount = str(a.mount, 32);
     const method = str(a.method, 128);
     if (mount === undefined || method === undefined) throw new LayerError("bad request");
-    if (stats !== undefined) { const call = (a.params as { call?: unknown } | undefined)?.call; stats.detail(`${method}${typeof call === "string" ? `:${call}` : ""}`); }
+    if (stats !== undefined) {
+      const call = (a.params as { call?: unknown } | undefined)?.call;
+      const named = typeof call === "string" && isComponentCall(call) ? `${method}:${call}` : method;
+      stats.detail(named, NAMED_METHODS.has(method));
+    }
     const pluginId = runtime.partOf(s.frame, mount);
     const press = await pressIn(s, a.active);
     // The MOSS Browser from a component (browser-calls.ts): none from a part in the background, and an acting call only with

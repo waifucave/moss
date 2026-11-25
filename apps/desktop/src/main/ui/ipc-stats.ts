@@ -3,6 +3,12 @@
 // acceptance run reads it to hold an idle app to a budget, and a person chasing a hot idle app reads it to see which channel never stops. Counts only: no
 // payload, no plugin id, no text ever goes in the line.
 
+/** The core event types worth naming in the counters; any other is counted as `other`. */
+export const NAMED_EVENTS: ReadonlySet<string> = new Set(["plugin_point_changed", "plugin_settings_changed", "plugin_store_changed", "plugin_ui_message", "plugin_ui_changed", "plugin_changed", "methods_changed", "activity_changed", "plugin_api_event"]);
+/** The app's own API methods a page may name (`moss:api`); any other is counted as `other`. */
+export const NAMED_METHODS: ReadonlySet<string> = new Set(["plugin.layer.call", "plugin.layer.watch", "plugin.layer.unwatch", "events.subscribe", "bot.get", "bot.list", "card.pending", "computer.get", "computer.list", "device.list", "session.answer", "session.attach", "session.detach", "session.get", "session.list"]);
+
+
 /** The counts of one window of time: messages the windows sent main (`in`, by IPC channel) and main sent them (`out`, by message type). */
 export interface IpcWindow {
   seconds: number;
@@ -27,10 +33,11 @@ export class IpcStats {
     this.outCounts.set(type, (this.outCounts.get(type) ?? 0) + 1);
   }
 
-  /** One more of a named kind of call or event (a method name or an event type, never a payload or an id). */
-  detail(name: string): void {
-    const k = name.replace(/[^A-Za-z0-9._:-]/g, "").slice(0, 48);
-    if (k === "") return;
+  /** One more of a named kind of call or event. Only a name the caller says is the app's own fixed string is kept as it
+   *  is (`known`: the SDK's catalog of calls a component may make, a short list of core event types); any other name,
+   *  which a plugin could have chosen, is counted as `other`, so no plugin-chosen text reaches the counters line. */
+  detail(name: string, known: boolean): void {
+    const k = known && /^[A-Za-z0-9._:-]{1,48}$/.test(name) ? name : "other";
     this.detailCounts.set(k, (this.detailCounts.get(k) ?? 0) + 1);
     if (this.detailCounts.size > 64) this.detailCounts.delete(this.detailCounts.keys().next().value!);
   }

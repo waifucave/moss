@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { placeLine } from "../src/main/card-place";
 import { KEEP, REDUCE, fileLine } from "../src/main/file-log";
 import { isKnownTreeMethod, loggedMethod } from "../src/main/ui/tree-calls";
-import { ipcLine } from "../src/main/ui/ipc-stats";
+import { IpcStats, ipcLine } from "../src/main/ui/ipc-stats";
+import { parseIpcLine } from "../src/main/ui/ipc-stats";
 import { APP_LOG_LINE_MAX, cleanLogLine } from "../../../packages/app-release/src/app-log";
 
 // The acceptance's evidence list is the one file of scripts/acceptance/ this test depends on; it is loaded by its full path (with its extension) so
@@ -467,5 +468,24 @@ describe("what MOSS Code writes to its log file", () => {
       expect(found.map((f) => f.line)).toEqual(["audio: a reworded line nobody classed"]);
       expect(found[0]!.for).toBe("sound muted, or not");
     });
+  });
+});
+
+describe("the counters line's calls part (written by ipcLine)", () => {
+  const written = (names: string[]) => {
+    const stats = new IpcStats();
+    for (const n of names) stats.detail(n, true);
+    return ipcLine(stats.take(5), [{ type: "Browser", percent: 1 }]);
+  };
+  test("a line written with calls is kept whole, and still parses", () => {
+    const line = written(["plugin.layer.call:points.entries", "plugin.layer.call:points.entries", "ev:plugin_point_changed", "events.subscribe"]);
+    expect(line).toContain(" calls (");
+    expect(fileLine(line)).toBe(line);
+    expect(parseIpcLine(line)).toMatchObject({ seconds: 5 });
+  });
+  test("a calls part with a word, a path, a capital, a fifth name or a long name is not kept", () => {
+    const base = written(["events.subscribe"]).replace(/ calls \(.*\)$/, "");
+    for (const bad of ["a sentence with words 3", `/Users/someone/${"x".repeat(5)} 3`, "Capital.Name 3", "a 1, b 1, c 1, d 1, e 1", `${"a".repeat(49)} 3`])
+      expect(fileLine(`${base} calls (${bad})`)).toBe("ipc: (text not kept in the file)");
   });
 });
