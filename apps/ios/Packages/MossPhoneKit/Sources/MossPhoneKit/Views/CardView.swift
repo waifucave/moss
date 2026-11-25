@@ -14,15 +14,15 @@ public struct CardView: View {
     let onOpen: (String) -> Void
     /// Why the buttons wait, in one line (the model's), and the report that the heading is on screen.
     let waitReason: String?
-    let onSighted: () -> Void
+    let onSighted: (String) -> Void
     /// The report that an opened field's last line has been on screen.
-    let onReadEnd: (String) -> Void
+    let onReadEnd: (String, String) -> Void
     @Environment(\.nowMs) private var nowOverride
     @Environment(\.dynamicTypeSize) private var typeSize
 
     /// `note` says why the card can't be answered (expired, answered elsewhere, failed); `onSettle` then dismisses it (or, after a failure, lets the person try again).
     public init(card: Card, busy: Bool = false, note: CardNote? = nil, ready: @escaping (CardOption) -> Bool = { _ in true }, opened: Set<String> = [], onOpen: @escaping (String) -> Void = { _ in },
-                waitReason: String? = nil, onSighted: @escaping () -> Void = {}, onReadEnd: @escaping (String) -> Void = { _ in },
+                waitReason: String? = nil, onSighted: @escaping (String) -> Void = { _ in }, onReadEnd: @escaping (String, String) -> Void = { _, _ in },
                 onAnswer: @escaping (CardOption) -> Void, onSettle: @escaping () -> Void = {}) {
         self.card = card; self.busy = busy; self.note = note; self.ready = ready; self.opened = opened; self.onOpen = onOpen
         self.waitReason = waitReason; self.onSighted = onSighted; self.onReadEnd = onReadEnd
@@ -32,7 +32,7 @@ public struct CardView: View {
     public init(card: Card, in model: CardsModel) {
         self.init(card: card, busy: model.answering.contains(card.id), note: model.note(for: card), ready: { model.mayAnswer(card, with: $0) },
                   opened: model.opened[card.id] ?? [], onOpen: { model.open($0, of: card) },
-                  waitReason: model.waitReason(card), onSighted: { model.sighted(card) }, onReadEnd: { model.readEnd($0, of: card) },
+                  waitReason: model.waitReason(card), onSighted: { model.sighted(card, on: $0) }, onReadEnd: { model.readEnd($0, of: card, on: $1) },
                   onAnswer: { o in Task { await model.answer(card, with: o) } },
                   onSettle: { model.note(for: card) == .failed ? model.clearFailure(card) : model.dismiss(card) })
     }
@@ -44,7 +44,7 @@ public struct CardView: View {
                 // The heading counts as seen by its first line, wholly inside what the bars leave visible: what follows
                 // down to the buttons is passed on the way to them.
                 Text(Sealed.visible(card.title)).font(.headline)
-                    .overlay(alignment: .top) { Color.clear.frame(height: 12).whenSeen("heading", onSighted) }
+                    .overlay(alignment: .top) { Color.clear.frame(height: 12).whenSeen(onSighted) }
                 if let what = card.what { cutText(what, name: "what", limit: Card.Cut.text).font(.subheadline).foregroundStyle(.secondary) }
             }
             ForEach(shownFields, id: \.0) { name, value in
@@ -155,7 +155,7 @@ public struct CardView: View {
     }
     /// After an opened field: its end, reported once it has been on screen (only then does the field count as read).
     @ViewBuilder private func endMarker(_ name: String) -> some View {
-        if opened.contains(name) { Color.clear.frame(height: 1).whenSeen { onReadEnd(name) } }
+        if opened.contains(name) { Color.clear.frame(height: 1).whenSeen { onReadEnd(name, $0) } }
     }
     /// Opens a cut field in place.
     private func showAll(_ name: String, _ label: String) -> some View {
@@ -203,10 +203,7 @@ public struct CardsScreen: View {
             .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 24)
             .cardContent()
         }
-        .cardViewport()
-        #if DEBUG
-        .overlay(alignment: .bottomLeading) { SeenLogView() }
-        #endif
+        .cardViewport(model)
         .background(Color(uiColor: .systemGroupedBackground))
         .overlay {
             if !model.loaded { ProgressView("Loading").controlSize(.large) }

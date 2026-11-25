@@ -104,17 +104,17 @@ class EngineFlowTests: XCTestCase {
         for f in ["what", "command", "reason", "source", "host", "paths", "detail"] { XCTAssertNotNil(rich.fields[f], "the engine's card carries \(f)") }
         try await eventually("the new card's wait over") { !cards.settling.contains(afterConnect) }
         XCTAssertFalse(cards.mayAnswer(rich), "refused by default before the view's report")
-        cards.sighted(rich)
+        cards.seenOnScreen(rich)
         XCTAssertFalse(cards.mayAnswer(rich))
         await cards.answer(rich, with: rich.options.first { $0.kind == .approve }!)
         XCTAssertTrue(cards.cards.contains { $0.id == afterConnect }, "nothing was answered while a part was cut")
         cards.open("paths", of: rich); cards.open("reason", of: rich)
         XCTAssertFalse(cards.mayAnswer(rich), "opened, not yet read to the end")
-        cards.readEnd("paths", of: rich); cards.readEnd("reason", of: rich)
+        cards.readOnScreen("paths", of: rich); cards.readOnScreen("reason", of: rich)
         for id in [atConnect, afterConnect] {
             let shown = cards.cards.first { $0.id == id }!
             let approve = shown.options.first { $0.kind == .approve }!
-            cards.sighted(shown)
+            cards.seenOnScreen(shown)
             try await eventually("\(id) answerable") { cards.mayAnswer(shown) }
             await cards.answer(shown, with: approve)
             XCTAssertNil(cards.notes[id], "the answer to \(id) was taken")
@@ -215,4 +215,11 @@ class EngineFlowTests: XCTestCase {
         let afterRevoke = await client.connectionState()
         XCTAssertNotEqual(afterRevoke, .connected)
     }
+}
+
+/// The view's two steps in one, for tests that are about something else: the surface is presented, the report made, and a
+/// frame presented after it.
+@MainActor extension CardsModel {
+    func seenOnScreen(_ card: Card) { surface("engine-test", presented: true); sighted(card, on: "engine-test"); framePresented("engine-test") }
+    func readOnScreen(_ field: String, of card: Card) { surface("engine-test", presented: true); readEnd(field, of: card, on: "engine-test"); framePresented("engine-test") }
 }

@@ -9,6 +9,8 @@ public struct ConversationScreen: View {
     @Environment(\.nowMs) private var nowOverride
     @Environment(\.conversationStartsAtTop) private var startsAtTop
     @Environment(\.conversationScrollTo) private var scrollTarget
+    /// The composer's camera, photo or file picker is over the conversation: its cards are not being looked at.
+    @State private var composerCovering = false
 
     public init(model: ConversationModel, cards: CardsModel) { self.model = model; self.cards = cards }
 
@@ -30,11 +32,7 @@ public struct ConversationScreen: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
             ScrollView {
-                // Not lazy: a lazy stack places rows at estimated heights first and the bottom anchor re-places the view
-                // as they are measured, and in those passes a card's heading sat inside the visible part while the person
-                // never saw it (the log: heading 1845 in 1732..2402 at the open, then on screen at y=-25). A plain stack
-                // is laid out at its real heights from the first pass; a page is at most 60 messages.
-                VStack(alignment: .leading, spacing: 4) {
+                LazyVStack(alignment: .leading, spacing: 4) {
                     if model.hasEarlier {
                         Button("Show earlier messages") { Task { await model.loadEarlier() } }
                             .font(.footnote).frame(maxWidth: .infinity)
@@ -73,10 +71,7 @@ public struct ConversationScreen: View {
             .scrollEdgeEffectStyle(.soft, for: .bottom)
             // Only where it opens: growth (a card's opened list) is not pinned to the bottom, so it grows downward from where it was.
             .defaultScrollAnchor(startsAtTop ? .top : .bottom, for: .initialOffset)
-            .cardViewport()
-            #if DEBUG
-            .overlay(alignment: .bottomLeading) { SeenLogView() }
-            #endif
+            .cardViewport(cards, covered: composerCovering)
             .task(id: scrollTarget) { if let t = scrollTarget { try? await Task.sleep(for: .seconds(1)); proxy.scrollTo(t, anchor: .top) } }
             // Never scrolled by itself while a card's buttons are on screen: nothing moves under the person's finger.
             .onChange(of: model.messages.count) { _, _ in if !startsAtTop, scrollTarget == nil, waitingCards.isEmpty { withAnimation { proxy.scrollTo("end") } } }
@@ -106,6 +101,7 @@ public struct ConversationScreen: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .task { model.start() }
+        .onPreferenceChange(ComposerCoveringKey.self) { composerCovering = $0 }
         .onDisappear { model.stopListening() }
     }
 

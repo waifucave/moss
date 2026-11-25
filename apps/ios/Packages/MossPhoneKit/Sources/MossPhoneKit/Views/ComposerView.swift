@@ -82,6 +82,7 @@ struct ComposerView: View {
         .fullScreenCover(isPresented: $showCamera) {
             CameraPicker { data in if let data { Task { await add(data) } } }.ignoresSafeArea()
         }
+        .preference(key: ComposerCoveringKey.self, value: showPhotos || showFiles || showCamera)
     }
 
     private var composerBody: some View {
@@ -447,4 +448,10 @@ struct QuestionComposerView: View {
         .padding(16)
         .modifier(ComposerChrome(horizontal: 12, bottom: 12, radius: 28))
     }
+}
+
+/// The composer has the camera, the photo picker or the file picker over the screen.
+struct ComposerCoveringKey: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
 }

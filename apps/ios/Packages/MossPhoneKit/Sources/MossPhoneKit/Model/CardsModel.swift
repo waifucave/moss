@@ -49,8 +49,67 @@ public final class CardsModel {
                 settleWait: Duration = .milliseconds(1200)) {
         self.client = client; self.app = app; self.now = now; self.settleWait = settleWait
     }
-    /// The view's report: this card, as it is now (id and hash), has been on screen from its heading.
-    public func sighted(_ card: Card) { if cards.contains(card) { sighted.insert(Self.key(card)) } }
+    // MARK: What counts as on screen
+    //
+    // A report counts only if it was made on a surface (one screen holding cards) the person is looking at in its
+    // settled place, and that surface stayed so until the next frame was presented:
+    //  (a) a surface is not presented until it has been placed at its opening position and a frame has been presented
+    //      after that (the view says so);
+    //  (b) nothing counts while the app is not active, or while the surface is covered (a sheet over it);
+    //  (c) a change of the content's size unpresents the surface until the next presented frame, and drops what was
+    //      reported in the same pass: each report carries the surface's generation, and a size change moves it on.
+
+    /// The surfaces presented now, settled, in front and not covered (the view's word).
+    public private(set) var presentedSurfaces: Set<String> = []
+    public private(set) var appActive = true
+    /// Surfaces with reports waiting for the next presented frame: the view answers with `framePresented(_:)`.
+    public private(set) var awaitingFrame: Set<String> = []
+    private enum Report { case sighted(Card), readEnd(String, Card) }
+    @ObservationIgnored private var generation: [String: Int] = [:]
+    @ObservationIgnored private var pending: [String: [(Int, Report)]] = [:]
+
+    /// The view's word on a surface: presented (settled, the app active, nothing over it) or not. Becoming not presented
+    /// drops what it reported and has not yet had a presented frame.
+    public func surface(_ id: String, presented: Bool) {
+        if presented { presentedSurfaces.insert(id); return }
+        presentedSurfaces.remove(id)
+        generation[id, default: 0] += 1
+        pending[id] = nil; awaitingFrame.remove(id)
+    }
+    /// The surface left the screen (or its conversation is reloaded): nothing from it counts until it is presented again.
+    public func surfaceGone(_ id: String) { surface(id, presented: false); generation[id] = nil }
+    /// The app's scene phase: only an active app's surfaces count.
+    public func setAppActive(_ active: Bool) {
+        appActive = active
+        if !active { for id in presentedSurfaces.union(pending.keys) { surface(id, presented: false) } }
+    }
+    private func accepts(_ surface: String) -> Bool { appActive && presentedSurfaces.contains(surface) }
+
+    /// The view's report: this card, as it is now (id and hash), has been on screen from its heading, on `surface`. It
+    /// counts at the next presented frame, if the surface is still presented and unchanged then.
+    public func sighted(_ card: Card, on surface: String) { hold(.sighted(card), on: surface) }
+    /// The view's report: the end of an opened field of this card (as it is now) has been on screen, on `surface`.
+    public func readEnd(_ field: String, of card: Card, on surface: String) { hold(.readEnd(field, card), on: surface) }
+    private func hold(_ report: Report, on surface: String) {
+        guard accepts(surface) else { return }
+        pending[surface, default: []].append((generation[surface, default: 0], report))
+        awaitingFrame.insert(surface)
+    }
+    /// The view's word that a frame was presented on `surface` after its reports: those made in this generation, with the
+    /// surface still presented, count now.
+    public func framePresented(_ surface: String) {
+        let held = pending[surface] ?? []
+        pending[surface] = nil; awaitingFrame.remove(surface)
+        guard accepts(surface) else { return }
+        let now = generation[surface, default: 0]
+        for (gen, report) in held where gen == now {
+            switch report {
+            case .sighted(let card): if cards.contains(card) { sighted.insert(Self.key(card)) }
+            case .readEnd(let field, let card):
+                if cards.contains(card), opened[card.id]?.contains(field) == true { readToEnd.insert(Self.key(card, field)) }
+            }
+        }
+    }
 
     /// Why its approve buttons don't answer now, in one line for the card, or nil when they do. (Deny waits only out the
     /// moment after a card shows or changes: refusing is always possible.)
@@ -75,11 +134,6 @@ public final class CardsModel {
     public func open(_ field: String, of card: Card) {
         opened[card.id, default: []].insert(field)
         readToEnd.remove(Self.key(card, field))
-    }
-    /// The view's report: the end of an opened field of this card (as it is now) has been on screen.
-    public func readEnd(_ field: String, of card: Card) {
-        guard cards.contains(card), opened[card.id]?.contains(field) == true else { return }
-        readToEnd.insert(Self.key(card, field))
     }
     /// Whether this option answers now. Every option: drawn whole, not inside the moment after it showed or changed, not
     /// busy, nothing noted. An approve also: on screen from its heading (the view's report) and every cut part opened.

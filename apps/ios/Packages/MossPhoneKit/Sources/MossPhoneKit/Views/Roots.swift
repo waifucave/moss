@@ -161,6 +161,8 @@ public struct MossRoot: View {
                             BotConversationView(bot: bot, client: client, cards: cards, autoSend: launch.sendsOnOpen)
                         }
                 }
+                // A sheet over the stack covers its cards (the Needs You sheet's own cards are not under it).
+                .environment(\.cardsCovered, showSettings || showCards || showNewBot)
                 .sheet(isPresented: $showSettings) {
                     SettingsScreen(model: settings, appName: "MOSS", onUnpaired: { showSettings = false; self.paired = nil; pairing.retry() }, onDone: { showSettings = false })
                 }
@@ -251,6 +253,8 @@ public struct MossCodeRoot: View {
                             SessionConversationView(session: s, client: client, cards: cards, autoSend: launch.sendsOnOpen)
                         }
                 }
+                // A sheet over the stack covers its cards (the Needs You sheet's own cards are not under it).
+                .environment(\.cardsCovered, showCards || showSettings || showNew)
                 .sheet(isPresented: $showCards) {
                     NeedsYouSheet(cards: cards, who: { c in c.session.flatMap { id in (real ? sessions.sessions : Fake.sessions).first { $0.id == id }?.title } ?? "A session" }, onDone: { showCards = false })
                 }
