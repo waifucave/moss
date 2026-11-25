@@ -1,13 +1,13 @@
 # Security Policy
 
-MOSS runs an AI agent with real access to a real Mac — the filesystem, the shell, the screen, the
-keyboard, a browser, and a direct link to the owner's phone. We take reports about that surface
+MOSS runs AI agents with real access to real computers, on macOS, Windows and Linux — the
+filesystem, the shell, a browser, your other paired computers, and a direct link to your phone. We take reports about that surface
 seriously.
 
 ## Supported versions
 
-Only the **latest release** is supported. MOSS auto-updates through Sparkle, so users are normally
-within one version of `main`. Fixes ship in a new release rather than as patches to older ones.
+Only the **latest release** is supported. MOSS updates itself from the project's releases,
+so users are normally within one version of `main`. Fixes ship in a new release rather than as patches to older ones.
 
 | Version | Supported |
 | --- | --- |
@@ -26,8 +26,8 @@ Report it privately through GitHub:
 
 Helpful things to include:
 
-- MOSS version (`moss --version`) and macOS version
-- Which surface is affected — daemon, CLI, Mac app, remote/phone transport, a plugin
+- MOSS version (`moss --version`), and your system and its version
+- Which surface is affected — daemon, CLI, MOSS or MOSS Code, remote/phone transport, a plugin
 - What an attacker gains, and what access they need to start with
 - Reproduction steps, or a proof of concept
 
@@ -45,26 +45,30 @@ This is a small project without a bug bounty. We can offer a fast fix and public
 
 These are in scope and genuinely interesting to us:
 
-- **Sandbox escape.** The agent's shell runs under a macOS seatbelt profile with an explicit
-  writable set. Anything that writes outside it without consent — or that reaches `~/.moss`, which
-  is denied to the agent unconditionally — is a real finding.
+- **Sandbox escape.** The agent's shell runs under the system's sandbox — Seatbelt on macOS,
+  bubblewrap on Linux, a separate restricted account on Windows — with an explicit writable set and
+  no network. Anything that writes outside it without consent, or that writes MOSS's own settings,
+  levels, credentials or plugins under `~/.moss`, which the fence denies at every level, is a real
+  finding.
 - **Approval bypass.** MOSS's permission model is enforced in the daemon, not suggested in a
   prompt. Any path that performs a gated action (an out-of-root write, a dangerous-domain
   navigation, an unsandboxed command) without the policy that governs it is in scope.
-- **Mode escape.** A tool reachable from a mode it isn't registered for — for example filesystem or
-  shell access from Chat mode — is a vulnerability, not a quirk.
-- **Daemon socket authentication.** The Unix socket at `~/.moss/run/core.sock` is token
-  authenticated with roles. Anything that authenticates without a valid token, or that escalates
-  from the `remote` or `plugin` role to `harness`/`admin`, is in scope.
+- **Session escape.** A tool reachable from a kind of session it isn't offered to — a side thread,
+  a coding agent's session, a plugin's — is a vulnerability, not a quirk.
+- **Daemon socket authentication.** The engine's endpoint, `~/.moss/run/core.sock` (a named pipe on
+  Windows), authenticates every connection with a token and a role (`app`, `cli`, `remote`, `peer`,
+  a plugin's, and others). Anything that authenticates without a valid token, or that reaches a
+  method its role isn't given (from `remote`, `peer` or a plugin to `app` or `cli`), is in scope.
 - **The remote (phone) surface.** The remote role has a deliberately small method allowlist and a
   filtered event stream. A remote client reaching a method or an event type outside those
   allowlists — particularly raw model reasoning — is in scope.
 - **Secret handling.** Any path that writes an API key, OAuth token, or provider `encrypted_content`
   to disk, a log, a session transcript the model can read, or an error message.
-- **Transport.** The Mac↔phone link (iroh/QUIC, paired out of band). Anything that lets an unpaired
-  party read, inject into, or hijack a session.
-- **Update integrity.** Sparkle appcast/EdDSA signature handling, or anything that would let an
-  attacker deliver a build.
+- **Transport.** The links between your computers and phones (iroh/QUIC, paired with a code and
+  four words compared on both screens). Anything that lets an unpaired party read, inject into, or
+  hijack a session.
+- **Update integrity.** The update files' Ed25519 signatures and their checks in the apps' updater
+  and the engine's own update, or anything that would let an attacker deliver a build.
 - **Plugin isolation.** A plugin escaping the capabilities the user consented to.
 
 ### Out of scope
@@ -78,7 +82,7 @@ These are in scope and genuinely interesting to us:
   version, and we want it.
 - Model output quality, hallucination, or cost.
 - Findings that require an attacker to already have local code execution as the user, or physical
-  access to an unlocked Mac.
+  access to an unlocked computer.
 - Issues in third-party dependencies with no MOSS-specific exploit path — report those upstream.
 - Missing hardening that isn't exploitable, from automated scanners with no proof of impact.
 - Social engineering, and denial of service against your own machine.
@@ -87,16 +91,23 @@ These are in scope and genuinely interesting to us:
 
 Stated plainly, so you know what you're auditing:
 
-- **Credentials never touch disk.** API keys and OAuth tokens live in the macOS Keychain
-  (`Bun.secrets`, service `com.waifucave.moss.core`).
-- **Data stays local.** There is no MOSS backend, account or telemetry. Model calls go to your
-  provider; web fetching is performed locally; the phone connects to your Mac directly and
-  end-to-end encrypted. When a direct path can't be established, the connection relays through an
-  iroh relay we operate (`infra/relay/`) — it forwards ciphertext only, and terminates nothing.
-- **Shell commands are sandboxed** under a seatbelt profile with a per-session writable set. So are
+- **Credentials never touch disk in plain text.** On macOS, API keys and OAuth tokens live in the
+  Keychain (`Bun.secrets`, service `com.waifucave.moss.core`), as items only the engine's binary is
+  served. On Windows and Linux they live in one encrypted file in `~/.moss`, whose key is kept in
+  Credential Manager or the Secret Service (`docs/secrets-file.md`).
+- **Data stays local.** There is no telemetry, and no account is needed. Model calls go to your
+  provider; web searches go to the search provider MOSS's web plugin uses; web fetching is
+  performed locally. Your devices find each other through the project's pairing service, which holds
+  only sealed records, and connect directly, end-to-end encrypted. When a direct path can't be
+  established, the connection relays through public iroh relays, or a relay you choose — it
+  forwards ciphertext only, and terminates nothing.
+- **Shell commands are sandboxed** under the system's sandbox, with a writable set drawn from the
+  approval level and the session. So are
   the model-authored workflow scripts, which run in a separate confined subprocess.
-- **Reads are unrestricted by design** — `read`/`glob`/`grep`/`ls` have no path fence. That is a
-  deliberate decision, matching what the user themselves can read. The single denial is MOSS's own
-  runtime/credential directory.
-- **Every release is signed and notarized by Apple**, and every update is EdDSA-signed and verified
-  by Sparkle before it installs.
+- **Reads are broad by design** — the file tools read what the user themselves can read. That is
+  a deliberate decision. The denials are MOSS's own run folder and credentials, and the secret places
+  in the user's home (`~/.ssh`, `~/.aws`, `~/.gnupg` and others), for file tools and shell commands
+  alike.
+- **Every release is signed** — with a Developer ID and notarized by Apple on macOS, with
+  Authenticode on Windows — and every update file carries an Ed25519 signature that the apps' updater
+  and the engine's own update check before they read it.
