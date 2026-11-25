@@ -124,6 +124,25 @@ object SampleData {
         options = listOf(CardOption("deny", CardOption.Kind.deny, "No"), CardOption("approve", CardOption.Kind.approve, "Yes")),
     )
 
+    /** A card whose values overflow their area: a 6-line command and detail, 8 paths, the site, and the rule last. */
+    val tallCard = Card("card_7d6e5f4a", "tool", computer = computerName, bot = "luna", origin = "user",
+        issuedAt = ago(20), expiresAt = Long.MAX_VALUE, hash = "d".repeat(64),
+        fields = linkedMapOf(
+            "title" to SealedValue.Text("Run a cleanup script?"),
+            "what" to SealedValue.Text("Luna wants to tidy the build folders."),
+            "command" to SealedValue.Code((1..6).joinToString("\n") { "rm -rf packages/app$it/dist" }, "sh"),
+            "detail" to SealedValue.Code((1..6).joinToString("\n") { "step $it of 6" }),
+            "paths" to SealedValue.ListOf((1..8).map { "packages/app$it/dist/" }),
+            "host" to SealedValue.Code("registry.example.com"),
+            "rule" to SealedValue.Rows(listOf(SealedValue.Row("What", "this exact command"), SealedValue.Row("Where", "any folder, on Studio only"))),
+        ),
+        options = listOf(
+            CardOption("deny", CardOption.Kind.deny, "Deny"),
+            CardOption("allow_always", CardOption.Kind.approve, "Always allow", rememberAlways = true),
+            CardOption("allow_once", CardOption.Kind.approve, "Allow"),
+        ),
+    )
+
     val cards: List<Card> = listOf(
         Card("card_0a1b2c3d", "tool", computer = computerName, session = "s_alpha", bot = "alpha", origin = "routine",
             issuedAt = ago(150), expiresAt = now + 450_000, hash = "a".repeat(64),

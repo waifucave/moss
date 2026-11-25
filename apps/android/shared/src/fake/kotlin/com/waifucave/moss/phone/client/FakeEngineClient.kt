@@ -43,6 +43,8 @@ class FakeEngineClient(
         botLimit,
         /** Paired; the one card waiting is the provider-consent card, whose provider is only in its `host` field. */
         providerConsent,
+        /** Paired; the one card waiting has more values than its area shows, so it waits to be scrolled to the end. */
+        tallCard,
     }
 
     class Failure(message: String) : Exception(message)
@@ -101,6 +103,7 @@ class FakeEngineClient(
                 botList = mutableListOf(); summaryList = mutableListOf(); sessionList.clear(); cardList = mutableListOf()
             }
             Scenario.providerConsent -> cardList = mutableListOf(SampleData.providerConsentCard)
+            Scenario.tallCard -> cardList = mutableListOf(SampleData.tallCard)
             Scenario.cardStates -> {
                 // The first card ran out of time; the third one is answered on another device.
                 val i = cardList.indexOfFirst { it.id == "card_0a1b2c3d" }

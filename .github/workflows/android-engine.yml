@@ -32,6 +32,10 @@ jobs:
     name: android apps · real engine · emulator
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    env:
+      # Dependency downloads are retried (bounded) when Maven Central answers 429; tests are never run twice. This job runs
+      # no Robolectric test (the engine client's JVM tests are plain JUnit), so it has no Robolectric cache.
+      GRADLE_OPTS: -Dorg.gradle.internal.repository.max.retries=6 -Dorg.gradle.internal.repository.initial.backoff=2000
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:

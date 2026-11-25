@@ -2,8 +2,8 @@ name: Android apps
 
 # Builds MOSS and MOSS Code for Android (debug, unsigned), runs the shared module's tests, and draws a picture of every
 # screen in light and dark on the JVM (Robolectric and Roborazzi, no emulator), uploaded as the `android-pictures` artifact.
-# Not gating: it is a separate workflow, and its job may fail without holding a merge. No secret, no signing, nothing
-# published.
+# A failed test fails the job and the run (no continue-on-error: a run that goes green with failed tests is worse than a
+# red one). No secret, no signing, nothing published.
 on:
   push:
     branches: ["lane-int/**", "lane/an-**"]
@@ -22,8 +22,11 @@ concurrency:
 jobs:
   android:
     runs-on: ubuntu-24.04
-    continue-on-error: true
     timeout-minutes: 45
+    env:
+      # Dependency downloads are retried (bounded: 6 tries, backing off from 2 s) when Maven Central answers 429 or drops a
+      # connection. Only downloads: a test is never run twice.
+      GRADLE_OPTS: -Dorg.gradle.internal.repository.max.retries=6 -Dorg.gradle.internal.repository.initial.backoff=2000
     defaults:
       run:
         working-directory: apps/android
@@ -37,6 +40,31 @@ jobs:
       - uses: gradle/actions/setup-gradle@ac638b010cf58a27ee6c972d7336334ccaf61c96 # v4.4.1
         with:
           gradle-version: "8.13"
+      # setup-gradle caches Gradle's own dependencies. Robolectric fetches its Android jar itself, outside Gradle, into
+      # ~/.m2: that is cached here, keyed on the runner's OS and the Robolectric version.
+      - name: Robolectric's version
+        id: robolectric
+        run: echo "version=$(grep -E '^robolectric = ' gradle/libs.versions.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        id: robolectric-cache
+        with:
+          path: ~/.m2/repository/org/robolectric
+          key: robolectric-${{ runner.os }}-${{ steps.robolectric.outputs.version }}
+      - name: Fetch Robolectric's Android jar (cold cache only, bounded retry)
+        if: steps.robolectric-cache.outputs.cache-hit != 'true'
+        env:
+          # What Robolectric 4.14.1 fetches for SDK 35 (the tests' @Config); another version fetches its own on demand.
+          ANDROID_ALL: 15-robolectric-12650502-i7
+        run: |
+          set -euo pipefail
+          dir="$HOME/.m2/repository/org/robolectric/android-all-instrumented/$ANDROID_ALL"
+          mkdir -p "$dir"
+          base="https://repo1.maven.org/maven2/org/robolectric/android-all-instrumented/$ANDROID_ALL/android-all-instrumented-$ANDROID_ALL"
+          for ext in jar jar.sha1; do
+            curl -fsSL --retry 5 --retry-delay 30 --retry-all-errors --max-time 600 -o "$dir/android-all-instrumented-$ANDROID_ALL.$ext" "$base.$ext"
+          done
+          # The jar is the one Maven Central lists.
+          echo "$(cat "$dir/android-all-instrumented-$ANDROID_ALL.jar.sha1")  $dir/android-all-instrumented-$ANDROID_ALL.jar" | sha1sum -c -
       - name: Build both apps
         # The fake variants: the real ones need the shared core's native library and binding, built by android-engine.yml.
         run: gradle --no-daemon --stacktrace :moss:assembleFakeDebug :code:assembleFakeDebug
