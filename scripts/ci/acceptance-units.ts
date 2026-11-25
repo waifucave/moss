@@ -10,6 +10,8 @@
 export const ON_GITHUB: readonly string[] = [
   "chain", "window-1", "window-2", "window-3", "workshop", "plugin-app", "browser", "bundled-tools", "examples", "reopen", "host", "cards", "moss", "setup",
   "arrivals", "addons", "archive", "acp", "workshop-points", "models", "builder-examples", "browser-host", "surface-copy-host", "canvas", "canvas-app",
+  // Lane XC: two engines over the real link sidecar (macOS and Linux; ci.yml keeps it out of the Windows set for now).
+  "computers",
 ];
 
 export const NOT_ON_GITHUB: Readonly<Record<string, string>> = {

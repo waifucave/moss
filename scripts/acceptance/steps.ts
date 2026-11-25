@@ -4,6 +4,7 @@ import { SETUP_STEPS } from "./setup-step";
 import { CANVAS_STEPS } from "./canvas-step";
 import { MCP_APPS_STEPS } from "./mcp-apps-step";
 import { CANVAS_APP_STEPS } from "./canvas-app-step";
+import { COMPUTERS_STEPS } from "./computers-step";
 import { UI_STEPS } from "./ui-steps";
 import { EXAMPLE_NOTES_STEP, EXAMPLE_WEATHER_STEP } from "./example-steps";
 import { BUNDLED_TOOLS_STEP } from "./bundled-tools-step";
@@ -152,6 +153,8 @@ export const FULL_STEPS = [
   ...MCP_APPS_STEPS,
   // Lane CA's rows: the start page, a start through the door, the corner control, "Open in MOSS" (the `canvas-app` unit, canvas-app-step.ts).
   ...CANVAS_APP_STEPS,
+  // Lane XC's rows: two engines over the real link, a bot on one working on the other's files (the `computers` unit, computers-step.ts).
+  ...COMPUTERS_STEPS,
   COLD_START_STEP,
   IDLE_STEP,
 ] as const;

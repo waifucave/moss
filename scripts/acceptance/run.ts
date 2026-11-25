@@ -73,7 +73,7 @@ import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, r
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { MOSS_PROTOCOL_VERSION } from "../../packages/protocol/src/index";
+import { DEFAULT_LEVEL, MOSS_PROTOCOL_VERSION } from "../../packages/protocol/src/index";
 import { notOnLinux, onLinux, onUnfencedOs } from "./not-on-linux";
 import { TEST_KEYCHAIN_PASSWORD } from "../../packages/core/src/auth/login-keychain";
 import { HARNESS_TOKEN_FILE } from "../../packages/core/src/platform/pair/run-files";
@@ -137,6 +137,7 @@ import { AGENT_STEP, COLD_START_STEP, COPY_UPGRADE_STEPS, FULL_STEPS, IDLE_STEP,
 import { DISTRUST, answerKeyFileFor, keepStateProblem, oldHalfRow, readState, settingsWithFake, socketPathProblem, statePaths, treeDigest, writeState, type KeptState } from "./state";
 import { FAKE_ARTICLE_TEXT, FAKE_HIT_PATH, FAKE_PRIVATE_ADDRESS, FAKE_PRIVATE_SITE, FAKE_PUBLIC_SITE, FAKE_SEARCH_HIT, serveOutsideWorld, type OutsideWorld } from "./fake-exa";
 import { FAKE_LINKED_PATH, FAKE_LINKS_PATH } from "./fake-exa";
+import { BETA_MEMORY_DUMMY, BETA_NOTE, BETA_SECRETS_DUMMY, COMPUTERS_BASH_STEP, COMPUTERS_CARD_STEP, COMPUTERS_MOVE_STEP, COMPUTERS_OFFLINE_STEP, COMPUTERS_PAIR_STEP, COMPUTERS_READ_STEP, COMPUTERS_REFUSED_STEP, COMPUTERS_STEPS, COMPUTERS_WRITE_STEP, offlineWrong, refusedWrong, type Seen } from "./computers-step";
 import { CODE_ADAPTER_STEP, codeAdapterWrong, GEMINI_MODEL, GEMINI_REPLY, GOOGLE_PLUGIN, OAUTH_MODEL, OAUTH_PLUGIN, OAUTH_REPLY, OAUTH_SIGN_IN_STEP, OPENAI_REPLY, OPENAI_WIRE_PROVIDERS, openAiWireWrong, THIRD_PARTY_KEY, THIRD_PARTY_MODEL, THIRD_PARTY_MODEL_STEP, THIRD_PARTY_PLUGIN, THIRD_PARTY_REPLY } from "./code-adapter-step";
 import { placeModelsFixture, startFakeModels, type FakeModels } from "./fake-models";
 import { placeOAuthFixture, startFakeOAuth, type FakeOAuth } from "./fake-oauth";
@@ -3981,6 +3982,177 @@ let shardSummary: string[] = [];
 
 /** The model key through the app's own methods (step 2's calls), asked again while the daemon still says
  *  `plugin.auth.list` "is not served yet" (its registry is still opening: the `--only-*` runs' start flake). */
+// ── the `computers` unit (lane XC, computers-step.ts) ──────────────────────────────────────────────────────────────
+/** Two engines over the real link: Alpha on this unit's home, Beta on a home of its own beside it, each with its own
+ *  link sidecar on loopback (the acceptance daemon's MOSS_ACCEPTANCE_LINK_BIN switch). They pair through the product's own
+ *  path, and a bot on Alpha then reads, writes, runs, moves and is refused on Beta, and meets Beta stopped. */
+async function computersRun(): Promise<void> {
+  const row = (name: string) => stepNumber(FULL_STEPS, name);
+  const bin = process.env.MOSS_ACCEPTANCE_LINK_BIN;
+  if (bin === undefined || bin === "" || !existsSync(bin)) {
+    for (const s of COMPUTERS_STEPS) record(row(s), "BLOCKED", `no built link sidecar (MOSS_ACCEPTANCE_LINK_BIN ${bin === undefined || bin === "" ? "unset" : `${bin} isn't there`}): the unit's job builds native/link first`);
+    return;
+  }
+  const linkEnv = { MOSS_ACCEPTANCE_LINK_BIN: bin };
+  const betaUser = join(root, "beta-user");
+  const betaHome = join(betaUser, ".moss");
+  const opened: MossClient[] = [];
+  let beta: { proc: ChildProcess; log: string } | undefined;
+  const done = new Set<string>();
+  const put = (name: string, status: Status, detail: string) => { done.add(name); record(row(name), status, detail); };
+  try {
+    // ── the two engines ──
+    await startDaemonProc({ ...linkEnv, MOSS_ACCEPTANCE_COMPUTER_NAME: "Alpha" });
+    const c = (await appDriver()).client;
+    await signInKey(c);
+    const bot = await keyedSession(c);
+    mkdirSync(betaUser, { recursive: true });
+    beta = startChild("daemon-beta", process.execPath, [join(REPO, "scripts", "acceptance", "daemon.ts")], {
+      ...baseEnv(), ...USAGE_INERT_ENV, ...linkEnv, HOME: betaUser, MOSS_HOME: betaHome, MOSS_ACCEPTANCE_USER_HOME: betaUser,
+      MOSS_ACCEPTANCE_RUN_PID: String(process.pid), MOSS_KEYCHAIN_SERVICE: `${service}.beta`, MOSS_ACCEPTANCE_COMPUTER_NAME: "Beta",
+    });
+    const betaProc = beta.proc;
+    await until("Beta's socket, app token and harness token", 120_000, async () => {
+      if (!alive(betaProc)) fail(`Beta's daemon exited: ${lastLines(beta!.log)}`);
+      if (!existsSync(join(betaHome, "run", "app.token")) || !existsSync(join(betaHome, "run", HARNESS_TOKEN_FILE))) return undefined;
+      try { (await MossClient.connect(coreEndpoint(betaHome), 1_000)).close(); return true; } catch { return undefined; }
+    });
+    const tokenOf = (h: string, f: string) => readFileSync(join(h, "run", f), "utf8").trim();
+    await until("Alpha's harness token", 30_000, () => (existsSync(join(home, "run", HARNESS_TOKEN_FILE)) ? true : undefined));
+    const betaApp = (await hello(coreEndpoint(betaHome), "app", tokenOf(betaHome, "app.token"), "moss-acceptance", MOSS_PROTOCOL_VERSION)).client;
+    opened.push(betaApp);
+    // Each user's own terminal (the CLI role): the one place the four words are said.
+    const terminal = async (h: string) => {
+      const t = (await hello(coreEndpoint(h), "cli", tokenOf(h, HARNESS_TOKEN_FILE), "moss-acceptance-terminal", MOSS_PROTOCOL_VERSION)).client;
+      opened.push(t);
+      const words: string[][] = [];
+      t.onNotification((_m, params) => {
+        const p = (params ?? {}) as Record<string, unknown>;
+        const ev = (p["event"] ?? p) as Record<string, unknown>;
+        if (ev["type"] === "pairing_changed" && ev["step"] === "words" && Array.isArray(ev["words"])) words.push(ev["words"] as string[]);
+      });
+      await t.request("events.subscribe", { areas: ["devices"] });
+      return { t, words };
+    };
+    const ta = await terminal(home);
+    const tb = await terminal(betaHome);
+
+    // ── pairing, through the product's own path ──
+    try {
+      const begun = await c.request<{ pairingId: string; qr: string }>("device.pair.begin", {});
+      const joined = await betaApp.request<{ pairingId: string }>("device.pair.join", { code: begun.qr });
+      const wa = await until("Alpha's terminal hearing the four words", 60_000, () => ta.words[0]);
+      const wb = await until("Beta's terminal hearing the four words", 60_000, () => tb.words[0]);
+      if (wa.join(" ") !== wb.join(" ")) fail(`the two terminals heard different words (${wa.length} and ${wb.length} words)`);
+      await ta.t.request("device.pair.confirm", { pairingId: begun.pairingId, words: wa });
+      await tb.t.request("device.pair.confirm", { pairingId: joined.pairingId, words: wb });
+      const listed = async (cl: MossClient) => (await cl.request<{ devices: { name: string }[] }>("device.list", {})).devices.map((d) => d.name).sort().join(",");
+      await until("both engines listing Alpha and Beta", 60_000, async () => ((await listed(c)) === "Alpha,Beta" && (await listed(betaApp)) === "Alpha,Beta" ? true : undefined));
+      // Beta reachable from Alpha's tree, at fully automatic (its own terminal sets it), for the rows that ask nothing.
+      await tb.t.request("computer.setLevel", { name: "Beta", level: "automatic" });
+      await until("Beta online and fully automatic on Alpha", 60_000, async () => {
+        const got = await c.request<{ computer: { online?: boolean; state?: string; level?: string } }>("computer.get", { name: "Beta" }).catch(() => undefined);
+        return got !== undefined && (got.computer.online === true || got.computer.state === "online") && got.computer.level === "automatic" ? true : undefined;
+      });
+      put(COMPUTERS_PAIR_STEP, "PASS", "paired over the two sidecars on loopback (QR, four words in each terminal, the terminals' confirm); both list Alpha and Beta; Beta online on Alpha");
+    } catch (err) {
+      put(COMPUTERS_PAIR_STEP, statusOf(err), why(err));
+      throw err;
+    }
+
+    // ── a bot on Alpha, on Beta's files ──
+    mkdirSync(join(betaUser, "project"), { recursive: true });
+    writeFileSync(join(betaUser, "project", "notes.md"), `${BETA_NOTE}\n`);
+    const callOn = async (tool: string, input: Record<string, unknown>, timeoutMs = 150_000): Promise<Seen | undefined> => {
+      const seen = fake!.requests.length;
+      await turn(c, bot, `ACCEPTANCE-CALL ${tool} ${JSON.stringify(input)}`, timeoutMs);
+      return fake!.requests.slice(seen).map((r) => r.toolResult).find((r): r is Seen => r !== undefined);
+    };
+    const botScratch = join(home, "scratch");
+    const noMisfile = () => (existsSync(botScratch) && findUnder(botScratch, "home", 3) !== undefined ? "a home/ folder appeared under the bot's scratch on Alpha" : undefined);
+    const step = async (name: string, body: () => Promise<string>) => {
+      try {
+        const detail = await body();
+        const mis = noMisfile();
+        if (mis !== undefined) fail(mis);
+        put(name, "PASS", detail);
+      } catch (err) { put(name, statusOf(err), why(err)); }
+    };
+    await step(COMPUTERS_READ_STEP, async () => {
+      const r = await callOn("Read", { file_path: "home/Beta/project/notes.md" });
+      if (r === undefined || r.isError || !r.text.includes(BETA_NOTE)) fail(`the bot wasn't given Beta's text (${r?.text.slice(0, 160) ?? "no result"})`);
+      return "the bot was given the note only Beta's disk holds";
+    });
+    await step(COMPUTERS_WRITE_STEP, async () => {
+      const r = await callOn("Write", { file_path: "home/Beta/project/from-alpha.md", content: "written from Alpha" });
+      const there = join(betaUser, "project", "from-alpha.md");
+      if (r?.isError === true || !existsSync(there) || readFileSync(there, "utf8") !== "written from Alpha") fail(`not on Beta's disk (${r?.text.slice(0, 160) ?? "no result"})`);
+      return "on Beta's disk, written as sent";
+    });
+    await step(COMPUTERS_BASH_STEP, async () => {
+      const r = await callOn("Bash", { command: "cd home/Beta/project && pwd && cat notes.md", description: "where am I" });
+      const real = realpathSync.native(join(betaUser, "project"));
+      if (r === undefined || r.isError || !r.text.includes(real) || !r.text.includes(BETA_NOTE)) fail(`the output doesn't show Beta's folder and file (${r?.text.slice(0, 200) ?? "no result"})`);
+      if (!r.text.startsWith("now on Beta: home/Beta/project")) fail(`the result's first line doesn't say where the shell now is (${r.text.split("\n")[0]})`);
+      return `ran in ${real} on Beta (its pwd and its file in the output)`;
+    });
+    await step(COMPUTERS_REFUSED_STEP, async () => {
+      // Dummies only: the other bot's memory and a secrets file made here when the engine has none yet; the token is Beta's own
+      // app token, checked by its value and never printed.
+      mkdirSync(join(betaHome, "bots", "sol", "memory"), { recursive: true });
+      writeFileSync(join(betaHome, "bots", "sol", "memory", "notes.md"), BETA_MEMORY_DUMMY);
+      const secrets = join(betaHome, "secrets.enc");
+      const planted = !existsSync(secrets);
+      if (planted) writeFileSync(secrets, BETA_SECRETS_DUMMY);
+      const wrong = [
+        refusedWrong("run/app.token", await callOn("Read", { file_path: "home/Beta/.moss/run/app.token" }), tokenOf(betaHome, "app.token")),
+        refusedWrong("secrets.enc", await callOn("Read", { file_path: "home/Beta/.moss/secrets.enc" }), planted ? BETA_SECRETS_DUMMY : readFileSync(secrets, "utf8").slice(0, 24)),
+        refusedWrong("another bot's memory", await callOn("Read", { file_path: "home/Beta/.moss/bots/sol/memory/notes.md" }), BETA_MEMORY_DUMMY),
+      ].filter((w): w is string => w !== undefined);
+      if (wrong.length > 0) fail(wrong.join("; "));
+      return "the token, the secrets file and another bot's memory on Beta: each refused, none of their text given to the bot";
+    });
+    await step(COMPUTERS_MOVE_STEP, async () => {
+      mkdirSync(join(userHome, "site"), { recursive: true });
+      writeFileSync(join(userHome, "site", "index.html"), "<h1>moved</h1>");
+      const r = await callOn("Bash", { command: "mv home/Alpha/site home/Beta/", description: "move the site" });
+      const there = join(betaUser, "site", "index.html");
+      if (r?.isError === true || !existsSync(there) || readFileSync(there, "utf8") !== "<h1>moved</h1>") fail(`not on Beta (${r?.text.slice(0, 160) ?? "no result"})`);
+      if (existsSync(join(userHome, "site"))) fail("still on Alpha");
+      return "the folder is on Beta with its file, and gone from Alpha";
+    });
+    await step(COMPUTERS_CARD_STEP, async () => {
+      await tb.t.request("computer.setLevel", { name: "Beta", level: DEFAULT_LEVEL });
+      await until("Beta's default level on Alpha", 60_000, async () => ((await c.request<{ computer: { level?: string } }>("computer.get", { name: "Beta" })).computer.level === DEFAULT_LEVEL ? true : undefined));
+      const before = raised.length;
+      const r = await callOn("Write", { file_path: "home/Beta/project/carded.md", content: "after the yes" });
+      const card = raised.slice(before).find((k) => JSON.stringify(k).includes("Beta"));
+      if (card === undefined) fail(`no card naming Beta was raised on Alpha (${raised.length - before} card(s))`);
+      const there = join(betaUser, "project", "carded.md");
+      if (r?.isError === true || !existsSync(there)) fail(`not written after the yes (${r?.text.slice(0, 160) ?? "no result"})`);
+      return `Beta's card (${DEFAULT_LEVEL}) raised on Alpha and answered there; the file landed after the yes`;
+    });
+    await step(COMPUTERS_OFFLINE_STEP, async () => {
+      betaProc.kill("SIGTERM");
+      await until("Beta's engine to stop", 30_000, () => (alive(betaProc) ? undefined : true));
+      await until("Beta offline on Alpha", 60_000, async () => {
+        const got = await c.request<{ computer: { online?: boolean; state?: string } }>("computer.get", { name: "Beta" }).catch(() => undefined);
+        return got !== undefined && got.computer.online !== true && got.computer.state !== "online" ? true : undefined;
+      });
+      const t0 = Date.now();
+      const r = await callOn("Read", { file_path: "home/Beta/project/notes.md" });
+      const w = offlineWrong(r, Date.now() - t0);
+      if (w !== undefined) fail(w);
+      return `"computer offline" in ${Date.now() - t0} ms`;
+    });
+  } catch (err) {
+    for (const s of COMPUTERS_STEPS) if (!done.has(s)) record(row(s), statusOf(err), `the computers unit's setup: ${why(err)}`);
+  } finally {
+    for (const cl of opened) cl.close();
+    if (beta !== undefined && alive(beta.proc)) beta.proc.kill("SIGTERM");
+  }
+}
+
 async function signInKey(c: MossClient): Promise<void> {
   const plugin = "moss/model-anthropic";
   const auth = await until("plugin.auth.list served", 60_000, async () => {
@@ -4118,6 +4290,7 @@ async function otherUnitsRun(app: { exe: string; args: string[] }, ids: readonly
   // lane HS: the host unit runs alone (its own daemon starts the host).
   if (ids.includes("host")) { await hostOnlyRun(app); await hostGaveUpRun(app); await hostIdleRun(app); return; }
   if (ids.includes("browser-host")) { await browserOnlyRun(app, { withHost: true }); return; }
+  if (ids.includes("computers")) { await computersRun(); return; }
   if (ids.includes("surface-copy-host")) { await browserOnlyRun(app, { withHost: true, row: "surface-copy" }); return; }
   try {
     // The previous app's session in the home's store before the daemon first opens it (the archive row).

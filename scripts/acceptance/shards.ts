@@ -65,10 +65,11 @@ import { SETUP_STEPS } from "./setup-step";
 import { CANVAS_STEPS } from "./canvas-step";
 import { MCP_APPS_STEPS } from "./mcp-apps-step";
 import { CANVAS_APP_STEPS } from "./canvas-app-step";
+import { COMPUTERS_STEPS } from "./computers-step";
 import { BROWSER_HOST_STEP, HOST_GAVE_UP_STEP, HOST_IDLE_STEP, HOST_STEP, SURFACE_COPY_HOST_STEP } from "./host-step";
 import { ROWS_ELSEWHERE } from "./elsewhere";
 
-export type UnitId = "main" | "chain" | "setup" | "window-1" | "window-2" | "window-3" | "examples" | "bundled-tools" | "cards" | "workshop" | "reopen" | "arrivals" | "addons" | "archive" | "acp" | "builder-examples" | "workshop-points" | "release" | "browser" | "plugin-app" | "models" | "moss" | "cold" | "idle" | "host" | "browser-host" | "surface-copy-host" | "canvas" | "canvas-app";
+export type UnitId = "computers" | "main" | "chain" | "setup" | "window-1" | "window-2" | "window-3" | "examples" | "bundled-tools" | "cards" | "workshop" | "reopen" | "arrivals" | "addons" | "archive" | "acp" | "builder-examples" | "workshop-points" | "release" | "browser" | "plugin-app" | "models" | "moss" | "cold" | "idle" | "host" | "browser-host" | "surface-copy-host" | "canvas" | "canvas-app";
 
 export interface Unit {
   id: UnitId;
@@ -137,6 +138,8 @@ const OTHERS: readonly Unit[] = [
   { id: "canvas", rows: [...CANVAS_STEPS, ...MCP_APPS_STEPS], phase: "parallel", estimate: 120 },
   // Lane CA's canvas rows (canvas-app-step.ts): MOSS Code from source with a plugin's start page, and a MOSS it starts when a part asks "Open in MOSS"; a home of its own.
   { id: "canvas-app", rows: CANVAS_APP_STEPS, phase: "parallel", estimate: 180, ownHome: true },
+  // Lane XC: two engines of their own (Alpha on the unit's home, Beta beside it), each with its link sidecar.
+  { id: "computers", rows: COMPUTERS_STEPS, phase: "parallel", estimate: 150, ownHome: true },
   { id: "cold", rows: [COLD_START_STEP], phase: "serial", estimate: 16 },
   { id: "idle", rows: [IDLE_STEP], phase: "serial", estimate: 45 },
   // lane HS: the background host's rows start their own daemon (and the host) on a home no other unit has used: beside other

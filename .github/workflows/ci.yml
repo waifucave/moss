@@ -1411,8 +1411,26 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # The `computers` unit (lane XC): two engines over the real link, so it needs the built link sidecar, cached as the
+      # link job caches it; every other unit runs on the in-memory wire and skips these.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch; the version is RUST_TOOLCHAIN
+        if: matrix.unit == 'computers'
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: matrix.unit == 'computers'
+        with:
+          workspaces: native/link -> target
+
+      - name: Build moss-link
+        if: matrix.unit == 'computers'
+        run: cargo build --release --locked --manifest-path native/link/Cargo.toml
+
       - name: Acceptance · ${{ matrix.unit }}
         run: bun scripts/ci/acceptance-unit.ts ${{ matrix.unit }} "$RUNNER_TEMP/acceptance-${{ matrix.unit }}"
+        env:
+          MOSS_ACCEPTANCE_LINK_BIN: ${{ matrix.unit == 'computers' && format('{0}/native/link/target/release/moss-link', github.workspace) || '' }}
 
       - uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         if: ${{ !cancelled() && steps.electron.outputs.cache-hit != 'true' }}
@@ -1476,10 +1494,27 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # The `computers` unit's link sidecar (lane XC), as on macOS above.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch; the version is RUST_TOOLCHAIN
+        if: matrix.unit == 'computers'
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: matrix.unit == 'computers'
+        with:
+          workspaces: native/link -> target
+
+      - name: Build moss-link
+        if: matrix.unit == 'computers'
+        run: cargo build --release --locked --manifest-path native/link/Cargo.toml
+
       - name: Acceptance on Linux · ${{ matrix.unit }}
         # No window manager on purpose: the window rows are written for a window that is not focused or shown (offscreen), and a manager
         # focuses and places it (run 45209149315: window-2's reload row saw a different tab with one).
         run: xvfb-run -a scripts/with-private-secret-service.sh bun scripts/ci/acceptance-unit.ts ${{ matrix.unit }} "$RUNNER_TEMP/acceptance-linux-${{ matrix.unit }}"
+        env:
+          MOSS_ACCEPTANCE_LINK_BIN: ${{ matrix.unit == 'computers' && format('{0}/native/link/target/release/moss-link', github.workspace) || '' }}
 
       - uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         if: ${{ !cancelled() && steps.electron.outputs.cache-hit != 'true' }}
@@ -1513,6 +1548,9 @@ jobs:
       fail-fast: false
       matrix:
         unit: ${{ fromJSON(needs.changes.outputs.acceptance_units) }}
+        # Not on Windows yet (the controller's ruling for lane XC): the `computers` unit runs on macOS and Linux.
+        exclude:
+          - unit: computers
     defaults:
       run:
         shell: bash

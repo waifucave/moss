@@ -38,11 +38,23 @@ const appPeer = (peer: PeerFacts): boolean => peer.pid !== null && (peer.pid ===
 // (a fractional SNTP offset once kept every card from the app, and only the packaged run showed it). Nothing leaves the
 // machine: an in-memory wire with no other device on it, no account or handshake, no directories' driver or network
 // watch, and a public time source that answers a fractional offset, as SNTP's is, without asking any server.
-const links = {
-  wire: (k: { publicKey: Uint8Array }) => new MemoryNetwork().endpoint(k.publicKey),
-  handshake: null, account: null, driver: false as const, watch: () => () => {},
-  publicTime: { sample: async () => ({ offsetMs: 37.5 + Math.random(), rttMs: 1.25 }) },
-};
+// The `computers` unit (lane XC, across computers) alone sets MOSS_ACCEPTANCE_LINK_BIN: this daemon's links run on the
+// real link sidecar (the built `moss-link`) bound to loopback, with no relay and no lookup, so two acceptance daemons
+// pair and call each other over the real link and nothing leaves the machine. Read here only: the product's own
+// startup reads no such variable.
+const linkBin = process.env.MOSS_ACCEPTANCE_LINK_BIN;
+const publicTime = { sample: async () => ({ offsetMs: 37.5 + Math.random(), rttMs: 1.25 }) };
+const links = linkBin !== undefined && linkBin !== ""
+  ? {
+    binary: linkBin, sidecar: { relay: "disabled" as const, n0Lookup: false, bind: "127.0.0.1:0" },
+    // Two daemons on one machine: each its own computer name (Alpha, Beta), never the machine's one for both.
+    self: { name: process.env.MOSS_ACCEPTANCE_COMPUTER_NAME || "Alpha", kind: "desktop" as const, os: process.platform === "darwin" ? "macos" as const : "linux" as const },
+    handshake: null, account: null, driver: false as const, watch: () => () => {}, publicTime,
+  }
+  : {
+    wire: (k: { publicKey: Uint8Array }) => new MemoryNetwork().endpoint(k.publicKey),
+    handshake: null, account: null, driver: false as const, watch: () => () => {}, publicTime,
+  };
 // Usage-inert (packages/core/src/usage/wiring.ts): it never reads or runs the user's own Codex, Claude Code, Antigravity or
 // OpenCode, nor the plan beat, temp home or not.
 // A wait before the plugin registry opens (the cold-start step widens the window the app can connect into).
@@ -84,6 +96,14 @@ const launchProgram = async (program: "moss" | "code"): Promise<void> => {
 };
 const daemon = await startDaemon({ appPeer, launchProgram, openInStartMs: scaled(60_000), heartbeatTimeoutMs: scaled(15_000), parts: { userHome }, links, usage: USAGE_INERT, pluginFetch, requestRestart, ...(Number.isFinite(opening) && opening > 0 ? { pluginsOpenDelayMs: opening } : {}), ...(Number.isFinite(answering) && answering > 0 ? { pluginsOpenAnswerDelayMs: answering } : {}) });
 console.error(`acceptance daemon: listening on ${daemon.socketPath}`);
+// The `computers` unit pairs two daemons through the product's own path: the four words reach only the user's terminal
+// (the CLI role, the harness token), so this daemon puts its harness token beside app.token for the run, as a test
+// build does (run-files.ts `writeHarnessTokenFile`); only under that unit's switch.
+if (linkBin !== undefined && linkBin !== "") {
+  const { writeHarnessTokenFile } = await import("../../packages/core/src/platform/pair/run-files");
+  const { bunRunner } = await import("../../packages/core/src/platform/login/live");
+  await writeHarnessTokenFile(join(process.env.MOSS_HOME!, "run"), daemon.tokens.harness, { os: process.platform === "darwin" ? "darwin" : "linux", run: bunRunner });
+}
 // A CI runner (run.ts sets MOSS_ACCEPT_DIAGNOSE): a tick every 500 ms; one that comes more than a second late says this daemon's loop was
 // held up (or the machine was), with the time, which the daemon's own lines do not carry. See stall-watch.ts.
 if (process.env.MOSS_ACCEPT_DIAGNOSE === "1") {
