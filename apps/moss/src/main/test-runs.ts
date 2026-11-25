@@ -93,6 +93,18 @@ export interface Scene {
 }
 
 /** The scenes for the owner's renders (the brief's list). */
+/** Once the layout has settled, the first open question card is scrolled to the top of the conversation and asserted to lie inside the viewport (light and
+ *  dark then show the same place); a card that is not there or not in view throws, and the render fails. */
+const SHOW_OPEN_QUESTION = `(async () => {
+  await new Promise((r) => setTimeout(r, 800));
+  const card = document.querySelector('.messages [data-kind=question][data-state=pending]');
+  if (!card) throw new Error('no open question card in the conversation');
+  card.scrollIntoView({ block: 'start' });
+  await new Promise((r) => setTimeout(r, 600));
+  const box = card.getBoundingClientRect();
+  if (box.top < 0 || box.bottom > window.innerHeight || box.height === 0) throw new Error('the open question card is not inside the viewport: ' + JSON.stringify({ top: box.top, bottom: box.bottom, height: window.innerHeight }));
+})()`;
+
 export const SCENES: readonly Scene[] = [
   // The conversation with its file and its own card whole (the strip has a scene of its own).
   { name: "conversation", go: { bot: "juniper", panel: false, strip: false } },
@@ -105,7 +117,8 @@ export const SCENES: readonly Scene[] = [
   { name: "question-long", go: { bot: "ada", panel: false, strip: false } },
   // Open cards that wait for no turn: skipped (the person's own bubble "Skipped the question"), and two open at once.
   { name: "question-skipped", go: { bot: "brook", panel: false, strip: false } },
-  { name: "question-two-open", go: { bot: "juniper", panel: false, strip: false } },
+  { name: "question-open-later", go: { bot: "kite", panel: false, strip: false }, run: SHOW_OPEN_QUESTION },
+  { name: "question-two-open", go: { bot: "juniper", panel: false, strip: false }, run: SHOW_OPEN_QUESTION },
   // Lane MA2's pages (the side panel, Plugins, Settings), written as `ma2-<scene>-<theme>-<size>.png`.
   { name: "ma2-panel", go: { bot: "juniper", panel: true } },
   { name: "ma2-plugins", go: { page: "plugins", strip: false } },
@@ -173,6 +186,7 @@ export async function runRender(o: { win: BrowserWindow; engine: MossEngine; dir
     await sleep(500);
     await until(async () => (await win.webContents.executeJavaScript(`document.querySelectorAll("[data-bot-row]").length`).catch(() => 0) as number) > 0, 15_000);
   };
+  let scriptFailed = false;
   if (ready) {
     win.webContents.setFrameRate(30);
     // Layout does not depend on the colours: the measure looks at the light theme only.
@@ -186,7 +200,7 @@ export async function runRender(o: { win: BrowserWindow; engine: MossEngine; dir
           await win.webContents.executeJavaScript(`window.__mossTest && window.__mossTest.go(${JSON.stringify({ ...scene.go, calm: true })})`).catch(() => undefined);
           // Let the conversation load, the sealed card frames draw and the faces settle.
           await sleep(process.env.MOSS_RENDER_MEASURE === "1" ? 1_000 : 1_600);
-          if (scene.run !== undefined) { await win.webContents.executeJavaScript(scene.run).catch((err: unknown) => o.log(`render: ${scene.name} script failed: ${String(err)}`)); await sleep(process.env.MOSS_RENDER_MEASURE === "1" ? 500 : 900); }
+          if (scene.run !== undefined) { await win.webContents.executeJavaScript(scene.run).catch((err: unknown) => { scriptFailed = true; o.log(`render: ${scene.name} script failed: ${String(err)}`); }); await sleep(process.env.MOSS_RENDER_MEASURE === "1" ? 500 : 900); }
           if (scene.said !== undefined) { win.webContents.send("moss:card-said", scene.said.card, scene.said.words); await sleep(500); }
           if (process.env.MOSS_RENDER_MEASURE === "1") {
             // Layout, not a picture: with classic (always shown, space-taking) scroll bars styled onto this page only (never a
@@ -207,6 +221,6 @@ export async function runRender(o: { win: BrowserWindow; engine: MossEngine; dir
     }
   }
   if (process.env.MOSS_RENDER_MEASURE === "1") writeFileSync(join(o.dir, "measure.json"), JSON.stringify(measured, null, 2));
-  writeFileSync(join(o.dir, "render-run.json"), JSON.stringify({ ok: ready, written, log: o.logLines.slice(-120) }, null, 2));
+  writeFileSync(join(o.dir, "render-run.json"), JSON.stringify({ ok: ready && !scriptFailed, written, log: o.logLines.slice(-120) }, null, 2));
   app.exit(ready ? 0 : 1);
 }

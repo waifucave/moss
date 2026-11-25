@@ -42,7 +42,7 @@ if (built.status !== 0) {
 }
 const home = mkdtempSync(join(tmpdir(), "mr-"));
 let pid: number | undefined;
-const engine = await startFakeEngine({ home, picturePng: await pagePng(), frameMs: 400, peerPid: () => pid, longTalk: { bot: "maple", messages: 60, text: longText },
+const engine = await startFakeEngine({ home, noCards: (process.env.MOSS_RENDER_SCENES ?? "").startsWith("question-"), picturePng: await pagePng(), frameMs: 400, peerPid: () => pid, longTalk: { bot: "maple", messages: 60, text: longText },
   // Two more bots at work, so the status line shows other phrases: reading a file and reading a site.
   running: {
     juniper: { name: "mcp__moss__Browser", argsJson: "{}" },

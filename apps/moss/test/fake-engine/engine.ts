@@ -57,6 +57,8 @@ export interface FakeEngineOptions {
   /** A tool call running on a bot's main session: sent as a `tool_call` event when MOSS attaches to that session (the
    *  status line takes a file's base name or a site's host from its input; the conversation never draws it). */
   running?: Record<string, { name: string; argsJson: string; displayTitle?: string }>;
+  /** No approval cards at all (a render of a scene that is about something else: its sealed fields cannot draw offscreen). */
+  noCards?: boolean;
   longTalk?: { bot: string; messages: number; /** The words of message `i` (0-based; even ones are the person's). Default: "Long message N". */ text?: (i: number) => string };
   /** What `host.status` answers (the background host's state). */
   host?: { state: string; crashes: number; since: number; gaveUp?: boolean };
@@ -193,7 +195,7 @@ export async function startFakeEngine(o: FakeEngineOptions): Promise<FakeEngine>
     pub.frame(o.picturePng);
     pictureId = pub.id;
   }
-  const cards = new Map<string, Card>(cardsAt(now).map((c) => [c.id, c]));
+  const cards = new Map<string, Card>((o.noCards === true ? [] : cardsAt(now)).map((c) => [c.id, c]));
   for (const c of cards.values()) router.pending({ id: c.id, ...(c.session !== undefined ? { session: c.session } : {}), ...(c.bot !== undefined ? { bot: c.bot } : {}) });
 
   const conns = new Map<number, Conn>();
