@@ -103,7 +103,8 @@ describeWithEmbeddedRuntime("a bot's tools on another computer's files (lane XC,
       ].join("\n")), control()));
       expect(first[0]?.isError).toBe(true);
       expect(first[1]?.isError).toBe(true);
-      beta.node.close();
+      // Beta drops off the network (its link gone, as when it is switched off).
+      cluster!.net.partition(beta.device);
       await until(() => alpha.node.registry.get("Beta")?.state !== "online", 5000, "Beta offline on Alpha");
       const started = Date.now();
       const second = results(await driver.turn(user(call("Read", { file_path: "home/Beta/x.md" })), control()));
