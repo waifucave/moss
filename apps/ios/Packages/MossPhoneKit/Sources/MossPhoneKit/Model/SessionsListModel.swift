@@ -72,6 +72,7 @@ public final class SessionsListModel {
         switch event {
         case .sessionChanged(let s):
             if let i = sessions.firstIndex(where: { $0.id == s.id }) { sessions[i] = s } else { sessions.append(s) }
+        case .sessionRemoved(let id): sessions.removeAll { $0.id == id }
         case .connection(let c): connection = c
         default: break
         }

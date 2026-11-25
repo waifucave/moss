@@ -96,7 +96,25 @@ fn what_a_hostile_computer_sends_is_read_safely() {
     assert!(engine::session_item(&q("Which\u{202E} one?")).is_none());
     let resolved = engine::session_item(&json!({ "type": "question_resolved", "seq": 10, "sessionId": "s1", "ts": 2, "callId": "c1", "answers": {}, "by": "user" })).unwrap();
     assert!(engine::open_question(std::slice::from_ref(&asked)).is_some());
+    let ItemKind::QuestionResolved { by, skipped, to_bot, cause, .. } = &resolved.kind else { panic!("{resolved:?}") };
+    assert_eq!((by.as_deref(), *skipped, *to_bot, cause.as_deref()), (Some("user"), false, false, None), "an older-shaped resolution: answered, not skipped");
     assert!(engine::open_question(&[asked, resolved]).is_none());
+
+    // A bot's open question skipped on another device (its skip sent to the bot), and one the engine's stop ended.
+    let skipped = engine::session_item(&json!({ "type": "question_resolved", "seq": 11, "sessionId": "s1", "ts": 3, "callId": "c2", "answers": {}, "by": "user", "skipped": true, "toBot": true })).unwrap();
+    let ItemKind::QuestionResolved { call_id, skipped: s, to_bot, .. } = &skipped.kind else { panic!("{skipped:?}") };
+    assert_eq!((call_id.as_str(), *s, *to_bot), ("c2", true, true));
+    let stopped = engine::session_item(&json!({ "type": "question_resolved", "seq": 12, "sessionId": "s1", "ts": 4, "callId": "c3", "answers": {}, "by": "aborted", "cause": "engine-stopped" })).unwrap();
+    let ItemKind::QuestionResolved { by, cause, skipped: s, .. } = &stopped.kind else { panic!("{stopped:?}") };
+    assert_eq!((by.as_deref(), cause.as_deref(), *s), (Some("aborted"), Some("engine-stopped"), false));
+    assert!(engine::session_item(&json!({ "type": "question_resolved", "seq": 13, "sessionId": "s1", "ts": 4, "callId": "c\u{202E}4" })).is_none(), "a hidden character in a call id: not an item");
+    // The person's answer as their message names the question it answers; a plain message names none.
+    let answer = engine::session_item(&json!({ "type": "user_message", "seq": 14, "sessionId": "s1", "ts": 5, "text": "Green", "answersQuestion": "c2" })).unwrap();
+    let ItemKind::User { answers_question, .. } = &answer.kind else { panic!("{answer:?}") };
+    assert_eq!(answers_question.as_deref(), Some("c2"));
+    let plain = engine::session_item(&json!({ "type": "user_message", "seq": 15, "sessionId": "s1", "ts": 5, "text": "hi" })).unwrap();
+    let ItemKind::User { answers_question, .. } = &plain.kind else { panic!("{plain:?}") };
+    assert!(answers_question.is_none());
 
     // Composer offers: limits only when whole.
     let c = engine::composer_offers(&json!({ "kind": "coding", "pictures": true, "files": { "maxBytes": 10 }, "pictureChunks": { "maxBytes": 6, "chunkBytes": 2 },

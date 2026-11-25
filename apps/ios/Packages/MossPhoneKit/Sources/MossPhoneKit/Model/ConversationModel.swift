@@ -26,6 +26,8 @@ public final class ConversationModel {
     public private(set) var isInterrupting = false
     /// The first page has been read (or failed to be): the conversation is drawn only then, so it opens where it should.
     public private(set) var loaded = false
+    /// The person deleted this conversation (or its bot) on their computer: nothing more is sent to it.
+    public private(set) var gone = false
     public var kind: ConversationKind { if case .bot = source { return .bot } else { return .codingSession } }
 
     @ObservationIgnored private let client: EngineClient
@@ -110,15 +112,28 @@ public final class ConversationModel {
             statusLine = line
         case .questionChanged(let subject) where subject == sessionID:
             Task { await self.refreshQuestion() }
+        case .questionResolved(let subject, let callId, let state) where subject == sessionID:
+            if let i = messages.firstIndex(where: { $0.question?.callId == callId }) { messages[i].question?.state = state }
+        case .sessionRemoved(let id) where id == sessionID:
+            markGone()
+        case .botRemoved(let id):
+            if case .bot(let b) = source, b.id == id { markGone() }
         default: break
         }
+    }
+
+    private func markGone() {
+        gone = true
+        question = nil
+        statusLine = nil
+        errorText = kind == .bot ? "This bot was deleted on your computer." : "This conversation was deleted on your computer."
     }
 
     /// Sends the draft. The field clears only when the send was accepted: a refused prompt stays in it (and so does a picture).
     @discardableResult
     public func send() async -> Bool {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return false }
+        guard !text.isEmpty, !gone else { return false }
         let id = failedSend?.text == text ? failedSend!.id : makeID()
         do {
             try await client.send(session: sessionID, text: text, clientMessageId: id, images: staged.map(\.path), files: stagedFiles.map(\.path))

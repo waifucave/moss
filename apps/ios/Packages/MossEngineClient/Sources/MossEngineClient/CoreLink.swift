@@ -42,7 +42,8 @@ public enum LinkItem: Sendable, Equatable {
     case message(ChatMessage)
     case turnStarted
     case turnEnded
-    case question
+    /// A question closed, and how (`question_resolved`).
+    case questionResolved(callId: String, state: AskedQuestion.State)
     case other
 }
 
@@ -65,6 +66,7 @@ public enum LinkEvent: Sendable {
     case botSummaryChanged(BotSummary)
     case botRemoved(id: String)
     case sessionChanged(SessionRow)
+    case sessionRemoved(id: String)
     case sessionItem(session: String, seq: UInt64, item: LinkItem)
     /// A card whose hash didn't match: not shown, never signed.
     case tamperedCard
@@ -134,6 +136,7 @@ public protocol ConnectionLink: AnyObject, Sendable {
     func composerOffers(session: String) async throws -> ComposerOffers
     func pendingQuestion(session: String) async throws -> AskQuestion?
     func answerQuestion(session: String, callId: String, answers: [String: String]) async throws
+    func skipQuestion(session: String, callId: String) async throws
     func backends() async throws -> [AgentBackend]
     func startOptions(backend: String, computer: String?) async throws -> BackendOptions
     func recentStart() async throws -> RecentStart

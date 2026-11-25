@@ -159,9 +159,13 @@ public struct CardView: View {
     }
     /// Opens a cut field in place.
     private func showAll(_ name: String, _ label: String) -> some View {
-        Button(label) { onOpen(name) }
-            .font(.footnote).buttonStyle(.plain).foregroundStyle(.secondary).underline()
-            .accessibilityIdentifier("showAll-\(name)")
+        // A footnote-sized line, but a full 44-point target (the accessibility audit's hit area), the whole row's width.
+        Button { onOpen(name) } label: {
+            Text(label).font(.footnote).foregroundStyle(.secondary).underline()
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("showAll-\(name)")
     }
 
     private var footer: some View {

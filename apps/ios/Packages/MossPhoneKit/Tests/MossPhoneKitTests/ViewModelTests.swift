@@ -295,6 +295,51 @@ final class ViewModelTests: XCTestCase {
         XCTAssertNil(m2.question, "closed on another device: it leaves this phone without a reopen")
     }
 
+    /// A question drawn where it was asked takes how it ended, live; the person's answer names it.
+    func testAQuestionWhereItWasAskedShowsHowItEnded() async {
+        let c = fake()
+        let m = ConversationModel(source: .bot(SampleData.bots[0]), client: c)
+        let sid = SampleData.bots[0].mainSession
+        await m.load()
+        let asked = ChatMessage(id: "q1", role: .question, text: "Which colour?", at: 1,
+                                question: AskedQuestion(callId: "ask_9", header: "Tag", text: "Which colour?", options: ["Green", "Amber"]))
+        m.apply(.message(subject: sid, asked))
+        XCTAssertEqual(m.messages.last?.question?.state, .open)
+        m.apply(.questionResolved(subject: sid, callId: "ask_9", state: .skipped))
+        XCTAssertEqual(m.messages.first { $0.id == "q1" }?.question?.state, .skipped, "skipped on another device: drawn closed and Skipped")
+        m.apply(.questionResolved(subject: "elsewhere", callId: "ask_9", state: .answered))
+        XCTAssertEqual(m.messages.first { $0.id == "q1" }?.question?.state, .skipped, "another conversation's event changes nothing here")
+    }
+
+    /// A bot deleted on the computer: its conversation says so and sends nothing more; lists drop deleted bots and sessions.
+    func testADeletedBotOrSessionLeavesTheListsAndItsConversation() async {
+        let c = fake()
+        let bot = SampleData.bots[0]
+        let m = ConversationModel(source: .bot(bot), client: c)
+        await m.load()
+        m.apply(.botRemoved(id: bot.id))
+        XCTAssertTrue(m.gone)
+        XCTAssertNotNil(m.errorText)
+        m.draft = "still there?"
+        let sent = await m.send()
+        XCTAssertFalse(sent, "nothing is sent to a deleted bot")
+
+        let code = ConversationModel(source: .session(SampleData.sessions[0]), client: c)
+        await code.load()
+        code.apply(.sessionRemoved(id: "not-this-one"))
+        XCTAssertFalse(code.gone)
+        code.apply(.sessionRemoved(id: SampleData.sessions[0].id))
+        XCTAssertTrue(code.gone)
+
+        let sessions = SessionsListModel(client: c)
+        await sessions.load()
+        let first = try? XCTUnwrap(sessions.sessions.first)
+        if let first {
+            sessions.apply(.sessionRemoved(id: first.id))
+            XCTAssertFalse(sessions.sessions.contains { $0.id == first.id }, "a deleted session leaves the list live")
+        }
+    }
+
     func testFileOverTheLimitIsRefusedWithAPlainLine() async {
         let c = fake()
         let m = ConversationModel(source: .bot(SampleData.bots[0]), client: c)

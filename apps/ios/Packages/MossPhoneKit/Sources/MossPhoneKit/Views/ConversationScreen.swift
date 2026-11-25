@@ -52,7 +52,7 @@ public struct ConversationScreen: View {
                                 .font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.vertical, 6)
                                 .accessibilityAddTraits(.isHeader)
                         }
-                        MessageRow(message: m, botName: speaker).id(m.id)
+                        MessageRow(message: m, botName: speaker, answered: answeredText).id(m.id)
                             .padding(.top, prev != nil && prev?.role != m.role ? 6 : 0)
                     }
                     ForEach(waitingCards) { card in
@@ -97,7 +97,10 @@ public struct ConversationScreen: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 20)
                 }
-                if let q = model.question {
+                if model.gone {
+                    // Deleted on the computer: nothing to send to.
+                    EmptyView()
+                } else if let q = model.question {
                     // A bot's question doesn't hold the bot: it stays open until answered or skipped, so it can be skipped here.
                     QuestionComposerView(question: q, onSubmit: { answers in await model.answerQuestion(answers) },
                                          onSkip: model.kind == .bot ? { await model.skipQuestion() } : nil)
@@ -110,6 +113,13 @@ public struct ConversationScreen: View {
         .task { model.start() }
         .onPreferenceChange(ComposerCoveringKey.self) { composerCovering = $0 }
         .onDisappear { model.stopListening() }
+    }
+
+    /// Each question asked in this conversation, by call id: what an answer bubble names.
+    private var answeredText: [String: String] {
+        var out: [String: String] = [:]
+        for m in model.messages { if let q = m.question { out[q.callId] = q.text } }
+        return out
     }
 
     private var speaker: String {
@@ -126,21 +136,29 @@ public struct ConversationScreen: View {
 struct MessageRow: View {
     let message: ChatMessage
     let botName: String
+    /// The question a message answers, by call id: its text, for the answer bubble's caption.
+    var answered: [String: String] = [:]
 
     var body: some View {
         switch message.role {
         case .user:
             VStack(alignment: .trailing, spacing: 2) {
+                if let id = message.answersQuestion {
+                    // The person's answer to (or skip of) a question asked above: said so, never read as a plain message.
+                    Label(answered[id].map { "Answer to: \($0)" } ?? "Answer to a question", systemImage: "arrowshape.turn.up.left")
+                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
                 Text(message.text)
                     .padding(.horizontal, 14).padding(.vertical, 9)
                     .foregroundStyle(Theme.userBubbleText)
                     .background(Theme.userBubble, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 if let d = message.device { Text("from \(d)").font(.caption2).foregroundStyle(.secondary) }
             }
+
             .frame(maxWidth: .infinity, alignment: .trailing)
             .padding(.leading, 64)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("You: \(message.text)")
+            .accessibilityLabel(message.answersQuestion == nil ? "You: \(message.text)" : "Your answer: \(message.text)")
         case .bot, .agent:
             VStack(alignment: .leading, spacing: 4) {
                 if !message.text.isEmpty {
@@ -157,6 +175,8 @@ struct MessageRow: View {
         case .note:
             Text(message.text).font(.footnote).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .center).padding(.vertical, 4)
+        case .question:
+            if let q = message.question { AskedQuestionRow(question: q, asker: botName) }
         }
     }
 }
@@ -212,3 +232,40 @@ extension EnvironmentValues {
     var conversationStartsAtTop: Bool { get { self[StartsAtTopKey.self] } set { self[StartsAtTopKey.self] = newValue } }
 }
 
+
+/// A question where it was asked: the question and its options as asked, and how it ended. The person answers an open one
+/// in the composer's place, below; this row never takes an answer.
+struct AskedQuestionRow: View {
+    let question: AskedQuestion
+    let asker: String
+    private var status: (String, String)? {
+        switch question.state {
+        case .open: return nil
+        case .answered: return ("Answered", "checkmark.circle")
+        case .skipped: return ("Skipped", "forward")
+        case .withdrawn: return ("Withdrawn", "xmark.circle")
+        case .engineStopped: return ("Ended: your computer stopped", "power")
+        }
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let h = question.header { Text(verbatim: h).font(.caption.weight(.semibold)).foregroundStyle(.secondary) }
+            Text(verbatim: question.text).font(.subheadline).lineLimit(6)
+            if !question.options.isEmpty {
+                Text(verbatim: question.options.joined(separator: " · ")).font(.footnote).foregroundStyle(.secondary).lineLimit(3)
+            }
+            if let s = status {
+                Label(s.0, systemImage: s.1).font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
+            } else {
+                Text("Waiting for your answer below").font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.botBubble.opacity(0.6), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.primary.opacity(0.12), lineWidth: 0.5))
+        .padding(.trailing, 32)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(asker) asked: \(question.text). \(status?.0 ?? "Waiting for your answer")")
+    }
+}

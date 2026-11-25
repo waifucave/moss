@@ -105,6 +105,8 @@ pub enum ConnEvent {
     BotRemoved { id: String },
     /// A session changed (`session_changed`).
     SessionChanged { session: crate::engine::SessionRow },
+    /// The person deleted a session or a bot's conversation (`session_removed`): it is gone; a list drops it.
+    SessionRemoved { id: String },
     /// An event of a session's log this connection follows (`event`), typed as a conversation shows it.
     SessionEvent { item: crate::engine::SessionItem },
     /// A message from the engine larger than the phone takes was read and dropped (`bytes` long); the link stays.
@@ -136,7 +138,7 @@ impl ConnEvent {
             ConnEvent::TamperedCard { computers_id } => computers_id.as_ref().map_or(0, String::len),
             ConnEvent::BotChanged { bot } => bot.size(),
             ConnEvent::BotSummaryChanged { summary } => summary.size(),
-            ConnEvent::BotRemoved { id } => id.len(),
+            ConnEvent::BotRemoved { id } | ConnEvent::SessionRemoved { id } => id.len(),
             ConnEvent::SessionChanged { session } => session.size(),
             ConnEvent::SessionEvent { item } => item.size(),
             ConnEvent::Notification { method, params_json } => method.len() + params_json.len(),
@@ -882,6 +884,7 @@ impl Inner {
             Some("bot_summary_changed") => params.get("summary").and_then(crate::engine::summary).map(|summary| ConnEvent::BotSummaryChanged { summary }),
             Some("bot_removed") => params.get("id").and_then(Value::as_str).filter(|i| cards::is_bot_id(i)).map(|id| ConnEvent::BotRemoved { id: id.to_string() }),
             Some("session_changed") => params.get("session").and_then(crate::engine::session_row).map(|session| ConnEvent::SessionChanged { session }),
+            Some("session_removed") => params.get("id").and_then(Value::as_str).filter(|i| cards::is_session_id(i)).map(|id| ConnEvent::SessionRemoved { id: id.to_string() }),
             _ => None,
         };
         if let Some(e) = typed {
@@ -1252,6 +1255,10 @@ impl Connection {
     /// `session.answer`: each answer keyed by its question's text, exactly as asked.
     pub async fn answer_question(&self, session: String, call_id: String, answers: HashMap<String, String>) -> Result<(), CoreError> {
         typed!(self, |i| crate::engine::answer_question(&*i, &session, &call_id, answers))
+    }
+    /// Skips a bot's open question: no answers; the bot is told it was skipped. Only the person does this.
+    pub async fn skip_question(&self, session: String, call_id: String) -> Result<(), CoreError> {
+        typed!(self, |i| crate::engine::skip_question(&*i, &session, &call_id))
     }
     pub async fn backends(&self) -> Result<Vec<crate::engine::AgentBackend>, CoreError> {
         typed!(self, |i| crate::engine::backends(&*i))

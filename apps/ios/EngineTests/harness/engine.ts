@@ -46,12 +46,25 @@ const home = join(userHome, ".moss");
 const project = join(userHome, "project1");
 mkdirSync(project, { recursive: true });
 
-/** A bot's brain for these tests: each turn says `Reply: <the message>` and ends. */
+/** A bot's brain for these tests: each turn says `Reply: <the message>` and ends. A message `ask me` makes it ask the
+ *  person a question the way a bot's `AskUserQuestion` does (`question_asked` in its log, the turn not waiting): the card
+ *  stays open across turns until the person answers or skips it, and that reaches the bot as their message. */
+let asked = 0;
 class ReplyDriver {
   readonly canFold = true;
   async turn(input: { text?: string }, ctl: { record(e: { type: string; [k: string]: unknown }): void; signal: AbortSignal }) {
     await Bun.sleep(150);
     if (ctl.signal.aborted) return { reason: "interrupted" as const };
+    if (String(input.text ?? "").trim() === "ask me") {
+      asked += 1;
+      ctl.record({ type: "question_asked", callId: `iw_ask_${asked}`, questions: [{
+        question: "Which colour should the new tag have?", header: "Tag colour", multiSelect: false,
+        options: [{ label: "Green", description: "Matches the success states" }, { label: "Amber", description: "Stands out" }],
+      }] });
+      const said = "I asked you which colour.";
+      ctl.record({ type: "assistant_message", text: said });
+      return { reason: "end_turn" as const, text: said };
+    }
     const text = `Reply: ${String(input.text ?? "").slice(0, 200)}`;
     ctl.record({ type: "assistant_message", text });
     return { reason: "end_turn" as const, text };

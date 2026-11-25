@@ -6,7 +6,6 @@ import MossPhoneKit
 //   * `session.attach` / `session.detach` (following a conversation live; the core then types its events);
 //   * `card.list`'s ids (the cards themselves only ever come from the core's issue), and `card.get`'s outcome and option
 //     (read back after an answer timed out);
-//   * `session.answer` with `skipped` (skipping a bot's open question: the core's `answer_question` has no skip yet);
 //   * a card's JSON into the screens' `Card` (the core gives `card_json` to draw; every string in it is drawn through the
 //     core's `visible_text`). A card the phone can't draw whole (an unknown sealed field or option kind) is never shown.
 
@@ -33,11 +32,6 @@ enum Doors {
         return (try await call(c, "session.attach", p)["lastSeq"] as? NSNumber)?.uint64Value ?? 0
     }
     static func detach(_ c: ConnectionLink, session: String) async { _ = try? await call(c, "session.detach", ["id": session]) }
-
-    /// Skips a bot's open question: no answers, `skipped` (the engine tells the bot; only the person may skip).
-    static func skipQuestion(_ c: ConnectionLink, session: String, callId: String) async throws {
-        _ = try await call(c, "session.answer", ["id": session, "callId": callId, "answers": [String: String](), "skipped": true])
-    }
 
     /// The ids `card.list` names now.
     static func pendingCardIDs(_ c: ConnectionLink) async throws -> [String] {

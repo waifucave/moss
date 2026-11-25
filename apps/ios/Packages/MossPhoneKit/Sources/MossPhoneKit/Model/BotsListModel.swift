@@ -99,6 +99,10 @@ public final class BotsListModel {
         case .botChanged(let b):
             if let i = bots.firstIndex(where: { $0.id == b.id }) { bots[i] = b } else { bots.append(b) }
         case .botSummaryChanged(let s): summaries[s.id] = s
+        case .botRemoved(let id):
+            // Deleted (or archived) on the computer: off the list now, and off the pins.
+            bots.removeAll { $0.id == id }; summaries[id] = nil
+            if pinnedIDs.contains(id) { togglePin(id) }
         case .statusLine(let subject, let line): lines[subject] = line
         case .message(let subject, let m):
             if let b = bots.first(where: { $0.mainSession == subject }), m.role != .note {

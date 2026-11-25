@@ -48,7 +48,31 @@ public struct BotSummary: Codable, Hashable, Sendable {
     public init(id: String, last: Last? = nil, unread: Bool = false) { self.id = id; self.last = last; self.unread = unread }
 }
 
-public enum MessageRole: String, Codable, Sendable { case user, bot, note, agent }
+public enum MessageRole: String, Codable, Sendable { case user, bot, note, agent, question }
+
+/// A question asked in the conversation, drawn where it was asked, with how it ended. Its answer, when the person's
+/// message carries it, is drawn from this record (the choice), never from that message's words.
+public struct AskedQuestion: Hashable, Sendable {
+    public enum State: Hashable, Sendable {
+        case open
+        /// Answered (here or on another device); the person's answer is the message that names it.
+        case answered
+        /// The person skipped it (here or on another device): nothing was chosen.
+        case skipped
+        /// It ended without an answer: the turn ended or was stopped.
+        case withdrawn
+        /// The engine went away while it waited (a stop, an update's restart, a crash), not the person.
+        case engineStopped
+    }
+    public var callId: String
+    public var header: String?
+    public var text: String
+    public var options: [String]
+    public var state: State
+    public init(callId: String, header: String? = nil, text: String, options: [String], state: State = .open) {
+        self.callId = callId; self.header = header; self.text = text; self.options = options; self.state = state
+    }
+}
 
 /// One message of a conversation, already read out of the session's events by the client.
 public struct ChatFile: Hashable, Sendable {
@@ -68,8 +92,14 @@ public struct ChatMessage: Identifiable, Hashable, Sendable {
     public var device: String?
     /// A file the message carries, drawn as its own card.
     public var file: ChatFile?
-    public init(id: String, role: MessageRole, text: String, at: Int64, device: String? = nil, file: ChatFile? = nil) {
+    /// A question asked here (`role == .question`), with how it ended.
+    public var question: AskedQuestion?
+    /// The person's message is their answer to (or skip of) this question (its `callId`).
+    public var answersQuestion: String?
+    public init(id: String, role: MessageRole, text: String, at: Int64, device: String? = nil, file: ChatFile? = nil,
+                question: AskedQuestion? = nil, answersQuestion: String? = nil) {
         self.id = id; self.role = role; self.text = text; self.at = at; self.device = device; self.file = file
+        self.question = question; self.answersQuestion = answersQuestion
     }
 }
 
@@ -329,6 +359,12 @@ public enum EngineEvent: Hashable, Sendable {
     case connection(ConnectionState)
     /// A question was asked or closed (answered or skipped, here or on another device) in this session: re-read what is open.
     case questionChanged(subject: String)
+    /// A question in this session closed: how (the conversation updates the question where it was asked).
+    case questionResolved(subject: String, callId: String, state: AskedQuestion.State)
+    /// The person deleted a bot (`bot_removed`) or a session or bot's conversation (`session_removed`): lists drop it, and an
+    /// open conversation says it is gone.
+    case botRemoved(id: String)
+    case sessionRemoved(id: String)
 }
 
 

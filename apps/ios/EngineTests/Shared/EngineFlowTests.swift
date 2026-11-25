@@ -173,6 +173,30 @@ class EngineFlowTests: XCTestCase {
             XCTAssertTrue(withPicture, conversation.errorText ?? "")
         }
         if app == .moss {
+            // A bot's open question (it doesn't wait): shown where the composer is, live; skipped once, answered once; each
+            // drawn where it was asked with how it ended, and the person's answer drawn as the answer to it.
+            for round in ["skip", "answer"] {
+                conversation.draft = "ask me"
+                let asking = await conversation.send()
+                XCTAssertTrue(asking, conversation.errorText ?? "")
+                try await eventually("the bot's question (\(round))") { conversation.question != nil }
+                let q = try XCTUnwrap(conversation.question)
+                print("IW question \(q.callId): \(q.text)")
+                if round == "skip" {
+                    let skipped = await conversation.skipQuestion()
+                    XCTAssertTrue(skipped, conversation.errorText ?? "")
+                    try await eventually("drawn as skipped") { conversation.messages.contains { $0.question?.callId == q.callId && $0.question?.state == .skipped } }
+                } else {
+                    let answered = await conversation.answerQuestion([q.text: "Green"])
+                    XCTAssertTrue(answered, conversation.errorText ?? "")
+                    try await eventually("drawn as answered") { conversation.messages.contains { $0.question?.callId == q.callId && $0.question?.state == .answered } }
+                    try await eventually("the person's answer, naming its question") { conversation.messages.contains { $0.role == .user && $0.answersQuestion == q.callId } }
+                }
+                XCTAssertNil(conversation.question, "the composer is back")
+                let open = try await client.pendingQuestion(session: sid)
+                XCTAssertNil(open, "nothing is left open on the engine")
+            }
+
             // A bot made from the phone (the engine's `bot.create` door): it is listed next.
             let made = try await client.createBot(name: "Gamma", model: nil)
             let listed = try await client.bots()

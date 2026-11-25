@@ -137,7 +137,13 @@ public actor CoreEngineClient: EngineClient {
             emit(.sessionChanged(r))
         case .sessionItem(let session, let seq, let item):
             sessionItem(item, seq: seq, session: session)
-        case .botRemoved, .notification, .tamperedCard, .messageDropped, .lagged, .closed:
+        case .botRemoved(let id):
+            for (s, b) in botOfSession where b.id == id { botOfSession[s] = nil }
+            emit(.botRemoved(id: id))
+        case .sessionRemoved(let id):
+            botOfSession[id] = nil
+            emit(.sessionRemoved(id: id))
+        case .notification, .tamperedCard, .messageDropped, .lagged, .closed:
             break
         }
     }
@@ -146,12 +152,36 @@ public actor CoreEngineClient: EngineClient {
         if attached[session] != nil { attached[session] = max(attached[session] ?? 0, seq) }
         let bot = botOfSession[session]
         switch item {
-        case .message(let m): emit(.message(subject: session, role(m, botSession: bot != nil)))
+        case .message(let m):
+            emit(.message(subject: session, role(m, botSession: bot != nil)))
+            if m.role == .question { emit(.questionChanged(subject: session)) }
         case .turnStarted: emit(.statusLine(subject: session, line: bot.map { "\($0.name) is thinking" } ?? "Working"))
         case .turnEnded: emit(.statusLine(subject: session, line: nil))
-        case .question: emit(.questionChanged(subject: session))
+        case .questionResolved(let callId, let state):
+            noteQuestion(callId, state)
+            emit(.questionResolved(subject: session, callId: callId, state: state))
+            emit(.questionChanged(subject: session))
         case .other: break
         }
+    }
+
+    /// A page's messages, each question with how it ended (from this page, or a newer one or a live event read before).
+    private func messages(of p: LinkPage, botSession: Bool) -> [ChatMessage] {
+        for i in p.items { if case .questionResolved(let id, let state) = i.item { noteQuestion(id, state) } }
+        return p.items.compactMap { item -> ChatMessage? in
+            guard case .message(let m) = item.item else { return nil }
+            var out = role(m, botSession: botSession)
+            if let q = out.question, let state = questionStates[q.callId] { out.question?.state = state }
+            return out
+        }
+    }
+    /// How each question read so far ended, by call id (the newest pages are read first, so an earlier page's question
+    /// still shows how it ended). Bounded: the oldest are forgotten first.
+    private var questionStates: [String: AskedQuestion.State] = [:]
+    private var questionOrder: [String] = []
+    private func noteQuestion(_ id: String, _ state: AskedQuestion.State) {
+        if questionStates.updateValue(state, forKey: id) == nil { questionOrder.append(id) }
+        if questionOrder.count > 2000 { questionStates[questionOrder.removeFirst()] = nil }
     }
 
     /// The core types an assistant's words as the agent's: in a bot's conversation they are the bot's.
@@ -175,7 +205,7 @@ public actor CoreEngineClient: EngineClient {
             attached[s] = last
             let bot = botOfSession[s]
             guard let p = try? await (bot != nil ? c.conversation(bot: bot!.id, beforeSeq: nil, limit: 60) : c.history(session: s, beforeSeq: nil, limit: 60)) else { continue }
-            for i in p.items { if case .message(let m) = i.item { emit(.message(subject: s, role(m, botSession: bot != nil))) } }
+            for m in messages(of: p, botSession: bot != nil) { emit(.message(subject: s, m)) }
             let running = rows.first { $0.id == s }.map { $0.motion == .running } ?? false
             emit(.statusLine(subject: s, line: running ? (bot.map { "\($0.name) is thinking" } ?? "Working") : nil))
         }
@@ -323,7 +353,7 @@ public actor CoreEngineClient: EngineClient {
         let sid = p.session
         if bot != nil, sid != session { await follow(c, sid) }
         if let low = p.items.map(\.seq).min() { oldestSeq[sid] = min(oldestSeq[sid] ?? Int64(low), Int64(low)) }
-        let messages: [ChatMessage] = p.items.compactMap { if case .message(let m) = $0.item { return role(m, botSession: botSession) } else { return nil } }
+        let messages = messages(of: p, botSession: botSession)
         return MessagePage(session: sid, messages: messages, hasMore: p.hasMore)
     }
 
@@ -537,6 +567,6 @@ public actor CoreEngineClient: EngineClient {
         try await link().answerQuestion(session: session, callId: question.callId, answers: answers)
     }
     public func skipQuestion(session: String, question: AskQuestion) async throws {
-        try await Doors.skipQuestion(link(), session: session, callId: question.callId)
+        try await link().skipQuestion(session: session, callId: question.callId)
     }
 }

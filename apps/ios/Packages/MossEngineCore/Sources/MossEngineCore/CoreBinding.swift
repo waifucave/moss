@@ -121,11 +121,25 @@ enum Records {
             text.isEmpty ? .other : .message(ChatMessage(id: i.id, role: role, text: text, at: i.at))
         }
         switch i.kind {
-        case .user(let text, _): return m(.user, text)
+        case .user(let text, _, let answers):
+            guard !text.isEmpty else { return .other }
+            return .message(ChatMessage(id: i.id, role: .user, text: text, at: i.at, answersQuestion: answers))
         case .assistant(let text): return m(.agent, text)
         case .fromBot(_, let text), .fromSession(let text), .fromPlugin(let text), .agent(let text), .routine(_, let text), .note(_, let text), .turnError(let text): return m(.note, text)
         case .turnEnded: return .turnEnded
-        case .questionAsked, .questionResolved: return .question
+        case .questionAsked(let q):
+            // Where it was asked, as asked (the phone draws one question of a call: the first).
+            guard let first = q.questions.first else { return .other }
+            return .message(ChatMessage(id: i.id, role: .question, text: first.question, at: i.at,
+                                        question: AskedQuestion(callId: q.callId, header: first.header, text: first.question,
+                                                                options: first.options.map(\.label))))
+        case .questionResolved(let callId, let by, let skipped, _, let cause):
+            // `by` names who closed it; "aborted" (and the like) is no one's answer: the turn ended or the engine went away.
+            let ended = ["aborted", "expired", "timeout", "cancelled"].contains(by ?? "")
+            let state: AskedQuestion.State = skipped ? .skipped
+                : !ended ? .answered
+                : cause == "engine-stopped" ? .engineStopped : .withdrawn
+            return .questionResolved(callId: callId, state: state)
         case .other(let kind): return kind == "turn_started" ? .turnStarted : .other
         }
     }
@@ -166,6 +180,7 @@ final class ConnectionImpl: ConnectionLink, @unchecked Sendable {
         case .botSummaryChanged(let summary): return .botSummaryChanged(Records.summary(summary))
         case .botRemoved(let id): return .botRemoved(id: id)
         case .sessionChanged(let session): return .sessionChanged(Records.session(session))
+        case .sessionRemoved(let id): return .sessionRemoved(id: id)
         case .sessionEvent(let item): return .sessionItem(session: item.session, seq: item.seq, item: Records.item(item))
         case .tamperedCard: return .tamperedCard
         case .messageDropped: return .messageDropped
@@ -219,6 +234,9 @@ final class ConnectionImpl: ConnectionLink, @unchecked Sendable {
     }
     func answerQuestion(session: String, callId: String, answers: [String: String]) async throws {
         try await mapped { try await c.answerQuestion(session: session, callId: callId, answers: answers) }
+    }
+    func skipQuestion(session: String, callId: String) async throws {
+        try await mapped { try await c.skipQuestion(session: session, callId: callId) }
     }
     func backends() async throws -> [MossPhoneKit.AgentBackend] {
         try await mapped { try await c.backends().filter(\.userStartable).map { MossPhoneKit.AgentBackend(id: $0.id, name: $0.name) } }

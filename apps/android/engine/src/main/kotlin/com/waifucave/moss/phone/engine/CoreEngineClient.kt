@@ -224,6 +224,8 @@ class CoreEngineClient(
             is ConnEvent.SessionEvent -> sessionItem(e.item)
             is ConnEvent.Notification -> if (e.method == "core.event" && e.paramsJson.contains("\"device_")) synchronized(this) { devices = null }
             is ConnEvent.Lagged -> scope.launch { afterUp() }
+            // A deleted session (`session_removed`): the Android lists don't drop it live yet; they do on their next read.
+            is ConnEvent.SessionRemoved -> {}
             is ConnEvent.TamperedCard, is ConnEvent.MessageDropped, is ConnEvent.Closed -> {}
         }
     }

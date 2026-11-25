@@ -192,6 +192,7 @@ final class FakeConnection: ConnectionLink, @unchecked Sendable {
     }
     func pendingQuestion(session: String) async throws -> AskQuestion? { nil }
     func answerQuestion(session: String, callId: String, answers: [String: String]) async throws {}
+    func skipQuestion(session: String, callId: String) async throws {}
     func backends() async throws -> [AgentBackend] { [] }
     func startOptions(backend: String, computer: String?) async throws -> BackendOptions { BackendOptions(backend: backend, models: []) }
     func recentStart() async throws -> RecentStart { RecentStart() }

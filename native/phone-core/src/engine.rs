@@ -55,6 +55,11 @@ fn value(v: &Value, k: &str, max_units: usize) -> Option<String> {
     (!s.is_empty() && s.encode_utf16().count() <= max_units && !s.chars().any(unshown)).then(|| s.to_string())
 }
 
+/// A question's call id as the engine sent it (it is handed back): non-empty, at most `max` bytes, nothing hidden.
+fn call_id(v: &Value, k: &str, max: usize) -> Option<String> {
+    raw_str(v, k).filter(|c| !c.is_empty() && c.len() <= max && !c.chars().any(unshown)).map(str::to_string)
+}
+
 fn int(v: &Value, k: &str) -> Option<i64> {
     let n = get(v, k)?;
     n.as_i64().or_else(|| n.as_f64().filter(|f| f.fract() == 0.0 && f.abs() < 9.0e15).map(|f| f as i64))
@@ -336,7 +341,9 @@ pub struct AskQuestion {
 #[derive(Clone, Debug, PartialEq, uniffi::Enum)]
 pub enum ItemKind {
     /// The person's message (`user_message`); `device` names the device it came from, when the engine says.
-    User { text: String, device: Option<String> },
+    /// `answers_question` is the `callId` of a bot's open question this message answers or skips (`answersQuestion`):
+    /// the conversation draws it as that question's answer, from the question's own record, never from these words.
+    User { text: String, device: Option<String>, answers_question: Option<String> },
     /// The bot's or the agent's reply (`assistant_message`).
     Assistant { text: String },
     /// A message from another bot (`bot_message`).
@@ -356,7 +363,11 @@ pub enum ItemKind {
     /// A turn ended (`turn_completed`): `end_turn`, `aborted`, `error`.
     TurnEnded { reason: String },
     QuestionAsked { question: AskQuestion },
-    QuestionResolved { call_id: String },
+    /// A question closed (`question_resolved`). `by` is who closed it (`user`, `aborted`, …, as the engine says);
+    /// `skipped`: the person skipped a bot's open question (nothing chosen: draw it "Skipped", never as answered);
+    /// `to_bot`: the answer went to the bot as the person's message; `cause`: why an aborted one ended
+    /// (`engine-stopped`: the engine went away while it waited, not the person).
+    QuestionResolved { call_id: String, by: Option<String>, skipped: bool, to_bot: bool, cause: Option<String> },
     Other { kind: String },
 }
 
@@ -413,7 +424,7 @@ pub fn session_item(v: &Value) -> Option<SessionItem> {
     let seq = get(v, "seq").and_then(Value::as_u64)?;
     let msg = |k: &str| text(v, k, MESSAGE_MAX);
     let kind = match kind_name {
-        "user_message" => ItemKind::User { text: msg("text")?, device: value(v, "device", 64) },
+        "user_message" => ItemKind::User { text: msg("text")?, device: value(v, "device", 64), answers_question: call_id(v, "answersQuestion", 200) },
         "assistant_message" => ItemKind::Assistant { text: msg("text")? },
         "bot_message" => ItemKind::FromBot { bot: raw_str(v, "from").filter(|b| is_bot_id(b)).map(str::to_string), text: msg("text")? },
         "session_message" => ItemKind::FromSession { text: msg("text")? },
@@ -424,7 +435,13 @@ pub fn session_item(v: &Value) -> Option<SessionItem> {
         "agent_error" => ItemKind::TurnError { text: text(v, "message", 2000).unwrap_or_default() },
         "turn_completed" => ItemKind::TurnEnded { reason: raw_str(v, "stopReason").map(other).unwrap_or_default() },
         "question_asked" => ItemKind::QuestionAsked { question: ask(v, seq, int(v, "ts").unwrap_or(0))? },
-        "question_resolved" => ItemKind::QuestionResolved { call_id: raw_str(v, "callId").filter(|c| !c.is_empty() && c.len() <= 128 && !c.chars().any(unshown))?.to_string() },
+        "question_resolved" => ItemKind::QuestionResolved {
+            call_id: call_id(v, "callId", 128)?,
+            by: raw_str(v, "by").map(other),
+            skipped: boolean(v, "skipped").unwrap_or(false),
+            to_bot: boolean(v, "toBot").unwrap_or(false),
+            cause: raw_str(v, "cause").map(other),
+        },
         x => ItemKind::Other { kind: other(x) },
     };
     Some(SessionItem { id: format!("{session}#{seq}"), session, seq, at: int(v, "ts").unwrap_or(0), late: boolean(v, "late").unwrap_or(false), kind })
@@ -448,7 +465,7 @@ fn page(r: &Value, session: Option<String>) -> Result<MessagePage, CoreError> {
 /// The question still open in a page (`question_asked` with no `question_resolved` after it in the page).
 pub fn open_question(items: &[SessionItem]) -> Option<AskQuestion> {
     let resolved: std::collections::HashSet<&str> =
-        items.iter().filter_map(|i| if let ItemKind::QuestionResolved { call_id } = &i.kind { Some(call_id.as_str()) } else { None }).collect();
+        items.iter().filter_map(|i| if let ItemKind::QuestionResolved { call_id, .. } = &i.kind { Some(call_id.as_str()) } else { None }).collect();
     items.iter().rev().find_map(|i| match &i.kind {
         ItemKind::QuestionAsked { question } if !resolved.contains(question.call_id.as_str()) => Some(question.clone()),
         _ => None,
@@ -822,6 +839,13 @@ pub async fn answer_question(c: &impl Caller, session: &str, call_id: &str, answ
     c.call_json("session.answer", json!({ "id": session, "callId": call_id, "answers": answers })).await.map(|_| ())
 }
 
+/// Skips a bot's open question (`session.answer` with `skipped`): no answers; the engine tells the bot it was skipped.
+/// Only the person may skip, and only a bot's open question (a blocking one is answered).
+pub async fn skip_question(c: &impl Caller, session: &str, call_id: &str) -> Result<(), CoreError> {
+    need_session(session)?;
+    c.call_json("session.answer", json!({ "id": session, "callId": call_id, "answers": {}, "skipped": true })).await.map(|_| ())
+}
+
 pub async fn backends(c: &impl Caller) -> Result<Vec<AgentBackend>, CoreError> {
     let r = c.call_json("agent.backends", json!({})).await?;
     answer_of(&r, "agent.backends")?;
@@ -974,14 +998,14 @@ impl AskQuestion {
 impl SessionItem {
     pub fn size(&self) -> usize {
         let kind = match &self.kind {
-            ItemKind::User { text, device } => text.len() + opt(device),
+            ItemKind::User { text, device, answers_question } => text.len() + opt(device) + opt(answers_question),
             ItemKind::Assistant { text } | ItemKind::FromSession { text } | ItemKind::FromPlugin { text } | ItemKind::Agent { text } | ItemKind::TurnError { text } => text.len(),
             ItemKind::FromBot { bot, text } => opt(bot) + text.len(),
             ItemKind::Routine { name, text } => opt(name) + text.len(),
             ItemKind::Note { label, text } => opt(label) + text.len(),
             ItemKind::TurnEnded { reason } => reason.len(),
             ItemKind::QuestionAsked { question } => question.size(),
-            ItemKind::QuestionResolved { call_id } => call_id.len(),
+            ItemKind::QuestionResolved { call_id, by, cause, .. } => call_id.len() + opt(by) + opt(cause) + 2,
             ItemKind::Other { kind } => kind.len(),
         };
         self.id.len() + self.session.len() + 32 + kind
