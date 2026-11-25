@@ -11,7 +11,7 @@
 // reads: `weak` is a model that must have read what it edits; the owner's ruling of 2026-11-12 sets it by hand per model).
 // A default must be `strong` or `medium` on every vendor row that serves it; `recommended()` also skips a weak row, so a
 // row the catalog reclasses later stops being recommended without an edit here. A family whose vendors serve only weak
-// models (Gemma, Llama in agent SDK 0.0.85) declares no default: its vendors recommend nothing there and the person picks.
+// models (Gemma, Llama in agent SDK 0.0.86) declares no default: its vendors recommend nothing there and the person picks.
 // The 2026-11-24 catalog audit (lane CT) moved: gemini 3.7 Flash -> 3.8 Flash (Google routes 3.7 Flash to 3.8 Flash and
 // no longer lists it, https://aistudio.google.com/docs/deprecations); mistral Medium 3.5 -> Large 3 (`mistral-large-2512`:
 // Medium 3.5 is deprecated, retiring 2027-03-05, https://docs.mistral.ai/models; its named successor, Large 4, is in no
@@ -32,19 +32,19 @@
 // serves it, and the same page puts it among "Models available for at least 12 months after release": released
 // "September 2, 2026", retiring "September 2, 2027 or later", so not before spring. Argon is the other strong model Vertex
 // serves, but it is the Pro tier: $4 / $20 per million tokens on Google's own API against 3.8 Flash's $0.75 / $3.75 (the
-// catalog's google rows; every vertex row is unpriced), not an everyday default. The Vertex row is in clover-sdk PR #91
-// (no effort declared there: Vertex's card says `thinking_budget` returns 400); when an SDK release carries it, Vertex
-// recommends Hydrogen and the Vertex pin test in `default-model.test.ts` moves with it.
+// catalog's google rows; every vertex row is unpriced), not an everyday default. Agent SDK 0.0.86 carries
+// `vertex/gemini-4-hydrogen` (LOW to XHIGH as a named level), so Vertex recommends Hydrogen with no effort, as Google
+// does; 3.8 Flash stays the fallback for a provider that doesn't serve Hydrogen.
 //
-// THE GEMINI 4 EFFORT (2026-11-24). Hydrogen is the default with NO effort, so no thinking budget is sent and the model
-// thinks at its own default (high). The agent SDK's Google adapter turns an effort into `thinkingConfig.thinkingBudget`
-// only. Vertex's card, https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/4-hydrogen (read
-// 2026-11-24), says setting `thinking_budget` on Hydrogen "returns an HTTP 400 error"; Google AI Studio's
-// https://aistudio.google.com/docs/thinking (read 2026-11-24) documents only `thinking_level` for Gemini 4 and says
-// nothing either way about a budget. No real call has been made, so the default takes the form that cannot fail.
-// Restore `effort: "medium"` when the adapter sends the level form (`thinkingLevel`), or when one real call shows the
-// budget is accepted. A person who PICKS an effort for Hydrogen on Google today gets it sent as a budget (the row lists
-// low/medium/high/xhigh, so the picker offers them).
+// THE GEMINI 4 EFFORT (2026-11-24, kept on agent SDK 0.0.86). Hydrogen is the default with NO effort, so no thinking
+// control is sent and the model thinks at its own default (high). Vertex's card,
+// https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/4-hydrogen (read 2026-11-24), says setting
+// `thinking_budget` on Hydrogen "returns an HTTP 400 error"; Google AI Studio's https://aistudio.google.com/docs/thinking
+// (read 2026-11-24) documents only `thinking_level` for Gemini 4. Since 0.0.86 the Google adapter sends each row's
+// declared form, a named `thinkingLevel` for Gemini 4 and the covered Gemini 3.x rows, never a budget there; but no real
+// call has confirmed the level form yet, so the default keeps the form that cannot fail. It goes back to
+// `effort: "medium"` once the owner's one real Gemini turn at an effort works. A person who PICKS an effort for Hydrogen
+// gets the named level (the picker offers low/medium/high/xhigh).
 //
 // THE EFFORT STATES WHAT IS SENT (2026-11-24): `recommended()` drops a declared effort the row does not list, so a
 // declaration the rows cannot take was a promise nobody got. Where every vendor row's vocabulary is low/high/max
@@ -76,7 +76,7 @@ export const FAMILY_DEFAULTS: Readonly<Record<string, FamilyDefault>> = {
   claude: { model: "claude-opus-5.5", effort: "medium" }, // the owner's
   gpt: { model: "gpt-6.2-sol", effort: "medium" }, // the owner's
   // NO EFFORT on Hydrogen (the controller's ruling, 2026-11-24): see THE GEMINI 4 EFFORT above. 3.8 Flash, where Hydrogen
-  // isn't served (Vertex), keeps medium: the thinking budget is how Gemini 3.x takes an effort.
+  // isn't served, keeps medium: sent as the level MEDIUM since agent SDK 0.0.86.
   gemini: { model: "gemini-4-hydrogen", then: [{ model: "gemini-3.8-flash", effort: "medium" }] },
   grok: { model: "grok-4.7", effort: "medium" }, // xAI's current model (https://docs.x.ai/docs/release-notes.md, September 2026), same price as 4.6
   deepseek: { model: "deepseek-v4-pro", effort: "high" }, // rows take low, high, max: no medium

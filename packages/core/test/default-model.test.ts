@@ -54,30 +54,36 @@ describe("the recommended default: the family's one default, as the provider ser
     }
     expect(holes).toEqual([]);
   });
-  test("Vertex's Gemini: Hydrogen isn't served there, so the first fallback, 3.8 Flash at medium; Google keeps Hydrogen", () => {
-    // Agent SDK 0.0.85 has no vertex/gemini-4-hydrogen row (Vertex's model-versions page lists it): when one lands, Vertex
-    // moves to Hydrogen and this pin moves with it.
-    expect(catalog.models.some((m) => m.providerId === "vertex" && m.canonicalModelId === "gemini-4-hydrogen")).toBe(false);
-    expect(recommendedFor(catalog, "vertex", "gemini")).toEqual({ model: "vertex/gemini-3.8-flash", effort: "medium" });
-    expect(rec("vertex")).toEqual({ model: "vertex/gemini-3.8-flash", effort: "medium" });
+  test("Vertex's Gemini: Hydrogen with no effort, as Google's (agent SDK 0.0.86 carries vertex/gemini-4-hydrogen); 3.8 Flash at medium stays the fallback where Hydrogen isn't served", () => {
+    expect(recommendedFor(catalog, "vertex", "gemini")).toEqual({ model: "vertex/gemini-4-hydrogen" });
+    expect(rec("vertex")).toEqual({ model: "vertex/gemini-4-hydrogen" });
     expect(recommendedFor(catalog, "google", "gemini")).toEqual({ model: "google/gemini-4-hydrogen" });
-    // A weak fallback is never chosen: with 3.8 Flash reclassed weak, Vertex recommends nothing for Gemini.
-    const weakFlash = { families: catalog.families, models: catalog.models.map((m) => (m.key === "vertex/gemini-3.8-flash" ? { ...m, strength: "weak" as const } : m)) };
+    // A provider without Hydrogen (its row taken away here) takes the fallback.
+    const noHydrogen = { families: catalog.families, models: catalog.models.filter((m) => m.key !== "vertex/gemini-4-hydrogen") };
+    expect(recommendedFor(noHydrogen, "vertex", "gemini")).toEqual({ model: "vertex/gemini-3.8-flash", effort: "medium" });
+    // A weak fallback is never chosen: with 3.8 Flash reclassed weak too, Vertex recommends nothing for Gemini.
+    const weakFlash = { families: catalog.families, models: noHydrogen.models.map((m) => (m.key === "vertex/gemini-3.8-flash" ? { ...m, strength: "weak" as const } : m)) };
     expect(recommendedFor(weakFlash, "vertex", "gemini")).toBeUndefined();
   });
-  test("the Gemini default sends no thinkingConfig: Hydrogen is recommended with no effort, so the adapter maps none (2026-11-24: Vertex's card says a thinking budget returns 400)", () => {
-    const google = rec("google")!;
-    expect(google).toEqual({ model: "google/gemini-4-hydrogen" });
-    expect(defaultEffortFor(catalog, google.model)).toBeUndefined();
+  test("what is sent for Gemini (agent SDK 0.0.86 sends each row's thinking control in its declared form): Hydrogen as the default, no effort, no thinkingConfig; 3.8 Flash at medium, the level MEDIUM, never a budget", () => {
+    for (const provider of ["google", "vertex"]) {
+      const def = rec(provider)!;
+      expect(def.effort).toBeUndefined();
+      expect(defaultEffortFor(catalog, def.model)).toBeUndefined();
+      const hydrogen = catalog.models.find((m) => m.key === def.model)!;
+      // No effort: the adapter makes no thinking control, so the request carries no `thinkingConfig`. Checked 2026-11-24
+      // that nothing fills one in: the runtime sends no effort for a session with none (agent SDK `engine.ts`
+      // `planEffort`, the row's `defaultEffort` applies only on a per-message-effort model), and MOSS maps an implicit
+      // effort only when one is wanted (`implicitEffortFor`).
+      expect(mapGoogleEffort(undefined, hydrogen).ok).toBe(false);
+      // A person who picks an effort for Hydrogen gets the named level (the form Google and Vertex document).
+      expect(mapGoogleEffort("medium", hydrogen)).toEqual({ ok: true, value: { thinkingLevel: "MEDIUM" } });
+      const flash = catalog.models.find((m) => m.key === `${provider}/gemini-3.8-flash`)!;
+      expect(mapGoogleEffort("medium", flash)).toEqual({ ok: true, value: { thinkingLevel: "MEDIUM" } });
+    }
     expect(recommendedFor(catalog, "google-openai", "gemini")?.effort).toBeUndefined();
-    const row = catalog.models.find((m) => m.key === google.model)!;
-    // No effort: the adapter's mapping refuses to make one, so `thinkingConfig` gets no budget. Checked 2026-11-24 that
-    // nothing fills one in: the runtime sends no effort for a session with none (agent SDK `engine.ts` `planEffort`, the
-    // row's `defaultEffort` applies only on a per-message-effort model), and MOSS maps an implicit effort only when one is
-    // wanted (`implicitEffortFor`).
-    expect(mapGoogleEffort(undefined, row).ok).toBe(false);
-    // What a person who picks an effort gets today: a budget (the adapter's only form). Restore medium when this changes.
-    expect(mapGoogleEffort("medium", row)).toEqual({ ok: true, value: { thinkingBudget: 4096 } });
+    // The request body itself (the whole generationConfig, no budget key anywhere) is the agent SDK's test:
+    // packages/provider-runtime/src/adapters/google/thinking-forms.test.ts.
   });
   test("a weak row is never recommended, whatever the table says; a row with no class is weak", () => {
     const row = catalog.models.find((m) => m.key === recM("anthropic"))!;
