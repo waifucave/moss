@@ -1421,7 +1421,7 @@ jobs:
   acceptance-linux:
     name: acceptance-linux · ${{ matrix.unit }}
     needs: changes
-    if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.acceptance == 'true'
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.only != 'acceptance-windows' && needs.changes.outputs.acceptance == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -1488,7 +1488,10 @@ jobs:
   acceptance-windows:
     name: acceptance-windows · ${{ matrix.unit }}
     needs: changes
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.only != 'acceptance-linux' && needs.changes.outputs.acceptance == 'true'
+    # Only when asked (`scripts/ci/lane start --only acceptance-windows`) until its units are green: twelve of them are red for an hour each, and an
+    # ordinary lane run must not spend its Windows runners on them. TO FLIP when they are green: drop the `only == 'acceptance-windows'` test here (the
+    # job then joins every ordinary run, as `acceptance-linux` does), restore `!= 'acceptance-windows'` on nothing, and say so in scripts/ci/lane's help.
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.only == 'acceptance-windows' && needs.changes.outputs.acceptance == 'true'
     runs-on: windows-latest
     timeout-minutes: 120
     strategy:

@@ -40,16 +40,21 @@ describe("planFor: the checks and macOS runners a run starts", () => {
   test("a manual run of everything is a push's and the Linux acceptance: the parked Swift kits and Cowork stay out; --parked adds them", () => {
     const push = ids(undefined, "push");
     const dispatch = ids(undefined, "workflow_dispatch");
-    expect(dispatch.filter((id) => !push.includes(id)).sort()).toEqual(["acceptance-linux", "acceptance-windows"]);
+    expect(dispatch.filter((id) => !push.includes(id)).sort()).toEqual(["acceptance-linux"]); // (the Windows acceptance runs only with `--only acceptance-windows`, until it is green)
     const parked = planForFiles(undefined, "workflow_dispatch", "all", undefined, "all").jobs.map((j) => j.id);
-    expect(parked.filter((id) => !push.includes(id)).sort()).toEqual(["acceptance-linux", "acceptance-windows", "libkrun-queue", "swift", "swift-cowork-launcher"]);
+    expect(parked.filter((id) => !push.includes(id)).sort()).toEqual(["acceptance-linux", "libkrun-queue", "swift", "swift-cowork-launcher"]);
     // ... and the lane's own diff does it (what `lane start --all` sends): the host's folder runs the host's job and not Cowork's.
     const own = planForFiles(undefined, "workflow_dispatch", "all", undefined, ["apple/ComputerUse/WinterBrowserHost/Sources/Host.swift"]).jobs.map((j) => j.id);
     expect(own).toContain("swift");
     expect(own).not.toContain("swift-cowork-launcher");
     expect(planForFiles(undefined, "workflow_dispatch").jobs.find((j) => j.id === "acceptance-linux")!.checks).toBe(ON_GITHUB.length);
   });
-    expect(planForFiles(undefined, "workflow_dispatch").jobs.find((j) => j.id === "acceptance-windows")!.checks).toBe(ON_GITHUB.length);
+    // Windows acceptance: only when asked, and then nothing else of the acceptance runs.
+    const win = planForFiles(undefined, "workflow_dispatch", "acceptance-windows").jobs.map((j) => j.id);
+    expect(win).toContain("acceptance-windows");
+    for (const id of ["acceptance", "acceptance-linux"]) expect(win).not.toContain(id);
+    expect(planForFiles(undefined, "workflow_dispatch", "acceptance-windows").jobs.find((j) => j.id === "acceptance-windows")!.checks).toBe(ON_GITHUB.length);
+    for (const only of ["all", "acceptance", "acceptance-linux"]) expect(planForFiles(undefined, "workflow_dispatch", only).jobs.map((j) => j.id)).not.toContain("acceptance-windows");
 
   test("a document starts the names-and-layout check and the gates, and no runner but Linux's", () => {
     const p = planForFiles(["docs/moss-spec.md"]);
@@ -117,7 +122,7 @@ describe("planFor: the checks and macOS runners a run starts", () => {
   test("an acceptance-only manual run starts the acceptance (both machines), the names check and the gates, and no suite", () => {
     const areas = Object.fromEntries(CI_AREA_NAMES.map((a) => [a, a === "acceptance"])) as ReturnType<typeof areasFor>;
     const p = planFor(areas, ON_GITHUB, "workflow_dispatch", "acceptance");
-    expect(p.jobs.map((j) => j.id).sort()).toEqual(["acceptance", "acceptance-linux", "acceptance-windows", "changes", "gate", "lane-gate", "names"]);
+    expect(p.jobs.map((j) => j.id).sort()).toEqual(["acceptance", "acceptance-linux", "changes", "gate", "lane-gate", "names"]);
     const mac = planFor(areas, ON_GITHUB, "workflow_dispatch", "acceptance-linux");
     expect(mac.jobs.map((j) => j.id)).not.toContain("acceptance");
     expect(mac.jobs.map((j) => j.id)).toContain("acceptance-linux");

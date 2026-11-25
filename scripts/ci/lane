@@ -17,6 +17,8 @@
 #   scripts/ci/lane result [sha]                the gate and every check that is not green, from the commit's check-runs (the run's job
 #                                               list often answers HTTP 502; this does not need it); default: HEAD
 #
+# Windows acceptance: only with `--only acceptance-windows`, until it is green; then it joins the ordinary run (the one condition to flip is on the
+# `acceptance-windows` job in .github/workflows/ci.yml).
 # `run` defaults to the newest run of this branch's HEAD commit. `--only acceptance` runs just the acceptance units (and the names and
 # layout checks), to run them again after a fix. What a lane reads is `lane gate`: every job but the Windows ones, plus the acceptance
 # run (a red Windows job shows in the table and does not fail the lane gate). The gate prints its scope: which areas ran and which were
