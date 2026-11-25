@@ -151,6 +151,8 @@ export async function startFakeDaemon(opts: FakeOptions): Promise<FakeDaemon> {
     }
     const reply = (result: unknown) => id !== undefined && send(s, { jsonrpc: "2.0", id, result });
     const fail = (code: number, message: string) => id !== undefined && send(s, { jsonrpc: "2.0", id, error: { code, message } });
+    // Windows: a client asks the well-known pipe for its own (a rendezvous); this fake takes every connection on its one pipe, so it answers with that pipe.
+    if (method === "protocol.rendezvous") return reply({ pipe: endpoint, ttlMs: 5000 });
     const params = (msg.params ?? {}) as Record<string, unknown>;
     // A key the app sends for a sign-in is never written down, here as in the daemon: only its length.
     const logged = typeof params.key === "string" ? { ...params, key: `<${params.key.length} characters>` } : params;

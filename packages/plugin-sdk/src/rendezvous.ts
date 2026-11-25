@@ -3,7 +3,6 @@
 // pipe (a fresh 128-bit name, this user's alone, ONE accepted connection, a few seconds to use it). The client connects to that, and the engine
 // reads its pid from the pipe's single end. On macOS and Linux the endpoint is a Unix socket the OS names the peer of, and nothing changes.
 // (A copy of packages/protocol/src/rendezvous.ts: the published plugin SDK cannot depend on the protocol package; a test holds the two to the same request.)
-import { createConnection } from "node:net";
 
 /** The pipe a client should connect to for the engine at `endpoint`: on Windows a one-shot pipe from a rendezvous, otherwise `endpoint` itself.
  *  An engine that does not know the rendezvous (older than this client) is dialled the old way, on the endpoint. */
@@ -13,6 +12,8 @@ export const RENDEZVOUS_REQUEST = `${JSON.stringify({ jsonrpc: "2.0", id: 1, met
 export async function engineEndpoint(endpoint: string, opts: { platform?: string; timeoutMs?: number } = {}): Promise<string> {
   if ((opts.platform ?? process.platform) !== "win32" || !/^\\\\[.?]\\pipe\\/i.test(endpoint)) return endpoint;
   const timeoutMs = opts.timeoutMs ?? 5000;
+  // Loaded only here: this module is part of a package a browser bundle also reads, where `node:net` has no connection to make.
+  const { createConnection } = await import("node:net");
   return await new Promise<string>((resolve, reject) => {
     const socket = createConnection({ path: endpoint });
     let buf = "";

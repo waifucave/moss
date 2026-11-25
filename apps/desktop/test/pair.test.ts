@@ -450,7 +450,8 @@ describe("a daemon going away when the app opens (try 9's dead end)", () => {
   function silentEndpoint(home: string): { close(): void } {
     const path = daemonEndpoint(home);
     mkdirSync(join(home, "run"), { recursive: true });
-    const server = Bun.listen({ unix: path, socket: { data() {} } });
+    // It answers the Windows rendezvous (the engine's own pipe for a client) with its own path, and nothing else.
+    const server = Bun.listen({ unix: path, socket: { data(s, chunk) { if (Buffer.from(chunk).toString().includes("protocol.rendezvous")) s.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { pipe: path, ttlMs: 5000 } })}\n`); } } });
     return { close: () => { server.stop(true); rmSync(path, { force: true }); } };
   }
 

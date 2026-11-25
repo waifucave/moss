@@ -582,6 +582,8 @@ export async function startFakeEngine(o: FakeEngineOptions): Promise<FakeEngine>
         if (msg.method === undefined && typeof msg.id === "number") { waiting.get(msg.id)?.(msg.error ?? msg.result); waiting.delete(msg.id); continue; }
         if (msg.method === undefined) continue;
         const method = msg.method;
+        // Windows: a client asks the well-known pipe for its own (a rendezvous); this fake takes every connection on its one pipe, so it answers with that pipe.
+        if (method === "protocol.rendezvous") { if (msg.id !== undefined) write(c, { jsonrpc: "2.0", id: msg.id, result: { pipe: endpoint, ttlMs: 5000 } }); continue; }
         const params = (msg.params ?? {}) as Record<string, unknown>;
         const { token: _t, ...shown } = params;
         log.push({ method, params: shown, conn: c.id });
