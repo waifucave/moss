@@ -57,6 +57,8 @@ export function memoryBlock(o: { paths: BotPaths; computer: string }): string {
     `  ${MEMORY_INDEX} there is its index: one line for each memory file, with a link to it. Read the files it links to when they bear on what you are doing. When you learn something worth keeping (about the user, what they want, how they work, what you agreed), write it to a memory file and link it from ${MEMORY_INDEX}; when a memory turns out wrong, fix or remove it. Keep ${MEMORY_INDEX} short: only its first ${MEMORY_INDEX_MAX_LINES} lines are shown to you here.`,
     `- Your background agents' transcripts: ${paths.agents}/ (each task notification names its file).`,
     `- Scratch, for working files: ${paths.scratch}/ on ${o.computer}. It is never synced and isn't memory.`,
+    // Lane XC (the controller's ruling: file tools never follow the shell's tree folder).
+    "- Each of the user's computers' files: home/<Computer>/… in Read, Write, Edit, Glob and Grep, always as the full path. A shell command that starts with `cd home/<Computer>/…` runs on that computer, and the commands after it stay there; your file tools' relative paths stay in your scratch folder.",
   ];
   if (index === undefined || index.text.trim() === "") lines.push(`${MEMORY_INDEX} is empty so far.`);
   else {

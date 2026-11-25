@@ -73,7 +73,8 @@ export function agentHookSource(o: { hooks: () => TurnHooks | undefined; plugins
 
 /** What the turn loop asks of the hooks: each event, with what its hooks may change. */
 export interface TurnHooks {
-  toolBefore(s: HookSession, tool: { name: string; callId: string }, input: unknown, signal?: AbortSignal): Promise<{ deny?: string; ask?: string; input: unknown }>;
+  /** `askBy`: the plugin whose hook asked (its id), for the card another computer shows for the call (lane XC). */
+  toolBefore(s: HookSession, tool: { name: string; callId: string }, input: unknown, signal?: AbortSignal): Promise<{ deny?: string; ask?: string; askBy?: string; input: unknown }>;
   toolAfter(s: HookSession, tool: { name: string; callId: string }, input: unknown, result: unknown, signal?: AbortSignal): Promise<unknown>;
   messageIn(s: HookSession, text: string, signal?: AbortSignal): Promise<string>;
   messageOut(s: HookSession, text: string, signal?: AbortSignal): Promise<string>;
@@ -328,13 +329,13 @@ export function pluginHooks(o: PluginHooksOptions): TurnHooks {
 
   return {
     async toolBefore(s, tool, input, signal) {
-      let reason: { deny?: string; ask?: string } = {};
-      const r = await run<{ input: unknown }>("tool.before", s, { tool }, { input }, (acc, out) => {
+      let reason: { deny?: string; ask?: string; askBy?: string } = {};
+      const r = await run<{ input: unknown }>("tool.before", s, { tool }, { input }, (acc, out, hook) => {
         if (isObject(out.deny)) {
           reason = { deny: typeof out.deny.reason === "string" ? out.deny.reason : "a plugin's hook refused it" };
           return { value: acc, stop: true };
         }
-        if (isObject(out.ask) && reason.ask === undefined) reason = { ...reason, ask: typeof out.ask.reason === "string" ? out.ask.reason : "a plugin's hook asks" };
+        if (isObject(out.ask) && reason.ask === undefined) reason = { ...reason, ask: typeof out.ask.reason === "string" ? out.ask.reason : "a plugin's hook asks", askBy: hook.pluginId };
         return { value: "input" in out ? { input: out.input } : acc };
       }, signal, tool.name);
       return { ...reason, input: r.input };

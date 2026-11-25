@@ -95,7 +95,7 @@ declare const __MOSS_TEST_BUILD__: string | false | undefined;
 import { claimDaemonChildren } from "./platform/daemon-children";
 import { MossSecretStore, KeychainValues, memoryVault, openMossSecretStore, secretStoreWarning } from "./secrets/moss-secret-store";
 import { defaultDeviceName, openOnBroker, startDaemonLinks, type DaemonLinks, type DaemonLinksInput } from "./ipc/device-links";
-import { botApprovalCheck, runsLaterPlace, type BundledToolKind } from "./approvals/bot-check";
+import { botApprovalCheck, botToolRequest, runsLaterPlace, type BundledToolKind } from "./approvals/bot-check";
 import { builtCopy } from "./approvals/bundled-tools";
 import { sendMessageTarget } from "./bots/tools";
 import type { BotSessionContext } from "./bots/service";
@@ -5008,6 +5008,29 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
             // This computer's floor before a call goes to another (lane XC): a file tool's write to a place that runs
             // later is refused by its name, as bot-check refuses one whose path it can't resolve here; the holder
             // refuses it on its own disk too (fence/peer-floor.ts).
+            // A plugin's ask before a call on another computer: this computer's own card, every time, with no "always"
+            // (the plugin asks for each call), saying which plugin asks and why (its words quoted, one line, clamped:
+            // they are the plugin's, never MOSS's) and where the call will run. Without a broker, no yes.
+            askHere: async (q: { ctx: BotSessionContext; tool: string; input: unknown; computer: string; reason: string; plugin?: string; origin: TurnOrigin | undefined; signal: AbortSignal }) => {
+              if (broker === undefined) return false;
+              const input = (q.input !== null && typeof q.input === "object" && !Array.isArray(q.input) ? q.input : {}) as Record<string, unknown>;
+              // Its paths as the tree paths given (the call's computer named as the one they are on), never read as this
+              // session's own folder.
+              const req = botToolRequest(q.ctx, q.origin ?? "bot", q.tool, input, { localComputer: q.computer });
+              const said = (s: string, n: number) => {
+                const one = s.toWellFormed().replace(/[\u0000-\u001f\u007f-\u009f\s]+/g, " ").trim();
+                return one.length > n ? `${one.slice(0, n - 1)}…` : one;
+              };
+              const plugin = q.plugin === undefined ? "A plugin" : said(q.plugin, 80);
+              req.fields.title = { type: "text", text: "A plugin asks before this" };
+              req.fields.reason = { type: "text", text: `${plugin} on ${said(node.registry.self().name, 80)} asks before this: \u201c${said(q.reason, 300)}\u201d` };
+              req.fields.computer = { type: "code", code: `runs on ${said(q.computer, 80)}` };
+              req.cardAlways = true;
+              delete req.ruleKey;
+              req.options = [{ id: "approve", kind: "approve", label: "Approve" }, { id: "deny", kind: "deny", label: "Deny" }];
+              const decision = await broker.request(req, { signal: q.signal });
+              return decision.allowed;
+            },
             remoteFloor: (tool: string, input: unknown, cwd?: string) => {
               const given = (input as { file_path?: unknown } | null)?.file_path;
               if ((tool !== "Write" && tool !== "Edit") || typeof given !== "string") return undefined;

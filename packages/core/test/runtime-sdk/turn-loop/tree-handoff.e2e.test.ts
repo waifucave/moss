@@ -3,7 +3,7 @@
 // driver's last PreToolUse hook answers each call (agent SDK 0.0.87's `toolResult`); the runtime's own tool never runs.
 // Two computers on the fake link in one process (the host-level proof; the two-process proof is the `computers`
 // acceptance unit).
-import { afterEach, expect } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TurnControl, TurnInput } from "../../../src/contracts/session-host";
@@ -42,7 +42,8 @@ async function twoComputers(): Promise<{ alpha: TestComputer; beta: TestComputer
 }
 
 describeWithEmbeddedRuntime("a bot's tools on another computer's files (lane XC, the hand-off)", (spawn) => {
-  function driverOn(c: TestComputer, o: { hooks?: TurnHooks; level?: Level; may?: { act: boolean } } = {}) {
+  type Asked = { tool: string; computer: string; reason: string; plugin?: string };
+  function driverOn(c: TestComputer, o: { hooks?: TurnHooks; level?: Level; may?: { act: boolean }; askHere?: (q: Asked) => boolean; runs?: string[] } = {}) {
     const bot: EffectiveBot = { id: "luna", name: "Luna", instructions: "You are Luna.", model: "winter-test/calls", modelFrom: "user", userLayer: [] };
     const ctx: BotSessionContext & { bot: EffectiveBot } = {
       bot, botId: "luna", sessionId: "b_luna", kind: "bot", computer: c.name, paths: botPaths(c.mossHome, "luna"),
@@ -59,7 +60,12 @@ describeWithEmbeddedRuntime("a bot's tools on another computer's files (lane XC,
       driver: new BotSessionDriver(ctx, {
         home: c.mossHome, spawn, canUseTool: allow, sandbox: () => ({}), stopGraceMs: 5_000, log: () => {}, toolHoldMs: 200,
         ...(o.hooks === undefined ? {} : { hooks: o.hooks }),
-        tree: { directory: n.peers.directory(), resolve: (p, as) => n.tree.resolve(p, as), names: () => n.registry.list().map((x) => x.name), tools: n.tools },
+        tree: {
+          directory: n.peers.directory(), resolve: (p, as) => n.tree.resolve(p, as), names: () => n.registry.list().map((x) => x.name),
+          // Every call that goes to the other computer, counted.
+          tools: { run: (tool, input, rc) => { o.runs?.push(`${tool} ${rc.callId}`); return n.tools.run(tool, input, rc); } },
+          ...(o.askHere === undefined ? {} : { askHere: async (q: Asked) => o.askHere!(q) }),
+        },
       }),
     };
   }
@@ -88,7 +94,7 @@ describeWithEmbeddedRuntime("a bot's tools on another computer's files (lane XC,
       expect(glob?.content).toContain("home/Beta/project/notes.md");
       expect(glob?.content).toContain("home/Beta/project/new.md");
       // The command ran in Beta's real folder: its output proves where.
-      expect(bashCd?.content.split("\n")[0]).toBe("now on Beta: home/Beta/project");
+      expect(bashCd?.content.split("\n")[0]).toBe("now on Beta: home/Beta/project (the commands after this run there; file tools need the full path: home/Beta/project/…)");
       expect(bashCd?.content).toContain(realpathSync.native(join(beta.home, "project")));
       expect(bashSticky?.content).toContain("written from Alpha");
       expect(back?.isError).toBe(false);
@@ -168,7 +174,7 @@ describeWithEmbeddedRuntime("a bot's tools on another computer's files (lane XC,
   }, 90_000);
 
   // The review of 1b (blockers 1 and 2, should-fixes 3 and 4).
-  darwinTest("a plugin's rewrite is what runs on Beta; a plugin's ask makes Beta ask with its own card, even where Beta's level wouldn't", async () => {
+  darwinTest("a plugin's rewrite is what runs on Beta; a plugin's ask raises this computer's card before the call goes, and Beta's level decides its own", async () => {
     const phone = await makePhone();
     const { alpha, beta } = await judgedComputers(phone);
     await beta.node.registry.setLevel("Beta", "automatic", { via: "terminal" });
@@ -183,7 +189,8 @@ describeWithEmbeddedRuntime("a bot's tools on another computer's files (lane XC,
         return { input };
       },
     };
-    const { ctx, driver } = driverOn(alpha, { hooks });
+    const asked: Asked[] = [];
+    const { ctx, driver } = driverOn(alpha, { hooks, askHere: (q) => (asked.push(q), true) });
     try {
       const r = results(await driver.turn(user([
         call("Write", { file_path: "home/Beta/scrubbed.md", content: "SECRET-TOKEN-123" }),
@@ -191,7 +198,9 @@ describeWithEmbeddedRuntime("a bot's tools on another computer's files (lane XC,
       ].join("\n")), control()));
       expect(r[0]?.isError).toBe(false);
       expect(readFileSync(join(beta.home, "scrubbed.md"), "utf8")).toBe("SCRUBBED");
-      expect(phone.shown.map((s) => s.computer)).toEqual(["Beta"]);
+      // The plugin's card is Alpha's, naming Beta and the plugin's words; Beta at automatic asks nothing of its own.
+      expect(asked.map((q) => [q.tool, q.computer, q.reason])).toEqual([["Write", "Beta", "the plugin wants the user to see this"]]);
+      expect(phone.shown).toEqual([]);
       expect(r[1]?.isError).toBe(false);
       expect(readFileSync(join(beta.home, "asked.md"), "utf8")).toBe("asked");
       expect(existsSync(join(ctx.paths.scratch, "home"))).toBe(false);
@@ -270,6 +279,95 @@ describeWithEmbeddedRuntime("a bot's tools on another computer's files (lane XC,
       expect(r[2]?.content).not.toContain(beta.home);
       expect(existsSync(join(beta.home, "repo", ".git", "config"))).toBe(false);
       expect(existsSync(join(ctx.paths.scratch, "home"))).toBe(false);
+    } finally {
+      await driver.stop();
+    }
+  }, 90_000);
+
+  darwinTest("a plugin that asks before a Read on Beta: this computer's card, every time; a no reads nothing", async () => {
+    const { alpha, beta } = await twoComputers();
+    writeFileSync(join(beta.home, "tax.md"), "PROBE-TAX");
+    const hooks: TurnHooks = { ...NO_HOOKS, toolBefore: async (_s, tool, input) => (tool.name === "Read" ? { ask: "reads of tax files are asked", input } : { input }) };
+    let yes = false;
+    const asked: Asked[] = [];
+    const { ctx, driver } = driverOn(alpha, { hooks, askHere: (q) => (asked.push(q), yes) });
+    try {
+      const no = results(await driver.turn(user(call("Read", { file_path: "home/Beta/tax.md" })), control()));
+      expect(asked.map((q) => [q.tool, q.computer])).toEqual([["Read", "Beta"]]);
+      expect(no[0]?.content).not.toContain("PROBE-TAX");
+      yes = true;
+      const ok = results(await driver.turn(user(call("Read", { file_path: "home/Beta/tax.md" })), control()));
+      expect(asked).toHaveLength(2);
+      expect(ok[0]?.content).toContain("PROBE-TAX");
+      expect(existsSync(join(ctx.paths.scratch, "home"))).toBe(false);
+    } finally {
+      await driver.stop();
+    }
+  }, 90_000);
+
+  // The review's hardening, at the hooks themselves (the seam the runtime calls).
+  test("a second pass of a call's hooks gives the answer again and Beta sees one call; no id, no mark, no answer: refused", async () => {
+    const { alpha, beta } = await twoComputers();
+    const runs: string[] = [];
+    const { ctx, driver } = driverOn(alpha, { runs });
+    const h = driver.treeHooksForTest();
+    const sig = new AbortController().signal;
+    const raw = (id: string, file: string) => ({ hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: file, content: "once" }, tool_use_id: id });
+    try {
+      const a = raw("call-1", "home/Beta/once.md");
+      await h.preTool(a, "call-1", sig);
+      const first = await h.handOff(a, "call-1", sig);
+      // The runtime evaluates again (a policy change mid-evaluation): both passes, the same answer, one run.
+      await h.preTool(a, "call-1", sig);
+      const second = await h.handOff(a, "call-1", sig);
+      expect(second).toEqual(first);
+      expect(runs).toEqual(["Write call-1"]);
+      expect(readFileSync(join(beta.home, "once.md"), "utf8")).toBe("once");
+      // Answered: the approval check lets it through without judging it here; never asked of the inner check.
+      let inner = 0;
+      const can = h.canUse(async () => (inner++, { behavior: "deny", message: "inner" }));
+      expect((await can("Write", a.tool_input, { signal: sig, toolUseID: "call-1" } as never))?.behavior).toBe("allow");
+      expect(inner).toBe(0);
+      // No id: refused at #preTool, never left to the runtime's own tool.
+      const noId = await h.preTool({ ...raw("", "home/Beta/no-id.md") }, undefined, sig) as { hookSpecificOutput?: { permissionDecision?: string } };
+      expect(noId.hookSpecificOutput?.permissionDecision).toBe("deny");
+      // Never marked (the bound took it), on another computer's path: the hand-off refuses it.
+      const unmarked = await h.handOff(raw("call-2", "home/Beta/unmarked.md"), "call-2", sig) as { hookSpecificOutput?: { permissionDecision?: string } };
+      expect(unmarked.hookSpecificOutput?.permissionDecision).toBe("deny");
+      // Marked but not answered: the approval check refuses it, never judges it as a local path.
+      await h.preTool(raw("call-3", "home/Beta/marked.md"), "call-3", sig);
+      const marked = await can("Write", { file_path: "home/Beta/marked.md", content: "x" }, { signal: sig, toolUseID: "call-3" } as never);
+      expect(marked?.behavior).toBe("deny");
+      expect(inner).toBe(0);
+      expect(runs).toEqual(["Write call-1"]);
+      for (const f of ["no-id.md", "unmarked.md", "marked.md"]) expect(existsSync(join(beta.home, f))).toBe(false);
+      expect(existsSync(join(ctx.paths.scratch, "home"))).toBe(false);
+    } finally {
+      await driver.stop();
+    }
+  }, 60_000);
+
+  darwinTest("a move from Alpha to Beta is judged at Alpha's level too: read-only on Alpha loses nothing; at ask it asks", async () => {
+    const phone = await makePhone();
+    const { alpha, beta } = await judgedComputers(phone);
+    await beta.node.registry.setLevel("Beta", "automatic", { via: "terminal" });
+    await until(() => alpha.node.registry.get("Beta")?.level === "automatic", 5000, "Beta's level on Alpha");
+    mkdirSync(join(alpha.home, "keep"), { recursive: true });
+    writeFileSync(join(alpha.home, "keep", "a.md"), "stays");
+    await alpha.node.registry.setLevel("Alpha", "read-only", { via: "terminal" });
+    const { driver } = driverOn(alpha);
+    try {
+      const r = results(await driver.turn(user(call("Bash", { command: "mv home/Alpha/keep home/Beta/" })), control()));
+      expect(r[0]?.isError).toBe(true);
+      expect(readFileSync(join(alpha.home, "keep", "a.md"), "utf8")).toBe("stays");
+      expect(existsSync(join(beta.home, "keep"))).toBe(false);
+      // At ask on Alpha, the move asks (one card for the whole move), and a no keeps it on Alpha.
+      await alpha.node.registry.setLevel("Alpha", "ask", { via: "terminal" });
+      phone.deny = true;
+      const asked = results(await driver.turn(user(call("Bash", { command: "mv home/Alpha/keep home/Beta/" })), control()));
+      expect(phone.shown.map((c) => c.method)).toEqual(["tree.transfer"]);
+      expect(asked[0]?.isError).toBe(true);
+      expect(readFileSync(join(alpha.home, "keep", "a.md"), "utf8")).toBe("stays");
     } finally {
       await driver.stop();
     }

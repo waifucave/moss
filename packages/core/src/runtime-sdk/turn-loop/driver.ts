@@ -273,6 +273,9 @@ export interface BotDriverDeps {
     /** This computer's own floor for a call on another computer, before it goes there: why it is refused (a file tool's
      *  write to a place that runs later, by name: `runLaterByName`), or undefined. */
     remoteFloor?: (tool: string, input: unknown, cwd?: string) => string | undefined;
+    /** A plugin's ask for a call on another computer: this computer's card (its broker), naming the plugin, its reason
+     *  (quoted, clamped) and where the call runs. True: the person said yes. */
+    askHere?: (q: { ctx: BotSessionContext; tool: string; input: unknown; computer: string; reason: string; plugin?: string; origin: TurnOrigin | undefined; signal: AbortSignal }) => Promise<boolean>;
   };
   /** The plugin registry, for `Glossary`'s skills, agent definitions, plugins and points. */
   registry?: GlossaryDeps["registry"];
@@ -382,6 +385,9 @@ type WakeContext = BotSessionContext & { wake?(w: TaskWake): unknown };
 
 /** How long the tool hook may run (seconds): a call the pause holds waits inside it (`TOOL_HOLD_MS`). */
 const TOOL_HOOK_TIMEOUT_S = 3600;
+/** The test-build define (scripts/build-daemon.ts): `false` in a release build, a label in a test build, undeclared from
+ *  source. */
+declare const __MOSS_TEST_BUILD__: string | false | undefined;
 /** The most calls marked for the hand-off at once (lane XC): far above a turn's concurrent calls. */
 const REMOTE_MARKS_MAX = 256;
 /** How long a tool call waits for the pause to lift before it's refused, saying why (a minute inside the hook's hour). */
@@ -485,13 +491,15 @@ export class BotSessionDriver implements SessionDriver {
   readonly #router: TreeRouter | undefined;
   /** Calls `#preTool` found on another computer's path, by call id: `#treeHandOff` answers them; their results are the
    *  holder's, fenced there, so `#postTool` leaves them unfiltered. */
-  readonly #remoteCalls = new Map<string, { ask?: string }>();
+  readonly #remoteCalls = new Map<string, { ask?: string; askBy?: string; answered?: true; result?: Record<string, unknown> }>();
 
   /** Marks a call for the hand-off, with a plugin's ask. Bounded: the oldest mark goes past `REMOTE_MARKS_MAX` (a call
    *  whose turn ended with no PostToolUse of any kind, the review's should-fix 5). */
-  #markRemote(callId: string, ask: string | undefined): void {
+  #markRemote(callId: string, ask: string | undefined, askBy?: string): void {
+    // A second pass of the call's hooks keeps the answer already given (`#treeHandOff`).
+    if (this.#remoteCalls.get(callId)?.result !== undefined) return;
     this.#remoteCalls.delete(callId);
-    this.#remoteCalls.set(callId, ask === undefined ? {} : { ask });
+    this.#remoteCalls.set(callId, { ...(ask === undefined ? {} : { ask }), ...(askBy === undefined ? {} : { askBy }) });
     while (this.#remoteCalls.size > REMOTE_MARKS_MAX) this.#remoteCalls.delete(this.#remoteCalls.keys().next().value!);
   }
   readonly #d: BotDriverDeps;
@@ -662,7 +670,14 @@ export class BotSessionDriver implements SessionDriver {
       // would read another computer's path as one in this session's folder). Reached only when a hook asks after an
       // answer, which none of this driver's does for such a call (#preTool sends a plugin's ask to the holder, and the
       // session loads no settings' hooks); denying now would only misreport a call already run.
-      if (opts.toolUseID !== undefined && this.#remoteCalls.has(opts.toolUseID)) return { behavior: "allow", updatedInput: input };
+      const mark = opts.toolUseID === undefined ? undefined : this.#remoteCalls.get(opts.toolUseID);
+      if (mark?.answered === true) return { behavior: "allow", updatedInput: input };
+      // Marked for another computer but not answered there (a path the hand-off didn't reach): never judged here as a
+      // local path, never run on this disk.
+      if (mark !== undefined) {
+        this.#remoteCalls.delete(opts.toolUseID!);
+        return { behavior: "deny", message: "This call names another computer's path and wasn't run there; try it again." };
+      }
       const r = await inner(name, input, opts);
       if (r === null || r.behavior !== "allow") {
         this.#dropCallId(name, opts.toolUseID);
@@ -769,7 +784,19 @@ export class BotSessionDriver implements SessionDriver {
    *  the trailing gate) has had its say and a deny from any of them wins before anything runs elsewhere. The holder
    *  judges the call by its own level, saved rules and fence (`service.ts`, `judgePeer`); a card it needs comes back
    *  through this computer's broker (`askUser`). Bash on another computer moves the session's tree folder, shown on
-   *  the result's first line when it changes. */
+   *  the result's first line when it changes.
+   *
+   *  The limit (agent SDK 0.0.87): the answer is made INSIDE PreToolUse, so the other computer acts before this
+   *  computer's runtime reaches its own final decision for the call. So this computer's checks are made here first:
+   *  the pause and the lease (#preTool, the trailing gate, again here, and after any card there); the plugins'
+   *  tool.before (a deny refuses, a rewrite is what runs, an ask raises this computer's card before anything goes); the
+   *  tree router's refusals; the run-later floor for a file tool's write (`remoteFloor`); and the level, never wider
+   *  than the session's own, the bot's on this computer or the holder's. A later deny can't come in this driver's
+   *  session: every PreToolUse hook is this driver's (no base hooks, `settingSources: []`, so no settings' hooks or
+   *  rules), this hook is the last, the session runs in permission mode "default" (never plan), none of this computer's
+   *  saved rules or Tools-tab settings applies to a built-in tool (the rules only allow; the settings are plugin
+   *  tools'), and `#gatedCanUseTool` lets through a call this hook answered (keyed on the answer it recorded) without
+   *  judging it again. */
   #treeHandOff(): HookCallbackMatcher {
     return {
       failClosed: true,
@@ -777,18 +804,32 @@ export class BotSessionDriver implements SessionDriver {
       hooks: [async (raw, toolUseId, { signal }) => {
         const input = raw as ToolUseInput;
         const callId = input.tool_use_id ?? toolUseId ?? "";
-        const mark = this.#remoteCalls.get(callId);
-        if (mark === undefined) return {};
+        const name = input.tool_name ?? "";
         const deny = (why: string) => {
           this.#remoteCalls.delete(callId);
           return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: why } };
         };
-        const name = input.tool_name ?? "";
-        const tools = this.#d.tree?.tools;
+        const mark = this.#remoteCalls.get(callId);
         // On the input as every earlier hook left it (the runtime hands each hook the one before's rewrite), routed
         // again: what runs there is what was judged here.
         const route = this.#router?.route(name, input.tool_input) ?? { kind: "local" as const };
-        const answer = (text: string, isError: boolean) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", toolResult: { content: text, isError } } });
+        if (mark === undefined) {
+          // Not marked, yet on another computer's path (a mark taken by the bound, or a path a later hook made): never
+          // left to the runtime's own tool, which would write it into the session's folder past the file fence.
+          return route.kind === "other" ? deny(`${route.computer} holds that path, and this call wasn't set to run there; try it again`) : {};
+        }
+        // The runtime may evaluate a call's hooks again (a policy change mid-evaluation, `evaluateWithFreshPolicy`): the
+        // answer given once is given again, and the call never runs a second time there.
+        if (mark.result !== undefined) return mark.result;
+        const tools = this.#d.tree?.tools;
+        // The one way out with a result: recorded on the mark as it answers (`#gatedCanUseTool` lets through only a call
+        // answered here, never one merely marked), and kept for a second pass.
+        const answer = (text: string, isError: boolean) => {
+          const out = { hookSpecificOutput: { hookEventName: "PreToolUse", toolResult: { content: text, isError } } };
+          mark.answered = true;
+          mark.result = out;
+          return out;
+        };
         if (route.kind === "refused") return deny(route.reason);
         if (route.kind !== "other" || tools === undefined) return deny("this call no longer names another computer's path; run it again");
         if (!route.online) return answer(`Error: computer offline: ${route.computer} is offline`, true);
@@ -800,11 +841,21 @@ export class BotSessionDriver implements SessionDriver {
         const held = await this.#gate(signal);
         if (held !== undefined) return deny(held);
         const ctx = this.#ctx;
+        // A plugin's ask (its hook here, on this computer): the card is this computer's, raised here before anything
+        // goes, for every tool, reads included (the holder never asks about a read). A no stops the call. The holder's
+        // own card, where its rules ask, still follows: two askers, two cards.
+        if (mark.ask !== undefined) {
+          const askHere = this.#d.tree?.askHere;
+          if (askHere === undefined) return deny(`a plugin asks before this call, and this computer can't show its card for a call on ${route.computer}`);
+          const yes = await askHere({ ctx, tool: name, input: input.tool_input, computer: route.computer, reason: mark.ask, ...(mark.askBy === undefined ? {} : { plugin: mark.askBy }), origin: this.#origin, signal });
+          if (!yes) return deny(`${name} was refused: the person declined the plugin's card for it`);
+          const after = await this.#gate(signal);
+          if (after !== undefined) return deny(after);
+        }
         // The level the holder judges at, never wider than any of (the review's blocker 2, the controller's ruling): the
-        // session's own (a side thread's or a routine's), the bot's level on the computer it runs on, the holder's; a
-        // plugin's ask makes it "ask", so the holder asks the user for this call on its own card.
+        // session's own (a side thread's or a routine's), the bot's level on the computer it runs on, the holder's.
         const dir = this.#d.tree!.directory;
-        const levels = [ctx.level, dir.get(ctx.computer)?.level, dir.get(route.computer)?.level, mark.ask === undefined ? undefined : ("ask" as const)].filter((l): l is Level => l !== undefined);
+        const levels = [ctx.level, dir.get(ctx.computer)?.level, dir.get(route.computer)?.level].filter((l): l is Level => l !== undefined);
         const level = strictestLevel(levels) ?? "read-only";
         const before = this.#router?.treeCwd;
         let r: TreeToolResult;
@@ -829,10 +880,28 @@ export class BotSessionDriver implements SessionDriver {
         if (name === "Bash") {
           this.#router?.settled(route, r.cwd);
           const after = this.#router?.treeCwd;
-          if (after !== before) text = `${after !== undefined ? `now on ${r.computer}: ${after}` : `back on ${ctx.computer}: the commands after this run here`}\n${text}`;
+          if (after !== before) text = `${after !== undefined ? `now on ${r.computer}: ${after} (the commands after this run there; file tools need the full path: ${after}/…)` : `back on ${ctx.computer}: the commands after this run here`}\n${text}`;
         }
         return answer(text, r.isError);
       }],
+    };
+  }
+
+  /** Test seam (lane XC): what a call on another computer meets, as the runtime calls it: this driver's PreToolUse
+   *  (`#preTool`), the hand-off (`#treeHandOff`), and the approval check's gate over `inner`. Nothing else uses it. Never
+   *  in a release build: there `__MOSS_TEST_BUILD__` is defined `false` (scripts/build-daemon.ts), the check below folds
+   *  to a throw and the rest is dead code the bundler drops; from source (`bun test`) and in a test build it works. */
+  treeHooksForTest(): {
+    preTool: (raw: unknown, toolUseId: string | undefined, signal: AbortSignal) => Promise<Record<string, unknown>>;
+    handOff: (raw: unknown, toolUseId: string | undefined, signal: AbortSignal) => Promise<unknown>;
+    canUse: (inner: CanUseTool) => CanUseTool;
+  } {
+    if (typeof __MOSS_TEST_BUILD__ !== "undefined" && __MOSS_TEST_BUILD__ === false) throw new Error("treeHooksForTest isn't in a release build");
+    const hook = this.#treeHandOff().hooks[0]!;
+    return {
+      preTool: (raw, id, signal) => this.#preTool(raw, id, signal),
+      handOff: (raw, id, signal) => Promise.resolve(hook(raw as never, id, { signal } as never)),
+      canUse: (inner) => this.#gatedCanUseTool(inner),
     };
   }
 
@@ -882,7 +951,7 @@ export class BotSessionDriver implements SessionDriver {
       }
       // The plugins' say goes with the call (the review's blocker 1): their ask makes the holder ask the user for it
       // (`#treeHandOff`, level "ask"), and their rewritten input is what the later hooks see and what runs there.
-      this.#markRemote(callId, r.ask);
+      this.#markRemote(callId, r.ask, r.askBy);
       const rewritten = r.input !== input.tool_input && r.input !== null && typeof r.input === "object" && !Array.isArray(r.input);
       return rewritten ? { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: r.input as Record<string, unknown> } } : {};
     }
