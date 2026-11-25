@@ -323,9 +323,30 @@ describe("a read-only command of the fenced Bash on Windows (lane WS9): no card,
       });
     }
   }
-  test("what the runtime's rule doesn't call read-only still asks: a substitution, a redirection, a writer in a chain or a pipe, a here-document that runs one", async () => {
-    for (const command of ["ls $(rm -rf ~)", "ls `touch x`", "ls > out.txt", "cat a >> b", "ls && rm -rf build", "ls; touch x", "cat x | tee y", "cat <<EOF\n$(rm -rf ~)\nEOF", "git status; git commit -m x", "find . -delete", "ls 'unterminated"]) {
-      expect([command, await judged("Bash", command, "ask", "up")]).toEqual([command, "card"]);
+  // What the runtime's rule doesn't call read-only, and a command naming a network path (which Windows would resolve and
+  // connect to: the WS9 reviewer's finding), get no allowance: a card at ask, refused at read-only, as a writing command.
+  const hostile = ["ls $(rm -rf ~)", "ls `touch x`", "ls > out.txt", "cat a >> b", "ls && rm -rf build", "ls; touch x", "cat x | tee y", "cat <<EOF\n$(rm -rf ~)\nEOF", "git status; git commit -m x", "find . -delete", "ls 'unterminated"];
+  const network = ["ls //host/share", "cat \"//host/share/x\"", "cat \\\\\\\\host\\\\share\\\\x", "grep x --file=//host/x", "cat //./pipe/x", "ls /\\\\host/share", "ls \\\\/host\\\\share", "cat '\\\\\\\\host@SSL\\\\x'", "ls -la //?/UNC/host/x", "echo $(cat //host/x)"];
+  for (const level of ["ask", "read-only"] as const) {
+    test(`a command the runtime's rule doesn't call read-only, at ${level}: ${level === "ask" ? "a card" : "refused"} (a substitution, a redirection, a writer in a chain or a pipe, a here-document that runs one)`, async () => {
+      for (const command of hostile) expect([command, await judged("Bash", command, level, "up")]).toEqual([command, level === "ask" ? "card" : "deny"]);
+    });
+    test(`a command naming a network path (\`//host\`, \`\\\\\\\\host\`, mixed, quoted, after \`=\`, a device path), at ${level}: ${level === "ask" ? "a card" : "refused"}`, async () => {
+      for (const command of network) expect([command, await judged("Bash", command, level, "up")]).toEqual([command, level === "ask" ? "card" : "deny"]);
+    });
+  }
+  test("a single slash, a doubled one inside a path, a URL in a pattern: still read-only (no card)", async () => {
+    for (const command of ["ls /c/Users", "ls ./a//b", "cat src//index.ts", "grep -r 'http://x' src"]) {
+      expect([command, await judged("Bash", command, "ask", "up")]).toEqual([command, "allow"]);
+    }
+  });
+  test("what the runtime's classifier answers today for forms that can run a program (pinned, so a change in the SDK is seen)", () => {
+    // Each of these is NOT read-only by agent SDK 0.0.86's rule: none gets the allowance, so each asks as a writing command.
+    for (const command of ["git -c core.pager=less log", "git -c core.fsmonitor=x status", "sort -o out.txt in.txt", "sed -i s/a/b/ f", "awk 'BEGIN{system(\"x\")}'", "env cmd", "env", "find . -exec rm {} \\;", "xargs rm", "less f", "git diff --output=x"]) {
+      expect([command, fencedReadOnlyCommand("Bash", { command })]).toEqual([command, false]);
+    }
+    for (const command of ["find . -name x", "ls -la src", "git status && cat README", "cat <<EOF\nhi\nEOF", "echo hi"]) {
+      expect([command, fencedReadOnlyCommand("Bash", { command })]).toEqual([command, true]);
     }
   });
   test("never while the sandbox isn't this computer's fence (`commandsAlwaysCard`), nor without the daemon's word (macOS and Linux: their runtime decides it before this check)", async () => {

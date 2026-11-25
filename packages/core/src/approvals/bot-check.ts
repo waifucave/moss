@@ -158,7 +158,18 @@ export function fencedReadOnlyCommand(tool: string, input: unknown): boolean {
   if (tool !== "Bash" || input === null || typeof input !== "object" || Array.isArray(input)) return false;
   const i = input as Record<string, unknown>;
   if (i.dangerouslyDisableSandbox !== undefined && i.dangerouslyDisableSandbox !== false) return false;
-  return typeof i.command === "string" && i.command.trim() !== "" && isReadOnlyShellCommand(i.command);
+  return typeof i.command === "string" && i.command.trim() !== "" && !namesNetworkPath(i.command) && isReadOnlyShellCommand(i.command);
+}
+
+/** Whether a command line names a network path on Windows (the WS9 reviewer's finding): a word starting with two slashes
+ *  of either kind (`//host/share`, `\\\\host\\share`, `/\\host`, `\\/host`, the device forms `//./pipe/x` and `//?/UNC/…`,
+ *  `\\\\host@SSL\\x` for WebDAV) at the start of the line, after a space, a quote, `=` (`--file=//host/x`), `,`, a
+ *  bracket or brace, or a shell operator. Git for Windows' bash hands such a word to Windows as a share: naming one makes
+ *  Windows resolve the host and connect to it, which no card would have shown. A doubled slash inside a path
+ *  (`./a//b`) is not a word's start. Text only and cautious: it may hold back a command that never reaches a share
+ *  (a quoted `//` in a pattern), which then only asks, as a writing command does. */
+export function namesNetworkPath(command: string): boolean {
+  return /(^|[\s'"=,({[`;|&<>])[\\/]{2}/.test(command);
 }
 
 export function runLaterFileRefusal(tool: string, path: string): string {

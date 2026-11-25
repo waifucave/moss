@@ -313,6 +313,9 @@ describeWithEmbeddedRuntime("MOSS's coding agent over ACP", (spawn) => {
     expect((await call("Bash", "npm test")).asked).toBe(true);
     expect((await call("Bash", "ls > out.txt")).asked).toBe(true);
     expect((await call("Bash", "ls $(rm -rf ~)")).asked).toBe(true);
+    // A network path (Windows would resolve the host and connect): no allowance, it asks (the same helper as a bot's).
+    expect((await call("Bash", "ls //host/share")).asked).toBe(true);
+    expect((await call("Bash", "cat \\\\\\\\host\\\\share\\\\x")).asked).toBe(true);
     expect((await call("PowerShell", "Get-ChildItem")).asked).toBe(true);
     // The fence removed meanwhile: no allowance, it asks.
     ready = false;
