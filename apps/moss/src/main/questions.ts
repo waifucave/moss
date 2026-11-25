@@ -118,6 +118,22 @@ export class QuestionLog {
     return [];
   }
 
+  /** The person's own bubble for a user message that answers or skips a question (the event's `answersQuestion`), drawn from that question's
+   *  record (what was chosen, or skipped), never by reading the message's words back. Undefined when the log has no such outcome. */
+  bubbleOf(e: Record<string, unknown>): { text: string; quoted?: string } | undefined {
+    const call = str(e.answersQuestion, 200);
+    if (call === undefined) return undefined;
+    const id = `${String(e.sessionId ?? "s")}:q${call}`;
+    const out = this.outcomes.get(id);
+    if (out === undefined || (out.state !== "answered" && out.state !== "skipped")) return undefined;
+    const questions = this.asked.get(id)?.question?.questions.map((q) => q.question) ?? [];
+    const quoted = questions[0];
+    if (out.state === "skipped") return { text: "Skipped the question", ...(quoted !== undefined ? { quoted } : {}) };
+    const answers = out.answers ?? {};
+    const given = questions.length > 0 ? questions.flatMap((q) => (answers[q] !== undefined ? [answers[q]!] : [])) : Object.values(answers);
+    return { text: `Answered: ${given.join("; ")}`, ...(quoted !== undefined ? { quoted } : {}) };
+  }
+
   /** Whether `callId` waits in `session` (the person may answer it now), and the texts it asks. */
   waiting(session: string, callId: string): string[] | undefined {
     const m = this.asked.get(`${session}:q${callId}`);

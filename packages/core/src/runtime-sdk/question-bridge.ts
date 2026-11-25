@@ -41,7 +41,7 @@ export const AskUserQuestionInput = z.object({
     header: utf16(12, 1),
     options: z.array(z.object({
       // One line: a label is written into the person's answer message, so a newline or control character in it is refused at ask time.
-      label: z.string().min(1).refine((l) => !/[\u0000-\u001f\u007f\u0085\u2028\u2029]/.test(l), { message: "an option's label is one line: no newline or control character" }),
+      label: z.string().min(1).refine((l) => !/[\u0000-\u001f\u007f\u0085\u2028\u2029\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/.test(l), { message: "an option's label is one line: no newline, control, invisible or direction-changing character" }),
       description: z.string().optional(),
       preview: z.string().optional(),
     })).max(4).refine((options) => options.length !== 1, {

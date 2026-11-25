@@ -53,7 +53,7 @@ describe("session.answer: a bot's AskUserQuestion is an open card, not a wait", 
     expect(await answer({ id: "b_alpha", callId: "call_1", answers: { "Which one?": "Tea" } }, { caller: theUser } as never)).toEqual({ ok: true });
     await flush();
     const resolved = b.host.history("b_alpha").flatMap((r) => (r.type === "driver" && r.event.type === "question_resolved" ? [r.event as unknown as { callId: string; by: string; answers: Record<string, string>; skipped?: boolean }] : []));
-    expect(resolved).toEqual([{ type: "question_resolved", callId: "call_1", answers: { "Which one?": "Tea" }, by: "user" }] as never);
+    expect(resolved).toEqual([{ type: "question_resolved", callId: "call_1", answers: { "Which one?": "Tea" }, by: "user", toBot: true }] as never);
     expect(userInputs(b)).toEqual(['My answer to your question "Which one?" (options: "Tea" / "Coffee"): chose "Tea"']);
     expect(b.host.get("b_alpha")?.needsYou?.questions).toBe(0);
     const turns = b.drivers.for("b_alpha").turns;
@@ -197,6 +197,28 @@ describe("session.answer: a bot's AskUserQuestion is an open card, not a wait", 
     expect(await third.side.questions.replayUnsent("b_alpha")).toBe(0);
     expect(userInputs(third)).toHaveLength(2);
     await third.shutdown();
+  });
+
+  test("a start sends only what the open-card path recorded: an old blocking question the person answered (by user, a tool result, no message) and a blocking agent's question are never sent again", async () => {
+    const home = tempDir();
+    const plugins = (await pluginFromFolder(ALPHA_FOLDER, { bundled: true })).inputs;
+    const first = await boot({ home, plugins });
+    const canUseTool = first.side.questions.canUseTool("b_alpha", async () => ({ behavior: "allow", updatedInput: {} }));
+    // A blocking question of the bot's agent (agentID set), answered by the person through the broker: the model got it as a tool result.
+    const pending = canUseTool("AskUserQuestion", question, { ...ctx, toolUseID: "call_agent", agentID: "agent_1" } as never) as Promise<{ behavior: string }>;
+    await flush();
+    expect(first.side.questions.answer("b_alpha", "call_agent", { "Which one?": "Tea" }, "user")).toEqual({ ok: true });
+    await pending;
+    // An old record: a card of before this change, resolved by the user with no `toBot` mark, written straight to the log.
+    first.host.recordCore("b_alpha", { type: "question_asked", callId: "call_old", questions: question.questions });
+    first.host.recordCore("b_alpha", { type: "question_resolved", callId: "call_old", answers: { "Which one?": "Coffee" }, by: "user" });
+    expect(userInputs(first)).toEqual([]);
+    await first.shutdown();
+    const again = await boot({ home, plugins });
+    await flush();
+    expect(userInputs(again)).toEqual([]);
+    expect(await again.side.questions.replayUnsent("b_alpha")).toBe(0);
+    await again.shutdown();
   });
 
   test("the 10-minute rule: a question from a turn the user didn't start is denied unanswered; one from the user's waits", async () => {

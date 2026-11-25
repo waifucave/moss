@@ -159,6 +159,7 @@ export function projectRecord(record: SessionRecord, opts: ProjectOptions): Wire
             clientName: input.device, device: input.device, sentAt: input.sentAt,
             ...(input.images !== undefined && input.images.length > 0 ? { images: input.images } : {}),
             ...(input.files !== undefined && input.files.length > 0 ? { files: input.files } : {}),
+            ...(typeof input.clientMessageId === "string" && input.clientMessageId.startsWith("question-") && input.clientMessageId.length > 9 && input.clientMessageId.length <= 209 ? { answersQuestion: input.clientMessageId.slice(9) } : {}),
           };
         case "bot":
           return { type: "bot_message", ...envelope, from: input.bot, fromSession: input.session, text: input.text };

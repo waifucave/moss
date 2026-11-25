@@ -732,6 +732,11 @@
             ],
             "additionalProperties": false
           }
+        },
+        "answersQuestion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
         }
       },
       "required": [
@@ -2033,6 +2038,10 @@
         },
         "skipped": {
           "type": "boolean"
+        },
+        "toBot": {
+          "type": "boolean",
+          "const": true
         },
         "cause": {
           "type": "string",

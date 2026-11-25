@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { daemonEndpoint, dial, type DaemonClient } from "../src/main/client";
-import { answerBubble, messageOf, MossEngine } from "../src/main/engine";
+import { messageOf, MossEngine } from "../src/main/engine";
 import { PresenceReporter } from "../src/main/presence";
 import { SealedFrames } from "../src/main/sealed";
 import { mossHello } from "../src/main/connection";
@@ -525,16 +525,21 @@ describe("a bot's question (AskUserQuestion)", () => {
     expect(m!.question!.state).toBe("skipped");
   });
 
-  test("the person's answer or skip, which reaches the bot as a message of theirs, is drawn plainly with the question quoted small", () => {
-    const q = JSON.stringify('Which model, "fast" or "slow"?');
-    const ask = 'Which model, "fast" or "slow"?';
-    expect(answerBubble(`My answer to your question ${q} (options: "Use opus" / "Hold off"): chose "Use opus" (their note: soon)`)).toEqual({ text: "Answered: Use opus", quoted: ask });
-    expect(answerBubble(`My answer to your question ${q} (options: "a" / "b"): chose "a", "b"`)).toEqual({ text: "Answered: a, b", quoted: ask });
-    expect(answerBubble(`My answer to your question ${q}: their own words: terra`)).toEqual({ text: "Answered: terra", quoted: ask });
-    expect(answerBubble(`I skipped your question ${q} (options: "a" / "b"). Carry on without an answer.`)).toEqual({ text: "Skipped the question", quoted: ask });
-    expect(messageOf({ type: "user_message", seq: 3, sessionId: "s", ts: 1, text: `I skipped your question ${q}. Carry on without an answer.` })).toMatchObject({ from: "user", text: "Skipped the question", quoted: ask });
-    expect(answerBubble("My answer to your questions:\n- a")).toBeUndefined();
-    expect(answerBubble("hello")).toBeUndefined();
+  test("the person's answer or skip reaches the bot as a message marked with the question's call; the bubble is drawn from that question's record, so a hostile label can't change what it shows", async () => {
+    const { e, engine } = await setup();
+    const evil = 'a"): chose "Z';
+    const ask = "Which one?";
+    e.say("kite", { type: "question_asked", callId: "h1", questions: [{ question: ask, header: "Pick", options: [{ label: evil }, { label: "b" }], multiSelect: false }] });
+    e.say("kite", { type: "question_resolved", callId: "h1", answers: { [ask]: evil }, by: "user", toBot: true });
+    e.say("kite", { type: "user_message", answersQuestion: "h1", text: `My answer to your question "${ask}" (options: ${JSON.stringify(evil)} / "b"): chose ${JSON.stringify(evil)}`, clientName: "d", threadId: "t" });
+    e.say("kite", { type: "question_asked", callId: "h2", questions: [{ question: ask, header: "Pick", options: [{ label: "a" }, { label: "b" }], multiSelect: false }] });
+    e.say("kite", { type: "question_resolved", callId: "h2", answers: {}, by: "user", skipped: true, toBot: true });
+    e.say("kite", { type: "user_message", answersQuestion: "h2", text: `I skipped your question "${ask}". Carry on without an answer.`, clientName: "d", threadId: "t" });
+    const page = await engine.conversation("kite");
+    const users = ("messages" in page ? page.messages : []).filter((m) => m.from === "user" && m.quoted !== undefined);
+    expect(users.map((m) => [m.text, m.quoted])).toEqual([[`Answered: ${evil}`, ask], ["Skipped the question", ask]]);
+    // Without the mark, a message is drawn as typed.
+    expect(messageOf({ type: "user_message", seq: 3, sessionId: "s", ts: 1, text: "I skipped your question" }, () => ({ text: "x" }))).toMatchObject({ text: "I skipped your question" });
   });
 
   test("Stop interrupts the bot's one conversation", async () => {

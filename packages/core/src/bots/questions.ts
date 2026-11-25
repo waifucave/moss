@@ -57,7 +57,7 @@ export const OPEN_CARDS_MAX = 4;
 export const tooManyOpenReply = (open: number): string => `Not asked: you already have ${open} questions open that the person has not answered or skipped yet. Wait for one of them, and do not ask the same thing twice.`;
 
 /** The bot's words as one JSON-quoted line: control characters and line breaks become spaces, then cut. */
-const quote = (text: string, max: number): string => JSON.stringify(clip(text.replace(/[\u0000-\u001f\u007f\u0085\u2028\u2029]+/g, " "), max));
+const quote = (text: string, max: number): string => JSON.stringify(clip(text.replace(/[\u0000-\u001f\u007f\u0085\u2028\u2029\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]+/g, " "), max));
 
 /** The person's answer to (or skip of) a bot's open question, as the message the bot gets. Everything the BOT wrote (the question, the option labels) is
  *  JSON-quoted on one line and cut; the fixed words are ours; what the person chose is named by the stored label (quoted), and their own typed words and
@@ -173,10 +173,10 @@ export function botQuestions(o: {
       const last = new Map<string, { answers: Record<string, string>; notes?: Record<string, string>; skipped: boolean } | undefined>();
       for (const r of log) {
         if (r.type !== "driver") continue;
-        const e = r.event as { type: string; callId?: string; questions?: readonly unknown[]; by?: string; answers?: Record<string, string>; notes?: Record<string, string>; skipped?: boolean };
+        const e = r.event as { type: string; callId?: string; questions?: readonly unknown[]; by?: string; toBot?: boolean; answers?: Record<string, string>; notes?: Record<string, string>; skipped?: boolean };
         if (typeof e.callId !== "string") continue;
         if (e.type === "question_asked") { cards.set(e.callId, e.questions ?? []); last.set(e.callId, undefined); }
-        else if (e.type === "question_resolved") last.set(e.callId, e.by === "user" ? { answers: e.answers ?? {}, ...(e.notes === undefined ? {} : { notes: e.notes }), skipped: e.skipped === true } : undefined);
+        else if (e.type === "question_resolved") last.set(e.callId, e.by === "user" && e.toBot === true ? { answers: e.answers ?? {}, ...(e.notes === undefined ? {} : { notes: e.notes }), skipped: e.skipped === true } : undefined);
       }
       let sent = 0;
       for (const [callId, given] of last) {
@@ -212,6 +212,7 @@ export function botQuestions(o: {
         type: "question_resolved", callId, answers, by: "user",
         ...(notes !== undefined && Object.keys(notes).length > 0 ? { notes } : {}),
         ...(given.skipped ? { skipped: true } : {}),
+        toBot: true,
       });
       const asked = card.questions;
       return {

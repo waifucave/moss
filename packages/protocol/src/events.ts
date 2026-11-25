@@ -136,6 +136,9 @@ export const UserMessageEvent = Base.extend({
    *  only the MODEL sees the paths (`modelTextOf` substitutes them); the Mac's bubble draws a chip per
    *  token. Absent on every message without files (never an empty array); ≤ `USER_MESSAGE_FILES_MAX`. */
   files: z.array(UserMessageFileRef).min(1).max(USER_MESSAGE_FILES_MAX).optional(),
+  /** The person's answer or skip of a bot's open question, sent to the bot as this message: the question's `callId`. The window draws the
+   *  bubble from that question's own record (the choice, or skipped), never by reading the message's words back. */
+  answersQuestion: z.string().min(1).max(200).optional(),
 });
 
 const ThreadBase = Base.extend({ threadId: z.string().min(1) });
@@ -487,6 +490,9 @@ export const QuestionResolvedEvent = ThreadBase.extend({
   // answer with nothing chosen. A client that knows the field (the phone's question card included) draws a card another device
   // skipped as closed and "Skipped", with the question and options as asked and no chosen answer, never as answered.
   skipped: z.boolean().optional(),
+  // A bot's open card's answer that the engine sends to the bot as the person's message (`question-<callId>`): the mark the restart's replay reads, so
+  // only what the open-card path wrote is ever sent again, never a blocking question's answer (which went to the model as a tool result).
+  toBot: z.literal(true).optional(),
   // Why a blocking question ended with `by: "aborted"` when the ENGINE went away while it waited (a stop, an update's
   // restart, a crash), rather than the person pressing Stop or the turn ending: additive; an older client still draws it as withdrawn.
   cause: z.literal("engine-stopped").optional(),

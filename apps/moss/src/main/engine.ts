@@ -35,29 +35,9 @@ export function notServed(err: unknown): boolean {
   return err instanceof RpcCallError && err.code === -32601;
 }
 
-/** The person's answer to (or skip of) a bot's open question reaches the bot as a message in fixed words (the engine's `answerText`); here it
- *  is drawn plainly: "Answered: <choice>" or "Skipped the question", the question quoted small. Several questions at once stay as written. */
-export function answerBubble(text: string): { text: string; quoted: string } | undefined {
-  const quote = String.raw`("(?:[^"\\]|\\.)*")`;
-  const options = String.raw`(?: \(options: [^\n]*?\))?`;
-  const answered = new RegExp(`^My answer to your question ${quote}${options}: (chose ("(?:[^"\\\\]|\\\\.)*"(?:, "(?:[^"\\\\]|\\\\.)*")*)|their own words: ([\\s\\S]*?))(?: \\(their note: [\\s\\S]*\\))?$`).exec(text);
-  const skipped = new RegExp(`^I skipped your question ${quote}${options}\\. Carry on without an answer\\.$`).exec(text);
-  const hit = answered ?? skipped;
-  if (hit === null) return undefined;
-  let question: unknown;
-  try { question = JSON.parse(hit[1]!); } catch { return undefined; }
-  if (typeof question !== "string") return undefined;
-  if (answered === null) return { text: "Skipped the question", quoted: question };
-  let said: string;
-  if (answered[3] !== undefined) {
-    try { said = (JSON.parse(`[${answered[3]}]`) as string[]).join(", "); } catch { return undefined; }
-  } else said = (answered[4] ?? "").trim();
-  return { text: `Answered: ${said}`, quoted: question };
-}
-
 /** One bot conversation event as a message, or undefined for what the window doesn't show as a bubble. The text stays
  *  text: it is drawn as a text node, never as markup. */
-export function messageOf(e: Record<string, unknown>): Message | undefined {
+export function messageOf(e: Record<string, unknown>, bubbleOf?: (e: Record<string, unknown>) => { text: string; quoted?: string } | undefined): Message | undefined {
   const seq = typeof e.seq === "number" ? e.seq : undefined;
   const at = typeof e.ts === "number" ? e.ts : 0;
   const id = `${String(e.sessionId ?? "s")}:${seq ?? at}`;
@@ -65,8 +45,9 @@ export function messageOf(e: Record<string, unknown>): Message | undefined {
     const files = Array.isArray(e.files) ? (e.files as { path?: unknown }[]).flatMap((f) => typeof f.path === "string" ? [{ name: baseName(f.path), kind: "file" as const }] : []) : [];
     const images = Array.isArray(e.images) ? (e.images as { path?: unknown }[]).flatMap((f) => typeof f.path === "string" ? [{ name: baseName(f.path), kind: "image" as const }] : []) : [];
     const all = [...files, ...images];
-    const said = answerBubble(e.text);
-    if (said !== undefined) return { id, from: "user", text: said.text, quoted: said.quoted, at };
+    // The person's answer or skip of a bot's question: the bubble is drawn from the question's own record (the engine marks the message).
+    const said = typeof e.answersQuestion === "string" ? bubbleOf?.(e) : undefined;
+    if (said !== undefined) return { id, from: "user", text: said.text, ...(said.quoted !== undefined ? { quoted: said.quoted } : {}), at };
     return { id, from: "user", text: stripTokens(e.text), at, ...(all.length > 0 ? { files: all } : {}) };
   }
   if (e.type === "assistant_message" && typeof e.text === "string" && e.text.trim() !== "") return { id, from: "bot", text: e.text, at };
@@ -520,7 +501,7 @@ export class MossEngine {
     } else if ((e.type === "tool_result" || e.type === "assistant_message" || e.type === "turn_completed" || e.type === "user_message") && this.liveCall.delete(bot)) this.changed();
     // A bot's question, and how it ended (answered here or elsewhere, no answer in time, its turn stopped): the same message again.
     for (const q of this.questions.live(e)) for (const l of this.messageListeners) l(bot, q);
-    const m = messageOf(e);
+    const m = messageOf(e, (x) => this.questions.bubbleOf(x));
     if (m === undefined) return;
     for (const l of this.messageListeners) l(bot, m);
   }
@@ -552,7 +533,7 @@ export class MossEngine {
     if (r === undefined) return { waiting: true };
     this.sessionBot.set(r.session, bot);
     this.questions.learn(r.events);
-    const messages = r.events.flatMap((e) => { const m = e.type === "question_asked" ? this.questions.messageOf(e) : messageOf(e); return m === undefined ? [] : [m]; });
+    const messages = r.events.flatMap((e) => { const m = e.type === "question_asked" ? this.questions.messageOf(e) : messageOf(e, (x) => this.questions.bubbleOf(x)); return m === undefined ? [] : [m]; });
     const first = r.events.find((e) => typeof e.seq === "number");
     const last = [...r.events].reverse().find((e) => typeof e.seq === "number");
     // Follow the conversation live from the last event read (MOSS's own connection; the window draws what comes).
