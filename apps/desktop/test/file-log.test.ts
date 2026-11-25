@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { placeLine } from "../src/main/card-place";
 import { KEEP, REDUCE, fileLine } from "../src/main/file-log";
 import { isKnownTreeMethod, loggedMethod } from "../src/main/ui/tree-calls";
-import { IpcStats, ipcLine } from "../src/main/ui/ipc-stats";
+import { COMPONENT_CALLS } from "@waifucave/moss-plugin-sdk";
+import { IpcStats, NAMED_EVENTS, NAMED_METHODS, ipcLine } from "../src/main/ui/ipc-stats";
 import { parseIpcLine } from "../src/main/ui/ipc-stats";
 import { APP_LOG_LINE_MAX, cleanLogLine } from "../../../packages/app-release/src/app-log";
 
@@ -478,14 +479,25 @@ describe("the counters line's calls part (written by ipcLine)", () => {
     return ipcLine(stats.take(5), [{ type: "Browser", percent: 1 }]);
   };
   test("a line written with calls is kept whole, and still parses", () => {
-    const line = written(["plugin.layer.call:points.entries", "plugin.layer.call:points.entries", "ev:plugin_point_changed", "events.subscribe"]);
+    const line = written(["plugin.layer.call:points.entries", "plugin.layer.call:files.pickOpen", "plugin.layer.call:files.pickOpen", "plugin.layer.call:files.pickOpen", "ev:plugin_point_changed", "events.subscribe"]);
     expect(line).toContain(" calls (");
     expect(fileLine(line)).toBe(line);
     expect(parseIpcLine(line)).toMatchObject({ seconds: 5 });
   });
+  test("every name the allowlists and the catalog can produce passes the keep rule", () => {
+    const names = [...NAMED_EVENTS].map((e) => `ev:${e}`);
+    for (const m of NAMED_METHODS) { names.push(m); for (const c of COMPONENT_CALLS) names.push(`${m}:${c}`); }
+    expect(names.length).toBeGreaterThan(100);
+    for (const n of names) {
+      const line = written([n]);
+      expect(line).toContain(` calls (${n} 1)`);
+      expect(fileLine(line)).toBe(line);
+    }
+    expect(written(["plugin.layer.call:files.pickOpen"])).toContain("plugin.layer.call:files.pickOpen 1");
+  });
   test("a calls part with a word, a path, a capital, a fifth name or a long name is not kept", () => {
     const base = written(["events.subscribe"]).replace(/ calls \(.*\)$/, "");
-    for (const bad of ["a sentence with words 3", `/Users/someone/${"x".repeat(5)} 3`, "Capital.Name 3", "a 1, b 1, c 1, d 1, e 1", `${"a".repeat(49)} 3`])
+    for (const bad of ["a sentence with words 3", `/Users/someone/${"x".repeat(5)} 3`, "has space.Name 3", "a 1, b 1, c 1, d 1, e 1", `${"a".repeat(49)} 3`])
       expect(fileLine(`${base} calls (${bad})`)).toBe("ipc: (text not kept in the file)");
   });
 });

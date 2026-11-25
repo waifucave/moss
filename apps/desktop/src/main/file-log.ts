@@ -28,8 +28,8 @@ const W = "[a-z-]{1,24}";
 /** What the app calls a window or a surface (`surfaceName` in index.ts): its fixed phrases, a window number, or a surface's ref. */
 const SURF = `(?:a frame with no window|the main window|the window's strip \\(window \\d{1,6}\\)|the fallback card \\(window \\d{1,6}\\)|window \\d{1,6}|${REF})`;
 /** The ipc counters' pairs: `name count`, comma-separated, none to eight; a name has no space, quote, slash or sentence in it. */
-// The calls part of a counters line: at most four method names or event types (lower case, the app's own fixed names or `other`), each with a count.
-const IPC_CALLS = "(?:[a-z][a-z0-9._:-]{0,47} \\d{1,9}(?:, [a-z][a-z0-9._:-]{0,47} \\d{1,9}){0,3})";
+// The calls part of a counters line: at most four method names or event types (letters, digits and . _ : -; the app's own fixed names, the SDK catalog's camelCase call paths, or `other`), each with a count.
+const IPC_CALLS = "(?:[A-Za-z][A-Za-z0-9._:-]{0,47} \\d{1,9}(?:, [A-Za-z][A-Za-z0-9._:-]{0,47} \\d{1,9}){0,3})";
 const IPC_PAIRS = "(?:[\\w:.-]{1,60} \\d{1,9}(?:, [\\w:.-]{1,60} \\d{1,9}){0,7})?";
 /** A card's id, which the file never keeps. */
 const CARD = "\\S{1,100}";
