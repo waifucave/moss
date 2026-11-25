@@ -11,6 +11,7 @@ import type { BotSessionContext, EffectiveBot } from "../../../src/bots/service"
 import { botPaths } from "../../../src/bots/paths";
 import { BotSessionDriver, type BotDriverDeps } from "../../../src/runtime-sdk/turn-loop/driver";
 import { Cluster, type TestComputer, until } from "../../tree/cluster-support";
+import { answersFor, makePhone, type Phone } from "../../tree/answer-support";
 import { describeWithEmbeddedRuntime } from "../../helpers/embedded-runtime";
 import { darwinTest } from "../../helpers/darwin-only";
 
@@ -109,6 +110,53 @@ describeWithEmbeddedRuntime("a bot's tools on another computer's files (lane XC,
       expect(second[0]?.isError).toBe(true);
       expect(second[0]?.content).toContain("computer offline");
       expect(Date.now() - started).toBeLessThan(15_000);
+    } finally {
+      await driver.stop();
+    }
+  }, 90_000);
+
+  // Step 3: approvals follow the files. Beta at its default level (ask for risky actions, no reviewer here: every
+  // change asks); the card is Beta's own, shown through Alpha (askUser) and answered on the user's phone, signed; the
+  // signed answer travels with the call and Beta checks it as itself.
+  async function judgedComputers(phone: Phone): Promise<{ alpha: TestComputer; beta: TestComputer }> {
+    cluster = new Cluster();
+    const alpha = await cluster.add("Alpha", { answers: () => answersFor(phone), askUser: () => phone.ask });
+    const beta = await cluster.add("Beta", { answers: () => answersFor(phone), askUser: () => phone.ask });
+    alpha.bots.push("luna");
+    await cluster.join();
+    return { alpha, beta };
+  }
+
+  darwinTest("a write on Beta asks with Beta's own card; a yes writes it, a no keeps the file away", async () => {
+    const phone = await makePhone();
+    const { alpha, beta } = await judgedComputers(phone);
+    const { driver } = driverOn(alpha);
+    try {
+      const yes = results(await driver.turn(user(call("Write", { file_path: "home/Beta/approved.md", content: "yes" })), control()));
+      expect(yes[0]?.isError).toBe(false);
+      expect(phone.shown.map((s) => s.computer)).toEqual(["Beta"]);
+      expect(readFileSync(join(beta.home, "approved.md"), "utf8")).toBe("yes");
+      phone.deny = true;
+      const no = results(await driver.turn(user(call("Write", { file_path: "home/Beta/denied.md", content: "no" })), control()));
+      expect(no[0]?.isError).toBe(true);
+      expect(existsSync(join(beta.home, "denied.md"))).toBe(false);
+    } finally {
+      await driver.stop();
+    }
+  }, 90_000);
+
+  darwinTest("a move between Alpha and Beta raises one card that binds both computers", async () => {
+    const phone = await makePhone();
+    const { alpha, beta } = await judgedComputers(phone);
+    mkdirSync(join(alpha.home, "site"), { recursive: true });
+    writeFileSync(join(alpha.home, "site", "index.html"), "<h1>hi</h1>");
+    const { driver } = driverOn(alpha);
+    try {
+      const r = results(await driver.turn(user(call("Bash", { command: "mv home/Alpha/site home/Beta/" })), control()));
+      expect(r[0]?.isError).toBe(false);
+      expect(phone.shown).toHaveLength(1);
+      expect(phone.shown[0]?.method).toBe("tree.transfer");
+      expect(readFileSync(join(beta.home, "site", "index.html"), "utf8")).toBe("<h1>hi</h1>");
     } finally {
       await driver.stop();
     }
