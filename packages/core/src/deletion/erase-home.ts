@@ -61,7 +61,7 @@ export const ERASE_LEFT_KINDS = {
   "settings.json": "settings", memory: "memory",
 } as const;
 /** Not data left by an erase: `run/` holds the erase's own proof (removed last), and the CLI's log tee may make `logs/`
- *  before the engine reads the signal. */
+ *  before the engine reads the signal (the erase removes the old `logs/` first of all, so none of it can be left). */
 export const ERASE_NOT_COUNTED: readonly string[] = ["run", "logs"];
 export type EraseLeftKind = (typeof ERASE_LEFT_KINDS)[keyof typeof ERASE_LEFT_KINDS] | "other";
 
@@ -257,6 +257,9 @@ export async function eraseHome(deps: EraseDeps): Promise<EraseOutcome> {
   }
   // Every entry removed as itself (rmSync never follows a link inside what it removes), then the folder, then the link
   // the home was given as.
+  // `logs/` first, right after the proof: the start doesn't count `logs/` (the CLI's log tee may make a fresh one before
+  // it looks), so an erase cut short must never leave only the old logs behind to read as erased.
+  rmSync(join(check.real, "logs"), { recursive: true, force: true });
   for (const name of readdirSync(check.real)) if (name !== "run") rmSync(join(check.real, name), { recursive: true, force: true });
   rmSync(join(check.real, "run"), { recursive: true, force: true });
   rmdirSync(check.real);

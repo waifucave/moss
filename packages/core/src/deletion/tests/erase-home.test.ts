@@ -216,6 +216,26 @@ describe("erase: what goes and what stays", () => {
     expect(takeEraseSignalAtStart(home)).toBeUndefined();
   });
 
+  test("an erase cut short never leaves the old logs: logs/ goes right after the proof, before any other data", async () => {
+    const w = world();
+    writeFileSync(join(w.home, "logs", "daemon.log"), "an old run's log");
+    // A folder the erase can't remove stops it midway.
+    const stuck = join(w.home, "bots");
+    writeFileSync(join(stuck, "pinned.md"), "x");
+    const { chmodSync } = await import("node:fs");
+    chmodSync(stuck, 0o500);
+    try {
+      await eraseHome({ home: w.home, userHome: w.user }).catch(() => undefined);
+    } finally {
+      chmodSync(stuck, 0o700);
+    }
+    expect(existsSync(join(w.home, "logs", "daemon.log"))).toBe(false);
+    if (existsSync(join(stuck, "pinned.md"))) {
+      writeEraseSignal(w.home);
+      expect(takeEraseSignalAtStart(w.home)?.result).toBe("partial");
+    }
+  });
+
   test("an upgraded home (an older build wrote no marker, no erase began) with a planted signal: nothing is said, the signal goes, the start writes the marker", () => {
     const w = world();
     expect(existsSync(homeMarkerPath(w.home))).toBe(false);
