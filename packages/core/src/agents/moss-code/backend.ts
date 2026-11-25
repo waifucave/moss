@@ -40,7 +40,7 @@ import { runtimeDenyForms } from "../../fence/runtime-deny-forms";
 import { inProcessSandboxReady, notAvailableHere } from "../sandbox/in-process";
 import { GLOSSARY } from "../bridge/tools";
 import { botSandbox, isUnknownTask } from "../../runtime-sdk/turn-loop/driver";
-import { MISPLACED_SANDBOX_FLAG_REFUSAL, fencedReadOnlyCommand, misplacedSandboxFlag, outsideSandboxFlagOf, realFileWriteInput } from "../../approvals/bot-check";
+import { MISPLACED_SANDBOX_FLAG_REFUSAL, fencedReadOnlyCommand, misplacedSandboxFlag, outsideSandboxFlagOf, realFileWriteInput, windowsFileToolInput } from "../../approvals/bot-check";
 import { botChildSandboxOf, botChildWriteRefusal, type BotChildSandbox } from "../../runtime-sdk/turn-loop/subagent-backend";
 import { fillProvider } from "../../runtime-sdk/turn-loop/embedded-session";
 import { mergedHooks } from "../../runtime-sdk/turn-loop/hook-merge";
@@ -414,8 +414,13 @@ export class MossCodeBackend implements AgentBackend {
     const fenceHook: HookCallbackMatcher[] = [{
       failClosed: true,
       hooks: [async (input) => {
-        const why = fileToolRefusal(input as { tool_name?: unknown; tool_input?: unknown }, fence, spec.root);
-        return why === undefined ? {} : { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: why } };
+        const call = input as { tool_name?: unknown; tool_input?: unknown };
+        const why = fileToolRefusal(call, fence, spec.root);
+        if (why !== undefined) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: why } };
+        // Windows (lane WS9): the path in the disk's one spelling, so a Read and the Edit of one file are one key in the
+        // runtime's read-before-edit check (`windowsFileToolInput`).
+        const respelled = typeof call.tool_name === "string" ? windowsFileToolInput(call.tool_name, call.tool_input, spec.root) : undefined;
+        return respelled === undefined ? {} : { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: respelled } };
       }],
     }];
     // Every model turn holds at its start while paused (the runtime's own turns too); this event doesn't fail closed,

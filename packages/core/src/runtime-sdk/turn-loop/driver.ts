@@ -63,7 +63,7 @@ import { mergedHooks } from "./hook-merge";
 import { NAMESPACE_RE } from "@waifucave/moss-plugin-sdk";
 import { GLOSSARY_TOOL_NAME, glossaryTool, type GlossaryDeps } from "./glossary";
 import { partsServe } from "./only-backends";
-import { MISPLACED_SANDBOX_FLAG_REFUSAL, misplacedSandboxFlag, outsideSandboxFlagOf } from "../../approvals/bot-check";
+import { MISPLACED_SANDBOX_FLAG_REFUSAL, misplacedSandboxFlag, outsideSandboxFlagOf, windowsFileToolInput } from "../../approvals/bot-check";
 import { BOT_KEY_PATHS, RUNTIME_STATE_STORES, RUNTIME_STATE_SUFFIXES, fenceSearchOutput, fileToolFenceRefusal, type FileFence } from "./file-fence";
 import { secretReadPlaces, type Fence } from "../../contracts/fence";
 import { runtimeDenyForms } from "../../fence/runtime-deny-forms";
@@ -747,12 +747,16 @@ export class BotSessionDriver implements SessionDriver {
       this.#callIds.set(name, q);
     }
     const changed = r.input !== input.tool_input && r.input !== null && typeof r.input === "object" && !Array.isArray(r.input);
-    if (r.ask !== undefined || changed) {
+    // Windows (lane WS9): a file tool's path in the disk's one spelling (`windowsFileToolInput`), so the runtime's
+    // read-before-edit check keys a Read and the Edit of the same file alike, whatever spellings the model used.
+    const respelled = windowsFileToolInput(name, changed ? r.input : input.tool_input, this.#ctx.paths.scratch);
+    const updated = respelled ?? (changed ? (r.input as Record<string, unknown>) : undefined);
+    if (r.ask !== undefined || updated !== undefined) {
       return {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
           ...(r.ask !== undefined ? { permissionDecision: "ask" as const, permissionDecisionReason: r.ask } : {}),
-          ...(changed ? { updatedInput: r.input as Record<string, unknown> } : {}),
+          ...(updated !== undefined ? { updatedInput: updated } : {}),
         },
       };
     }

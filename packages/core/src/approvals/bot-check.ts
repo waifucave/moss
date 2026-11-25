@@ -308,6 +308,31 @@ export function realFileWriteInput(tool: string, input: Record<string, unknown>,
   return real === given ? input : { ...input, [key]: real };
 }
 
+/** The path a file tool reads or writes, by tool (lane WS9). */
+const FILE_TOOL_PATH_KEY: ReadonlyMap<string, string> = new Map([["Read", "file_path"], ["Edit", "file_path"], ["Write", "file_path"], ["NotebookRead", "notebook_path"], ["NotebookEdit", "notebook_path"]]);
+
+/**
+ * Windows (lane WS9, the workshop row of a Windows acceptance run): a file tool's path in the one spelling the disk
+ * gives it (`resolveSessionPath`: `realpathSync.native`, so 8.3 short names come back long, `/` becomes `\`, a `\\?\`
+ * prefix goes, the case is the disk's, and a link or junction is where it really is), or undefined when it is already
+ * that. The runtime keys the files a session has read (its read-before-edit check) by the JS `realpath`, which keeps a
+ * short name and the case as written, while MOSS hands an Edit or a Write its real path (`withRealPaths`,
+ * `realFileWriteInput`): a Read of `C:\Users\RUNNER~1\…\index.ts` then never counted for the Edit of
+ * `C:\Users\runneradmin\…\index.ts`. Given to every file tool's call in this spelling, the read and the edit of one file
+ * are one key, and two files that only look alike stay two. A path starting with `~` is left as written (the runtime
+ * doesn't expand it). Off Windows, undefined: there the JS `realpath` already gives one spelling.
+ */
+export function windowsFileToolInput(tool: string, input: unknown, cwd: string, o: { os?: Os; real?: (path: string, cwd: string) => string } = {}): Record<string, unknown> | undefined {
+  if ((o.os ?? hostOsOf()) !== "windows") return undefined;
+  const key = FILE_TOOL_PATH_KEY.get(tool);
+  if (key === undefined || input === null || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const i = input as Record<string, unknown>;
+  const given = i[key];
+  if (typeof given !== "string" || given.trim() === "" || given.trim().startsWith("~")) return undefined;
+  const real = (o.real ?? ((p, c) => resolveSessionPath(p, c)))(given.trim(), cwd);
+  return real === given ? undefined : { ...i, [key]: real };
+}
+
 /** Each rule key starts with its kind (#267's check 2): a built-in's never shares a key with another tool's, even one
  *  literally named `Bash(git push)`. */
 export const BUILTIN_KEY = "builtin:";

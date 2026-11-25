@@ -8,7 +8,8 @@ import { rootCovered } from "../../src/fence/sandbox-settings";
 import { grantedForms, homeReach, opaqueWindowsPath, reachesInside, uncPath, windowsPathRefused } from "../../src/agents/memory";
 import { runLaterByName } from "../../src/fence/sandbox-settings";
 import { diskSpelling } from "../../src/fence/canonical";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { windowsFileToolInput } from "../../src/approvals/bot-check";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -217,5 +218,47 @@ describe("a project on a mapped drive (lane WS9, the reviewer's should-fix): its
     expect(resolved).toBe(0);
     windowsPathRefused("\\\\nas\\share\\proj\\x", forms, "windows");
     expect(resolved).toBe(1);
+  });
+});
+
+describe("a file tool's path in the disk's one spelling on Windows, for the runtime's read-before-edit check (lane WS9: the workshop row)", () => {
+  // The disk's answer (`realpathSync.native`): long names, `\`, no device prefix, the disk's case; a junction where it leads.
+  const disk = (p: string) => {
+    let q = p.replace(/\//g, "\\").replace(/^\\\\\?\\/, "");
+    q = q.replace(/^C:\\Users\\RUNNER~1/i, "C:\\Users\\runneradmin").replace(/^c:\\users\\runneradmin/i, "C:\\Users\\runneradmin");
+    q = q.replace(/^C:\\Users\\runneradmin\\proj\\link/i, "C:\\Users\\runneradmin\\elsewhere");
+    return q;
+  };
+  const file = "C:\\Users\\runneradmin\\.moss\\plugins\\ws-greeter\\host\\index.ts";
+  const spelled = (tool: string, path: string) => windowsFileToolInput(tool, { file_path: path }, "C:\\Users\\runneradmin\\.moss\\scratch\\b", { os: "windows", real: disk })?.["file_path"] ?? path;
+  test("a Read by one spelling and the Edit by another of the SAME file get one path: short against long, `/` against `\\`, case, a `\\\\?\\` prefix", () => {
+    for (const read of [
+      "C:\\Users\\RUNNER~1\\.moss\\plugins\\ws-greeter\\host\\index.ts", "C:/Users/runneradmin/.moss/plugins/ws-greeter/host/index.ts",
+      "c:\\users\\RUNNERADMIN\\.moss\\plugins\\ws-greeter\\host\\index.ts", "\\\\?\\C:\\Users\\runneradmin\\.moss\\plugins\\ws-greeter\\host\\index.ts",
+    ]) {
+      expect([read, spelled("Read", read)]).toEqual([read, spelled("Edit", file)]);
+    }
+  });
+  test("a different file that only looks alike keeps its own path", () => {
+    expect(spelled("Read", "C:\\Users\\runneradmin\\.moss\\plugins\\ws-greeter\\host\\index.ts.bak")).not.toBe(spelled("Edit", file));
+    expect(spelled("Read", "C:\\Users\\runneradmin\\.moss\\plugins\\ws-greeter2\\host\\index.ts")).not.toBe(spelled("Edit", file));
+  });
+  test("a file reached through a junction is where it really is; `~` and other tools are left alone; off Windows nothing changes", () => {
+    expect(spelled("Read", "C:\\Users\\runneradmin\\proj\\link\\a.ts")).toBe("C:\\Users\\runneradmin\\elsewhere\\a.ts");
+    expect(windowsFileToolInput("Read", { file_path: "~/x" }, "C:\\x", { os: "windows", real: disk })).toBeUndefined();
+    expect(windowsFileToolInput("Bash", { command: "ls" }, "C:\\x", { os: "windows", real: disk })).toBeUndefined();
+    expect(windowsFileToolInput("Read", { file_path: "C:/Users/RUNNER~1/x" }, "C:\\x", { os: "macos", real: disk })).toBeUndefined();
+    expect(windowsFileToolInput("NotebookEdit", { notebook_path: "C:/Users/RUNNER~1/n.ipynb" }, "C:\\x", { os: "windows", real: disk })).toEqual({ notebook_path: "C:\\Users\\runneradmin\\n.ipynb" });
+  });
+  test.skipIf(process.platform !== "win32")("on Windows, a real short-named folder: the Read by its short name and the Edit by its long one get one path", () => {
+    const d = mkdtempSync(join(tmpdir(), "ws9-read-"));
+    try {
+      writeFileSync(join(d, "index.ts"), "x\n");
+      const long = realpathSync.native(d).replace(/^\\\\\?\\/, "");
+      const a = windowsFileToolInput("Read", { file_path: join(d, "index.ts") }, d)?.["file_path"] ?? join(d, "index.ts");
+      const b = windowsFileToolInput("Edit", { file_path: join(long, "index.ts").replace(/\\/g, "/") }, d)?.["file_path"] ?? join(long, "index.ts");
+      console.log(`[unit] read set: ${join(d, "index.ts")} -> ${a}; ${join(long, "index.ts")} -> ${b}`);
+      expect(a).toBe(b);
+    } finally { rmSync(d, { recursive: true, force: true }); }
   });
 });
