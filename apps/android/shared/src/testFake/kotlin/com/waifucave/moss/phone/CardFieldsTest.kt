@@ -79,6 +79,8 @@ class CardFieldsTest {
         compose.setContent { MossTheme(false) { CardView(c, busy = false, note = null, onAnswer = {}, onSettle = {}) } }
         assertTrue(compose.onAllNodes(hasText("Site")).fetchSemanticsNodes().isNotEmpty())
         assertTrue(compose.onAllNodes(hasText("fireworks")).fetchSemanticsNodes().isNotEmpty())
+        // It never expires (Long.MAX_VALUE): no expiry line.
+        assertTrue(compose.onAllNodes(hasText("Expires", substring = true)).fetchSemanticsNodes().isEmpty())
     }
 
     @Test fun aCardHoldingWhatThisBuildCantDrawHasNoButtons() {

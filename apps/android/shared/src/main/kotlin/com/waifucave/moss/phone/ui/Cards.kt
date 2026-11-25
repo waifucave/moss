@@ -143,8 +143,11 @@ fun CardView(card: Card, busy: Boolean, note: CardNote?, onAnswer: (CardOption) 
                 Text("on ${Sealed.visible(it.text)}", style = MossType.caption, color = c.secondary)
             }
             Spacer(Modifier.weight(1f))
-            val left = (card.expiresAt - now) / 1000
-            if (left > 0) Text("Expires in ${left / 60} min", style = MossType.caption, color = c.secondary)
+            // A card the person's own turn raised never expires (`expiresAt` reads as never): it says nothing.
+            if (card.expiresAt != Long.MAX_VALUE) {
+                val left = (card.expiresAt - now) / 1000
+                if (left > 0) Text("Expires in ${maxOf(1, left / 60)} min", style = MossType.caption, color = c.secondary)
+            }
         }
         if (changed) Text("This card changed while it was shown. Read it again before you answer.", style = MossType.footnote, color = c.secondary)
         if (!card.drawable()) {
