@@ -3533,6 +3533,29 @@ if (import.meta.main) {
     console.error("usage: moss mcp [list] | get <name> | login <name> [--yes] [--confirm-issuer-change] | logout <name> [--forget-client] | set-secret <name> [--from-clipboard [--issuer <issuer>]] | add [-s local|user|project] [-t stdio|sse|http] [-e KEY=value...] [-H \"Name: value\"...] [--version-negotiation legacy|auto|<revision>] <name> <commandOrUrl> [-- args...] | add-json [-s local|user|project] <name> <json> | remove <name> [-s local|user|project] | rename <old> <new> [-s local|user|project] | permissions <server> [<tool> | '*'] [allow|ask|deny|default]");
     process.exit(1);
   }
+  case "device": {
+    // `moss device` (device-cli.ts, lane XC): pairing a computer from the user's own terminal (a computer with only the
+    // engine has no app to pair in), the device list, and removing one. The running daemon, as the CLI: never one this
+    // command starts.
+    const dcli = await import("./device-cli");
+    const emit = (run: { code: number; output: string }): never => {
+      (run.code === 0 ? console.log : console.error)(run.output);
+      process.exit(run.code);
+    };
+    const args = process.argv.slice(3);
+    if (args.length === 0 || !["pair", "list", "revoke"].includes(args[0]!)) emit({ code: 2, output: dcli.DEVICE_USAGE });
+    if (!(await endpointAnswers(socketPath()))) emit({ code: 1, output: "MOSS isn't running on this computer: start it, then try again" });
+    const token = await new KeychainSecretStore().get(TOKEN_NAMES.harness).catch(() => undefined);
+    if (!token) emit({ code: 1, output: "this terminal can't reach MOSS: its token isn't readable" });
+    const conn = await dcli.openDeviceConn(socketPath(), token!);
+    // The person's own typing, in this terminal only: with no terminal there is nothing to ask, and a pairing is refused.
+    const ask = process.stdin.isTTY ? async (question: string): Promise<string | undefined> => {
+      const { createInterface } = await import("node:readline/promises");
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      try { return await rl.question(question); } finally { rl.close(); }
+    } : undefined;
+    emit(await dcli.runDevice(args, conn, { print: (line) => console.log(line), ...(ask === undefined ? {} : { ask }) }));
+  }
   case "plugin": {
     // `moss plugin` is MOSS's plugin registry (spec §5.6, moss-plugin-cli.ts): list, info, install, wrap, enable,
     // disable, remove, update, pin, unpin, restart, index, dev, logs, new, validate.
@@ -4654,6 +4677,7 @@ if (import.meta.main) {
   trust <dir> [--list] | trust list | trust remove <path>
   skills                                          list discovered skills for this directory
   mcp                                              list configured MCP servers and their tools
+  device pair [--join <code>] | list | revoke <name>   pair this computer from its terminal (you type the four words), list or remove devices
   plugin validate [<folder>] [--json] [--upgrade]   a plugin folder's class, contributions, hosts and OK text; non-zero on an error
   plugin list | install <git-url> [name] | enable <name> | disable <name> | remove <name> | restart <name>
   bg list <session> | bg peek <session> <taskId> | bg kill <session> <taskId>
