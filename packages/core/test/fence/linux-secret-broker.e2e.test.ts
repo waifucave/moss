@@ -237,6 +237,10 @@ describe.skipIf(!ready)("linux: the credential broker inside the real fence", ()
       '  for f in $p/fdinfo/*; do [ -r "$f" ] && cat "$f" >/dev/null 2>&1 && found="$found $pid:fdinfo"; done',
       "done",
       'echo "foreign=[${found}]"',
+      // The command's own fds: none of the relay's pipe numbers, and no pipe past its stdio (a leak through Bun.spawn).
+      'extra=""; for f in /proc/$$/fd/*; do n=${f##*/}; case $n in 0|1|2) continue;; esac; l=$(readlink "$f" 2>/dev/null) || continue; case "$l" in pipe:*) extra="$extra $n:$l";; esac; done',
+      '[ -e /proc/$$/fd/4 ] && extra="$extra fd4"; [ -e /proc/$$/fd/5 ] && extra="$extra fd5"',
+      'echo "own-extra=[${extra}]"',
       'n=0; for f in /proc/$kid/fd/*; do readlink "$f" >/dev/null 2>&1 && n=$((n+1)); done; echo "control=$n"',
       "kill $kid",
       "secret-tool lookup service gh:github.com username octo",
@@ -245,7 +249,22 @@ describe.skipIf(!ready)("linux: the credential broker inside the real fence", ()
     const out = outOf(r);
     expect(out).toMatch(/control=[1-9]/);
     expect(out).toContain("foreign=[]");
+    expect(out).toContain("own-extra=[]");
     expect(out).toContain(GH_TOKEN_VALUE); // the relay still served the command
+  }, 120_000);
+
+  test("orphans the command leaves are reaped by the relay: no zombie stays", async () => {
+    // 50 double forks: each `sleep` is orphaned to the sandbox's pid 1 (the relay) and exits there.
+    const script = [
+      "i=0; while [ $i -lt 50 ]; do ( sleep 0.2 & ); i=$((i+1)); done",
+      "sleep 2",
+      'z=0; for s in /proc/[0-9]*/stat; do st=$(sed "s/.*) //" "$s" 2>/dev/null | cut -d" " -f1); [ "$st" = Z ] && z=$((z+1)); done',
+      'echo "zombies=$z"',
+      "secret-tool lookup service gh:github.com username octo",
+    ].join("\n");
+    const r = await run(script, GRANTS);
+    expect(outOf(r)).toContain("zombies=0");
+    expect(outOf(r)).toContain(GH_TOKEN_VALUE);
   }, 120_000);
 
   test("without grants a run reaches no bus at all, as before", async () => {

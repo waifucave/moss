@@ -18,7 +18,7 @@ import type { MossFence } from "./fence";
 import { bwrapPlan, heldFolderNote } from "./linux-bwrap";
 import { unixSocketFilter } from "./seccomp";
 import { BROKER_LIMITS, type CredentialPolicy, type SecretBackend, serveSandboxBus, sessionBusSecrets, unixBusPath } from "./linux-secret-broker";
-import { BoundedPipeWriter, closeFd, linuxPipe, setNonBlocking } from "./relay-pipe";
+import { BoundedPipeWriter, closeFd, linuxPipe, PipeReader, setNonBlocking } from "./relay-pipe";
 import { PROCESS_HOLDER_FILE } from "../build-kind";
 import { agentConfigDirs, agentConfigFiles, gitTemplateDir, globalHooksPathDirs, loginStartDirs, loginStartSafeFiles, loginStartUnsafeFiles, selfUpdateFiles } from "./layout";
 import { supervisorArch } from "./linux-supervisor";
@@ -307,6 +307,7 @@ export function fencedSpawner(o: FencedProcessOptions): FencedSpawner {
             await broker?.end();
           }
           if (result.kind === "refused") return result;
+          // The supervisor's marker, and the bus relay's (`RELAY_CLOSED_MARKER`: it couldn't make itself undumpable).
           if (result.kind === "exited" && result.code === 127 && result.stderr.includes("(closed)")) {
             return { kind: "refused", reason: `a fenced process can't be started here: ${result.stderr.trim().slice(0, 200)}` };
           }
@@ -358,11 +359,14 @@ function openBroker(policy: CredentialPolicy): { childIn: number; childOut: numb
   if (fromRelay === null) { closeFd(toRelay[0]); closeFd(toRelay[1]); return null; }
   // The engine's write end never blocks and holds at most `unread` bytes the relay hasn't taken: a command that stops
   // the relay and leaves the pipe unread ends the run's broker, never the engine (Bun's own sink would buffer it all).
-  if (!setNonBlocking(toRelay[1])) { for (const fd of [...toRelay, ...fromRelay]) closeFd(fd); return null; }
+  if (!setNonBlocking(toRelay[1]) || !setNonBlocking(fromRelay[0])) { for (const fd of [...toRelay, ...fromRelay]) closeFd(fd); return null; }
+  // The engine's read end is read by `PipeReader` alone, never under a Bun stream, so it is closed exactly once, by
+  // `end()`; once the broker ends (an overflow, or the run's end) it keeps draining, so the relay never blocks writing.
+  const reader = new PipeReader(fromRelay[0]);
   let server: ReturnType<typeof serveSandboxBus> | null = null;
-  const writer = new BoundedPipeWriter(toRelay[1], BROKER_LIMITS.unread, () => server?.close());
+  const writer = new BoundedPipeWriter(toRelay[1], BROKER_LIMITS.unread, () => { server?.close(); reader.discard(); });
   server = serveSandboxBus({
-    input: Bun.file(fromRelay[0]).stream() as unknown as AsyncIterable<Uint8Array>,
+    input: reader,
     write: (b) => writer.write(b),
     policy,
     backend: () => sessionBusSecrets() ?? noKeyring,
@@ -382,7 +386,7 @@ function openBroker(policy: CredentialPolicy): { childIn: number; childOut: numb
       srv.close();
       writer.close();
       closeFd(toRelay[1]);
-      closeFd(fromRelay[0]);
+      reader.close();
     },
   };
 }

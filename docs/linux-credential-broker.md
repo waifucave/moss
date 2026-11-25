@@ -104,6 +104,11 @@ For the lane that builds the card (rules it must keep):
 - A bot chooses what its request names, so the card can't vouch for it. It says what will be shared ("the password
   for that login"), for this session only, with no "always".
 - Cards are deduplicated per request per session, and capped, on top of the broker's 4 a run.
+- `grantForQuery` pins a request, not an item the person saw. The card must show the item's REAL label and its real
+  attributes, as read by the engine. On Allow it must run `search(item.attributes)` again and require exactly one
+  result, the same item. The grant's label is the item's real label, never the bot's words.
+- A refused request reaches the card as the bot typed it: up to 32 attributes of up to 1 KiB each. The card cuts and
+  cleans it (length, control characters, bidirectional marks) before showing any of it.
 
 The refused call fails at once with The refused call fails at once with
 `org.freedesktop.DBus.Error.AccessDenied: moss: ...`, so the command does not hang past D-Bus's 25 s timeout. The bot
@@ -149,6 +154,12 @@ which can start host containers.
 - A relay that can't start: the run gets the broker only when the engine's executable and the relay's file are real
   files outside the MOSS home's view. A compiled engine (`/$bunfs`) has no relay file yet, so it serves no broker. The
   run then behaves as before.
+- The relay as pid 1: it reaps every orphan that ends (never the command itself, which Bun waits for), so a
+  daemonising helper or a `( cmd & )` leaves no zombie on the user's process count. If it can't make itself
+  undumpable, and read that back, it starts nothing: the run is refused with the relay's reason.
+- The engine's ends of the pipes: the read end is read by the engine alone (`PipeReader`), never under a Bun stream, so
+  it is closed exactly once and a later close can't hit the number's next owner. Once the broker ends, it keeps
+  draining, so a relay still writing never blocks until the run's timeout.
 - A race at start: the relay listens before it starts the command, and the engine's end exists before bwrap starts.
 - The end: the relay exits with the command, the sandbox's pid namespace takes everything else with it, and the
   engine closes its ends of the pipes and its own connection to the real bus when the run returns.
