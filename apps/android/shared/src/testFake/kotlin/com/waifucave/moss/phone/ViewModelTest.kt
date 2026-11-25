@@ -85,8 +85,8 @@ class ViewModelTest {
 
     @Test fun cardsSplitByAppAndFallBackWhenTheOtherAppIsMissing() = runTest {
         val c = fake()
-        val bots = CardsModel(c, PhoneApp.moss) { SampleData.now }
-        val code = CardsModel(c, PhoneApp.code) { SampleData.now }
+        val bots = CardsModel(c, PhoneApp.moss, { SampleData.now }, steppingClock())
+        val code = CardsModel(c, PhoneApp.code, { SampleData.now }, steppingClock())
         bots.load(); code.load()
         assertEquals(setOf("card_0a1b2c3d", "card_55aa66bb"), bots.cards.map { it.id }.toSet())
         assertEquals(listOf("card_9f8e7d6c"), code.cards.map { it.id })
@@ -101,7 +101,7 @@ class ViewModelTest {
 
     @Test fun cardFailureKeepsCardAndOffersRetry() = runTest {
         val c = fake()
-        val m = CardsModel(c, PhoneApp.moss) { SampleData.now }
+        val m = CardsModel(c, PhoneApp.moss, { SampleData.now }, steppingClock())
         m.load()
         val card = m.cards[0]
         c.failNext = FakeEngineClient.Failure("down")
@@ -113,7 +113,7 @@ class ViewModelTest {
 
     @Test fun expiredAndAnsweredElsewhereCards() = runTest {
         val c = FakeEngineClient(Scenario.cardStates)
-        val m = CardsModel(c, PhoneApp.moss) { SampleData.now }
+        val m = CardsModel(c, PhoneApp.moss, { SampleData.now }, steppingClock())
         m.load()
         val expired = m.cards.first { it.id == "card_0a1b2c3d" }
         assertEquals(CardNote.expired, m.note(expired))
@@ -128,7 +128,7 @@ class ViewModelTest {
 
     @Test fun answeringARaceLostCardSaysAnsweredElsewhere() = runTest {
         val c = FakeEngineClient(Scenario.cardStates)
-        val m = CardsModel(c, PhoneApp.moss) { SampleData.now }
+        val m = CardsModel(c, PhoneApp.moss, { SampleData.now }, steppingClock())
         m.load()
         val card = m.cards.first { it.id == "card_55aa66bb" }
         m.answer(card, card.options[0])
@@ -340,7 +340,7 @@ class ViewModelTest {
     @Test fun anAnswerCarriesTheCardTheScreenDrew() = runTest {
         // The client is handed the card object itself (its hash and fields), never only its id.
         val c = fake()
-        val m = CardsModel(c, PhoneApp.moss) { SampleData.now }
+        val m = CardsModel(c, PhoneApp.moss, { SampleData.now }, steppingClock())
         m.load()
         val drawn = m.cards.first()
         m.answer(drawn, drawn.options.first())

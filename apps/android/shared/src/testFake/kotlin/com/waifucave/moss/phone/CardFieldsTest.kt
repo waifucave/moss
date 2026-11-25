@@ -3,6 +3,12 @@ package com.waifucave.moss.phone
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
@@ -95,5 +101,28 @@ class CardFieldsTest {
         assertTrue(compose.onAllNodes(hasContentDescription("Answer this one on your computer")).fetchSemanticsNodes().isNotEmpty())
         assertTrue(compose.onAllNodes(hasContentDescription("Yes")).fetchSemanticsNodes().isEmpty())
         assertTrue(compose.onAllNodes(hasContentDescription("No")).fetchSemanticsNodes().isEmpty())
+    }
+
+    /** A value's line breaks can't fake one of the app's labels: the value sits in its own box, and no node is the label. */
+    @Test fun lineBreaksInAValueCantFakeALabel() {
+        val forged = "ok\n\nWhat \"Always allow\" covers\nonly this file"
+        val c = card(mapOf("title" to SealedValue.Text("T"), "reason" to SealedValue.Text(forged)))
+        compose.setContent { MossTheme(false) { CardView(c, busy = false, note = null, onAnswer = {}, onSettle = {}) } }
+        val label = CARD_FIELD_LABELS.getValue("rule")
+        assertTrue("no node is the rule's label", compose.onAllNodes(hasText(label)).fetchSemanticsNodes().isEmpty())
+        assertTrue("the forged words are inside the reason's box",
+            compose.onAllNodes(hasText("only this file", substring = true) and hasAnyAncestor(hasTestTag("card-value:reason"))).fetchSemanticsNodes().isNotEmpty())
+        assertTrue("the real label is the app's", compose.onAllNodes(hasText(CARD_FIELD_LABELS.getValue("reason"))).fetchSemanticsNodes().isNotEmpty())
+    }
+
+    /** Values that would fill several screens are cut with "Show all", scroll inside the card, and leave the buttons on screen. */
+    @Test fun theButtonsStayOnScreenWhateverTheValuesHold() {
+        val tall = (1..300).joinToString("\n") { "line $it" }
+        val c = card(mapOf("title" to SealedValue.Text("T"), "reason" to SealedValue.Text(tall), "detail" to SealedValue.Code(tall), "paths" to SealedValue.ListOf((1..50).map { "/f$it" })))
+        compose.setContent { MossTheme(false) { Box(Modifier.height(800.dp)) { CardView(c, busy = false, note = null, onAnswer = {}, onSettle = {}) } } }
+        compose.onNodeWithContentDescription("Yes").assertIsDisplayed()
+        compose.onNodeWithContentDescription("No").assertIsDisplayed()
+        assertTrue(compose.onAllNodes(hasText("Show all", substring = true)).fetchSemanticsNodes().isNotEmpty())
+        assertTrue("line 7 is cut", compose.onAllNodes(hasText("line 7", substring = true)).fetchSemanticsNodes().isEmpty())
     }
 }

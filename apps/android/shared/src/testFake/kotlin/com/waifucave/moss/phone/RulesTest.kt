@@ -8,6 +8,7 @@ import com.waifucave.moss.phone.ui.ComposerRules
 import com.waifucave.moss.phone.ui.Sealed
 import com.waifucave.moss.phone.ui.TimeText
 import com.waifucave.moss.phone.vm.BotsListModel
+import com.waifucave.moss.phone.vm.ARM_MS
 import com.waifucave.moss.phone.vm.CardsModel
 import com.waifucave.moss.phone.vm.MemoryPinStore
 import kotlinx.coroutines.test.runTest
@@ -16,6 +17,9 @@ import org.junit.Test
 import java.time.ZoneOffset
 import java.util.Locale
 import kotlin.random.Random
+
+/** A clock a second further on at every read: a card's wait (CardsModel.ARM_MS) is always over by the next look. */
+fun steppingClock(): () -> Long { var t = 0L; return { t += 1_000; t } }
 
 class RulesTest {
     @Test fun composerPrimarySlot() {
@@ -109,7 +113,7 @@ class RulesTest {
             val rnd = Random(seed)
             val c = FakeEngineClient()
             c.setOtherAppInstalled(false)
-            val m = CardsModel(c, PhoneApp.moss) { SampleData.now }
+            val m = CardsModel(c, PhoneApp.moss, { SampleData.now }, steppingClock())
             m.load()
             repeat(40) {
                 val card = SampleData.cards[rnd.nextInt(SampleData.cards.size)]
@@ -130,7 +134,7 @@ class RulesTest {
     @Test fun aNewCardGoesLastAndAChangedOneIsReplacedInPlace() = runTest {
         val c = FakeEngineClient()
         c.setOtherAppInstalled(false)
-        val m = CardsModel(c, PhoneApp.moss) { SampleData.now }
+        val m = CardsModel(c, PhoneApp.moss, { SampleData.now }, steppingClock())
         m.load()
         val first = m.cards.map { it.id }
         val fresh = SampleData.cards[0].copy(id = "card_ffff0000", issuedAt = SampleData.now + 1, hash = "f".repeat(64))
@@ -144,5 +148,33 @@ class RulesTest {
         // The same content again changes nothing.
         m.apply(EngineEvent.CardRequested(changed))
         assertEquals(1, m.cards.count { it.id == fresh.id })
+    }
+
+    /**
+     * The wait is the model's: after card A is answered and leaves, the card that moved up into its place takes no press
+     * for a moment (a second, impatient tap is refused, never sent), and then does.
+     */
+    @Test fun aCardThatMovedUpWaitsBeforeItTakesAPress() = runTest {
+        val c = FakeEngineClient()
+        c.setOtherAppInstalled(false)
+        var t = 0L
+        val m = CardsModel(c, PhoneApp.moss, { SampleData.now }, { t })
+        m.load()
+        t += 10_000
+        val waiting = m.cards.filter { m.note(it) == null }
+        assertTrue("two cards to work with", waiting.size >= 2)
+        val a = waiting[0]
+        val b = m.cards[m.cards.indexOf(a) + 1]
+        assertEquals(0L, m.waitLeft(a))
+        m.answer(a, a.options.first())
+        assertFalse(m.cards.any { it.id == a.id })
+        assertTrue("b moved up and waits", m.waitLeft(b) > 0)
+        m.answer(b, b.options.first())
+        assertTrue("the impatient tap was refused", m.cards.any { it.id == b.id })
+        assertNull(m.notes[b.id])
+        t += ARM_MS
+        assertEquals(0L, m.waitLeft(b))
+        m.answer(b, b.options.first())
+        assertFalse("now it is answered", m.cards.any { it.id == b.id })
     }
 }

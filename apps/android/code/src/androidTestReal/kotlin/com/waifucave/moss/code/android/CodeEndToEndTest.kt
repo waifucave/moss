@@ -107,6 +107,7 @@ class CodeEndToEndTest {
             val cardId = Runner.json("/card?session=$sessionId").getString("cardId")
             eventually("the card shown") { cards.cards.any { it.id == cardId } }
             val card = cards.cards.first { it.id == cardId }
+            eventually("past the new card's wait") { cards.waitLeft(card) == 0L }
             cards.answer(card, card.options.first { it.kind == CardOption.Kind.approve })
             assertNull("no note: ${cards.notes[cardId]}", cards.notes[cardId])
             val decision = Runner.json("/decision?card=$cardId").getJSONObject("decision")

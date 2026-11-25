@@ -156,6 +156,7 @@ class MossEndToEndTest {
             val cardId = Runner.json("/card?bot=$botId").getString("cardId")
             eventually("the card shown") { cards.cards.any { it.id == cardId } }
             val card = cards.cards.first { it.id == cardId }
+            eventually("past the new card's wait") { cards.waitLeft(card) == 0L }
             cards.answer(card, card.options.first { it.kind == CardOption.Kind.approve })
             assertNull("no note: ${cards.notes[cardId]}", cards.notes[cardId])
             assertFalse(cards.cards.any { it.id == cardId })
@@ -206,6 +207,7 @@ class MossEndToEndTest {
             val allow = drawn.options.first { it.kind == CardOption.Kind.approve && !it.rememberAlways }
             compose.waitUntil(60_000) { compose.onAllNodes(hasContentDescription(allow.label)).fetchSemanticsNodes().isNotEmpty() }
             // Past the moment a card new to the screen takes no press (the test rule's clock drives the screen's effects).
+            delay(1_000) // the screen's model times its wait on the real clock
             compose.mainClock.advanceTimeBy(1_500)
             compose.waitForIdle()
             // The button's own click (its semantics action): the card can sit under the floating composer, where a tap at

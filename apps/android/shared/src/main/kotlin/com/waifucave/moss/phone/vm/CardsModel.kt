@@ -14,10 +14,37 @@ enum class CardNote(val text: String) {
     failed("That didn't work. The card is still waiting."),
 }
 
+/** How long a card that came, changed or moved waits before it takes a press. */
+const val ARM_MS = 600L
+
 /** The cards waiting for the person. Which of them this app shows is the client's answer (`shows(card, app)`). */
-class CardsModel(private val client: EngineClient, private val app: PhoneApp, private val now: () -> Long = { System.currentTimeMillis() }) {
+class CardsModel(
+    private val client: EngineClient, private val app: PhoneApp, private val now: () -> Long = { System.currentTimeMillis() },
+    /** A monotonic clock for the wait below (milliseconds); tests pass their own. */
+    private val tick: () -> Long = { System.nanoTime() / 1_000_000 },
+) {
+    /** The cards in arrival order. Every change goes through [show], which arms the cards that moved. */
     var cards by mutableStateOf<List<Card>>(emptyList())
         private set
+
+    /**
+     * When each card starts taking a press ([tick] time). A card that is new on the screen, whose content changed, or that
+     * moved because a card above it came or went waits [ARM_MS] first: a tap meant for what was under the finger never
+     * answers it. A press inside the wait is refused here ([answer]), whatever the screen drew.
+     */
+    var armedAt by mutableStateOf<Map<String, Long>>(emptyMap())
+        private set
+
+    /** Milliseconds until `card` takes a press (0: it does now). */
+    fun waitLeft(card: Card): Long = maxOf(0L, (armedAt[card.id] ?: 0L) - tick())
+
+    private fun show(next: List<Card>, rearm: Set<String> = emptySet()) {
+        val before = cards.mapIndexed { i, c -> c.id to i }.toMap()
+        val at = tick() + ARM_MS
+        val moved = next.withIndex().filter { (i, c) -> before[c.id] != i || c.id in rearm }.map { it.value.id }
+        armedAt = armedAt.filterKeys { id -> next.any { it.id == id } } + moved.associateWith { at }
+        cards = next
+    }
     var answering by mutableStateOf<Set<String>>(emptySet())
         private set
     var notes by mutableStateOf<Map<String, CardNote>>(emptyMap())
@@ -46,7 +73,8 @@ class CardsModel(private val client: EngineClient, private val app: PhoneApp, pr
     suspend fun load() {
         try {
             val all = client.cards()
-            cards = all.filter { client.shows(it, app) }
+            val next = all.filter { client.shows(it, app) }
+            show(next, rearm = next.filter { n -> cards.any { it.id == n.id && it.hash != n.hash } }.map { it.id }.toSet())
             loadFailed = false
         } catch (e: CancellationException) { throw e } catch (e: Exception) { loadFailed = true }
         loaded = true
@@ -60,18 +88,18 @@ class CardsModel(private val client: EngineClient, private val app: PhoneApp, pr
                 val old = cards.firstOrNull { it.id == event.card.id }
                 when {
                     // New: at the end, so nothing the person is looking at moves.
-                    old == null -> cards = cards + event.card
+                    old == null -> show(cards + event.card)
                     // The same card with other content: replaced where it stands, said so, and its buttons wait a moment
                     // (the card's view holds them back while it is new to the screen); an answer to the old one is refused.
                     old.hash != event.card.hash -> {
-                        cards = cards.map { if (it.id == event.card.id) event.card else it }
+                        show(cards.map { if (it.id == event.card.id) event.card else it }, rearm = setOf(event.card.id))
                         notes = notes - event.card.id
                         changed = changed + event.card.id
                     }
                 }
             }
             is EngineEvent.CardResolved -> {
-                if (event.id in answeredHere) cards = cards.filter { it.id != event.id }
+                if (event.id in answeredHere) show(cards.filter { it.id != event.id })
                 else if (cards.any { it.id == event.id }) notes = notes + (event.id to CardNote.answeredElsewhere)
             }
             else -> {}
@@ -80,11 +108,13 @@ class CardsModel(private val client: EngineClient, private val app: PhoneApp, pr
 
     suspend fun answer(card: Card, option: CardOption) {
         if (card.id in answering || note(card) != null) return
+        // Inside the wait: refused, whatever the screen drew (a second tap after the card above it went).
+        if (waitLeft(card) > 0) return
         answering = answering + card.id
         try {
             answeredHere.add(card.id)
             client.answer(card, option)
-            cards = cards.filter { it.id != card.id }
+            show(cards.filter { it.id != card.id })
             notes = notes - card.id
         } catch (e: CardAnswerException) {
             answeredHere.remove(card.id)
@@ -101,7 +131,7 @@ class CardsModel(private val client: EngineClient, private val app: PhoneApp, pr
 
     /** Takes a settled card off the screen. */
     fun dismiss(card: Card) {
-        cards = cards.filter { it.id != card.id }
+        show(cards.filter { it.id != card.id })
         notes = notes - card.id
     }
     /** Lets a failed answer be tried again. */

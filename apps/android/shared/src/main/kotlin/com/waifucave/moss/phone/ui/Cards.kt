@@ -13,6 +13,10 @@ import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.TimerOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.platform.testTag
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -27,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import com.waifucave.moss.phone.model.Card
 import com.waifucave.moss.phone.model.CardOption
 import com.waifucave.moss.phone.model.SealedValue
+import com.waifucave.moss.phone.vm.ARM_MS
 import com.waifucave.moss.phone.vm.CardNote
 import com.waifucave.moss.phone.vm.CardsModel
 import kotlinx.coroutines.delay
@@ -56,6 +61,16 @@ object Sealed {
         val v = visible(s)
         return if (v.length <= limit) Cut(v, 0) else Cut(v.take(limit), v.length - limit)
     }
+
+    data class LineCut(val shown: String, val hiddenLines: Int, val hiddenChars: Int)
+    /** At most `lines` lines and `limit` characters (escaped), and how much was left out of each. */
+    fun cutLines(s: String, limit: Int, lines: Int): LineCut {
+        val v = visible(s)
+        val all = v.split('\n')
+        val byLines = if (all.size > lines) all.take(lines).joinToString("\n") else v
+        val shown = byLines.take(limit)
+        return LineCut(shown, maxOf(0, all.size - lines), maxOf(0, v.length - shown.length))
+    }
 }
 
 /**
@@ -72,8 +87,9 @@ val CARD_FIELD_LABELS = mapOf(
     "source" to "From", "host" to "Site", "paths" to "Files", "detail" to "Everything it sends", "expires" to "Expires", "rule" to "What \"Always allow\" covers",
 )
 
-/** How long a card new to the screen holds its buttons back. */
-const val ARM_MS = 600L
+/** How many lines of a value show before "Show all", and the most the values take before they scroll inside the card. */
+const val VALUE_LINES = 6
+val FIELDS_MAX = 360.dp
 
 /** Whether this build can draw all of a card: every field one it knows, every value of a kind it draws. */
 fun Card.drawable(): Boolean = fields.all { (name, v) -> name in CARD_FIELDS && v !is SealedValue.Unsupported }
@@ -86,7 +102,13 @@ private fun Card.footerComputer(): SealedValue.Text? = fields["computer"] as? Se
 
 /** A pending card: small, never raw JSON. Its title, what it asks, the command or paths it covers, and its sealed buttons. */
 @Composable
-fun CardView(card: Card, busy: Boolean, note: CardNote?, onAnswer: (CardOption) -> Unit, onSettle: () -> Unit, modifier: Modifier = Modifier, changed: Boolean = false) {
+fun CardView(
+    card: Card, busy: Boolean, note: CardNote?, onAnswer: (CardOption) -> Unit, onSettle: () -> Unit, modifier: Modifier = Modifier,
+    changed: Boolean = false,
+    /** The model's wait for this card (`CardsModel.waitLeft`) and what keys it (`CardsModel.armedAt`): the model refuses a
+     *  press inside it; the buttons show it. */
+    wait: Long = 0L, waitKey: Any? = null,
+) {
     val c = MossTheme.colors
     val now = nowMs()
     val large = largeText()
@@ -94,7 +116,13 @@ fun CardView(card: Card, busy: Boolean, note: CardNote?, onAnswer: (CardOption) 
     // A card new to the screen, or whose content just changed, takes no press for a moment: a tap meant for what was
     // there before never answers it.
     var armed by remember(card.id, card.hash) { mutableStateOf(false) }
-    LaunchedEffect(card.id, card.hash) { delay(ARM_MS); armed = true }
+    var drawnBefore by remember(card.id, card.hash) { mutableStateOf(false) }
+    LaunchedEffect(card.id, card.hash, waitKey) {
+        armed = false
+        delay(maxOf(wait, if (drawnBefore) 0L else ARM_MS))
+        drawnBefore = true
+        armed = true
+    }
     Column(
         modifier.fillMaxWidth().cardSurface(c).padding(14.dp).alpha(if (note == null || note == CardNote.failed) 1f else 0.75f),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -103,37 +131,46 @@ fun CardView(card: Card, busy: Boolean, note: CardNote?, onAnswer: (CardOption) 
             Text(Sealed.visible(if (card.headedBy("title")) card.title else "Needs your answer"), style = MossType.title, color = c.text, modifier = Modifier.semantics { heading() })
             if (card.headedBy("what")) card.what?.let { Text(Sealed.visible(it), style = MossType.line, color = c.secondary) }
         }
+        // The values in a bounded area of their own: however much they hold, the footer and the buttons stay on screen.
+        Column(
+            Modifier.fillMaxWidth().heightIn(max = FIELDS_MAX).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
         for (name in CARD_FIELDS) {
             val value = card.fields[name] ?: continue
             if (card.headedBy(name) || (name == "computer" && card.footerComputer() != null)) continue
             Labelled(name) {
+                // Each value in a visible box of its own: a line in a value can never read as one of the app's labels.
+                Box(Modifier.fillMaxWidth().background(c.code, RoundedCornerShape(10.dp)).padding(10.dp).testTag("card-value:$name")) {
                 when (value) {
                     is SealedValue.Text -> CutText(value.text, 600, expanded.contains(name), { expanded = expanded + name }, MossType.body)
-                    is SealedValue.Code -> Box(Modifier.fillMaxWidth().background(c.code, RoundedCornerShape(10.dp)).padding(10.dp)) {
-                        CutText(value.code, 800, expanded.contains(name), { expanded = expanded + name }, MossType.footnote.copy(fontFamily = FontFamily.Monospace))
-                    }
+                    is SealedValue.Code -> CutText(value.code, 800, expanded.contains(name), { expanded = expanded + name }, MossType.footnote.copy(fontFamily = FontFamily.Monospace))
                     is SealedValue.ListOf -> Column {
                         val shown = if (expanded.contains(name)) value.items else value.items.take(8)
-                        shown.forEach { Text(Sealed.visible(it), style = MossType.footnote.copy(fontFamily = FontFamily.Monospace), color = c.text) }
+                        shown.forEach { Text(Sealed.cutLines(it, 300, 2).shown, style = MossType.footnote.copy(fontFamily = FontFamily.Monospace), color = c.text) }
                         if (shown.size < value.items.size) TextButton(onClick = { expanded = expanded + name }, contentPadding = PaddingValues(0.dp)) {
                             Text("and ${value.items.size - shown.size} more. Show all", style = MossType.footnote.copy(textDecoration = TextDecoration.Underline), color = c.secondary)
                         }
                     }
                     is SealedValue.Rows -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         value.rows.forEach { r ->
+                            val label = Sealed.cutLines(r.label, 120, 1).shown
+                            val v = Sealed.cutLines(r.value, 300, 3).shown
                             if (large) Column {
-                                Text(Sealed.visible(r.label), style = MossType.body, color = c.secondary)
-                                Text(Sealed.visible(r.value), style = MossType.body, color = c.text)
+                                Text(label, style = MossType.body, color = c.secondary)
+                                Text(v, style = MossType.body, color = c.text)
                             } else Row {
-                                Text(Sealed.visible(r.label), style = MossType.body, color = c.secondary)
+                                Text(label, style = MossType.body, color = c.secondary)
                                 Spacer(Modifier.width(12.dp).weight(1f))
-                                Text(Sealed.visible(r.value), style = MossType.body, color = c.text)
+                                Text(v, style = MossType.body, color = c.text)
                             }
                         }
                     }
                     SealedValue.Unsupported -> Text("Can't be shown on the phone", style = MossType.footnote, color = c.secondary)
                 }
+                }
             }
+        }
         }
         // The footer: which computer, and how long the card has left.
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -196,12 +233,13 @@ private fun Labelled(name: String, content: @Composable () -> Unit) {
 @Composable
 private fun CutText(s: String, limit: Int, open: Boolean, onOpen: () -> Unit, style: androidx.compose.ui.text.TextStyle) {
     val c = MossTheme.colors
-    val cut = Sealed.cut(s, limit)
+    val cut = Sealed.cutLines(s, limit, VALUE_LINES)
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(if (open) Sealed.visible(s) else cut.shown, style = style, color = c.text)
-        if (cut.hiddenCount > 0 && !open) {
+        if ((cut.hiddenLines > 0 || cut.hiddenChars > 0) && !open) {
+            val what = if (cut.hiddenLines > 0) "${cut.hiddenLines} more lines" else "${cut.hiddenChars} more characters"
             TextButton(onClick = onOpen, contentPadding = PaddingValues(0.dp)) {
-                Text("Cut short: ${cut.hiddenCount} more characters. Show all", style = MossType.footnote.copy(textDecoration = TextDecoration.Underline), color = c.secondary)
+                Text("Cut short: $what. Show all", style = MossType.footnote.copy(textDecoration = TextDecoration.Underline), color = c.secondary)
             }
         }
     }
@@ -238,7 +276,7 @@ fun NeedsYouScreen(model: CardsModel, who: (Card) -> String, onBack: () -> Unit)
                             CardView(card, card.id in model.answering, model.note(card),
                                 onAnswer = { o -> scope.launch { model.answer(card, o) } },
                                 onSettle = { if (model.note(card) == CardNote.failed) model.clearFailure(card) else model.dismiss(card) },
-                                changed = card.id in model.changed)
+                                changed = card.id in model.changed, wait = model.waitLeft(card), waitKey = model.armedAt[card.id])
                         }
                     }
                 }

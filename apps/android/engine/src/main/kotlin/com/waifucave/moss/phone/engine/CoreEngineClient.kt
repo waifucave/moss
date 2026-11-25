@@ -319,8 +319,12 @@ class CoreEngineClient(
         if (!ReadBack.looksLikePairingCode(qr)) throw PairingException(PairingError.unreadableCode)
         // Making the core makes this phone's keys and saves them. A first pairing that then fails leaves nothing behind:
         // the store is wiped again, as it was.
-        val wasEmpty = core == null && store.itemCount() == 0
-        val pairing = try { phoneCore().beginPairing(qr, coreApp) } catch (e: CancellationException) {
+        // Whether the store was empty and the core that read it are taken under one hold of the lock.
+        val (wasEmpty, made) = lock.withLock {
+            val empty = core == null && withContext(Dispatchers.IO) { store.itemCount() } == 0
+            empty to coreLocked()
+        }
+        val pairing = try { made.beginPairing(qr, coreApp) } catch (e: CancellationException) {
             if (wasEmpty) forgetIdentity(); throw e
         } catch (e: Exception) {
             if (wasEmpty) forgetIdentity(); throw pairingError(e)
@@ -423,6 +427,9 @@ class CoreEngineClient(
             else -> IllegalStateException("the answer wasn't taken")
         }
     }
+
+    /** Stands for "no stored record": never a model anyone asks for. */
+    private val NO_RECORD = "\u0000no record"
 
     private fun resolvedHere(id: String) {
         synchronized(this) { issued.remove(id) }
@@ -532,7 +539,10 @@ class CoreEngineClient(
         try {
             val before = c.bots().map { it.id }.toSet()
             // A bot may have been made though the answer never came: read the bots back before anyone makes it again.
-            ReadBack.afterUncertain({ Typed.bot(c.createBot(name, model)) }, ::uncertain) { ReadBack.madeBot(before, c.bots().map(Typed::bot), name) { visibleText(it, false) } }
+            ReadBack.afterUncertain({ Typed.bot(c.createBot(name, model)) }, ::uncertain) { run {
+                val stored = calls.botStoredModels()
+                ReadBack.madeBot(before, c.bots().map(Typed::bot), name, model, { visibleText(it, false) }) { b -> if (b.id in stored) stored[b.id] else NO_RECORD }
+            } }
                 .also(::remember)
         } catch (e: CoreException.Rpc) {
             if (e.code == -32601L || e.code == -32010L) throw EngineRefusal("Making a bot from the phone isn't available on this computer yet.")

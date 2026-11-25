@@ -91,21 +91,24 @@ jobs:
         run: |
           set -euo pipefail
           hooks=(FakeEngineClient SampleData FakeLaunch FakeComposer sendFails cardStates tallQuestion botLimit providerConsent midTurn
-                 "Can you also look at the invoice?" "Quarterly report.pdf" "Site backup.zip" "moss-pair:sample")
+                 "Can you also look at the invoice?" "Quarterly report.pdf" "Site backup.zip" "moss-pair:sample"
+                 Marlow Sorrel Tansy Briar Juniper
+                 "Fix the flaky pairing test" "Move the settings page to the new form" "Rebuild the landing page header" "Trim the install script")
           bad=0
-          for apk in moss/build/outputs/apk/real/debug/*.apk code/build/outputs/apk/real/debug/*.apk; do
-            dir=$(mktemp -d); unzip -qq "$apk" -d "$dir"
+          # Every hook is in every fake APK (so the search is known to find each one) and in no real APK.
+          check() { # check <apk> <want: present|absent>
+            local dir; dir=$(mktemp -d); unzip -qq "$1" -d "$dir"
             for h in "${hooks[@]}"; do
-              if grep -rlaF -- "$h" "$dir" >/dev/null; then echo "::error::$apk holds \"$h\""; bad=1; fi
+              if grep -rlaF -- "$h" "$dir" >/dev/null; then found=1; else found=0; fi
+              if [ "$2" = absent ] && [ $found = 1 ]; then echo "::error::$1 holds \"$h\""; bad=1; fi
+              if [ "$2" = present ] && [ $found = 0 ]; then echo "::error::the search found no \"$h\" in $1"; bad=1; fi
             done
             rm -rf "$dir"
-          done
-          # The fake build is searched the same way, so the search is known to find what it looks for.
-          for apk in moss/build/outputs/apk/fake/debug/*.apk; do
-            dir=$(mktemp -d); unzip -qq "$apk" -d "$dir"
-            grep -rlaF -- "moss-pair:sample" "$dir" >/dev/null || { echo "::error::the search found nothing in the fake build"; bad=1; }
-            rm -rf "$dir"
-          done
+          }
+          n=0
+          for apk in moss/build/outputs/apk/fake/debug/*.apk code/build/outputs/apk/fake/debug/*.apk; do check "$apk" present; n=$((n+1)); done
+          for apk in moss/build/outputs/apk/real/debug/*.apk code/build/outputs/apk/real/debug/*.apk; do check "$apk" absent; n=$((n+1)); done
+          [ $n = 4 ] || { echo "::error::expected 4 APKs, searched $n"; bad=1; }
           exit $bad
       - name: Build moss-link
         run: cargo build --release --locked --manifest-path native/link/Cargo.toml

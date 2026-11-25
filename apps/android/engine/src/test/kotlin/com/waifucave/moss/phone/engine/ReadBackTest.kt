@@ -65,17 +65,22 @@ class ReadBackTest {
     @Test
     fun aBotThatWasMadeIsReadBackByItsNewIdAndName() = runTest {
         val made = ReadBack.afterUncertain({ throw Timeout() }, uncertain) {
-            ReadBack.madeBot(setOf("alpha"), listOf(bot("alpha", "Alpha"), bot("hazel", "Hazel")), "Hazel")
+            ReadBack.madeBot(setOf("alpha"), listOf(bot("alpha", "Alpha"), bot("hazel", "Hazel")), "Hazel", null)
         }
         assertEquals("hazel", made.id)
-        assertNull(ReadBack.madeBot(setOf("alpha", "hazel"), listOf(bot("alpha", "Alpha"), bot("hazel", "Hazel")), "Hazel"))
-        assertNull(ReadBack.madeBot(emptySet(), listOf(bot("a", "Hazel"), bot("b", "Hazel")), "Hazel"))
+        assertNull(ReadBack.madeBot(setOf("alpha", "hazel"), listOf(bot("alpha", "Alpha"), bot("hazel", "Hazel")), "Hazel", null))
+        assertNull(ReadBack.madeBot(emptySet(), listOf(bot("a", "Hazel"), bot("b", "Hazel")), "Hazel", null))
         // The name in the core's form: escaped as the core escapes it, and cut when long.
         val escape = { t: String -> t.replace("\u202E", "\\u{202E}") }
-        assertEquals("e", ReadBack.madeBot(emptySet(), listOf(bot("e", "Ha\\u{202E}zel")), "Ha\u202Ezel", escape)?.id)
+        assertEquals("e", ReadBack.madeBot(emptySet(), listOf(bot("e", "Ha\\u{202E}zel")), "Ha\u202Ezel", null, escape)?.id)
         // Exactly the name sent: never a bot whose name only starts it, or one that differs by spaces.
-        assertNull(ReadBack.madeBot(emptySet(), listOf(bot("p", "Hazel")), "Hazel the second"))
-        assertNull(ReadBack.madeBot(emptySet(), listOf(bot("q", "Hazel")), " Hazel "))
+        assertNull(ReadBack.madeBot(emptySet(), listOf(bot("p", "Hazel")), "Hazel the second", null))
+        assertNull(ReadBack.madeBot(emptySet(), listOf(bot("q", "Hazel")), " Hazel ", null))
+        // Another device's bot of that name on another model is not ours; ours has the model asked for.
+        val other = Bot("o", "Hazel", model = "openai/gpt-5", mainSession = "s_o")
+        assertNull(ReadBack.madeBot(emptySet(), listOf(other), "Hazel", "anthropic/claude-sonnet"))
+        assertNull(ReadBack.madeBot(emptySet(), listOf(other), "Hazel", null))
+        assertEquals("m", ReadBack.madeBot(emptySet(), listOf(other, Bot("m", "Hazel", model = "anthropic/claude-sonnet", mainSession = "s_m")), "Hazel", "anthropic/claude-sonnet")?.id)
     }
 
     @Test

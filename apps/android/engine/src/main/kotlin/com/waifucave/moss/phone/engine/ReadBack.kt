@@ -52,11 +52,18 @@ internal object ReadBack {
      * in the form the core hands names back. The engine keeps a name as it was sent (no trim, no cut: an empty one or one
      * over 200 characters is refused, `bots/records.ts`), and the core returns it escaped by the visible-text rule
      * (`clean`, `engine.rs` `text(name, 200)`). Its id is derived from the name and the ids taken, so the phone can't know
-     * it before the answer. Another bot made meanwhile under the same name makes two candidates: none is taken.
+     * it before the answer. Its stored model must be the one asked for too (the record keeps it as sent; none asked, none
+     * kept: `bot.list` would show a default instead, so the record's is read).
+     * The engine records no device for a bot a phone made (`madeBy: {kind: "user"}`), so a bot another device made in the
+     * same moment with the same name and model can't be told from ours; two such make two candidates: none is taken.
      */
-    fun madeBot(before: Set<String>, now: List<Bot>, name: String, clean: (String) -> String = { it }): Bot? {
+    fun madeBot(
+        before: Set<String>, now: List<Bot>, name: String, model: String?, clean: (String) -> String = { it },
+        /** The model the bot's stored record holds (`bot.records`); `bot.list` shows the effective one, a default when none was asked. */
+        storedModel: (Bot) -> String? = { it.model },
+    ): Bot? {
         val sent = clean(name)
-        return now.filter { it.id !in before && it.name == sent }.singleOrNull()
+        return now.filter { it.id !in before && it.name == sent && storedModel(it) == model }.singleOrNull()
     }
 
     /**

@@ -18,7 +18,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.layout.SubcomposeLayout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -65,7 +67,6 @@ fun ConversationScreen(model: ConversationModel, cards: CardsModel, onBack: () -
     val now = nowMs()
     val scope = rememberCoroutineScope()
     var pickerOpen by remember { mutableStateOf(preset.picker) }
-    var composerHeight by remember { mutableIntStateOf(0) }
     val density = LocalDensity.current
     LaunchedEffect(model) { model.run() }
     LaunchedEffect(preset.draft) { preset.draft?.let { model.draft = it } }
@@ -99,71 +100,83 @@ fun ConversationScreen(model: ConversationModel, cards: CardsModel, onBack: () -
 
     Column(Modifier.fillMaxSize().background(c.background).systemBarsPadding()) {
         ConversationHeader(model, onBack)
-        Box(Modifier.weight(1f).fillMaxWidth()) {
-            val bottomPad = with(density) { composerHeight.toDp() } + 8.dp
-            LazyColumn(
-                state = list, modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = bottomPad),
-                verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.Bottom),
-            ) {
-                if (model.hasEarlier) item("earlier") {
-                    TextButton(onClick = { scope.launch { model.loadEarlier() } }, modifier = Modifier.fillMaxWidth()) {
-                        Text("Show earlier messages", style = MossType.footnote, color = c.text)
+        // The composer is measured first and its height handed to the list, the fade and the picker in the same pass
+        // (no size written to state during layout and read back by a sibling).
+        ComposerOverlay(
+            Modifier.weight(1f).fillMaxWidth(),
+            body = { composerH ->
+                Box(Modifier.fillMaxSize()) {
+                LazyColumn(
+                    state = list, modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = composerH + 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.Bottom),
+                ) {
+                    if (model.hasEarlier) item("earlier") {
+                        TextButton(onClick = { scope.launch { model.loadEarlier() } }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Show earlier messages", style = MossType.footnote, color = c.text)
+                        }
                     }
-                }
-                if (model.messages.isEmpty() && model.errorText == null) item("empty") {
-                    Text(
-                        if (model.source is ConversationModel.Source.OfBot) "This is the start of your conversation with ${model.title}." else "Nothing has been said in this session yet.",
-                        style = MossType.footnote, color = c.secondary, modifier = Modifier.fillMaxWidth().padding(top = 40.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                    )
-                }
-                items(rows, key = {
-                    when (it) { is Item.Divider -> it.key; is Item.Msg -> "m-" + it.m.id; is Item.CardItem -> "c-" + it.card.id; Item.Status -> "status" }
-                }) { item ->
-                    when (item) {
-                        is Item.Divider -> Text(item.text, style = MossType.footnote, color = c.secondary,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).semantics { heading() })
-                        is Item.Msg -> MessageRow(item.m, speaker, Modifier.padding(top = if (item.gapAbove) 6.dp else 0.dp))
-                        is Item.CardItem -> CardView(item.card, item.card.id in cards.answering, cards.note(item.card),
-                            onAnswer = { o -> scope.launch { cards.answer(item.card, o) } },
-                            onSettle = { if (cards.note(item.card) == CardNote.failed) cards.clearFailure(item.card) else cards.dismiss(item.card) },
-                            changed = item.card.id in cards.changed,
-                            modifier = Modifier.padding(top = 6.dp))
-                        Item.Status -> StatusLine(model.statusLine ?: "", Modifier.padding(start = 4.dp, top = 2.dp))
+                    if (model.messages.isEmpty() && model.errorText == null) item("empty") {
+                        Text(
+                            if (model.source is ConversationModel.Source.OfBot) "This is the start of your conversation with ${model.title}." else "Nothing has been said in this session yet.",
+                            style = MossType.footnote, color = c.secondary, modifier = Modifier.fillMaxWidth().padding(top = 40.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        )
                     }
-                }
-            }
-            // What sits under the composer fades into the canvas, so the floating pill reads on any message.
-            Box(
-                Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(with(density) { composerHeight.toDp() } + 12.dp)
-                    .background(Brush.verticalGradient(listOf(c.background.copy(alpha = 0f), c.background.copy(alpha = 0.92f), c.background)))
-            )
-            if (pickerOpen) {
-                Box(Modifier.fillMaxSize().clickable(MutableInteractionSource(), null) { pickerOpen = false }.clearAndSetSemantics {})
-            }
-            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().imePadding().onSizeChanged { composerHeight = it.height }) {
-                model.errorText?.let { e ->
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Outlined.ErrorOutline, null, tint = c.secondary, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(e, style = MossType.footnote, color = c.secondary, modifier = Modifier.weight(1f))
-                        if (model.failedSend != null) {
-                            FilledTonalButton(onClick = { scope.launch { model.retry() } }, contentPadding = PaddingValues(horizontal = 14.dp)) {
-                                Text("Retry", style = MossType.footnote, fontWeight = FontWeight.SemiBold)
-                            }
+                    items(rows, key = {
+                        when (it) { is Item.Divider -> it.key; is Item.Msg -> "m-" + it.m.id; is Item.CardItem -> "c-" + it.card.id; Item.Status -> "status" }
+                    }) { item ->
+                        when (item) {
+                            is Item.Divider -> Text(item.text, style = MossType.footnote, color = c.secondary,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).semantics { heading() })
+                            is Item.Msg -> MessageRow(item.m, speaker, Modifier.padding(top = if (item.gapAbove) 6.dp else 0.dp))
+                            is Item.CardItem -> CardView(item.card, item.card.id in cards.answering, cards.note(item.card),
+                                onAnswer = { o -> scope.launch { cards.answer(item.card, o) } },
+                                onSettle = { if (cards.note(item.card) == CardNote.failed) cards.clearFailure(item.card) else cards.dismiss(item.card) },
+                                changed = item.card.id in cards.changed, wait = cards.waitLeft(item.card), waitKey = cards.armedAt[item.card.id],
+                                modifier = Modifier.padding(top = 6.dp))
+                            Item.Status -> StatusLine(model.statusLine ?: "", Modifier.padding(start = 4.dp, top = 2.dp))
                         }
                     }
                 }
-                val q = model.question
-                if (q != null) QuestionComposer(q) { answers -> model.answerQuestion(answers) }
-                else Composer(model, preset, pickerOpen, onPicker = { pickerOpen = it })
-            }
-            if (pickerOpen && model.question == null) {
-                ComposerPicker(model, onClose = { pickerOpen = false },
-                    modifier = Modifier.align(Alignment.BottomStart).padding(start = 16.dp, end = 16.dp, bottom = with(density) { composerHeight.toDp() } + 4.dp))
-            }
-        }
+                    // What sits under the composer fades into the canvas, so the floating pill reads on any message.
+                    Box(
+                        Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(composerH + 12.dp)
+                            .background(Brush.verticalGradient(listOf(c.background.copy(alpha = 0f), c.background.copy(alpha = 0.92f), c.background)))
+                    )
+                    if (pickerOpen) {
+                        Box(Modifier.fillMaxSize().clickable(MutableInteractionSource(), null) { pickerOpen = false }.clearAndSetSemantics {})
+                    }
+                }
+            },
+            composer = {
+                Column(Modifier.fillMaxWidth().imePadding()) {
+                    model.errorText?.let { e ->
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Outlined.ErrorOutline, null, tint = c.secondary, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(e, style = MossType.footnote, color = c.secondary, modifier = Modifier.weight(1f))
+                            if (model.failedSend != null) {
+                                FilledTonalButton(onClick = { scope.launch { model.retry() } }, contentPadding = PaddingValues(horizontal = 14.dp)) {
+                                    Text("Retry", style = MossType.footnote, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                        }
+                    }
+                    val q = model.question
+                    if (q != null) QuestionComposer(q) { answers -> model.answerQuestion(answers) }
+                    else Composer(model, preset, pickerOpen, onPicker = { pickerOpen = it })
+                }
+            },
+            overlay = { composerH ->
+                if (pickerOpen && model.question == null) {
+                    Box(Modifier.fillMaxSize()) {
+                        ComposerPicker(model, onClose = { pickerOpen = false },
+                            modifier = Modifier.align(Alignment.BottomStart).padding(start = 16.dp, end = 16.dp, bottom = composerH + 4.dp))
+                    }
+                }
+            },
+        )
     }
 }
 
@@ -261,5 +274,34 @@ private fun FileCard(file: ChatFile) {
         }
         Spacer(Modifier.width(20.dp))
         Icon(Icons.Outlined.ArrowCircleDown, null, tint = c.secondary, modifier = Modifier.size(24.dp))
+    }
+}
+
+/**
+ * The conversation's area: the composer measured first at the bottom, then the body under it and the overlay over it,
+ * each given the composer's height in the same layout pass, as a scaffold does with its bars.
+ */
+@Composable
+private fun ComposerOverlay(
+    modifier: Modifier,
+    body: @Composable (composerHeight: Dp) -> Unit,
+    composer: @Composable () -> Unit,
+    overlay: @Composable (composerHeight: Dp) -> Unit,
+) {
+    SubcomposeLayout(modifier) { constraints ->
+        val width = constraints.maxWidth
+        val height = constraints.maxHeight
+        val loose = Constraints(minWidth = width, maxWidth = width, minHeight = 0, maxHeight = height)
+        val bar = subcompose("composer", composer).map { it.measure(loose) }
+        val barHeight = bar.maxOfOrNull { it.height } ?: 0
+        val barDp = barHeight.toDp()
+        val full = Constraints(minWidth = width, maxWidth = width, minHeight = height, maxHeight = height)
+        val under = subcompose("body") { body(barDp) }.map { it.measure(full) }
+        val over = subcompose("overlay") { overlay(barDp) }.map { it.measure(full) }
+        layout(width, height) {
+            under.forEach { it.place(0, 0) }
+            bar.forEach { it.place(0, height - it.height) }
+            over.forEach { it.place(0, 0) }
+        }
     }
 }
