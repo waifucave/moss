@@ -100,6 +100,8 @@ final class CardGateUITests: XCTestCase {
         XCTAssertTrue(allow.waitForExistence(timeout: 10))
         sleep(2)
         let title = app.staticTexts["Run this command?"]
+        let bar = app.navigationBars.firstMatch
+        print("IW tall at start: title \(title.exists ? "\(title.frame)" : "absent") bar \(bar.frame) allow \(allow.isEnabled)")
         XCTAssertFalse(allow.isEnabled, "opened at its bottom, the heading out of sight: Allow waits")
         if !(title.exists && title.isHittable) {
             XCTAssertFalse(allow.isEnabled, "the heading hasn't been on screen: Allow waits")
@@ -107,7 +109,6 @@ final class CardGateUITests: XCTestCase {
         }
         // Down towards the heading in short steps that don't coast, so it passes through the bar: while any of it is
         // under the bar Allow still waits, and it answers only once the heading is wholly below the bar.
-        let bar = app.navigationBars.firstMatch
         var underBarSeen = false
         for _ in 0..<80 {
             if title.exists {

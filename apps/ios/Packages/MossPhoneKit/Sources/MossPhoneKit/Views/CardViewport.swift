@@ -44,19 +44,36 @@ extension View {
 private struct SeenInViewport: ViewModifier {
     let seen: () -> Void
     @Environment(\.cardViewport) private var viewport
+    @State private var frame: CGRect = .zero
+    /// The viewport as last delivered, kept in state so the dwell's later look reads the current one, not a copy.
+    @State private var shown: CGRect = .zero
+    @State private var dwell: Task<Void, Never>?
+    /// How long a part must stay inside the visible part to count: a layout pass (the scroll view placed at its top for a
+    /// moment before it moves to where it opens) is not the person seeing it.
+    static let dwellTime: Duration = .milliseconds(300)
     func body(content: Content) -> some View {
         content.background {
             GeometryReader { g in
                 let f = g.frame(in: .named(cardContentSpace))
                 Color.clear
-                    .onAppear { check(f, viewport) }
-                    .onChange(of: f) { _, new in check(new, viewport) }
-                    .onChange(of: viewport) { _, new in check(f, new) }
+                    .onAppear { frame = f; shown = viewport; check() }
+                    .onChange(of: f) { _, new in frame = new; check() }
+                    .onChange(of: viewport) { _, new in shown = new; check() }
             }
         }
+        .onDisappear { dwell?.cancel(); dwell = nil }
     }
-    private func check(_ frame: CGRect, _ viewport: CGRect) {
-        guard viewport.height > 1, frame.height > 0 else { return }
-        if viewport.insetBy(dx: -1, dy: -1).contains(frame) { seen() }
+    private var inside: Bool {
+        shown.height > 1 && frame.height > 0 && shown.insetBy(dx: -1, dy: -1).contains(frame)
+    }
+    private func check() {
+        guard inside else { dwell?.cancel(); dwell = nil; return }
+        guard dwell == nil else { return }
+        dwell = Task { @MainActor in
+            try? await Task.sleep(for: Self.dwellTime)
+            guard !Task.isCancelled else { return }
+            dwell = nil
+            if inside { seen() }
+        }
     }
 }
