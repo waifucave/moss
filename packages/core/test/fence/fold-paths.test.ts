@@ -5,7 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import { pathKey, pathWithin } from "../../src/fence/fold";
 import { rootCovered } from "../../src/fence/sandbox-settings";
-import { homeReach, opaqueWindowsPath, reachesInside, uncPath, windowsPathRefused } from "../../src/agents/memory";
+import { grantedForms, homeReach, opaqueWindowsPath, reachesInside, uncPath, windowsPathRefused } from "../../src/agents/memory";
 import { runLaterByName } from "../../src/fence/sandbox-settings";
 import { diskSpelling } from "../../src/fence/canonical";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
@@ -191,5 +191,31 @@ describe("run-later places by name, in the disk's own spelling too (lane WS8: a 
       expect(runLaterByName(join(d, ".moss", "plugins", "p", "x.ts"), { userHome: "C:\\Users\\nobody", mossHome: join(longD, ".moss"), os: "windows" })).toBe(false);
       expect(runLaterByName(join(longD, "proj", ".moss", "x"), { userHome: "C:\\Users\\nobody", mossHome: join(longD, ".moss"), os: "windows" })).toBe(true);
     } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+});
+
+describe("a project on a mapped drive (lane WS9, the reviewer's should-fix): its granted root is judged as it resolves too", () => {
+  // `Z:` mapped to `\\\\nas\\share`: Windows resolves every path under it to the share.
+  const real = (p: string) => p.replace(/^Z:/i, "\\\\nas\\share");
+  test("its files, which resolve to the share, are inside the root granted by its letter", () => {
+    const forms = grantedForms(["Z:\\proj"], "Z:\\proj", real);
+    expect(forms).toEqual(["Z:\\proj", "\\\\nas\\share\\proj"]);
+    for (const p of ["\\\\nas\\share\\proj\\src\\a.ts", "//NAS/share/PROJ/b", "\\\\?\\UNC\\nas\\share\\proj\\c"]) {
+      expect([p, windowsPathRefused(p, forms, "windows")]).toEqual([p, false]);
+    }
+  });
+  test("the share outside the project, and this computer's own shares, stay refused", () => {
+    const forms = () => grantedForms(["Z:\\proj"], "Z:\\proj", real);
+    for (const p of ["\\\\nas\\share\\other\\x", "\\\\nas\\share", "\\\\localhost\\C$\\Users\\u\\.ssh\\id", "\\\\nas\\share\\proj2\\x"]) {
+      expect([p, windowsPathRefused(p, forms, "windows")]).toEqual([p, true]);
+    }
+  });
+  test("the roots are resolved only when a share is asked about", () => {
+    let resolved = 0;
+    const forms = () => { resolved++; return grantedForms(["Z:\\proj"], "Z:\\proj", real); };
+    expect(windowsPathRefused("C:\\Users\\u\\x", forms, "windows")).toBe(false);
+    expect(resolved).toBe(0);
+    windowsPathRefused("\\\\nas\\share\\proj\\x", forms, "windows");
+    expect(resolved).toBe(1);
   });
 });

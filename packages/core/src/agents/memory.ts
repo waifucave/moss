@@ -78,12 +78,15 @@ export function realPathOf(path: string, cwd: string): string {
 export function homeReach(home: string, path: string, cwd: string, os?: Os, granted: readonly string[] = [cwd]): "inside" | "holds" | undefined {
   // The home as it really is too (a short name or a link to it given as the home).
   const realHome = realPathOf(home, cwd);
-  if (windowsPathRefused(path.trim(), granted, os)) return "inside"; // as written, before any resolving
+  // The granted roots as written and as they resolve (a mapped drive's `Z:\proj` is `\\server\share\proj`), only
+  // when a share is asked about.
+  const roots = () => grantedForms(granted, cwd);
+  if (windowsPathRefused(path.trim(), roots, os)) return "inside"; // as written, before any resolving
   let holds = false;
   for (const p of new Set([isAbsolute(path) ? path : resolve(cwd, path), realPathOf(path, cwd)])) {
     // A path no comparison can place (a device path, a share: `windowsPathRefused`), as written or as it resolves (a
     // link to a share): it reaches every deny. Refused.
-    if (windowsPathRefused(p, granted, os)) return "inside";
+    if (windowsPathRefused(p, roots, os)) return "inside";
     for (const h of new Set([home, realHome])) {
       if (reachesInside(p, h, os)) return "inside";
       if (reachesInside(h, p, os)) holds = true;
@@ -116,10 +119,18 @@ export function uncPath(path: string, os?: Os): boolean {
  *  (`\\localhost\C$\…`, `\\127.0.0.1\…`, `\\<its name>\<a share of the user's home>`), which Windows opens as
  *  `\\?\UNC\…`, never `C:\…`, so no deny on `C:\Users\…` would match it; this computer's names are never listed,
  *  every share is refused. False everywhere but Windows. */
-export function windowsPathRefused(path: string, granted: readonly string[], os?: Os): boolean {
+export function windowsPathRefused(path: string, granted: readonly string[] | (() => readonly string[]), os?: Os): boolean {
   if (opaqueWindowsPath(path, os)) return true;
   if (!uncPath(path, os)) return false;
-  return !granted.some((g) => uncPath(g, os) && pathWithin(path, g, "windows"));
+  const roots = typeof granted === "function" ? granted() : granted;
+  return !roots.some((g) => uncPath(g, os) && pathWithin(path, g, "windows"));
+}
+
+/** Granted roots as written and as each resolves (`realPathOf`; lane WS9, the reviewer's should-fix): a project on a
+ *  mapped drive (`Z:\proj`, `Z:` a share) is opened as `\\server\share\proj\…`, so its file tools' paths resolve to
+ *  the share while the root was granted by its letter; judged against the root's resolved form too, they are inside it. */
+export function grantedForms(granted: readonly string[], cwd: string, real: (path: string, cwd: string) => string = realPathOf): string[] {
+  return [...new Set([...granted, ...granted.map((g) => real(g, cwd))])];
 }
 
 /** Whether `path` is in the Win32 device namespace in a form other than a drive (`\\?\C:\`) or a share

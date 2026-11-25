@@ -6,7 +6,7 @@
 import { isAbsolute, join, resolve } from "node:path";
 import type { Os } from "@waifucave/moss-protocol";
 import { BOT_READ_DENIED, type FenceOp, type FenceVerdict } from "../../contracts/fence";
-import { homeReach, realPathOf, uncPath, windowsPathRefused } from "../../agents/memory";
+import { grantedForms, homeReach, realPathOf, uncPath, windowsPathRefused } from "../../agents/memory";
 import { SECRET_FILE_SEGMENTS } from "../../secrets/secret-files";
 import { CONFIG_COPY_FILES } from "./home-deny";
 import { RESUME_STAGING_PREFIX } from "../host/vendor-paths";
@@ -84,7 +84,10 @@ export interface FileFence {
 function windowsRefused(path: string, fence: FileFence, cwd: string, real?: string): boolean {
   const os = fence.os ?? hostOs();
   if (os !== "windows") return false;
-  const granted = [cwd, ...(fence.roots?.() ?? [])];
+  // The granted roots as written and as they resolve (a mapped drive's letter is its share), worked out only when a share
+  // is asked about, and once.
+  let forms: string[] | undefined;
+  const granted = () => (forms ??= grantedForms([cwd, ...(fence.roots?.() ?? [])], cwd));
   return windowsPathRefused(path, granted, os) || windowsPathRefused(real ?? realPathOf(path, cwd), granted, os);
 }
 
