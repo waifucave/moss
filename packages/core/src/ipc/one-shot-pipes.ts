@@ -5,8 +5,8 @@
 // the connection opens exactly one end is connected and it is this socket's own; two or more mean a second connection raced in, and then none is
 // named. The client's pid is read from that end (`GetNamedPipeClientProcessId`), and the connection is judged as that process from there on.
 import { randomBytes } from "node:crypto";
-import { connectedEndsOfPipe } from "../platform/caller-probe";
-import { lockPipeDacl } from "../platform/win-pipe";
+import { pipeEndsOf } from "../platform/caller-probe";
+import { lockPipeDacl, processIdentity } from "../platform/win-pipe";
 
 type Handlers<D> = {
   open(socket: any): void; close(socket: any, error?: Error): void; data(socket: any, chunk: any): void | Promise<void>; drain?(socket: any): void;
@@ -17,14 +17,16 @@ export interface OneShotDeps<D> {
   endpoint: string;
   /** The connection handlers the well-known pipe has (a one-shot's connection is handled exactly like it). */
   handlers: Handlers<D>;
-  /** Gives a socket its proven client pid. */
-  adopt(socket: object, pid: number): void;
+  /** Gives a socket its proven client pid, and when it connected. */
+  adopt(socket: object, pid: number, connectedAt: number): void;
   /** Closes a socket at once (terminate), so its end does not linger. */
   closeAtOnce(socket: object): void;
   userSid(): string | null;
   /** Test seams. */
   listen?: (path: string, handlers: Handlers<D>) => { stop(closeActive?: boolean): void };
-  ends?: (path: string) => number[] | null;
+  ends?: (path: string) => { used: number; pids: number[] } | null;
+  /** The user (a SID string) a process runs as; the client must be this user's. */
+  userOf?: (pid: number) => string | null;
   lock?: (path: string, sid: string) => number;
   now?: () => number;
   ttlMs?: number;
@@ -66,11 +68,17 @@ export class OneShotPipes<D = unknown> {
       ...d.handlers,
       open: (socket) => {
         // The first connection stops the listener whatever follows: a one-shot serves one.
-        const ends = (d.ends ?? connectedEndsOfPipe)(path);
+        const at = (d.now ?? Date.now)();
+        const ends = (d.ends ?? pipeEndsOf)(path);
         const first = !done;
         finish();
-        if (!first || ends === null || ends.length !== 1) { d.handlers.open(socket); d.closeAtOnce(socket); return; } // refused: unnamed or ambiguous
-        d.adopt(socket, ends[0]!);
+        // Named only when EVERY end of the name that is in use (a client that has already gone included, whose pid can no longer be read) is this one:
+        // a client that connected, wrote and left must not make the end that remains look like this connection's.
+        const pid = ends !== null && ends.used === 1 && ends.pids.length === 1 ? ends.pids[0]! : null;
+        // And the client is this user's: the access list is locked just after the listener opens, and in that moment another account could connect.
+        const mine = pid !== null && (d.userOf ?? ((p: number) => processIdentity(p)?.userSid ?? null))(pid)?.toUpperCase() === sid.toUpperCase();
+        if (!first || pid === null || !mine) { d.handlers.open(socket); d.closeAtOnce(socket); return; } // refused: unnamed, ambiguous or not this user's
+        d.adopt(socket, pid, at);
         d.handlers.open(socket);
       },
     };

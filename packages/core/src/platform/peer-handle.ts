@@ -58,6 +58,7 @@ function win() {
     WaitForSingleObject: { args: ["u64", "u32"], returns: "u32" },
     TerminateProcess: { args: ["u64", "u32"], returns: "i32" },
     CloseHandle: { args: ["u64"], returns: "i32" },
+    GetProcessTimes: { args: ["u64", "ptr", "ptr", "ptr", "ptr"], returns: "i32" },
   });
 }
 
@@ -99,7 +100,14 @@ function pidOnly(pid: number): PeerHandle {
 
 /** The peer of a connected socket's descriptor (macOS, Linux), or of a pipe connection whose client pid is known
  *  (Windows). Null when the OS names no process. */
-export function peerHandle(fd: number | null, os: DaemonPlatform, knownPid?: number | null): PeerHandle | null {
+/** FILETIME ticks (100 ns since 1601) as milliseconds since the Unix epoch. */
+export function fileTimeToUnixMs(ticks: bigint): number { return Number(ticks / 10_000n) - 11_644_473_600_000; }
+
+/** Whether a process created at `createdMs` is NOT the one whose pid a connection made at `connectedMs` reported: it was created after the connection
+ *  (the pid was reused between the pid being read and the process being opened). `slackMs` covers the clocks' resolution. */
+export function pidReusedSince(createdMs: number, connectedMs: number, slackMs = 2000): boolean { return createdMs > connectedMs + slackMs; }
+
+export function peerHandle(fd: number | null, os: DaemonPlatform, knownPid?: number | null, connectedAtMs?: number): PeerHandle | null {
   if (os === "win32") {
     if (knownPid === undefined || knownPid === null) return null;
     const k = win();
@@ -108,6 +116,15 @@ export function peerHandle(fd: number | null, os: DaemonPlatform, knownPid?: num
     // A process we may not end (another user's, a protected one) is still held, so its pid can't be reused.
     if (h === 0n) h = BigInt(k.OpenProcess!(0x1000 | 0x100000, 0, knownPid) as number | bigint);
     if (h === 0n) return pidOnly(knownPid);
+    // The pid was read from the pipe and the process is opened only now: a process created after the connection was made is a later one that took the
+    // pid, never the connected one, and nothing is held for it.
+    if (connectedAtMs !== undefined) {
+      const created = new BigUint64Array(1), rest = [new BigUint64Array(1), new BigUint64Array(1), new BigUint64Array(1)];
+      if ((k.GetProcessTimes!(h, ptr(created), ptr(rest[0]!), ptr(rest[1]!), ptr(rest[2]!)) as number) === 0 || pidReusedSince(fileTimeToUnixMs(created[0]!), connectedAtMs)) {
+        k.CloseHandle!(h);
+        return null;
+      }
+    }
     let open = true;
     return {
       pid: knownPid, via: "handle",

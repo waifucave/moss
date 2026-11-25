@@ -124,7 +124,7 @@ export interface PipeServerIdentity {
   readonly image: string;
 }
 
-function processIdentity(pid: number): Omit<PipeServerIdentity, "pid"> | null {
+export function processIdentity(pid: number): Omit<PipeServerIdentity, "pid"> | null {
   const k = k32(), a = adv();
   if (!k || !a) return null;
   const h = BigInt(k.OpenProcess!(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) as number | bigint);

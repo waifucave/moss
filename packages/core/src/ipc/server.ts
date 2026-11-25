@@ -2202,7 +2202,7 @@ export function startIpcServer(opts: IpcServerOptions): IpcServer {
     if (oneShotsOn) {
       oneShots = new OneShotPipes<ConnState>({
         endpoint: opts.socketPath, handlers: socketHandlers as never, userSid: currentUserSid, closeAtOnce,
-        adopt: (socket, pid) => { opts.mossConnections!.adopt(socket, pid); },
+        adopt: (socket, pid, at) => { opts.mossConnections!.adopt(socket, pid, at); },
       });
     }
   }

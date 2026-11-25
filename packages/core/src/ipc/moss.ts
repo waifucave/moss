@@ -248,7 +248,7 @@ export interface MossServer {
    *  connection was made before the pipe's DACL was locked down, so the listener closes it (review M3). */
   opened(socket: object, scan?: boolean): boolean;
   /** A one-shot pipe's connection, named by its single end (`ipc/one-shot-pipes.ts`). */
-  adopt(socket: object, pid: number): void;
+  adopt(socket: object, pid: number, connectedAt?: number): void;
   /** Whether this connection's client is named (always on other OSes: they have the OS's own answer). */
   isNamed(socket: object): boolean;
   /** Right after the listener locked the pipe's DACL down (Windows). */
@@ -385,7 +385,7 @@ export function createMossServer(deps: MossServerDeps): MossServer {
   const handles = new WeakMap<object, PeerHandle | null>();
   const handleOf = (socket: object): PeerHandle | null => {
     if (handles.has(socket)) return handles.get(socket)!;
-    const h = gone.has(socket) ? null : pipePeers ? peerHandle(null, "win32", pipePeers.pidOf(socket)) : peerHandle(socketFd(socket), os);
+    const h = gone.has(socket) ? null : pipePeers ? peerHandle(null, "win32", pipePeers.pidOf(socket), pipePeers.connectedAtOf(socket)) : peerHandle(socketFd(socket), os);
     handles.set(socket, h);
     return h;
   };
@@ -714,7 +714,7 @@ export function createMossServer(deps: MossServerDeps): MossServer {
 
     lockedDown() { pipePeers?.lockedDown(); },
 
-    adopt(socket, pid) { pipePeers?.adopt(socket, pid); },
+    adopt(socket, pid, connectedAt) { pipePeers?.adopt(socket, pid, connectedAt); },
     isNamed(socket) { return pipePeers === null || pipePeers.pidOf(socket) !== null; },
 
     prove(socket, params) {

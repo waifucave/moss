@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { OneShotPipes, OneShotRefused } from "../one-shot-pipes";
 
 type H = { open(s: object): void; close(s: object): void; data(s: object, c: unknown): void };
-function rig(over: Partial<ConstructorParameters<typeof OneShotPipes>[0]> & { ends?: (p: string) => number[] | null } = {}) {
+function rig(over: Partial<ConstructorParameters<typeof OneShotPipes>[0]> = {}) {
   const log: string[] = [];
   const adopted: Array<[object, number]> = [];
   const closed: object[] = [];
@@ -12,11 +12,12 @@ function rig(over: Partial<ConstructorParameters<typeof OneShotPipes>[0]> & { en
   const pipes = new OneShotPipes({
     endpoint: "\\\\.\\pipe\\moss-core-abc",
     handlers: { open: (s: object) => { opened.push(s); }, close() {}, data() {} } as never,
-    adopt: (s, pid) => { adopted.push([s, pid]); },
+    adopt: (s: object, pid: number) => { adopted.push([s, pid]); },
     closeAtOnce: (s: object) => { closed.push(s); },
     userSid: () => "S-1-5-21-1",
     listen: (path, h) => { const l = { h: h as unknown as H, stopped: false }; listeners.set(path, l); return { stop: () => { l.stopped = true; log.push(`stop ${path.slice(-4)}`); } }; },
     lock: () => 1,
+    userOf: () => "S-1-5-21-1",
     ...over,
   });
   return { pipes, log, adopted, closed, opened, listeners };
@@ -32,7 +33,7 @@ describe("OneShotPipes", () => {
   });
 
   test("the one connection with exactly one connected end is named by that end's pid, and the listener stops", () => {
-    const { pipes, adopted, opened, listeners, closed } = rig({ ends: () => [4242] });
+    const { pipes, adopted, opened, listeners, closed } = rig({ ends: () => ({ used: 1, pids: [4242] }) });
     const { pipe } = pipes.issue();
     const l = listeners.get(pipe)!;
     const s = {};
@@ -45,7 +46,7 @@ describe("OneShotPipes", () => {
   });
 
   test("two ends on the name (a connection racing in): the one that opens is refused, and so is the next, never named by what is left", () => {
-    const { pipes, adopted, listeners, closed } = rig({ ends: () => [1, 2] });
+    const { pipes, adopted, listeners, closed } = rig({ ends: () => ({ used: 2, pids: [1, 2] }) });
     const { pipe } = pipes.issue();
     const l = listeners.get(pipe)!;
     const s1 = {}, s2 = {};
@@ -56,7 +57,7 @@ describe("OneShotPipes", () => {
   });
 
   test("a second connection after the first is refused even when its own scan shows one end", () => {
-    const answers = [[7], [8]];
+    const answers = [{ used: 1, pids: [7] }, { used: 1, pids: [8] }];
     const { pipes, adopted, listeners, closed } = rig({ ends: () => answers.shift()! });
     const { pipe } = pipes.issue();
     const l = listeners.get(pipe)!;
@@ -94,7 +95,7 @@ describe("OneShotPipes", () => {
   });
 
   test("bounded: at most sixteen pending, and a rate cap; a hundred opened and used leave none pending", () => {
-    const { pipes, listeners } = rig({ maxPerWindow: 1000, ends: () => [5] });
+    const { pipes, listeners } = rig({ maxPerWindow: 1000, ends: () => ({ used: 1, pids: [5] }) });
     const made: string[] = [];
     for (let i = 0; i < 16; i++) made.push(pipes.issue().pipe);
     expect(() => pipes.issue()).toThrow(OneShotRefused);
@@ -106,5 +107,33 @@ describe("OneShotPipes", () => {
     const capped = rig({ maxPerWindow: 3 });
     for (let i = 0; i < 3; i++) capped.pipes.issue();
     expect(() => capped.pipes.issue()).toThrow(OneShotRefused);
+  });
+
+  test("an end whose client has already gone still counts: the end that remains is not taken for this connection's own", () => {
+    // x connected, wrote and left (its end is used but its pid cannot be read); a's end is the one the scan can read.
+    const { pipes, adopted, listeners, closed } = rig({ ends: () => ({ used: 2, pids: [9] }) });
+    const l = listeners.get(pipes.issue().pipe)!;
+    const sx = {};
+    l.h.open(sx);
+    expect(adopted).toEqual([]);
+    expect(closed).toEqual([sx]);
+  });
+
+  test("a client that is not this user's is refused, this user's is named", () => {
+    const other = rig({ ends: () => ({ used: 1, pids: [11] }), userOf: () => "S-1-5-21-2" });
+    const lo = other.listeners.get(other.pipes.issue().pipe)!;
+    const so = {};
+    lo.h.open(so);
+    expect(other.adopted).toEqual([]);
+    expect(other.closed).toEqual([so]);
+    const unknown = rig({ ends: () => ({ used: 1, pids: [11] }), userOf: () => null });
+    const lu = unknown.listeners.get(unknown.pipes.issue().pipe)!;
+    lu.h.open({});
+    expect(unknown.adopted).toEqual([]);
+    const mine = rig({ ends: () => ({ used: 1, pids: [11] }), userOf: () => "s-1-5-21-1" });
+    const lm = mine.listeners.get(mine.pipes.issue().pipe)!;
+    const sm = {};
+    lm.h.open(sm);
+    expect(mine.adopted).toEqual([[sm, 11]]);
   });
 });

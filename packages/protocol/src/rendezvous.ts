@@ -7,6 +7,9 @@ import { createConnection } from "node:net";
 
 /** The pipe a client should connect to for the engine at `endpoint`: on Windows a one-shot pipe from a rendezvous, otherwise `endpoint` itself.
  *  An engine that does not know the rendezvous (older than this client) is dialled the old way, on the endpoint. */
+/** The one request a client sends the well-known pipe (the plugin SDK's copy sends the same line). */
+export const RENDEZVOUS_REQUEST = `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "protocol.rendezvous" })}\n`;
+
 export async function engineEndpoint(endpoint: string, opts: { platform?: string; timeoutMs?: number } = {}): Promise<string> {
   if ((opts.platform ?? process.platform) !== "win32" || !/^\\\\[.?]\\pipe\\/i.test(endpoint)) return endpoint;
   const timeoutMs = opts.timeoutMs ?? 5000;
@@ -16,7 +19,7 @@ export async function engineEndpoint(endpoint: string, opts: { platform?: string
     let settled = false;
     const done = (fn: () => void): void => { if (settled) return; settled = true; clearTimeout(timer); socket.destroy(); fn(); };
     const timer = setTimeout(() => done(() => reject(new Error("the engine did not answer the rendezvous"))), timeoutMs);
-    socket.once("connect", () => { socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "protocol.rendezvous" })}\n`); });
+    socket.once("connect", () => { socket.write(RENDEZVOUS_REQUEST); });
     socket.on("data", (chunk) => {
       buf += chunk.toString("utf8");
       const nl = buf.indexOf("\n");

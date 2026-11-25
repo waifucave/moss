@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OneShotPipes } from "../../src/ipc/one-shot-pipes";
 import { ownHandles } from "../../src/platform/caller-probe";
+import { peerHandle } from "../../src/platform/peer-handle";
 import { resolveEndpoint } from "../../src/platform/transport";
 import { currentUserSid } from "../../src/platform/win-pipe";
 
@@ -15,15 +16,16 @@ function rig() {
   const named = new Map<object, number>();
   const refused: object[] = [];
   const sockets: object[] = [];
+  const texts = new Map<object, string>();
   const pipes = new OneShotPipes({
     endpoint,
-    handlers: { open: (s: object) => { sockets.push(s); }, close() {}, data() {} } as never,
+    handlers: { open: (s: object) => { sockets.push(s); }, close() {}, data(s: object, chunk: Uint8Array) { texts.set(s, `${texts.get(s) ?? ""}${Buffer.from(chunk).toString()}`); } } as never,
     adopt: (s, pid) => { named.set(s, pid); },
     closeAtOnce: (s) => { refused.push(s); (s as { terminate(): void }).terminate(); },
     userSid: currentUserSid,
   });
   const until = async (cond: () => boolean) => { for (let i = 0; i < 400 && !cond(); i++) await Bun.sleep(10); };
-  return { pipes, named, refused, sockets, until };
+  return { pipes, named, refused, sockets, texts, until };
 }
 
 const clientTo = (path: string, ms: number) => Bun.spawn([process.execPath, "-e", `const s = await Bun.connect({ unix: ${JSON.stringify(path)}, socket: { data() {} } }); await Bun.sleep(${ms}); s.end();`], { stdout: "ignore", stderr: "ignore", windowsHide: true });
@@ -87,5 +89,32 @@ describe.skipIf(!win)("one-shot pipes, real", () => {
     const sddl = pipeDaclSddl(pipe);
     expect(sddl).not.toBeNull();
     expect(sddl).not.toContain(";;;WD"); // not Everyone
+  });
+
+  test("a client that connects, writes and leaves while another connects: neither is named as the other", async () => {
+    const label = (path: string, who: string, ms: number) => Bun.spawn([process.execPath, "-e", `const s = await Bun.connect({ unix: ${JSON.stringify(path)}, socket: { data() {} } }); s.write(${JSON.stringify(who)}); ${ms === 0 ? "s.end(); process.exit(0)" : `await Bun.sleep(${ms}); s.end();`}`], { stdout: "ignore", stderr: "ignore", windowsHide: true });
+    for (let round = 0; round < 6; round++) {
+      const r = rig();
+      const { pipe } = r.pipes.issue();
+      const x = label(pipe, "X", 0), a = label(pipe, "A", 2500); // x writes and drops at once; a stays
+      await Bun.sleep(1800);
+      const pidOf: Record<string, number> = { X: x.pid, A: a.pid };
+      for (const [s, pid] of r.named) {
+        const who = (r.texts.get(s) ?? "").slice(0, 1);
+        if (who !== "") expect([round, who, pid]).toEqual([round, who, pidOf[who]!]); // a socket that carried X's hello is never named as A, nor the reverse
+      }
+      expect(r.named.size).toBeLessThanOrEqual(1); // a one-shot serves one
+      a.kill(); x.kill();
+    }
+  });
+
+  test("the pid is checked against the connection's time: a process created after it is refused", async () => {
+    const child = Bun.spawn([process.execPath, "-e", "await Bun.sleep(5000)"], { stdout: "ignore", stderr: "ignore", windowsHide: true });
+    await Bun.sleep(200);
+    const h = peerHandle(null, "win32", child.pid, Date.now());
+    expect(h).not.toBeNull();
+    h!.close();
+    expect(peerHandle(null, "win32", child.pid, Date.now() - 60_000)).toBeNull(); // "connected" before this process existed
+    child.kill();
   });
 });

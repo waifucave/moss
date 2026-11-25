@@ -53,7 +53,10 @@ function advapi32(): Lib | null {
 }
 
 function ntdll(): Lib | null {
-  return open("ntdll", "ntdll.dll", { NtQueryInformationProcess: { args: ["u64", "i32", "ptr", "u32", "ptr"], returns: "i32" } });
+  return open("ntdll", "ntdll.dll", {
+    NtQueryInformationProcess: { args: ["u64", "i32", "ptr", "u32", "ptr"], returns: "i32" },
+    NtQueryInformationFile: { args: ["u64", "ptr", "ptr", "u32", "i32"], returns: "i32" },
+  });
 }
 
 function libSystemExtra(): Lib | null {
@@ -327,13 +330,38 @@ function connectedServerEnds(handles: readonly OwnHandle[], name: string | null)
   return out;
 }
 
-/** The client pids of the connected server ends of the one pipe `endpoint` (a pipe name only one listener serves, so its instances are the only ends
- *  there are), or null when the daemon's handles cannot be read. One-shot pipes (`ipc/one-shot-pipes.ts`) are named by this: exactly one end is that
- *  connection's own, with nothing to choose among. */
-export function connectedEndsOfPipe(endpoint: string): number[] | null {
+/** FILE_PIPE_LOCAL_INFORMATION's NamedPipeState: 1 disconnected, 2 listening, 3 connected, 4 closing. */
+function pipeEndState(h: bigint): number | null {
+  const n = ntdll();
+  if (!n) return null;
+  const iosb = Buffer.alloc(16), info = Buffer.alloc(40);
+  if (((n.NtQueryInformationFile!(h, ptr(iosb), ptr(info), info.length, 24 /* FilePipeLocalInformation */) as number) >>> 0) !== 0) return null;
+  return info.readUInt32LE(32);
+}
+
+/** EVERY server end of the one pipe `endpoint` that is not merely listening (`used`: a connected end, one whose client has gone, one closing, one whose
+ *  state could not be read), and the client pids that could be read of them. A one-shot pipe (`ipc/one-shot-pipes.ts`) is named only when `used` is one and
+ *  its pid was read: an end whose client already left must still count, or the end that remains is taken for this connection's own. null: the daemon's
+ *  handles could not be read. */
+export function pipeEndsOf(endpoint: string): { used: number; pids: number[] } | null {
   const handles = ownHandles();
-  if (handles === null) return null;
-  return [...connectedServerEnds(handles.filter((h) => (h.access & WRITE_DAC) !== 0), pipeEndName(endpoint)).values()].map((e) => e.pid);
+  const k = kernel32();
+  if (handles === null || !k) return null;
+  const name = pipeEndName(endpoint);
+  let used = 0;
+  const pids: number[] = [];
+  for (const h of handles.filter((x) => (x.access & WRITE_DAC) !== 0)) {
+    if ((k.GetFileType!(h.handle) as number) !== 3) continue;
+    const flags = new Uint32Array(1);
+    if ((k.GetNamedPipeInfo!(h.handle, ptr(flags), null, null, null) as number) === 0 || (flags[0]! & 1) === 0) continue;
+    if (pipeHandleName(h.handle) !== name) continue;
+    const state = pipeEndState(h.handle);
+    if (state === 2) continue; // listening: no client yet, never anyone's
+    used++;
+    const pid = new Uint32Array(1);
+    if ((k.GetNamedPipeClientProcessId!(h.handle, ptr(pid)) as number) !== 0 && pid[0]! > 0) pids.push(pid[0]!);
+  }
+  return { used, pids };
 }
 
 /** WRITE_DAC: libuv creates its named pipe server ends with it (measured: 0x1e019f for the first
@@ -368,7 +396,10 @@ export class WindowsPipePeers {
   why = "";
 
   /** A connection the one-shot pipe proved (its single end's client pid): named without a scan. */
-  adopt(socket: object, pid: number): void { this.bySocket.set(socket, { handle: -1n, pid }); }
+  adopt(socket: object, pid: number, connectedAt: number = Date.now()): void { this.bySocket.set(socket, { handle: -1n, pid }); this.connectedAt.set(socket, connectedAt); }
+  private readonly connectedAt = new WeakMap<object, number>();
+  /** When an adopted socket's connection was made (ms), for the pid-reuse check. */
+  connectedAtOf(socket: object): number | undefined { return this.connectedAt.get(socket); }
 
   /** Whether this socket's connection was made before the DACL was locked down. */
   isEarly(socket: object): boolean {

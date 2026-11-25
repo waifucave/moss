@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { engineEndpoint } from "./rendezvous";
 import {
   LineDecoder, encodeLine, METHODS, PROTOCOL_VERSION, ConnWriter, ERR, type WritableSocket,
 } from "@waifucave/moss-protocol";
@@ -335,7 +336,7 @@ export function createPlugin(def: PluginDefinition): Plugin {
   async function connectOnce(): Promise<void> {
     decoder = new LineDecoder();
     const sock = await Bun.connect({
-      unix: socketPath!,
+      unix: await engineEndpoint(socketPath!), // Windows: the pipe the engine makes for this plugin (a rendezvous); elsewhere the path itself
       socket: {
         data(s, chunk) {
           let lines: string[];
