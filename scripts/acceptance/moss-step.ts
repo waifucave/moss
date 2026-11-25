@@ -524,6 +524,8 @@ async function cardRow(s: UnitState): Promise<string> {
   const a = await alpha(s.c);
   await openBot(s, "alpha", "MOSS");
   const before = await cardIds(s.c);
+  const doneBefore = (await s.c.request<{ events: { type: string; text?: string }[] }>("bot.conversation", { id: "alpha", limit: 200 })).events
+    .filter((e) => e.type === "assistant_message" && (e.text ?? "").startsWith("ACCEPTANCE-DONE")).length;
   await sendInMoss(s, "MOSS", "ACCEPTANCE-WRITE");
   const card = await newCard(s, before, "the Write's approval card", (k) => k.session === a.mainSession);
   const place = await s.x.until("the router's place for the card", 20_000, async () => {
@@ -567,11 +569,17 @@ async function cardRow(s: UnitState): Promise<string> {
   const keys = readFileSync(join(s.x.home, "devices", "program-keys.json"), "utf8");
   const table = JSON.parse(keys) as { keys: Record<string, Partial<Record<string, { publicKey: string }>>> };
   if (table.keys[s.device]?.moss?.publicKey !== pub) s.x.fail("the engine's moss key for this device isn't MOSS's own key");
+  // The reply of THIS Write's turn, not an earlier one (the stop row's turn left a DONE in the same conversation), and
+  // her session idle: the next row sends its message while MOSS is behind, and a message sent into a turn still running
+  // under load is held behind it, so it would not be the card-raising turn that row measures.
   const landed = await s.x.until("the Write to land after the approval", 60_000, async () => {
     const page = await s.c.request<{ events: { type: string; text?: string }[] }>("bot.conversation", { id: "alpha", limit: 200 });
-    return page.events.some((e) => e.type === "assistant_message" && (e.text ?? "").startsWith("ACCEPTANCE-DONE")) ? true : undefined;
-  }, 500).catch(() => false);
-  return `the ${card.kind} card placed ${placeWords(place)} and drawn in her conversation; the frame's own script answering with no press: MOSS refused it (${refusedLine.replace(/^sealed: answer refused /, "").slice(0, 80)}) and said "${saidBeside.slice(0, 60)}" beside the card; signed as MOSS Code with MOSS's key: refused (${asCode.reason ?? "no reason"}); a real press on Approve accepted (${overlap?.replace(/^overlap: /, "") ?? "no overlap check off macOS"}), MOSS's key the engine's moss key for this device${landed ? "; the Write's turn went on" : ""}`;
+    const done = page.events.filter((e) => e.type === "assistant_message" && (e.text ?? "").startsWith("ACCEPTANCE-DONE")).length;
+    if (done <= doneBefore) return undefined;
+    const v = await s.c.request<{ session: { state?: string } }>("session.get", { id: a.mainSession }).catch(() => undefined);
+    return v !== undefined && /^(idle|done|ready)$/i.test(String(v.session.state ?? "idle")) ? true : undefined;
+  }, 500);
+  return `the ${card.kind} card placed ${placeWords(place)} and drawn in her conversation; the frame's own script answering with no press: MOSS refused it (${refusedLine.replace(/^sealed: answer refused /, "").slice(0, 80)}) and said "${saidBeside.slice(0, 60)}" beside the card; signed as MOSS Code with MOSS's key: refused (${asCode.reason ?? "no reason"}); a real press on Approve accepted (${overlap?.replace(/^overlap: /, "") ?? "no overlap check off macOS"}), MOSS's key the engine's moss key for this device${landed ? "; the Write's turn went on and ended" : ""}`;
 }
 
 /** The raw 32 bytes of an Ed25519 private key's public half. */
@@ -598,7 +606,13 @@ async function awayRowBehind(s: UnitState, a: RecordView, from: number): Promise
   const before = await cardIds(s.c);
   const path = join(s.x.userHome, ".acceptance", `moss-away-${randomBytes(3).toString("hex")}.txt`);
   await s.c.request("session.send", { id: a.mainSession, message: { text: callText("Write", { file_path: path, content: "moss away\n" }), clientMessageId: randomUUID() } }, 30_000);
-  const card = await newCard(s, before, "the second Write's approval card", (k) => k.session === a.mainSession);
+  const asked = s.x.fake.requests.length;
+  const card = await newCard(s, before, "the second Write's approval card", (k) => k.session === a.mainSession).catch(async (err) => {
+    // Say where the message got to: whether the model was asked for it, and what the engine says her session is doing.
+    const v = await s.c.request<{ session: { state?: string } }>("session.get", { id: a.mainSession }).catch(() => undefined);
+    const seen = (s.x.fake.requests.slice(asked) as { lastUserText: string }[]).filter((r) => r.lastUserText.includes("moss away")).length;
+    s.x.fail(`${err instanceof Error ? err.message : String(err)} (her session: ${v?.session.state ?? "unread"}; requests to the model carrying the message: ${seen} of ${s.x.fake.requests.length - asked})`);
+  });
   const away = await s.x.until("the card placed off MOSS's window", 20_000, async () => {
     const p = await placementOf(s.c, card.id);
     return p !== undefined && !((p.kind === "conversation" || p.kind === "strip") && p.program === "moss") ? p : undefined;
