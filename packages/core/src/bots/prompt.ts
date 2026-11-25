@@ -58,7 +58,7 @@ export function memoryBlock(o: { paths: BotPaths; computer: string }): string {
     `- Your background agents' transcripts: ${paths.agents}/ (each task notification names its file).`,
     `- Scratch, for working files: ${paths.scratch}/ on ${o.computer}. It is never synced and isn't memory.`,
     // Lane XC (the controller's ruling: file tools never follow the shell's tree folder).
-    "- Each of the user's computers' files: home/<Computer>/… in Read, Write, Edit, Glob and Grep, always as the full path. A shell command that starts with `cd home/<Computer>/…` runs on that computer, and the commands after it stay there; your file tools' relative paths stay in your scratch folder.",
+    `- Each of the user's computers' files: home/ and the computer's name (home/${o.computer}/… for this one) in Read, Write, Edit, Glob and Grep, always as the full path. A shell command that starts with \`cd home/…\` into another computer runs on that computer, and the commands after it stay there; your file tools' relative paths stay in your scratch folder.`,
   ];
   if (index === undefined || index.text.trim() === "") lines.push(`${MEMORY_INDEX} is empty so far.`);
   else {

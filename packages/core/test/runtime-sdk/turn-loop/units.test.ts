@@ -264,7 +264,7 @@ describe("command hooks, through the process door (Claude Code's protocol)", () 
     expect((await before({ decision: "block", reason: "no rm -rf" })).deny).toBe("no rm -rf");
     expect((await before({ continue: false, stopReason: "stop here" })).deny).toBe("stop here");
     expect(await before({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "dangerous" } })).toEqual({ deny: "dangerous", input: { command: "rm -rf /" } });
-    expect(await before({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: "sure?" } })).toEqual({ ask: "sure?", input: { command: "rm -rf /" } });
+    expect(await before({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: "sure?" } })).toEqual({ ask: "sure?", askBy: "cc", input: { command: "rm -rf /" } });
     // allow never lets a call through past the approval check (§5.3): nothing changes, and no deny is lifted.
     expect(await before({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" } })).toEqual({ input: { command: "rm -rf /" } });
     expect(await before({ decision: "approve" })).toEqual({ input: { command: "rm -rf /" } });
@@ -292,7 +292,7 @@ describe("command hooks, through the process door (Claude Code's protocol)", () 
     expect(await call(denyFirst)).toEqual({ deny: "a denies", input: { command: "ls" } });
     expect(denyFirst.runs.map((r) => r.who.pluginId)).toEqual(["a-plug"]);
     const twoAsks = over({ "a-plug": { hookSpecificOutput: { permissionDecision: "ask", permissionDecisionReason: "a asks" } }, "b-plug": { ask: { reason: "b asks" } } });
-    expect(await call(twoAsks)).toEqual({ ask: "a asks", input: { command: "ls" } });
+    expect(await call(twoAsks)).toEqual({ ask: "a asks", askBy: "a-plug", input: { command: "ls" } });
     const replaced = over({ "a-plug": { input: { command: "ls -la" } }, "b-plug": { hookSpecificOutput: { updatedInput: { command: "ls -la /tmp" } } } });
     expect(await call(replaced)).toEqual({ input: { command: "ls -la /tmp" } });
     expect(JSON.parse(replaced.runs[1]!.stdin!)).toMatchObject({ input: { command: "ls -la" }, tool_input: { command: "ls -la" } });
