@@ -58,9 +58,10 @@ export interface OutsideFixture { named: string; plain: string; program: string;
 /** The two plugins, the program and the user's two files; `src` is where the plugins' folders go, `bin` the program's. */
 export function writeOutside(src: string, bin: string, userHome: string): OutsideFixture {
   mkdirSync(bin, { recursive: true });
-  const program = join(bin, "acc-outside-cat");
-  writeFileSync(program, "#!/bin/sh\nexec /bin/cat \"$1\"\n");
-  chmodSync(program, 0o755);
+  // Windows starts no script by its shebang: a program it can start is a `.cmd` (CreateProcess runs it), which the manifest names by its drive path.
+  const program = join(bin, process.platform === "win32" ? "acc-outside-cat.cmd" : "acc-outside-cat");
+  if (process.platform === "win32") writeFileSync(program, "@echo off\r\ntype \"%~1\"\r\n");
+  else { writeFileSync(program, "#!/bin/sh\nexec /bin/cat \"$1\"\n"); chmodSync(program, 0o755); }
   mkdirSync(userHome, { recursive: true });
   const privateFile = join(userHome, "acc-outside-private.txt");
   writeFileSync(privateFile, `${OUTSIDE_PRIVATE}\n`);
