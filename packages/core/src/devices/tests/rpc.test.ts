@@ -1,6 +1,7 @@
 // The devices area's handlers (as lane C's server mounts them) and the `peer.call` door: the terminal changes
 // directly, any other client gets a sealed card, a bot never; and a peer's call runs only with a signed answer from
 // a desktop's app-held answer key, bound to exactly that call.
+import { TerminalChanges } from "../terminal-changes";
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
@@ -39,7 +40,7 @@ const app: Caller = { kind: "user", client: "app" };
 const bot: Caller = { kind: "session", sessionId: "ses_abcdef12", sessionKind: "bot" };
 
 /** `selfOverride`: what this computer says about itself on the wire, whatever its registry took (a hostile device is not bound by our own checks). */
-async function computer(net: MemoryNetwork, name: string, ttlMs?: number, selfOverride?: Record<string, unknown>, over?: { openCard?: CardOpener; clock?: Clock }) {
+async function computer(net: MemoryNetwork, name: string, ttlMs?: number, selfOverride?: Record<string, unknown>, over?: { openCard?: CardOpener; clock?: Clock; personAt?: () => boolean; terminalChanges?: TerminalChanges; log?: (l: string) => void }) {
   const clk = over?.clock ?? clock;
   const store = new MemorySecretStore();
   const key = await DeviceKey.loadOrCreate(store);
@@ -54,12 +55,81 @@ async function computer(net: MemoryNetwork, name: string, ttlMs?: number, selfOv
   const brokerClock = new FakeClock();
   const broker = new FakeApprovalBroker({ clock: brokerClock, verify: deviceProofVerifier(registry), deviceKind: (id) => registry.get(id)?.kind });
   const transport = { links: () => [], watch: () => () => undefined, connect: () => Promise.reject(new Error("no links in this test")) };
-  const methods = devicesMethods({ registry, pairing, transport, clock: clk, openCard: over?.openCard ?? brokerCardOpener(broker), revoke: { store } });
+  const methods = devicesMethods({
+    registry, pairing, transport, clock: clk, openCard: over?.openCard ?? brokerCardOpener(broker), revoke: { store },
+    ...(over?.personAt ? { personAt: over.personAt } : {}), ...(over?.terminalChanges ? { terminalChanges: over.terminalChanges } : {}), ...(over?.log ? { log: over.log } : {}),
+  });
   const events: { type: string; step?: string; reason?: string; peerName?: string }[] = [];
   stops.push(devicesEvents({ registry, transport, pairing, clock: clk }, (e) => events.push(e)));
   const call = (method: string, params: unknown, caller: Caller) => methods[method]!(params, { caller });
   return { name, key, registry, pairing, broker, brokerClock, call, events };
 }
+
+// Lane XC: a pairing or a removal from a terminal while one of the person's apps or phones is connected also needs the
+// engine's card; with none connected it applies, is logged, and is shown once as a card when one connects.
+describe("a terminal's pairing and removal, and the person's apps", () => {
+  const approveCard = async (c: { broker: FakeApprovalBroker }, id: string) => {
+    const card = c.broker.cards().find((k) => k.id === id)!;
+    expect(await c.broker.answer(card.id, { optionId: "approve", hash: card.hash, proof: { via: "sealed-frame", frame: c.broker.frameChannel(card.id)!, input: "click", at: Date.now() } }, { role: "app" })).toBe("accepted");
+  };
+
+  test("with an app connected, the terminal's typed words AND the engine's card are both needed; a wrong word ends it", async () => {
+    const net = new MemoryNetwork();
+    const a = await computer(net, "Studio", undefined, undefined, { personAt: () => true });
+    const b = await computer(net, "Laptop");
+    const view = (await a.call("device.pair.begin", {}, terminal)) as { pairingId: string; qr: string };
+    const joined = (await b.call("device.pair.join", { code: view.qr }, terminal)) as { words: string[] };
+    await waitFor(() => a.pairing.get(view.pairingId)?.status === "words");
+    expect(await b.call("device.pair.confirm", { pairingId: view.pairingId, words: joined.words }, terminal)).toEqual({ applied: true });
+    const res = (await a.call("device.pair.confirm", { pairingId: view.pairingId, words: joined.words }, terminal)) as { applied: boolean; card?: string };
+    // The words typed, and still nothing added: the card waits.
+    expect(res.applied).toBe(false);
+    expect(a.broker.cards().find((c) => c.id === res.card)?.change).toBe("device-add");
+    await Bun.sleep(50);
+    expect(a.registry.get(b.key.id)).toBeUndefined();
+    await approveCard(a, res.card!);
+    await waitFor(() => a.registry.get(b.key.id) !== undefined);
+    // A removal from the terminal is a card too while the app is there.
+    const rm = (await a.call("device.revoke", { id: b.key.id }, terminal)) as { applied: boolean; card?: string };
+    expect(rm.applied).toBe(false);
+    expect(a.broker.cards().find((c) => c.id === rm.card)?.change).toBe("device-revoke");
+    expect(a.registry.get(b.key.id)?.revokedAt).toBeUndefined();
+    // A wrong word from the terminal ends a pairing with no card.
+    const v2 = (await a.call("device.pair.begin", {}, terminal)) as { pairingId: string; qr: string };
+    const c = await computer(net, "Tablet");
+    await c.call("device.pair.join", { code: v2.qr }, terminal);
+    await waitFor(() => a.pairing.get(v2.pairingId)?.status === "words");
+    const wrong = await a.call("device.pair.confirm", { pairingId: v2.pairingId, words: ["no", "such", "words", "here"] }, terminal).catch((e: unknown) => e);
+    expect((wrong as MethodError).message).toContain("don't match");
+  });
+
+  test("with no app connected, it applies, is logged and kept, and is shown once as a card when one connects; Remove revokes it", async () => {
+    const net = new MemoryNetwork();
+    let present = false;
+    const home = mkdtempSync(join(tmpdir(), "moss-xc-tc-"));
+    const lines: string[] = [];
+    const a = await computer(net, "Server", undefined, undefined, { personAt: () => present, terminalChanges: new TerminalChanges(home), log: (l) => lines.push(l) });
+    const b = await computer(net, "Laptop");
+    const view = (await a.call("device.pair.begin", {}, terminal)) as { pairingId: string; qr: string };
+    const joined = (await b.call("device.pair.join", { code: view.qr }, terminal)) as { words: string[] };
+    await waitFor(() => a.pairing.get(view.pairingId)?.status === "words");
+    void b.call("device.pair.confirm", { pairingId: view.pairingId, words: joined.words }, terminal);
+    expect(await a.call("device.pair.confirm", { pairingId: view.pairingId, words: joined.words }, terminal)).toEqual({ applied: true });
+    await waitFor(() => a.registry.get(b.key.id) !== undefined);
+    expect(lines.some((l) => l.includes("A device was paired from a terminal on") && l.includes("Laptop"))).toBe(true);
+    // Kept on disk (a restart keeps it), nothing shown yet.
+    expect(new TerminalChanges(home).pending().map((c) => c.kind)).toEqual(["paired"]);
+    expect(a.broker.cards()).toEqual([]);
+    // An app connects: the card, once, with the engine's own words; Remove revokes the device.
+    present = true;
+    await waitFor(() => a.broker.cards().length === 1, 5_000);
+    const card = a.broker.cards()[0]!;
+    expect(JSON.stringify(card)).toContain("A device was paired from a terminal on");
+    expect(new TerminalChanges(home).pending()).toEqual([]);
+    await approveCard(a, card.id);
+    await waitFor(() => a.registry.get(b.key.id)?.revokedAt !== undefined);
+  });
+});
 
 describe("devices methods", () => {
   test("pairing through the methods: from the terminal no card; from the app a sealed card first", async () => {

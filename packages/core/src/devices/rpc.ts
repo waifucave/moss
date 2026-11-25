@@ -24,6 +24,7 @@ import type { LinkTransport } from "../contracts/link-transport";
 import type { AccountClient } from "../identity/account";
 import type { PairingService, PairingState } from "../links/pairing";
 import { cleanName, nameProblem } from "./names";
+import { terminalChangeWords, type TerminalChange, type TerminalChanges } from "./terminal-changes";
 import { type RevokeOptions, revokeDevice } from "./account-devices";
 import type { FileDeviceRegistry } from "./registry";
 import { ANSWER_KEY_ROTATE_MAX_SKEW_MS, type AnswerKeyRotationRefusal, rotateOwnAnswerKey } from "../approvals/answer-key-rotation";
@@ -136,11 +137,22 @@ export interface DevicesMethodsDeps {
   /** `false`: `device.answerKey.set` is served elsewhere, from before the links start (the daemon's `answerKeyMethods`
    *  over the registry as soon as it opens): a device's own answer key is local state and never waits on a link. */
   answerKey?: false;
+  /** Lane XC: whether one of the person's apps or phones is connected to this engine now. While one is, a pairing or a
+   *  removal made in a terminal also raises the engine's own card there and waits for its answer (the typed words stay);
+   *  the terminal alone suffices only when none is (a server's case). Without it: as if none is. */
+  personAt?: () => boolean;
+  /** Where a change made in a terminal with no app or phone connected is kept until one connects and is shown it once
+   *  (`terminal-changes.ts`); with `log`, the one plain line the engine writes for it. */
+  terminalChanges?: TerminalChanges;
+  log?: (line: string) => void;
 }
 
 /** How long a replacement's card waits for the user: then it is cancelled, and the app asks again with a new hand-over.
  *  With the hand-over's own bound (`ANSWER_KEY_ROTATE_MAX_SKEW_MS`), a yes never applies one older than both. */
 export const ANSWER_KEY_ROTATION_CARD_MS = 10 * 60 * 1000;
+
+/** How often a kept terminal change looks for one of the person's apps or phones (only while one waits). */
+export const TERMINAL_CHANGE_LOOK_MS = 2_000;
 
 /** Why a replacement of this desktop's answer key wasn't taken, for the app. */
 const ROTATION_REFUSED: Record<AnswerKeyRotationRefusal, string> = {
@@ -244,6 +256,41 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
     if (pairing.get(id)?.status === "words") void askToAdd(id).catch(() => undefined);
   };
 
+  /** A change made in a terminal with no app or phone connected: one plain line in the engine's log, and kept to show. */
+  const noteTerminal = (c: TerminalChange): void => {
+    deps.log?.(`[devices] ${terminalChangeWords(c)}: ${cleanName(c.name) ? c.name : "(a device whose name can't be shown)"}`);
+    if (deps.terminalChanges === undefined) return;
+    deps.terminalChanges.add(c);
+    watchArrivals();
+  };
+  /** Shown once when one of the person's apps or phones is there: each kept change as the engine's own card. A paired
+   *  device's card asks whether to keep it (Remove revokes it); a removed one's only says so. Watched only while one waits. */
+  let arrivals: ReturnType<typeof setInterval> | undefined;
+  const watchArrivals = (): void => {
+    if (arrivals !== undefined || deps.terminalChanges === undefined || deps.personAt === undefined) return;
+    const look = (): void => {
+      if (deps.personAt?.() !== true) return;
+      const shown = deps.terminalChanges!.take();
+      if (arrivals !== undefined) { clearInterval(arrivals); arrivals = undefined; }
+      for (const c of shown) void showTerminalChange(c).catch(() => undefined);
+    };
+    arrivals = setInterval(look, TERMINAL_CHANGE_LOOK_MS);
+    (arrivals as { unref?: () => void }).unref?.();
+    look();
+  };
+  const showTerminalChange = async (c: TerminalChange): Promise<void> => {
+    const d = registry.get(c.device);
+    const still = c.kind === "paired" && d !== undefined && d.revokedAt === undefined && c.device !== registry.self().id;
+    const req = changeCard("device-revoke", terminalChangeWords(c), still ? "Remove it if it isn't yours." : undefined, [
+      { label: "The device", value: c.name, name: true },
+    ], c.device);
+    if (!still) req.options = [{ id: "approve", kind: "approve", label: "OK" }];
+    else req.options = [{ id: "approve", kind: "approve", label: "Remove it" }, { id: "deny", kind: "deny", label: "Keep it" }];
+    const opened = await deps.openCard(req);
+    if (still && (await opened.allowed)) await revokeDevice({ registry, ...deps.revoke }, c.device, "removed by the user after a pairing made in a terminal");
+  };
+  if ((deps.terminalChanges?.pending().length ?? 0) > 0) watchArrivals();
+
   return {
     [M.deviceList.name]: handler(M.deviceList, () => {
       const main = deps.main?.lease.state().main ?? null;
@@ -277,8 +324,12 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
       if (!d || d.revokedAt !== undefined) throw new MethodError(ERR.NOT_FOUND, `no device ${p.id}`);
       if (p.id === registry.self().id) throw new MethodError(ERR.INVALID_REQUEST, "this device can't revoke itself");
       const run = () => revokeDevice({ registry, ...deps.revoke }, p.id, "revoked by the user");
-      if (inTerminal(ctx)) {
+      // From a terminal with none of the person's apps or phones connected: at once, logged and kept to show; with one
+      // connected, the card below, as for every other caller (a process the OS started for an approved command can't
+      // quietly unpair the person's phone).
+      if (inTerminal(ctx) && deps.personAt?.() !== true) {
         await run();
+        noteTerminal({ kind: "removed", device: p.id, name: d.name, at: deps.clock.now() });
         return { applied: true };
       }
       const opened = await deps.openCard(changeCard("device-revoke", "Revoke this device?", undefined, [
@@ -318,8 +369,12 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
       requireUser(ctx, "pair a device");
       const state = pairing.get(p.pairingId);
       if (!state) throw new MethodError(ERR.NOT_FOUND, `no pairing ${p.pairingId}`);
-      if (inTerminal(ctx)) {
+      // From a terminal with none of the person's apps or phones connected (a server's case): the typed words alone, logged
+      // and kept to show. With one connected, the same as an app's: the words checked here, then the engine's own card.
+      if (inTerminal(ctx) && deps.personAt?.() !== true) {
         await pairing.confirm(p.pairingId, p.words, { terminal: true });
+        const peer = state.peer;
+        noteTerminal({ kind: "paired", device: peer?.id ?? p.pairingId, name: peer?.name ?? "(no name)", at: deps.clock.now() });
         return { applied: true };
       }
       // Words that aren't the pairing's end it at once, and withdraw its card: one guess per pairing, so this is no oracle on the words

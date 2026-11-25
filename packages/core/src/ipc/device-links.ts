@@ -21,6 +21,7 @@
 //     server through `mountMossRemoteClients`, C-M3 item 3) when the daemon passes `clients`.
 // Still to come: the sidecar's spawn under the fence (with C-M2's Bash fence: UDP and its pipes only), and the devices
 // area's events (`devicesEvents`), once the MOSS server sends `core.event`s.
+import { TerminalChanges } from "../devices/terminal-changes";
 import { accountDeletionMethods } from "../deletion/account-rpc";
 import { endAccountHere, resumeAccountDeletion } from "../identity/account-deletion";
 import { existsSync } from "node:fs";
@@ -108,6 +109,9 @@ export interface DaemonLinksInput {
    *  served from there (the daemon's own `answerKeyMethods`), so the links don't serve a second one. */
   onRegistry?: DeviceLinksOptions["onRegistry"];
   answerKeyServed?: true;
+  /** Lane XC: whether one of the person's apps or phones is connected to this engine now (`devicesMethods`' `personAt`):
+   *  then a pairing or a removal made in a terminal also needs the engine's own card. */
+  personAt?: () => boolean;
   /** The daemon's update gate (`RunningDaemon.updateGate`, lane M): the lease renews just before an update's restart. */
   updateGate?: UpdateRestartGate;
   /** The handshake: at the account settings' `handshakeUrl` (production's unless a dev or test build overrides it) by
@@ -197,6 +201,8 @@ export async function startDaemonLinks(input: DaemonLinksInput): Promise<DaemonL
       revoke: links.revokeOptions(), ...(links.main ? { main: links.main } : {}), ...(signedAccount ? { account: signedAccount } : {}),
       ...(input.answerKeyRotation ? { answerKeyRotation: input.answerKeyRotation } : {}),
       ...(input.answerKeyServed ? { answerKey: false as const } : {}),
+      ...(input.personAt ? { personAt: input.personAt } : {}),
+      terminalChanges: new TerminalChanges(input.home), log,
     })));
     // The account's deletion (the deletion lane): the person's `account.delete`; an account deleted on another device ends
     // here at this device's next contact with the account service (its 410), once; and a deletion the last run began is

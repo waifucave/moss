@@ -5166,6 +5166,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     }
     const started = await startDaemonLinks({
       home: dirs.home, store: contractSecrets, clock: partsClock, handlers: mossLaneHandlers,
+      // One of the person's apps or phones connected now (lane XC): a terminal's pairing or removal then needs its card.
+      personAt: () => mossServer?.connections().some((c) => c.caller.kind === "user" && c.caller.client !== "cli") === true,
       dispatch: (method, params, caller, role) => mossServer!.dispatch(method, params, { caller, role }),
       // The lease renews just before an update's restart (H-M3's `beforeRestart`, on lane M's gate).
       updateGate,
