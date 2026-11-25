@@ -2084,6 +2084,11 @@ export function startIpcServer(opts: IpcServerOptions): IpcServer {
         if (opts.mossConnections?.opened(socket, !oneShotsOn)) closeAtOnce(socket);
         if (oneShotsOn && !opts.mossConnections!.isNamed(socket)) socket.data.rendezvousOnly = true;
       },
+      // Windows: a write to a pipe whose client has left (EPIPE) is reported to the socket's `error` handler; with none, Bun treats it as an uncaught
+      // exception and the whole engine ends (seen on a runner: every client dropped, the daemon gone). A socket's error is that connection's end.
+      error(socket) {
+        try { closeAtOnce(socket); } catch { /* already gone */ }
+      },
       drain(socket) {
         socket.data?.writer?.onDrain();
         if (socket.data) opts.cowork?.watches.flush(socket.data.connId);
