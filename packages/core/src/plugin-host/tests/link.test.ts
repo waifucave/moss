@@ -1,7 +1,7 @@
 // The process link's reader: a read that fails (on Linux a socket pair's end closed with bytes it never read answers
 // ECONNRESET, never an EOF) ends the link as its end does, and never escapes as an unhandled rejection.
 import { describe, expect, test } from "bun:test";
-import { LINK_LINE_MAX, LineTooLong, linesOf, streamPeer } from "../link";
+import { LINK_LINE_MAX, LineTooLong, linesOf, socketLink, streamPeer } from "../link";
 
 test("a reset on the link's read closes the peer, as an EOF does, and nothing escapes", async () => {
   async function* reset(): AsyncGenerator<string> {
@@ -114,4 +114,22 @@ describe("the process's end holds every line it writes to the daemon's limit, me
     expect(written.at(-1)).toContain("pluginHost.log");
     release();
   });
+});
+
+test("a socket link whose pipe throws on write (Windows EPIPE: the other end left) ends that link, and nothing throws out", async () => {
+  const link = socketLink();
+  const epipe = Object.assign(new Error("EPIPE: broken pipe, write"), { code: "EPIPE" });
+  let writes = 0;
+  link.attach({ write() { writes++; throw epipe; } });
+  expect(() => link.write("{\"a\":1}\n")).not.toThrow(); // flushed at once: the throw is the other end gone
+  const seen: string[] = [];
+  for await (const line of link.lines) seen.push(line); // the reader ends, it does not hang
+  expect(seen).toEqual([]);
+  expect(() => link.write("later\n")).not.toThrow();
+  expect(writes).toBe(1); // nothing more is tried on it
+  // Written before the socket is attached, the throw comes at attach, and ends it the same way.
+  const early = socketLink();
+  early.write("first\n");
+  expect(() => early.attach({ write() { throw epipe; } })).not.toThrow();
+  for await (const _ of early.lines) { /* ends */ }
 });

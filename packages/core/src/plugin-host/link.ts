@@ -249,7 +249,9 @@ export function socketLink(maxLine?: number): {
   const flush = () => {
     while (sock !== undefined && out.length > 0) {
       const head = out[0]!;
-      const n = sock.write(head);
+      let n: number;
+      // Windows: a pipe whose other end has left throws EPIPE from `write` where a Unix socket gives -1. Either way the other end is gone: the link ends, never the process.
+      try { n = sock.write(head); } catch { out.length = 0; sock = undefined; done = true; wake?.(); return; }
       if (n < 0) { out.length = 0; return; } // the other end is gone; the reader's close ends the link
       if (n < head.length) { out[0] = head.subarray(n); return; }
       out.shift();
@@ -257,7 +259,7 @@ export function socketLink(maxLine?: number): {
   };
   return {
     lines: linesOf(bytes(), maxLine),
-    write(line) { out.push(Buffer.from(line)); flush(); },
+    write(line) { if (done) return; out.push(Buffer.from(line)); flush(); },
     attach(socket) { sock = socket; flush(); },
     data(chunk) { chunks.push(chunk); wake?.(); },
     drain: flush,
