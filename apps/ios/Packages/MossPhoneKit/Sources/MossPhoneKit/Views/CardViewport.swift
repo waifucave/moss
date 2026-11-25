@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The part of a scroll view a person can actually see: its bounds less the bars over it (the navigation bar, the
-/// composer), in the scroll view's own coordinates. A card reports a part of itself as seen only when that part sits
+/// The part of a scroll view a person can actually see: its frame less the bars over it (the navigation bar, the
+/// composer), in window coordinates. A card reports a part of itself as seen only when that part sits
 /// inside this rect; without one (no scroll view set it) nothing is ever reported seen, so an approve stays refused.
 struct CardViewportKey: EnvironmentKey { static let defaultValue: CGRect = .zero }
 extension EnvironmentValues {
@@ -20,18 +20,13 @@ private struct CardViewportReader: ViewModifier {
     func body(content: Content) -> some View {
         content
             .environment(\.cardViewport, viewport)
-            // From the first layout on (a list that never scrolls has a viewport too): the scroll view's size less the
-            // bars it runs under (its safe area there).
+            // In window coordinates, from the first layout on: the scroll view's frame less the bars it runs under (its
+            // safe area there). The cards measure themselves in the same coordinates, so scrolling moves only them.
             .onGeometryChange(for: CGRect.self) { g in
-                CGRect(x: 0, y: g.safeAreaInsets.top, width: g.size.width,
-                       height: max(0, g.size.height - g.safeAreaInsets.top - g.safeAreaInsets.bottom))
+                let f = g.frame(in: .global)
+                return CGRect(x: f.minX, y: f.minY + g.safeAreaInsets.top, width: f.width,
+                              height: max(0, f.height - g.safeAreaInsets.top - g.safeAreaInsets.bottom))
             } action: { new in viewport = new }
-            // And as it scrolls: what the bars cover, as the scroll view adjusts for it.
-            .onScrollGeometryChange(for: CGRect.self) { g in
-                // `contentInsets` holds what the bars cover (the safe area the scroll view adjusts for).
-                CGRect(x: 0, y: g.contentInsets.top, width: g.containerSize.width,
-                       height: max(0, g.containerSize.height - g.contentInsets.top - g.contentInsets.bottom))
-            } action: { _, new in viewport = new }
     }
 }
 
@@ -41,7 +36,7 @@ private struct SeenInViewport: ViewModifier {
     @State private var frame: CGRect = .null
     func body(content: Content) -> some View {
         content
-            .onGeometryChange(for: CGRect.self) { $0.frame(in: .scrollView) } action: { f in frame = f; check() }
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { f in frame = f; check() }
             .onChange(of: viewport) { _, _ in check() }
     }
     private func check() {
