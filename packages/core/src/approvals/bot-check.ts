@@ -19,6 +19,7 @@ import { lstatSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { CanUseTool } from "@waifucave/clover-agent-sdk";
+import { isReadOnlyShellCommand } from "@waifucave/clover-agent-runtime";
 import { LEVELS, canonicalJson, type Level, type Os, type SealedValue, type TurnOrigin } from "@waifucave/moss-protocol";
 import type { ActionEffect, ApprovalBroker } from "../contracts/approval-broker";
 import { WRITE_EFFECTS } from "../contracts/approval-broker";
@@ -149,6 +150,17 @@ export function runsLaterPlace(path: string, denyWrite: readonly string[], o: { 
 }
 
 /** Why a bot's file write to a run-later place is refused (no card is raised for it). */
+/** Whether a shell call is a read-only command by the runtime's own rule (`isReadOnlyShellCommand`, agent SDK 0.0.86:
+ *  the decision its default-mode pre-approval makes for its own Bash; a substitution, a redirection, a writer anywhere in
+ *  a chain, a here-document that runs one, or anything it can't parse is not), for a call that stays in the sandbox.
+ *  Bash only: no such rule exists for PowerShell, whose every call keeps reaching MOSS's own check. Lane WS9. */
+export function fencedReadOnlyCommand(tool: string, input: unknown): boolean {
+  if (tool !== "Bash" || input === null || typeof input !== "object" || Array.isArray(input)) return false;
+  const i = input as Record<string, unknown>;
+  if (i.dangerouslyDisableSandbox !== undefined && i.dangerouslyDisableSandbox !== false) return false;
+  return typeof i.command === "string" && i.command.trim() !== "" && isReadOnlyShellCommand(i.command);
+}
+
 export function runLaterFileRefusal(tool: string, path: string): string {
   return `${tool} was refused: ${path} is a place whose files run or apply later outside any sandbox (git's own files, an editor's or a coding agent's project settings, a shell's start files, credentials, an app, a folder of programs), so no bot's file tools write there. Give the user the change to make themselves, or, if they asked you for it, run it as a command outside the sandbox: its card shows them the exact command.`;
 }
@@ -432,6 +444,10 @@ export function botApprovalCheck(
     /** A bot's commands always ask on a card (no level, rule or reviewer answers them) while its Bash sandbox isn't
      *  drawn from this computer's fence (#353's S3; lane C's `sandboxSettingsOf`, #356, wires it). */
     commandsAlwaysCard?: boolean;
+    /** Windows (lane WS9): whether MOSS's fence holds every command of a bot's Bash here (the daemon's: Windows, the fence
+     *  set up). Then a read-only one (`fencedReadOnlyCommand`) runs with no card, as the runtime's Bash does elsewhere.
+     *  Absent: nothing of the kind (macOS and Linux, whose runtime decides it before this check). */
+    fencedReadOnlyCommands?: () => boolean;
     /** A bot's commands run in a sandbox drawn from this computer's fence (#356, #362: no network, writes only to the
      *  level's roots, never outside it): each is contained, so at ask for risky actions it runs without asking. */
     commandsSandboxed?: boolean;
@@ -704,6 +720,14 @@ export function botApprovalCheck(
     } else if (opts.commandsAlwaysCard && builtin && COMMAND_TOOLS.has(tool)) req.cardAlways = true;
     // A command that stays in the sandbox (`dangerouslyDisableSandbox` absent or `false`) is contained, as before.
     else if (opts.commandsSandboxed === true && builtin && BUILTIN_EFFECTS.get(tool) === "execute" && input.dangerouslyDisableSandbox !== true) req.contained = true;
+    // Windows (lane WS9): a read-only command of MOSS's fenced Bash runs with no card, as the runtime's own Bash does on
+    // macOS and Linux (its default-mode pre-approval, which since agent SDK 0.0.86 no host tool of that name gets). Only
+    // where the daemon says the fence holds every such command (`fencedReadOnlyCommands`: Windows, its fence set up),
+    // the command sandboxed by this computer's fence (`commandsSandboxed`, never `commandsAlwaysCard`), and judged by the
+    // runtime's own rule (`fencedReadOnlyCommand`); at every level, as there. Nothing anywhere else changes.
+    if (escape === "off" && builtin && opts.commandsSandboxed === true && opts.commandsAlwaysCard !== true && opts.fencedReadOnlyCommands?.() === true && fencedReadOnlyCommand(tool, input)) {
+      return { behavior: "allow", updatedInput: input };
+    }
     // What runs is what was shown: the allow carries the canonical judged input the card showed (stable key order),
     // and an input that changed meanwhile is refused instead.
     const shown = escape === "escape" ? canonicalJson(input) : undefined;

@@ -20,6 +20,11 @@ import { fileToolFenceRefusal } from "../../src/runtime-sdk/turn-loop/file-fence
 import { fileToolRefusal } from "../../src/agents/moss-code/backend";
 import { secretReadPlaces } from "../../src/contracts/fence";
 import { rmdirSync, symlinkSync } from "node:fs";
+import { MossApprovalBroker } from "../../src/approvals/broker";
+import { botApprovalCheck } from "../../src/approvals/bot-check";
+import { FakeClock } from "../../src/contracts/fakes/clock";
+import type { BotSessionContext } from "../../src/bots/service";
+import type { CanUseTool } from "@waifucave/clover-agent-sdk";
 import { agentShellTools, stopWindowsBackground, windowsShellTools } from "../../src/fence/win-shell-tools";
 import { planFromSettings, profileExcludeCandidates, QUARANTINE_COPY_LIMITS, quarantineWin, watchedReadDenies } from "../../src/fence/win-fenced";
 import { fencedExecutor } from "../../src/computers/fenced-executor";
@@ -520,6 +525,29 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     for (const link of ["keys", "mosslink"]) { try { rmdirSync(join(project, link)); } catch { /* already gone */ } } // a junction, never its target
     rmSync(project, { recursive: true, force: true });
   }, 300_000);
+
+  test("a bot's read-only command at the ask level (lane WS9): no card while this computer's fence is set up; a writing one asks", async () => {
+    // The daemon's wiring: the fence's own word that it can run here (`winSpawner.available`).
+    const spawner = fencedSpawner({ fence });
+    const broker = new MossApprovalBroker({ clock: new FakeClock(), levels: () => "ask", localComputer: "Studio" });
+    const cards: string[] = [];
+    const off = broker.watch((e) => {
+      if (e.type !== "requested") return;
+      cards.push(e.card.id);
+      void broker.answer(e.card.id, { optionId: "deny", hash: e.card.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(e.card.id)!, input: "click", at: 1 } }, { role: "app" });
+    });
+    const check = botApprovalCheck(broker, { commandsSandboxed: spawner.available, fencedReadOnlyCommands: () => spawner.available });
+    const ctx = { botId: BOT, sessionId: "e2e-bot", kind: "bot", computer: "Studio", paths: { scratch }, caller: CALLER } as unknown as BotSessionContext;
+    const opts = { signal: new AbortController().signal, toolUseID: "call_ro", requestId: "req_ro" } as Parameters<CanUseTool>[2];
+    const ls = await check(ctx, () => "user")("Bash", { command: "ls -la" }, opts);
+    const lsCards = cards.length;
+    const npm = await check(ctx, () => "user")("Bash", { command: "npm test" }, opts);
+    off();
+    console.log(`[e2e] read-only rule: fence set up ${spawner.available}; \`ls -la\` -> ${ls?.behavior} with ${lsCards} card(s); \`npm test\` -> ${npm?.behavior} with ${cards.length - lsCards} card(s)`);
+    expect(spawner.available).toBe(true);
+    expect([ls?.behavior, lsCards]).toEqual(["allow", 0]);
+    expect(cards.length - lsCards).toBe(1);
+  });
 
   test("a share back to this computer (lane WS8, the reviewer's finding): whether Windows opens it for this user, and both file tools refuse it", () => {
     let opened = false;

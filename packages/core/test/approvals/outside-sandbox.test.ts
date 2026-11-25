@@ -8,7 +8,7 @@ import { join } from "node:path";
 import type { Card, Level } from "@waifucave/moss-protocol";
 import { MossApprovalBroker, botDisplayName, type MossApprovalRequest } from "../../src/approvals/broker";
 import {
-  botApprovalCheck, CODE_MAX, MISPLACED_SANDBOX_FLAG_REFUSAL, OUTSIDE_SANDBOX_SENTENCE, misplacedSandboxFlag,
+  botApprovalCheck, CODE_MAX, fencedReadOnlyCommand, MISPLACED_SANDBOX_FLAG_REFUSAL, OUTSIDE_SANDBOX_SENTENCE, misplacedSandboxFlag,
   outsideSandboxFlagOf, outsideSandboxHeadline, outsideSandboxInputError, outsideSandboxTimeoutLine,
 } from "../../src/approvals/bot-check";
 import { mergedHooks, withoutAllow } from "../../src/runtime-sdk/turn-loop/hook-merge";
@@ -277,6 +277,69 @@ describe("a command in the sandbox, by MOSS's own rule (Bash and PowerShell; lan
     expect(seen).toHaveLength(1);
     expect(JSON.stringify(seen[0]!.fields.source)).toContain("moss-code");
     expect(JSON.stringify(seen[0]!.fields.source)).toContain("luna");
+  });
+});
+
+// Lane WS9: Windows's read-only rule for MOSS's fenced Bash, the runtime's own classifier (`isReadOnlyShellCommand`, agent
+// SDK 0.0.86). The check answers the same whatever the SDK does before it: under 0.0.85 the runtime pre-approved such a call
+// itself (by the tool's name), from 0.0.86 every call reaches this check, which now gives the same answer.
+describe("a read-only command of the fenced Bash on Windows (lane WS9): no card, only while the fence is set up", () => {
+  /** What the check does with one call, at a level, with the Windows fence up or not. */
+  async function judged(tool: string, command: string, level: Level, fence: "up" | "not set up", more: { alwaysCard?: boolean; flag?: boolean } = {}) {
+    const w = world();
+    let reviewed = 0;
+    const broker = brokerAt(level, async () => { reviewed++; return "safe"; });
+    const check = botApprovalCheck(broker, {
+      commandsSandboxed: fence === "up", fencedReadOnlyCommands: () => (more.flag ?? true) && fence === "up",
+      ...(more.alwaysCard ? { commandsAlwaysCard: true } : {}),
+    });
+    const seen: Card[] = [];
+    // Each card is answered "deny" as it comes, through the app's sealed frame (as `answerNext` does).
+    const off = broker.watch((e) => {
+      if (e.type !== "requested") return;
+      seen.push(e.card);
+      void broker.answer(e.card.id, { optionId: "deny", hash: e.card.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(e.card.id)!, input: "click", at: 1 } }, { role: "app" });
+    });
+    const r = await check(w.ctx, () => "user")(tool, { command }, callOpts);
+    off();
+    return seen.length > 0 ? "card" : reviewed > 0 ? "review" : r!.behavior === "allow" ? "allow" : "deny";
+  }
+  const levels: Level[] = ["read-only", "ask", "ask-risky", "accept-edits", "automatic"];
+  // The WS8 rule, unchanged, for everything this one leaves alone.
+  const before = {
+    up: { "read-only": "deny", ask: "card", "ask-risky": "allow", "accept-edits": "allow", automatic: "allow" },
+    "not set up": { "read-only": "deny", ask: "card", "ask-risky": "review", "accept-edits": "review", automatic: "allow" },
+  } as const;
+  for (const fence of ["up", "not set up"] as const) {
+    for (const level of levels) {
+      test(`Bash \`ls -la src\`, fence ${fence}, at ${level}: ${fence === "up" ? "allow, no card (as macOS's runtime does)" : before[fence][level]}`, async () => {
+        expect(await judged("Bash", "ls -la src", level, fence)).toBe(fence === "up" ? "allow" : before[fence][level]);
+      });
+      test(`Bash \`npm test\` (it writes), fence ${fence}, at ${level}: ${before[fence][level]}, as before`, async () => {
+        expect(await judged("Bash", "npm test", level, fence)).toBe(before[fence][level]);
+      });
+      test(`PowerShell \`Get-ChildItem\`, fence ${fence}, at ${level}: ${before[fence][level]}, as before (no classifier for it)`, async () => {
+        expect(await judged("PowerShell", "Get-ChildItem", level, fence)).toBe(before[fence][level]);
+      });
+    }
+  }
+  test("what the runtime's rule doesn't call read-only still asks: a substitution, a redirection, a writer in a chain or a pipe, a here-document that runs one", async () => {
+    for (const command of ["ls $(rm -rf ~)", "ls `touch x`", "ls > out.txt", "cat a >> b", "ls && rm -rf build", "ls; touch x", "cat x | tee y", "cat <<EOF\n$(rm -rf ~)\nEOF", "git status; git commit -m x", "find . -delete", "ls 'unterminated"]) {
+      expect([command, await judged("Bash", command, "ask", "up")]).toEqual([command, "card"]);
+    }
+  });
+  test("never while the sandbox isn't this computer's fence (`commandsAlwaysCard`), nor without the daemon's word (macOS and Linux: their runtime decides it before this check)", async () => {
+    expect(await judged("Bash", "ls", "automatic", "up", { alwaysCard: true })).toBe("card");
+    expect(await judged("Bash", "ls", "ask", "up", { flag: false })).toBe("card");
+    expect(await judged("Bash", "ls", "read-only", "up", { flag: false })).toBe("deny");
+  });
+  test("never for a call asking to leave the sandbox, whatever its command", async () => {
+    expect(fencedReadOnlyCommand("Bash", { command: "ls", dangerouslyDisableSandbox: true })).toBe(false);
+    expect(fencedReadOnlyCommand("Bash", { command: "ls", dangerouslyDisableSandbox: "yes" })).toBe(false);
+    expect(fencedReadOnlyCommand("Bash", { command: "ls", dangerouslyDisableSandbox: false })).toBe(true);
+    expect(fencedReadOnlyCommand("PowerShell", { command: "Get-ChildItem" })).toBe(false);
+    expect(fencedReadOnlyCommand("Bash", { command: "" })).toBe(false);
+    expect(fencedReadOnlyCommand("Bash", null)).toBe(false);
   });
 });
 

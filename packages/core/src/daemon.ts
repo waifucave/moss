@@ -4843,6 +4843,9 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
           // On Windows (lane WS8) only when the fence's Windows leg can run there (`moss-core sandbox setup` was run): its
           // tool refuses every command otherwise, and a command no sandbox holds is never judged as contained.
           commandsSandboxed: winSpawner === undefined || winSpawner.available,
+          // Windows (lane WS9): a read-only command of the fenced Bash runs with no card once the fence is set up, as the
+          // runtime's own Bash does on macOS and Linux; asked at each call, so a fence removed meanwhile stops it.
+          ...(winSpawner === undefined ? {} : { fencedReadOnlyCommands: () => winSpawner.available }),
           agentStart: agentStartPolicy({
             contained: async (backend) => (await agents()?.manager.isContainedBackend(backend)) === true,
             // A definition inside another bot (`own-bot`, its own or its plugin's) isn't this bot's to start (§5.5).

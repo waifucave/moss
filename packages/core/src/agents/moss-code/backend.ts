@@ -40,7 +40,7 @@ import { runtimeDenyForms } from "../../fence/runtime-deny-forms";
 import { inProcessSandboxReady, notAvailableHere } from "../sandbox/in-process";
 import { GLOSSARY } from "../bridge/tools";
 import { botSandbox, isUnknownTask } from "../../runtime-sdk/turn-loop/driver";
-import { MISPLACED_SANDBOX_FLAG_REFUSAL, misplacedSandboxFlag, outsideSandboxFlagOf, realFileWriteInput } from "../../approvals/bot-check";
+import { MISPLACED_SANDBOX_FLAG_REFUSAL, fencedReadOnlyCommand, misplacedSandboxFlag, outsideSandboxFlagOf, realFileWriteInput } from "../../approvals/bot-check";
 import { botChildSandboxOf, botChildWriteRefusal, type BotChildSandbox } from "../../runtime-sdk/turn-loop/subagent-backend";
 import { fillProvider } from "../../runtime-sdk/turn-loop/embedded-session";
 import { mergedHooks } from "../../runtime-sdk/turn-loop/hook-merge";
@@ -499,6 +499,15 @@ export class MossCodeBackend implements AgentBackend {
         // A bot's child never writes a run-later place: refused before any card, with the bot's own message.
         const runLater = botChildWriteRefusal(spec as unknown as AcpStartSpec, deps.botChild, name, input as Record<string, unknown>);
         if (runLater !== undefined) return { behavior: "deny", message: runLater };
+        // Windows (lane WS9): a read-only command of MOSS's fenced Bash runs with no ACP request and no card, as the
+        // runtime's own Bash does on macOS and Linux (its default-mode pre-approval, which a host tool of that name no
+        // longer gets from agent SDK 0.0.86) — only while the fence is set up (`sandboxReady`, asked now), and judged by the
+        // runtime's own rule (`fencedReadOnlyCommand`). PowerShell keeps asking. This is the one place that tells the two
+        // apart: ACP's request gives both as kind `execute`, titled by the command.
+        if (shellTools !== undefined && deps.sandboxReady?.() === true && fencedReadOnlyCommand(name, input)) {
+          if (!(await holdWhilePaused(gate, AbortSignal.any([opts.signal, abort.signal])))) return { behavior: "deny", message: PAUSED };
+          return { behavior: "allow", updatedInput: input as Record<string, unknown> };
+        }
         // The bridge's `Glossary` is the runtime's host tool search, which it names plainly (`hostToolSearch`); the rest are
         // `mcp__<bridge server>__<name>`.
         const onBridge = bridgePrefix !== undefined && name.startsWith(bridgePrefix) ? name.slice(bridgePrefix.length) : bridge !== undefined && name === GLOSSARY.name ? GLOSSARY.name : undefined;

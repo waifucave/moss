@@ -6,7 +6,7 @@ import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Options, SpawnClaudeCodeProcess } from "@waifucave/clover-agent-sdk";
+import type { CanUseTool, Options, SpawnClaudeCodeProcess } from "@waifucave/clover-agent-sdk";
 import { buildCoreBrand } from "../../runtime-sdk/brand";
 import { BOT_SANDBOX } from "../../runtime-sdk/turn-loop/driver";
 import { testProviderNameFor } from "../../runtime-sdk/provider-selection";
@@ -282,6 +282,41 @@ describeWithEmbeddedRuntime("MOSS's coding agent over ACP", (spawn) => {
     const escape = seen!.hooks!.PreToolUse![2]!;
     const said = await escape.hooks[0]!({ tool_name: "Bash", tool_input: { command: "whoami", dangerouslyDisableSandbox: true } } as never, undefined, { signal: new AbortController().signal });
     expect(JSON.stringify(said)).toContain('"permissionDecision":"deny"');
+  });
+
+  test("on Windows a read-only command of its fenced Bash runs with no ACP request, only while the fence is set up; a writing one, PowerShell and a hostile one ask (lane WS9)", async () => {
+    let seen: (Options & { canUseTool?: CanUseTool }) | undefined;
+    const fakeQuery = ((args: { prompt: AsyncIterable<string>; options: Options }) => {
+      seen = args.options;
+      async function* run() {
+        yield { type: "system", subtype: "init", model: MODEL, permissionMode: "default" };
+        for await (const _ of args.prompt) yield { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+      }
+      return Object.assign(run(), { interrupt: async () => {}, setModel: async () => {}, setPermissionMode: async () => {}, setEffort: async () => {}, supportedModels: async () => [] });
+    }) as unknown as MossCodeDeps["query"];
+    const tool = (name: string) => ({ name, description: name, inputSchema: { type: "object" }, run: async () => ({ text: "fenced", isError: false }) });
+    let ready = true;
+    // The bot holds its agent's root, so a command it is asked about isn't carded every time.
+    const w = make(spawn, { query: fakeQuery, sandboxReady: () => ready, windowsShell: () => [tool("Bash"), tool("PowerShell")], childCommandsHeld: () => true });
+    // At the widest level, so each request MOSS is asked answers at once: what is counted is whether it was asked.
+    w.changeLevel("automatic");
+    const r = await w.manager.start({ caller: { kind: "bot", bot: "alpha", session: "s_alpha", origin: "user" }, backend: MOSS_CODE_ID, root: "home/Studio/project1", title: "Shell", prompt: "hi", model: MODEL });
+    await waitFor(() => notification(w), "the task notification");
+    const asked = () => (readFileSync(join(w.mossHome, r.transcript), "utf8").match(/session\/request_permission/g) ?? []).length;
+    const call = async (name: string, command: string) => {
+      const before = asked();
+      const answer = await seen!.canUseTool!(name, { command }, { signal: new AbortController().signal, toolUseID: `call_${name}_${before}` } as Parameters<CanUseTool>[2]);
+      return { behavior: answer.behavior, asked: asked() > before };
+    };
+    expect(await call("Bash", "ls -la")).toEqual({ behavior: "allow", asked: false });
+    expect(await call("Bash", "git status && cat README")).toEqual({ behavior: "allow", asked: false });
+    expect((await call("Bash", "npm test")).asked).toBe(true);
+    expect((await call("Bash", "ls > out.txt")).asked).toBe(true);
+    expect((await call("Bash", "ls $(rm -rf ~)")).asked).toBe(true);
+    expect((await call("PowerShell", "Get-ChildItem")).asked).toBe(true);
+    // The fence removed meanwhile: no allowance, it asks.
+    ready = false;
+    expect((await call("Bash", "ls -la")).asked).toBe(true);
   });
 
   // Windows only, with MOSS_WIN_RUNTIME_E2E=1 (the windows-fence workflow's unit job): a real turn on the embedded runtime,
