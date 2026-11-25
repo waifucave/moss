@@ -14,6 +14,7 @@ import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { themeSourceOf } from "./theme-source";
+import { SEALED_SCHEME_ASK, isCardFrame, schemeOf, tellCardPages } from "./sealed-scheme";
 import { captureOne, captureWindows, surfaceName as captureName, type CaptureDeps, type WindowLike } from "./capture";
 import { openWindow, OPEN_TARGETS } from "./open";
 import { RENDER_CONSOLE_MAX, RenderQueue, renderPlace, type RenderConsoleLine, type RenderHandle } from "./render";
@@ -975,6 +976,17 @@ async function ready(): Promise<void> {
   startWindowSeam();
   syncAppearance();
   nativeTheme.on("updated", syncAppearance);
+  // A card page's scheme is the app's word, told to every card page, shown or not (sealed-scheme.ts): a hidden or offscreen frame does
+  // not re-read `prefers-color-scheme` when the Theme changes.
+  ipcMain.on(SEALED_SCHEME_ASK, (event) => {
+    event.returnValue = isCardFrame(event.senderFrame?.url ?? "") ? schemeOf(nativeTheme.shouldUseDarkColors) : "";
+  });
+  nativeTheme.on("updated", () => {
+    for (const wc of webContents.getAllWebContents()) {
+      if (wc.isDestroyed()) continue;
+      tellCardPages(wc.mainFrame.framesInSubtree.map((f) => ({ url: f.url, send: (channel, scheme) => f.send(channel, scheme) })), nativeTheme.shouldUseDarkColors);
+    }
+  });
   if (process.platform === "win32") systemPreferences.on("accent-color-changed", syncAppearance);
 
   for (const e of ["display-metrics-changed", "display-added", "display-removed"] as const) screen.on(e as "display-added", () => tellSurfaces());

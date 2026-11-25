@@ -693,9 +693,13 @@ const PAGE_CSS = `
   --seal-control: #EDEDED; --seal-accent: #4180E3; --seal-accent-text: #FFFFFF;
   --seal-mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace;
 }
+/* The scheme is the app's word (data-scheme, sealed-scheme.ts); the media query is only the guess before it arrives. */
 @media (prefers-color-scheme: dark) {
-  :root { --seal-surface: #202020; --seal-raised: #2A2A2A; --seal-hairline: #3F3F3F; --seal-text: #F2F2F2; --seal-muted: #9E9E9E; --seal-control: #3B3B3B; }
+  :root:not([data-scheme]) { --seal-surface: #202020; --seal-raised: #2A2A2A; --seal-hairline: #3F3F3F; --seal-text: #F2F2F2; --seal-muted: #9E9E9E; --seal-control: #3B3B3B; }
 }
+:root[data-scheme="dark"] { color-scheme: dark }
+:root[data-scheme="light"] { color-scheme: light }
+:root[data-scheme="dark"] { --seal-surface: #202020; --seal-raised: #2A2A2A; --seal-hairline: #3F3F3F; --seal-text: #F2F2F2; --seal-muted: #9E9E9E; --seal-control: #3B3B3B; }
 html, body { margin: 0; background: transparent; }
 body {
   font-family: var(--moss-card-font-family, system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI", "Noto Sans", Ubuntu, Cantarell, sans-serif);
@@ -775,7 +779,8 @@ body:has(.seal-button.glyph) .state { display: none }
 .own-head { -webkit-app-region: drag }
 .own-head { display: flex; gap: 10px; align-items: flex-start }
 .own-head .shield { flex: none; margin-top: 2px; color: #C27C00 }
-@media (prefers-color-scheme: dark) { .own-head .shield { color: #ECD575 } }
+@media (prefers-color-scheme: dark) { :root:not([data-scheme]) .own-head .shield { color: #ECD575 } }
+:root[data-scheme="dark"] .own-head .shield { color: #ECD575 }
 .own-words { min-width: 0 }
 .own .ask { font-size: 1.07em }
 .own .sub { margin: 2px 0 0; color: var(--seal-muted); font-size: 0.9em }

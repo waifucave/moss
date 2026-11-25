@@ -917,7 +917,9 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
   // (the OS cannot be flipped headless) follows the emulation under it.
   await step(11, async () => {
     if (ctx.cardTurn === undefined) return fail("no card turn can run here (the run has no plugin tool turn to press)");
-    const darkOf = async (session: string) => (await cdp.evaluate(session, "window.matchMedia('(prefers-color-scheme: dark)').matches").catch(() => undefined)) as boolean | undefined;
+    // A card page draws in the scheme the app tells it (`data-scheme` on its root, sealed-scheme.ts), the media query only before that;
+    // any other page reads its media query.
+    const darkOf = async (session: string) => (await cdp.evaluate(session, "(() => { const s = document.documentElement.getAttribute('data-scheme'); return s === 'dark' || s === 'light' ? s === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches; })()").catch(() => undefined)) as boolean | undefined;
     const schemes = async (cardId: string): Promise<{ main?: boolean; seen: { what: string; dark: boolean; url?: string }[] }> => {
       const seen: { what: string; dark: boolean; url?: string }[] = [];
       let main: boolean | undefined;
