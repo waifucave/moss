@@ -267,13 +267,15 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     const pipes = new OneShotPipes({
       endpoint, handlers: { open() {}, close() {}, data() {} } as never, adopt: (_s, pid) => { adopted.push(pid); },
       closeAtOnce: (s) => { (s as { terminate(): void }).terminate(); }, userSid: currentUserSid,
+      ttlMs: 600_000, // a fenced command takes tens of seconds to start: a one-shot that expired meanwhile would be "refused" for the wrong reason
     });
     const oneShot = pipes.issue().pipe;
-    const open = (name: string) => `try { $c = New-Object System.IO.Pipes.NamedPipeClientStream('.', '${name}', [System.IO.Pipes.PipeDirection]::InOut); $c.Connect(3000); 'PIPE-OPEN' } catch { 'PIPE-REFUSED ' + $_.Exception.GetType().Name }`;
+    // Refused for the right reason: the access list said no (UnauthorizedAccessException), not a pipe that was never there (which times out).
+    const open = (name: string) => `try { $c = New-Object System.IO.Pipes.NamedPipeClientStream('.', '${name}', [System.IO.Pipes.PipeDirection]::InOut); $c.Connect(3000); 'PIPE-OPEN' } catch { $e = $_.Exception; while ($e.InnerException) { $e = $e.InnerException }; 'PIPE-REFUSED ' + $e.GetType().Name }`;
     for (const path of [oneShot, endpoint]) {
       const r = await call(tools.PowerShell!, { command: open(path.replace(/^\\\\\.\\pipe\\/, "")) });
       console.log(`[e2e] pool principal on ${path}: ${r.text.trim()}`);
-      expect(r.text).toContain("PIPE-REFUSED");
+      expect(r.text).toContain("PIPE-REFUSED UnauthorizedAccessException");
     }
     expect(adopted).toEqual([]); // nothing was named: the one-shot still waits for its client
     // Its user, as the engine reads it from a process (processIdentity): not this user's, so `adopt` would refuse it even where the access list let it in.
