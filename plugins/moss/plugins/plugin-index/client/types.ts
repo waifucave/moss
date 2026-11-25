@@ -127,6 +127,8 @@ export interface PluginDetailView extends InstalledPlugin {
   servers: string[];
   settings: DetailSetting[];
   signIns: DetailSignIn[];
+  /** A local server's plugin: whether it answers now, and how many models it lists. */
+  local?: { running: boolean; models: number };
   log: string[];
   pinned: boolean;
   /** It comes from an index or npm, so updates reach it. */

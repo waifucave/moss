@@ -200,7 +200,7 @@ export function commandKeys(d: PluginDetail, listed: readonly { name: string; pl
 /** One plugin opened, from `plugin.get`, its settings, its sign-ins and its log. */
 export function toDetail(
   d: PluginDetail,
-  more: { childTools?: string[]; parts?: { name: string; labels: string[] }[]; settings?: SettingRow[]; auth?: { index: number; method: string; state: string; account?: string }[]; log?: string[]; muted?: boolean; grants?: GrantRow[]; commands?: { name: string; pluginId: string; keyState?: { state: string; what?: string; with?: string[] } }[] },
+  more: { childTools?: string[]; parts?: { name: string; labels: string[] }[]; settings?: SettingRow[]; auth?: { index: number; method: string; state: string; account?: string }[]; local?: { running: boolean; models: number }; log?: string[]; muted?: boolean; grants?: GrantRow[]; commands?: { name: string; pluginId: string; keyState?: { state: string; what?: string; with?: string[] } }[] },
   lang = "en",
   icons: Readonly<Record<string, string>> = {},
 ): PluginDetailView {
@@ -240,6 +240,7 @@ export function toDetail(
       state: a.state,
       ...(a.account ? { account: a.account } : {}),
     })),
+    ...(more.local !== undefined ? { local: more.local } : {}),
     log: more.log ?? [],
     pinned: d.pinned,
     updates: d.provenance.index !== undefined || d.provenance.npm !== undefined,
@@ -350,7 +351,7 @@ export function PluginIndexEntry({ props }: { props: PluginIndexEntryProps }) {
       quiet(core.call("plugin.grant.list", { pluginId: open })),
       quiet(core.call("command.list", {})),
     ]).then(
-      ([{ d, childTools, parts }, settings, auth, logs, mutes, grants, cmds]) => { if (!live) return; setOpenFailed(undefined); setDetail(toDetail(d.plugin, { childTools, parts, ...(settings ? { settings: settings.settings } : {}), ...(auth ? { auth: auth.auth } : {}), ...(logs ? { log: logs.lines } : {}), muted: mutedIn(mutes, open), ...(grants ? { grants: grants.grants.map((g) => ({ token: g.token, path: g.path, kind: g.kind, access: g.access })) } : {}), ...(cmds ? { commands: cmds.commands } : {}) }, "en", icons)); },
+      ([{ d, childTools, parts }, settings, auth, logs, mutes, grants, cmds]) => { if (!live) return; setOpenFailed(undefined); setDetail(toDetail(d.plugin, { childTools, parts, ...(settings ? { settings: settings.settings } : {}), ...(auth ? { auth: auth.auth, ...(auth.local !== undefined ? { local: auth.local } : {}) } : {}), ...(logs ? { log: logs.lines } : {}), muted: mutedIn(mutes, open), ...(grants ? { grants: grants.grants.map((g) => ({ token: g.token, path: g.path, kind: g.kind, access: g.access })) } : {}), ...(cmds ? { commands: cmds.commands } : {}) }, "en", icons)); },
       (err: unknown) => {
         if (!live) return;
         // The plugin went (removed meanwhile): back to the list. Any other failure (a call refused while the window's

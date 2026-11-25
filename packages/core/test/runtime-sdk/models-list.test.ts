@@ -6,11 +6,15 @@ import { loadCatalog, type WinterCatalog } from "@waifucave/clover-provider-cata
 import { catalogModelListings, listModels, MODELS_LIST, ModelListing, modelsMethods } from "../../src/runtime-sdk/models-list";
 import { modelPluginId } from "../../src/runtime-sdk/model-plugins/bundled";
 import { toolsRefusedFor } from "../../src/runtime-sdk/provider-selection";
+import { setLocalServers } from "../../src/runtime-sdk/model-plugins/local-servers";
 
 const catalog = loadCatalog();
 const everyProvider = new Set(catalog.providers.map((p) => p.id));
 
 describe("models.list", () => {
+  // No local-server prober: a daemon an earlier file started in this process lets its own go at stop, and this file
+  // pins the catalog rows as they are with none.
+  setLocalServers(undefined);
   test("every model of the catalog fits the protocol's limits, none dropped", async () => {
     const result = await listModels({ signedIn: () => everyProvider, catalog: () => catalog }, {});
     // The method's own result schema takes the whole answer.

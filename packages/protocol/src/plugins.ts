@@ -544,8 +544,12 @@ export const PLUGINS_METHODS = {
   }),
   pluginAuthList: defineMethod({
     name: "plugin.auth.list", owner: "A", roles: ["app", "cli"],
-    params: IdParams, result: z.object({ auth: z.array(PluginAuthView).max(32) }),
-    doc: "A plugin's sign-ins and their state, for Settings and the welcome guide (§3.3, §5.1).",
+    params: IdParams, result: z.object({
+      auth: z.array(PluginAuthView).max(32),
+      /** A plugin that serves a local server (2026-11-24): whether it answers now, and how many models it lists. */
+      local: z.object({ running: z.boolean(), models: z.number().int().nonnegative().max(100_000) }).optional(),
+    }),
+    doc: "A plugin's sign-ins and their state, and for a local server whether it is running, for Settings and the welcome guide (§3.3, §5.1).",
   }),
   pluginAuthSignIn: defineMethod({
     name: "plugin.auth.signIn", owner: "A", roles: ["app", "cli"], userOnly: true,

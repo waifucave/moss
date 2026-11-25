@@ -63,8 +63,8 @@ describe("the welcome guide", () => {
   test("lists each model provider once, in the user's language, with its terms and its sign-ins", async () => {
     const providers = await listProviders(client(), "fr");
     expect(providers).toEqual([
-      { id: "luna-models", name: "Luna IA", terms: { url: "https://luna.example/terms" }, auth: [{ index: 0, method: "api-key", state: "signed-out", help: "Make a key in Luna's console." }, { index: 1, method: "oauth-pkce", state: "signed-out" }] },
-      { id: "moss/openai", name: "OpenAI", terms: { text: "Be nice." }, auth: [{ index: 0, method: "api-key", state: "signed-in", account: "me@example.com" }] },
+      { id: "luna-models", name: "Luna IA", providers: ["luna"], terms: { url: "https://luna.example/terms" }, auth: [{ index: 0, method: "api-key", state: "signed-out", help: "Make a key in Luna's console." }, { index: 1, method: "oauth-pkce", state: "signed-out" }] },
+      { id: "moss/openai", name: "OpenAI", providers: ["openai"], terms: { text: "Be nice." }, auth: [{ index: 0, method: "api-key", state: "signed-in", account: "me@example.com" }] },
     ]);
     expect(anyReady(providers)).toBe(true);
     expect(anyReady(providers.slice(0, 1))).toBe(false);

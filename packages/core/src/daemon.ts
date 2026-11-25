@@ -275,7 +275,7 @@ import { DOWNLOAD_LIMITS, httpsFetch, INDEX_FETCH_TIMEOUT_MS } from "./registry/
 import { createPluginAuth, pluginAuthMethods, type PluginAuth } from "./runtime-sdk/plugin-auth";
 import { evictSessionsForCredential, evictSessionsForModelCatalog } from "./runtime-sdk/credentials";
 import { activeCatalog, installedModelPlugins, modelProviderKey, onModelCatalogChange } from "./runtime-sdk/model-plugins";
-import { isLocalServerProvider, localRecommendation, LocalServers, setLocalServers, type LocalServerEndpoint } from "./runtime-sdk/model-plugins/local-servers";
+import { isLocalServerProvider, localRecommendation, localServers, LocalServers, setLocalServers, type LocalServerEndpoint } from "./runtime-sdk/model-plugins/local-servers";
 import { catalogModelListings, contributedProviders, listModels, modelOffer, modelsMethods, type ModelsListDeps } from "./runtime-sdk/models-list";
 import { coldResumeRunHomeFor, createMossSessionDrivers, sessionPermissionClassFor, type MossLegDeps, type MossSessionDrivers } from "./runtime-sdk/session-driver";
 import { linkedRouterSupportsRunHome, linkedRunHomeBuilder, runHomeHandleOf, runHomeReportSummary } from "./runtime-sdk/run-home-support";
@@ -5384,6 +5384,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
         markAt = now;
       };
       offModelCatalog();
+      // The local servers' prober let go, so nothing outlives this daemon (another one in the same process starts its own).
+      if (localServers() === localServerProbe) setLocalServers(undefined);
       modelPlugins?.stop(); // A-M2: the compiled catalog back, the registry watch let go
       // The app is told to quit (`app.quit`, written now; no wait for it), and the pair starts nothing
       // more: no app start from here on, and this run's app token goes.

@@ -215,6 +215,8 @@ export interface CoreAnswers {
       account?: string;
       reason?: string;
     }[];
+    /** A local server's plugin: whether it answers now, and how many models it lists. */
+    local?: { running: boolean; models: number };
   };
   "plugin.logs": {
     lines: string[];

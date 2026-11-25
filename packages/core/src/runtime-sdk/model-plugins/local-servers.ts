@@ -63,7 +63,8 @@ export function isLocalServerProvider(catalog: Pick<WinterCatalog, "providers">,
 
 /** The SDK's local adapter, asked for its models with no credential, under `timeoutMs`. */
 export const sdkListLocalModels: ListLocalModels = async (endpoint, timeoutMs) => {
-  const adapter = createLocalOpenAIAdapter({ headerTimeoutMs: timeoutMs });
+  // Listing models reads no row: the adapter's descriptor lookup knows none here.
+  const adapter = createLocalOpenAIAdapter({ headerTimeoutMs: timeoutMs, descriptors: () => undefined });
   const result = await discoverModels(adapter, {
     connection: { providerId: endpoint.provider, baseUrl: endpoint.baseUrl, local: true, endpointOrigin: endpoint.personSet ? "user" : "reviewed" },
     credentials: createMemoryCredentialStore(),

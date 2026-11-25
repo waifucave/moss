@@ -351,6 +351,20 @@ describe("the Plugins page: what is installed", () => {
     expect(head.querySelector("img")?.getAttribute("src")).toBe("/_t/tarot-panel/assets/tarot%20card.png");
   });
 
+  test("a local server's plugin says whether it runs and how many models it lists, from the core's answer; any other says nothing (2026-11-24)", () => {
+    const d = installedDetail("tarot-panel") as never;
+    const pane = (local?: { running: boolean; models: number }) => {
+      const r = render(<Detail plugin={toDetail(d, local === undefined ? {} : { auth: [], local })} onBack={() => undefined} onSwitch={() => undefined} onRestart={() => undefined} onRemove={() => undefined} onKey={() => undefined} onSignIn={() => undefined} onSignOut={() => undefined} />);
+      const line = r.container.querySelector("[data-local-server]")?.textContent ?? null;
+      r.unmount();
+      return line;
+    };
+    expect(pane({ running: true, models: 3 })).toBe("Running, 3 models");
+    expect(pane({ running: true, models: 1 })).toBe("Running, 1 model");
+    expect(pane({ running: false, models: 0 })).toBe("Not running");
+    expect(pane()).toBeNull();
+  });
+
   test("a hidden setting (the plugin's own state) is not listed in the plugin's settings", () => {
     const d = installedDetail("tarot-panel") as never;
     const rows = [{ key: "region", type: "string", title: "Region", value: "eu" }, { key: "places", type: "string", title: "Places", hidden: true, value: "{}" }];

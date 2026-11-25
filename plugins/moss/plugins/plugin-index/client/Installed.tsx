@@ -401,6 +401,12 @@ export function Detail(props: DetailProps) {
         )}
       </Section>}
 
+      {!p.notYet && p.local !== undefined && (
+        <Section title={S.localTitle}>
+          <p className="cl-plugin-index__setting-note" data-local-server={p.local.running ? "running" : "stopped"}>{p.local.running ? S.localRunning(p.local.models) : S.localStopped}</p>
+        </Section>
+      )}
+
       {!p.notYet && p.signIns.length > 0 && (
         <Section title={S.signIns}>
           <ul className="cl-plugin-index__indexes">

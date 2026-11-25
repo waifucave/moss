@@ -1841,7 +1841,7 @@
       }
     },
     "plugin.auth.list": {
-      "doc": "A plugin's sign-ins and their state, for Settings and the welcome guide (§3.3, §5.1).",
+      "doc": "A plugin's sign-ins and their state, and for a local server whether it is running, for Settings and the welcome guide (§3.3, §5.1).",
       "owner": "A",
       "direction": "to-daemon",
       "roles": [
@@ -1916,6 +1916,24 @@
               ],
               "additionalProperties": false
             }
+          },
+          "local": {
+            "type": "object",
+            "properties": {
+              "running": {
+                "type": "boolean"
+              },
+              "models": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100000
+              }
+            },
+            "required": [
+              "running",
+              "models"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [

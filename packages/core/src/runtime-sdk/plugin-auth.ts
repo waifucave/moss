@@ -28,7 +28,7 @@ import type { CardOpener } from "../devices/rpc";
 import { PLUGINS_METHODS, type PluginAuthView } from "@waifucave/moss-protocol";
 import { startXaiLogin, type CredentialStore } from "@waifucave/clover-provider-runtime";
 import { clearCredentialMaterial, readCredentialMaterial, writeCredentialMaterial } from "../auth/credential-material";
-import { localServers } from "./model-plugins/local-servers";
+import { isLocalServerProvider, localServers } from "./model-plugins/local-servers";
 import type { SecretStore as DaemonSecretStore } from "../auth/secret-store";
 import { ContractError } from "../contracts/common";
 import type { PluginHost } from "../contracts/plugin-host";
@@ -184,6 +184,9 @@ export interface PluginAuth {
   unsignableProviders(): Set<string>;
   /** Whether the model plugins have started, so `signedInProviders` and `keylessProviders` answer for all of them. */
   modelPluginsReady(): boolean;
+  /** A plugin that serves a local server (2026-11-24): whether it answers now and how many models it lists, from the
+   *  engine's prober (asked here, on demand, cached 30 s); undefined for any other plugin or with no prober. */
+  localStatus?(id: string): Promise<{ running: boolean; models: number } | undefined>;
   signIn(id: string, index: number, key?: string): Promise<{ state: PluginAuthView["state"]; authorizeUrl?: string }>;
   signOut(id: string, index: number): Promise<void>;
   /** Tells the app and the CLI each of a plugin's sign-ins as it stands now (a renewal signed it out). */
@@ -417,6 +420,18 @@ export function createPluginAuth(deps: PluginAuthDeps): PluginAuth {
       try { await deps.signedOut?.(covers); } catch (err) { deps.log?.(`[plugin-auth] after a sign-out (${errorClass(err)})`); }
       await announce(id, index);
     },
+
+    async localStatus(id) {
+      const servers = localServers();
+      if (servers === undefined) return undefined;
+      const models = (deps.registry.get(id)?.manifest as { contributes?: { models?: { provider?: unknown }[] } } | undefined)?.contributes?.models ?? [];
+      const catalog = activeCatalog();
+      const local = models.map((m) => m.provider).filter((p): p is string => typeof p === "string" && isLocalServerProvider(catalog, p));
+      if (local.length === 0) return undefined;
+      const answers = await servers.ask();
+      const running = local.filter((p) => answers.has(p));
+      return { running: running.length > 0, models: running.reduce((n, p) => n + (answers.get(p)?.models.length ?? 0), 0) };
+    },
   };
 }
 
@@ -424,7 +439,10 @@ export function createPluginAuth(deps: PluginAuthDeps): PluginAuth {
 export function pluginAuthMethods(auth: PluginAuth, o: { openCard?: CardOpener; nameOf?: (id: string) => string | undefined; /** Whether the plugin is of the bundled tree, by its install record: only then does its name stand in the title. */ bundled?: (id: string) => boolean } & CardYesOutput = {}): Record<string, MethodHandler> {
   const M = PLUGINS_METHODS;
   return {
-    [M.pluginAuthList.name]: handler(M.pluginAuthList, async (p) => ({ auth: await auth.list(p.id) })),
+    [M.pluginAuthList.name]: handler(M.pluginAuthList, async (p) => {
+      const [list, local] = await Promise.all([auth.list(p.id), auth.localStatus?.(p.id).catch(() => undefined)]);
+      return { auth: list, ...(local !== undefined ? { local } : {}) };
+    }),
     [M.pluginAuthSignIn.name]: handler(M.pluginAuthSignIn, async (p, ctx) => {
       requireUser(ctx, "sign in");
       return auth.signIn(p.id, p.index, p.key);
