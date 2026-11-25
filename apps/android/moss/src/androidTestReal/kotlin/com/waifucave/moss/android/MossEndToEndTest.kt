@@ -205,7 +205,9 @@ class MossEndToEndTest {
             val drawn = client.cards().first { it.id == drawnId }
             val allow = drawn.options.first { it.kind == CardOption.Kind.approve && !it.rememberAlways }
             compose.waitUntil(60_000) { compose.onAllNodes(hasContentDescription(allow.label)).fetchSemanticsNodes().isNotEmpty() }
-            delay(1_500) // past the moment a card new to the screen takes no press
+            // Past the moment a card new to the screen takes no press (the test rule's clock drives the screen's effects).
+            compose.mainClock.advanceTimeBy(1_500)
+            compose.waitForIdle()
             // The button's own click (its semantics action): the card can sit under the floating composer, where a tap at
             // the button's centre would land on the composer instead.
             val button = compose.onAllNodes(hasContentDescription(allow.label) and hasClickAction())[0]
