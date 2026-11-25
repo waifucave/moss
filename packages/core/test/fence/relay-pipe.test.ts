@@ -77,12 +77,15 @@ describe.skipIf(process.platform !== "linux")("linux: the bounded pipe to the re
   test("after the consumer stops, the reader keeps draining, so a writer never blocks", async () => {
     const [r, w] = linuxPipe()!;
     expect(setNonBlocking(r)).toBe(true);
+    // The writer is in this same process, so it must not block (a blocking write would stop the reader's own timers):
+    // EAGAIN means the pipe is full, and it waits for the reader to drain it.
+    expect(setNonBlocking(w)).toBe(true);
     const reader = new PipeReader(r, 64 * 1024);
     const it = reader[Symbol.asyncIterator]();
     writeSync(w, Buffer.alloc(10));
     expect((await it.next()).done).toBe(false);
     await it.return!(); // the broker stopped (an overflow or the run's end)
-    // A blocking writer pushes 8 MiB, far past the pipe's 64 KiB and the queue's bound: it never waits forever.
+    // 8 MiB pushed, far past the pipe's 64 KiB and the queue's bound: the pipe keeps being drained, so it all goes in.
     const chunk = Buffer.alloc(64 * 1024);
     const t0 = performance.now();
     for (let k = 0; k < 128; k++) {
@@ -109,7 +112,7 @@ describe.skipIf(process.platform !== "linux")("linux: the bus relay fails closed
       const p = Bun.spawn([process.execPath, relay, "3", "4", "/bin/sh", "-c", `touch '${marker}'`], {
         stdio: ["ignore", "pipe", "pipe", r1, w2] as never, env: { PATH: "/usr/bin:/bin", ...env },
       });
-      const [code, err] = await Promise.all([p.exited, new Response(p.stderr as ReadableStream).text()]);
+      const [code, err] = await Promise.all([p.exited, new Response(p.stderr as unknown as ReadableStream).text()]);
       expect(code).toBe(127);
       expect(err).toContain("moss: the bus relay can't run here (closed)");
       expect(existsSync(marker)).toBe(false);

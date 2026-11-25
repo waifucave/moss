@@ -238,7 +238,10 @@ describe.skipIf(!ready)("linux: the credential broker inside the real fence", ()
       "done",
       'echo "foreign=[${found}]"',
       // The command's own fds: none of the relay's pipe numbers, and no pipe past its stdio (a leak through Bun.spawn).
-      'extra=""; for f in /proc/$$/fd/*; do n=${f##*/}; case $n in 0|1|2) continue;; esac; l=$(readlink "$f" 2>/dev/null) || continue; case "$l" in pipe:*) extra="$extra $n:$l";; esac; done',
+      // Read with one `ls` into a file: a `$(...)` in this shell would itself hold a pipe while it looks.
+      'ls -l /proc/$$/fd/ > own-fds.txt 2>/dev/null',
+      'extra="$(awk \'$(NF-2) !~ /^[012]$/ && $NF ~ /^pipe:/ { printf " %s:%s", $(NF-2), $NF }\' own-fds.txt)"',
+      'rm -f own-fds.txt',
       '[ -e /proc/$$/fd/4 ] && extra="$extra fd4"; [ -e /proc/$$/fd/5 ] && extra="$extra fd5"',
       'echo "own-extra=[${extra}]"',
       'n=0; for f in /proc/$kid/fd/*; do readlink "$f" >/dev/null 2>&1 && n=$((n+1)); done; echo "control=$n"',
