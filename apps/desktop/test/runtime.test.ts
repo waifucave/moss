@@ -698,9 +698,10 @@ describe("sleeping frames, surfaces, and the brokers' part of the runtime", () =
     return { ...f, t: () => t, advance: (ms: number) => { t += ms; }, later, reload, built };
   }
 
-  test("a mount dropped while its wait runs gets no address when the wait ends", () => {
+  test("a mount dropped while its wait runs gets no address when the wait ends (its parent is still there)", () => {
     const f = reloadedFixture();
-    f.s.rt.closeWindow(WIN);
+    // Only the frame's mount goes (its parent stays): without the wait's own check the parent would be sent a document for it.
+    (f.s.rt as unknown as { drop(id: string): void }).drop(f.item.mount);
     f.advance(1_100);
     f.later.shift()!();
     expect(f.reload()).toHaveLength(1);

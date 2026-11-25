@@ -469,7 +469,7 @@ async function ready(): Promise<void> {
       return true;
     }
     if (own !== undefined) clearTimeout(own.timer);
-    fallbacks.set(cardId, { timer: setTimeout(() => undefined, 0) });
+    fallbacks.set(cardId, { timer: setTimeout(() => undefined, 0), fired: true });
     await showFallbackCard(cardId);
     return true;
   };
@@ -1419,6 +1419,8 @@ async function showFallbackCard(cardId: string, strip = false): Promise<void> {
   // already: no window, and never a second one. Every caller holds an entry for the card before it comes here.
   const held = fallbacks.get(cardId);
   if (held === undefined || (held.win !== undefined && !held.win.isDestroyed())) return;
+  // A "not visible" report that armed the timer again while the names were asked for made a new entry: the strip's mark rides across.
+  if (strip && held.strip !== true) held.strip = true;
   const mint = sealed.mint(cardId, "own");
   if (mint === undefined) return;
   const url = `moss-sealed://card/${encodeURIComponent(cardId)}/own?token=${encodeURIComponent(mint.token)}`;

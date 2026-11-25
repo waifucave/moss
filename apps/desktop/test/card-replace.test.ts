@@ -257,3 +257,25 @@ describe("a press from a window that has closed", () => {
     expect(pressWindowIsOpen(undefined, () => false)).toBe(true);
   });
 });
+
+describe("the net's own timer that fired and drew nothing (a headless run's card that is not shown)", () => {
+  test("is nothing running: a later report arms it again", () => {
+    const timers = new Map<object, () => void>();
+    const net = new FallbackNet<Win>({
+      delayMs: 2_000,
+      schedule: (fn) => { const h = { unref() { /* fake */ } }; timers.set(h, fn); return h as never; },
+      unschedule: (h) => { timers.delete(h as never); },
+      show: () => undefined, // drew nothing
+      closeWindow: () => undefined,
+      isAlive: () => true,
+    });
+    net.arm("c");
+    expect(net.isLive("c")).toBe(true);
+    const first = net.get("c")!.timer;
+    [...timers.values()][0]!();
+    expect(net.isLive("c")).toBe(false);
+    net.armIfNone("c");
+    expect(net.get("c")!.timer).not.toBe(first);
+    expect(net.isLive("c")).toBe(true);
+  });
+});
