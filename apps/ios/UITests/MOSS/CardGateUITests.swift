@@ -36,6 +36,11 @@ final class CardGateUITests: XCTestCase {
         scroll(app, up: true, until: { app.buttons["showAll-reason"].firstMatch.isHittable })
         app.buttons["showAll-reason"].firstMatch.tap()
         scroll(app, up: true, until: { allow.isEnabled })
+        if !allow.isEnabled {
+            // Why it waits, as the card says it (for the log).
+            for t in app.staticTexts.allElementsBoundByIndex where t.label.contains("first") { print("IW card says: \(t.label)") }
+            print("IW title hittable: \(app.staticTexts["Change nine files?"].isHittable)")
+        }
         XCTAssertTrue(allow.isEnabled, "every cut part opened and read to its end: Allow answers")
         app.terminate()
     }

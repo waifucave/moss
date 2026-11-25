@@ -72,7 +72,7 @@ jobs:
       - name: The cards' drawn buttons (a cut card's Allow waits; the provider is drawn)
         run: |
           DEST="platform=iOS Simulator,name=$(xcrun simctl list devices available | grep -o 'iPhone [0-9A-Za-z ]*' | head -1 | sed 's/ *$//')"
-          xcodebuild test -project MOSSPhone.xcodeproj -scheme MOSS -destination "$DEST" -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO -only-testing:MOSSUITests/CardGateUITests 2>&1 | grep -E "Test Case|error:|XCTAssert|Executed|TEST (SUCC|FAIL)" | cut -c1-400 ; exit ${PIPESTATUS[0]}
+          xcodebuild test -project MOSSPhone.xcodeproj -scheme MOSS -destination "$DEST" -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO -only-testing:MOSSUITests/CardGateUITests 2>&1 | grep -E "Test Case|error:|XCTAssert|Executed|TEST (SUCC|FAIL)|IW " | cut -c1-400 ; exit ${PIPESTATUS[0]}
       - name: Accessibility audits at the default and the largest text size (MOSS)
         continue-on-error: true
         run: |
