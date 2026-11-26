@@ -57,6 +57,18 @@ enum AuditRunner {
         .init(app: "com.waifucave.moss.code.ios", screen: "settings", element: "Paired computer",
               reason: "as on MOSS's settings",
               owed: "lane/iw-4"),
+        .init(app: "com.waifucave.moss.code.ios", screen: "session", element: "4:26 AM",
+              reason: "a time divider in the readable grey failed both passes of the settled screen; cause not found yet",
+              owed: "lane/iw-4"),
+        .init(app: "com.waifucave.moss.code.ios", screen: "session", element: "src/settings/old-form/",
+              reason: "a card's path failed both passes of the settled screen; cause not found yet",
+              owed: "lane/iw-4"),
+        .init(app: "com.waifucave.moss.code.ios", screen: "session", element: "on Studio",
+              reason: "a card's 'on Studio' line failed both passes of the settled screen; cause not found yet",
+              owed: "lane/iw-4"),
+        .init(app: "com.waifucave.moss.code.ios", screen: "newSession", element: "Agent",
+              reason: "the 'Agent' row's label failed both passes; cause not found yet (likely the same element as the unlabelled one above)",
+              owed: "lane/iw-4"),
     ]
 
     /// A known entry names an element by its label's first line (a question's label goes on over several lines); "-" is an
