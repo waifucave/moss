@@ -40,7 +40,7 @@ const kp = (source: string): RegExp => new RegExp(`^(?:${source})$`);
 /** Lines written as they are: fixed words, numbers, versions, kinds, one id token. */
 export const KEEP: RegExp[] = [
   // answer-key.ts
-  kp(String.raw`answer key: (?:the kept key couldn't be read; a new one is made|the core didn't say which card; the new key stays staged|replacing it waits on its card|kept \(the replacement's card is over\)|the core doesn't hold the new key yet; it stays staged|replaced|the new key stays staged in this computer's store until the next start|this computer's secret store is plain text \(no Secret Service\); the key stays in memory)`),
+  kp(String.raw`answer key: (?:the kept key couldn't be read; a new one is made|the core didn't say which card; the new key stays staged|replacing it waits on its card|kept \(the replacement's card is over\)|the core doesn't hold the new key yet; it stays staged|replaced|the new key stays staged in this computer's store until the next start|this computer's secret store is plain text \(no Secret Service\); the key stays in memory|the new key waits on the engine's card \(an earlier key of this program was lost\))`),
   kp(String.raw`answer key: (?:kept \(the replacement was ${W}\)|registered \(${W}\)|registered after ${N} tries|trying again \(in ${DEC} s, and on a growing wait while the core can't take it\))`),
   // host-runtime.ts and the host's lines in index.ts
   kp(String.raw`host: (?:safe mode ends at its next start|stop everything: kept working|stop everything: (?:stopped|kept|no-engine)|ready(?: \(safe mode\))?|a window (?:is|is no longer) in front|the engine gave up starting the host \(the notice (?:not shown: (?:headless|no notifications)|shown)\))`),

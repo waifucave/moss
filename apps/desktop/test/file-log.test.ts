@@ -35,6 +35,7 @@ const KEPT: string[] = [
   "answer key: replaced",
   "answer key: the new key stays staged in this computer's store until the next start",
   "answer key: this computer's secret store is plain text (no Secret Service); the key stays in memory",
+  "answer key: the new key waits on the engine's card (an earlier key of this program was lost)",
   "answer key: kept (the replacement was declined)",
   "answer key: registered (secure-enclave)",
   "answer key: registered after 3 tries",
@@ -390,7 +391,7 @@ describe("what MOSS Code writes to its log file", () => {
       if (m > 0) dynamic[rel] = m;
     }
     expect(counts).toEqual({
-      "answer-key.ts": 16, "browser/frame-sender.ts": 2, "host-runtime.ts": 6, "housing.ts": 1, "card-replace.ts": 2, "index.ts": 183, "overlap.ts": 1, "pair/optional-calls.ts": 1,
+      "answer-key.ts": 17, "browser/frame-sender.ts": 2, "host-runtime.ts": 6, "housing.ts": 1, "card-replace.ts": 2, "index.ts": 183, "overlap.ts": 1, "pair/optional-calls.ts": 1,
       "pair/pair.ts": 19, "pair/setup-retry.ts": 2, "prefs.ts": 1, "preview-control.ts": 4, "touch-tap.ts": 5, "tray.ts": 1, "ui/electron.ts": 17, "ui/model.ts": 2,
       "ui/runtime.ts": 13, "ui/strings.ts": 2, "ui/theme.ts": 5, "ui/web-views.ts": 10,
     });
