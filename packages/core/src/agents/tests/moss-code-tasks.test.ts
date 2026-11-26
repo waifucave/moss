@@ -82,3 +82,16 @@ describe("MOSS's coding agent's background tasks", () => {
     expect(told).toEqual(["+t1", "-t1", "gone"]);
   });
 });
+
+test("reportingTasks logs each task frame's kind and id, never anything else", async () => {
+  const frames = [
+    { type: "system", subtype: "task_started", task_id: "t1", is_backgrounded: true, command: "echo SECRET-VALUE" },
+    { type: "system", subtype: "task_notification", task_id: "t1", output: "SECRET-OUT" },
+  ];
+  const q = { async *[Symbol.asyncIterator]() { for (const f of frames) yield f; } } as never;
+  const lines: string[] = [];
+  const told = reportingTasks(q, { started() {}, ended() {}, gone() {} }, (l) => lines.push(l));
+  for await (const _ of told as AsyncIterable<unknown>) { /* drained */ }
+  expect(lines).toEqual(["moss-code: task frame task_started t1 backgrounded=true", "moss-code: task frame task_notification t1 backgrounded=unset"]);
+  expect(lines.join("\n")).not.toContain("SECRET");
+});

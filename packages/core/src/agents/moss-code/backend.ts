@@ -535,7 +535,7 @@ export class MossCodeBackend implements AgentBackend {
       };
       const q = run({ prompt: args.prompt, options: { ...o, mcpServers: servers as Options["mcpServers"], canUseTool } }) as unknown as AcpQuery;
       const watched = stoppingTasksWhilePaused(q, gate, abort.signal, deps.log);
-      const told = onTasks === undefined ? watched : reportingTasks(watched, onTasks);
+      const told = onTasks === undefined ? watched : reportingTasks(watched, onTasks, deps.log);
       return onContext === undefined ? told : reportingContext(told, onContext);
     };
     return { query, options, abort, bridgeCalls };
@@ -630,7 +630,7 @@ export interface TaskFrames {
  *  start (every one but a foreground command, `is_backgrounded: false`, by the pause's own rule; a later
  *  `task_updated` that backgrounds one too), and ends at its notification or an update to a final status; when the query
  *  ends, every task it had ends with it. The subagents' own frames (`parent_tool_use_id`) are theirs, not the session's. */
-export function reportingTasks(q: AcpQuery, tell: TaskFrames): AcpQuery {
+export function reportingTasks(q: AcpQuery, tell: TaskFrames, log?: (line: string) => void): AcpQuery {
   const say = (fn: () => void) => {
     try { fn(); } catch { /* a report never stops the agent */ }
   };
@@ -641,6 +641,10 @@ export function reportingTasks(q: AcpQuery, tell: TaskFrames): AcpQuery {
           try {
             for await (const m of target) {
               const msg = m as { type?: unknown; subtype?: unknown; task_id?: unknown; is_backgrounded?: unknown; parent_tool_use_id?: unknown; patch?: { is_backgrounded?: unknown; status?: unknown } };
+              if (msg?.type === "system" && typeof msg.task_id === "string") {
+                // Kinds and ids only (never a command or its output): what the runtime told, for a session that reads as not waiting.
+                say(() => log?.(`moss-code: task frame ${typeof msg.subtype === "string" ? msg.subtype : "?"} ${msg.task_id as string} backgrounded=${typeof msg.is_backgrounded === "boolean" ? String(msg.is_backgrounded) : "unset"}${typeof msg.parent_tool_use_id === "string" && msg.parent_tool_use_id !== "" ? " (a subagent's)" : ""}`));
+              }
               if (msg?.type === "system" && typeof msg.task_id === "string" && !(typeof msg.parent_tool_use_id === "string" && msg.parent_tool_use_id !== "")) {
                 const id = msg.task_id;
                 const patch = msg.subtype === "task_updated" ? msg.patch : undefined;
