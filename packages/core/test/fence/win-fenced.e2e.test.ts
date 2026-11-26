@@ -563,13 +563,18 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
       console.log(`[e2e] 8.3 Read ${path}: agent refused ${agentWhy !== undefined}; bot refused ${botWhy !== undefined}`);
       expect([path, agentWhy !== undefined, botWhy !== undefined]).toEqual([path, true, true]);
     }
-    // What is opened is what was judged (lane WS9): the spelling a file tool is handed through the junction is the secret
-    // place itself, and that spelling is refused too, by both checks.
-    const opened = windowsFileToolInput("Read", { file_path: join(project, "keys", "id_e2e") }, project)?.["file_path"];
-    console.log(`[e2e] opened as judged: ${join(project, "keys", "id_e2e")} -> ${String(opened)}; refused for the agent ${fileToolRefusal({ tool_name: "Read", tool_input: { file_path: opened } }, agentFence, project) !== undefined}, for the bot ${fileToolFenceRefusal("Read", { file_path: opened }, bot, scratch) !== undefined}`);
-    expect(String(opened).toLowerCase()).toBe(join(home, ".ssh", "id_e2e").toLowerCase());
+    // What is opened is what was judged (lane WS9): a file tool keeps the spelling it was asked (no junction is followed, so a
+    // deny written on the link's own name still matches; only an 8.3 name is expanded), and that spelling, which the OS then
+    // follows to the secret place, is the one refused above by both checks. The place's own spelling is refused too.
+    const asKept = join(project, "keys", "id_e2e");
+    const opened = windowsFileToolInput("Read", { file_path: asKept }, project)?.["file_path"] ?? asKept;
+    console.log(`[e2e] opened as judged: ${asKept} -> ${String(opened)}`);
+    expect(String(opened).toLowerCase()).toBe(asKept.toLowerCase());
     expect(fileToolRefusal({ tool_name: "Read", tool_input: { file_path: opened } }, agentFence, project)).toBeDefined();
     expect(fileToolFenceRefusal("Read", { file_path: opened }, bot, scratch)).toBeDefined();
+    const place = join(home, ".ssh", "id_e2e");
+    expect(fileToolRefusal({ tool_name: "Read", tool_input: { file_path: place } }, agentFence, project)).toBeDefined();
+    expect(fileToolFenceRefusal("Read", { file_path: place }, bot, scratch)).toBeDefined();
     // The control: a plain file in the project is read by both.
     writeFileSync(join(project, "plain.txt"), "plain\n");
     expect(fileToolRefusal({ tool_name: "Read", tool_input: { file_path: join(project, "plain.txt") } }, agentFence, project)).toBeUndefined();
