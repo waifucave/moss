@@ -12,6 +12,9 @@ import { sealedEscape } from "./visible-text";
 /** How many boxes a card shows before the rest is behind "Show all": the iPhone's `Card.Cut.items`. */
 export const CHILDREN_CUT_ITEMS = 8;
 
+/** The longest a box's name (as drawn, one line) may be: a longer one can't be shown whole in the list, so it could never count as seen. */
+export const CHILDREN_LABEL_MAX = 300;
+
 /** The heading over the boxes: what Approve covers. */
 export const CHILDREN_HEAD_TEXT = "Approve covers the ticked ones";
 
@@ -70,9 +73,13 @@ export function drawChildren(raw: unknown): DrawnChildren {
     if (ids.has(id)) return { drawn: false, why: "two boxes share an id" };
     const line = childLine((c as { label?: unknown }).label);
     if (line.replaceAll("⏎", "").trim() === "") return { drawn: false, why: "a box has no name" };
-    if (lines.has(line)) return { drawn: false, why: "two boxes read the same" };
+    // A name too long to be on screen whole in the list's own box could never count as seen: the card is not drawn.
+    if (line.length > CHILDREN_LABEL_MAX) return { drawn: false, why: "a box's name is too long to read" };
+    // Two names that differ only in the spaces around or between their words read the same.
+    const same = line.trim().replace(/\s+/g, " ");
+    if (lines.has(same)) return { drawn: false, why: "two boxes read the same" };
     ids.add(id);
-    lines.add(line);
+    lines.add(same);
     out.push({ id, line, checked: (c as { checked?: unknown }).checked === true });
   }
   return { drawn: true, children: out, cut: out.length > CHILDREN_CUT_ITEMS };

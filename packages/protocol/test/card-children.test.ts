@@ -1,7 +1,7 @@
 // A card's boxes as the windows draw and answer them: the iPhone's rules (`drawnWhole`, `cutFields`) kept once for both
 // desktop apps.
 import { describe, expect, test } from "bun:test";
-import { CHILDREN_CUT_ITEMS, checkTicks, childLine, drawChildren, oneLine } from "../src/card-children";
+import { CHILDREN_CUT_ITEMS, CHILDREN_LABEL_MAX, checkTicks, childLine, drawChildren, oneLine } from "../src/card-children";
 
 const kid = (id: string, label: unknown = id, checked = true) => ({ id, label, checked });
 
@@ -21,6 +21,15 @@ describe("what is drawn", () => {
   test("no boxes is nothing to draw; boxes keep the engine's own ticks and their order", () => {
     expect(drawChildren(undefined)).toEqual({ drawn: true, children: [], cut: false });
     expect(drawChildren([kid("a", "A", true), kid("b", "B", false)])).toEqual({ drawn: true, children: [{ id: "a", line: "A", checked: true }, { id: "b", line: "B", checked: false }], cut: false });
+  });
+  test("names that differ only in the spaces around or between words read the same", () => {
+    expect(drawChildren([kid("a", "Mail"), kid("b", "  Mail ")])).toMatchObject({ drawn: false });
+    expect(drawChildren([kid("a", "Send mail"), kid("b", "Send   mail")])).toMatchObject({ drawn: false });
+    expect(drawChildren([kid("a", "Send mail"), kid("b", "Send male")])).toMatchObject({ drawn: true });
+  });
+  test("a name too long to be on screen whole is not drawn; one at the cap is", () => {
+    expect(drawChildren([kid("a", "x".repeat(CHILDREN_LABEL_MAX))])).toMatchObject({ drawn: true });
+    expect(drawChildren([kid("a", "x".repeat(CHILDREN_LABEL_MAX + 1))])).toMatchObject({ drawn: false });
   });
   test("more than the cut count is a cut list", () => {
     const n = (k: number) => Array.from({ length: k }, (_, i) => kid(`k${i}`, `Box ${i}`));

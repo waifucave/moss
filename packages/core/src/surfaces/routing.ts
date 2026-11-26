@@ -14,7 +14,7 @@ import type { Unsubscribe } from "../contracts/common";
 import type { EngineCardRouter } from "./card-router";
 import type { EngineSurfaceDoor } from "./door";
 
-const routed = (c: Card) => ({ id: c.id, ...(c.session !== undefined ? { session: c.session } : {}), ...(c.bot !== undefined ? { bot: c.bot } : {}) });
+const routed = (c: Card) => ({ id: c.id, ...(c.session !== undefined ? { session: c.session } : {}), ...(c.bot !== undefined ? { bot: c.bot } : {}), ...((c.children?.length ?? 0) > 0 ? { boxes: true as const } : {}) });
 
 export function routeBrokerCards(broker: Pick<ApprovalBroker, "watch" | "cards">, router: Pick<CardRouter, "pending" | "resolved">): Unsubscribe {
   const off = broker.watch((e) => {

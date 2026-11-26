@@ -399,7 +399,7 @@ export class SealedFrames {
   needsReview(token: string, option?: string): boolean {
     const ch = this.channels.get(token);
     const card = ch === undefined ? undefined : this.cards.get(ch.cardId);
-    if (ch === undefined || card === undefined || !ch.element.startsWith("button:") || (card.children?.length ?? 0) === 0) return false;
+    if (ch === undefined || card === undefined || !this.isPending(card.id) || !ch.element.startsWith("button:") || (card.children?.length ?? 0) === 0) return false;
     const pick = option ?? ch.element.slice("button:".length);
     return card.options.find((o) => o.id === pick)?.kind === "approve";
   }

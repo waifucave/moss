@@ -23,6 +23,12 @@ export function runCardRouterConformance(make: CardRouterFactory): void {
   }
 
   describe("CardRouter", () => {
+    test("a card with boxes is never placed on the island: with no window in front it is elsewhere, in front it is in the window as any card", () => {
+      const { router } = setup();
+      expect(router.pending({ id: "card_boxes01", session: "s_1", boxes: true })).toEqual({ kind: "elsewhere" });
+      expect(router.pending({ id: "card_plain01", session: "s_1" })).toEqual({ kind: "island" });
+    });
+
     test("no window reported (after an engine restart, too): the island draws it; with no host, it is elsewhere", () => {
       const { router } = setup();
       expect(router.pending({ id: "card_aaaaaa", session: "s_1" })).toEqual({ kind: "island" });

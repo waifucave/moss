@@ -108,6 +108,9 @@ describe("a part's own approve on a card with boxes is a review", () => {
     const deny = store.mint(CARD.id, "button:deny", main0)!.token;
     const whole = store.mint(CARD.id, OWN_ELEMENT, main0)!.token;
     expect([store.needsReview(approve), store.needsReview(deny), store.needsReview(whole)]).toEqual([true, false, false]);
+    // A card that is no longer pending is no review.
+    store.resolvedOutcome(CARD.id, "denied");
+    expect(store.needsReview(approve)).toBe(false);
     store.fromCore({ ...CARD, id: "card_plain", children: undefined });
     expect(store.needsReview(store.mint("card_plain", "button:approve", main0)!.token)).toBe(false);
   });
