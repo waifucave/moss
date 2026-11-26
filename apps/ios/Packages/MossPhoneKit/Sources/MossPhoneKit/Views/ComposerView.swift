@@ -356,19 +356,20 @@ struct ComposerView: View {
         defer { photoItem = nil }
         if let data = try? await item.loadTransferable(type: Data.self) { await add(data) }
     }
-    private func add(_ data: Data) async {
-        guard let ui = UIImage(data: data) else { return }
-        let thumb = ui.preparingThumbnail(of: CGSize(width: 168, height: 168))?.pngData() ?? data
-        await model.stage(data, thumbnail: thumb)
-    }
+    private func add(_ data: Data) async { await model.stagePicture(data) }
 }
 
-/// The camera, for the Camera row where the phone has one.
+/// The camera where the phone has one, the photo library otherwise (a simulator, a phone whose camera is restricted):
+/// the picture taken or chosen is readied and staged the same way (`ConversationModel.stagePicture`).
 struct CameraPicker: UIViewControllerRepresentable {
     let done: (Data?) -> Void
+    /// Where the picture comes from on this phone.
+    static var source: UIImagePickerController.SourceType {
+        UIImagePickerController.isSourceTypeAvailable(.camera) ? .camera : .photoLibrary
+    }
     func makeCoordinator() -> Coordinator { Coordinator(done) }
     func makeUIViewController(context: Context) -> UIImagePickerController {
-        let p = UIImagePickerController(); p.sourceType = .camera; p.delegate = context.coordinator; return p
+        let p = UIImagePickerController(); p.sourceType = Self.source; p.delegate = context.coordinator; return p
     }
     func updateUIViewController(_ vc: UIImagePickerController, context: Context) {}
     final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {

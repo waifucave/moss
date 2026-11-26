@@ -170,6 +170,17 @@ public final class ConversationModel {
     public func run(_ command: PluginCommand) async {
         do { try await client.runCommand(session: sessionID, command: command.id) } catch { errorText = "That didn't work." }
     }
+    /// A picture from the camera or the library, readied as the desktop readies one (`PicturePrep`) and staged.
+    public func stagePicture(_ data: Data) async {
+        do {
+            let p = try PicturePrep.prepare(data)
+            await stage(p.data, thumbnail: p.thumbnail)
+        } catch PicturePrep.Refusal.tooLarge {
+            errorText = "That picture is too large to send."
+        } catch {
+            errorText = "That picture couldn't be added."
+        }
+    }
     public func stage(_ data: Data, thumbnail: Data) async {
         do { staged.append(StagedImage(path: try await client.stageImage(session: sessionID, data: data), thumbnail: thumbnail)) }
         catch { errorText = "That picture couldn't be added." }

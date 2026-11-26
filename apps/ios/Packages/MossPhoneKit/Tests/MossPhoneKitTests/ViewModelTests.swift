@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 @testable import MossPhoneKit
 
@@ -403,6 +404,38 @@ final class ViewModelTests: XCTestCase {
         XCTAssertTrue(ok)
         let sent = await c.questionsAnswered.last?.answers
         XCTAssertEqual(sent?.count, 2, "both answers go in one answer")
+    }
+
+    /// A picture from the camera or the library is staged as the desktop stages one: unchanged when it fits a staging
+    /// request, scaled to a 1568-point long edge and written as JPEG only when it doesn't; something that isn't a
+    /// picture is refused with a plain line.
+    func testAPictureIsReadiedAsTheDesktopReadiesOne() async throws {
+        let size = CGSize(width: 3136, height: 1000)
+        let format = UIGraphicsImageRendererFormat.default(); format.scale = 1
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { ctx in
+            for x in stride(from: 0, to: 3136, by: 16) {
+                UIColor(hue: CGFloat(x) / 3136, saturation: 0.8, brightness: 0.9, alpha: 1).setFill()
+                ctx.fill(CGRect(x: CGFloat(x), y: 0, width: 16, height: 1000))
+            }
+        }
+        let png = try XCTUnwrap(image.pngData())
+        let kept = try PicturePrep.prepare(png)
+        XCTAssertEqual(kept.data, png, "it fits: its bytes go unchanged")
+        XCTAssertFalse(kept.thumbnail.isEmpty)
+        let shrunk = try PicturePrep.prepare(png, maxBytes: png.count - 1)
+        XCTAssertTrue(shrunk.data.starts(with: [0xFF, 0xD8, 0xFF]), "written again as JPEG")
+        XCTAssertLessThan(shrunk.data.count, png.count)
+        XCTAssertEqual(UIImage(data: shrunk.data)?.size.width, 1568, "its long edge scaled to 1568")
+        XCTAssertThrowsError(try PicturePrep.prepare(Data("not a picture".utf8)))
+
+        let c = fake()
+        let m = ConversationModel(source: .bot(SampleData.bots[0]), client: c)
+        await m.loadComposer()
+        await m.stagePicture(png)
+        XCTAssertEqual(m.staged.count, 1, m.errorText ?? "")
+        await m.stagePicture(Data("not a picture".utf8))
+        XCTAssertEqual(m.errorText, "That picture couldn't be added.")
+        XCTAssertEqual(m.staged.count, 1)
     }
 
     func testFileOverTheLimitIsRefusedWithAPlainLine() async {
