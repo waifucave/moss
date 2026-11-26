@@ -236,7 +236,7 @@ let cluster: Cluster | undefined;
 afterEach(() => { cluster?.close(); cluster = undefined; });
 
 /** Studio's bot runs commands on Beta, whose executor records what each one's folder got (and runs nothing). */
-async function pair(o: { level: Level; reviewer?: PeerReviewer; deny?: boolean }) {
+async function pair(o: { level: Level; reviewer?: PeerReviewer; deny?: boolean; executor?: (home: string) => ToolExecutor }) {
   const phone = await makePhone();
   if (o.deny) phone.deny = true;
   cluster = new Cluster();
@@ -247,6 +247,7 @@ async function pair(o: { level: Level; reviewer?: PeerReviewer; deny?: boolean }
   const beta = await cluster.add("Beta", {
     answers: () => answersFor(phone), askUser: () => phone.ask, ...(reviewer ? { reviewer: () => reviewer } : {}),
     executor: (_name, home) => {
+      if (o.executor) return o.executor(home);
       const floor: PeerFolderOptions = { userHome: home, mossHome: join(home, ".moss"), os: "macos", pathFolders: [] };
       const e: ToolExecutor = {
         async run(_tool, _input, ctx) { got.push(ctx.write ?? "none"); return { output: { stdout: "", stderr: "", code: 0 }, isError: false }; },
@@ -328,6 +329,25 @@ describe("on the tree service: the read-only rule, the card for the folder, auto
     await run("echo hi > out.txt");
     expect(phone.shown).toEqual([]);
     expect(got).toEqual([{ why: expect.stringContaining("couldn't judge") }]);
+  });
+
+  test("a Linux holder: a writing command runs temp-only, and the Linux reason reaches the asking bot's result text", async () => {
+    if (process.platform === "win32") return;
+    const { run, project } = await pair({
+      level: "automatic",
+      executor: (home) => {
+        const moss = join(home, ".moss");
+        const temp = join(home, "tmp");
+        mkdirSync(temp, { recursive: true });
+        // The real executor, its OS Linux; the spawner fails the write the way a read-only mount does.
+        const ro = { run: async () => ({ kind: "exit", code: 2, stdout: "", stderr: "/bin/sh: 1: cannot create bash-write.txt: Read-only file system\n" }) } as unknown as Parameters<typeof fencedExecutor>[0]["spawner"];
+        return fencedExecutor({ spawner: ro, home, temp, mossHome: moss, os: "linux", peerSpawner: () => ro, peerFloor: { userHome: home, mossHome: moss, os: "linux", pathFolders: () => [] } });
+      },
+    });
+    const r = await run("echo from-alpha > bash-write.txt");
+    const text = treeResultText("Bash", r.output);
+    expect(text).toContain("Read-only file system");
+    expect(text).toContain(`On Linux Beta gives another computer's commands no folder for now (its sandbox can't yet hold a repository's .git against a rename), so it ran without access to ${project}`);
   });
 });
 
