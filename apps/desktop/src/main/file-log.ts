@@ -151,6 +151,7 @@ export const REDUCE: [RegExp, string | ((m: RegExpExecArray) => string)][] = [
   [/^sealed: answer refused \(.*/, "sealed: answer refused (reason not kept)"],
   [/^sealed: core refused answer\b.*/, "sealed: the core refused an answer"],
   [/^sealed: answer accepted for \S+$/, "sealed: an answer was accepted"],
+  [/^sealed: review opened for \S+$/, "sealed: a part's approve on a card with boxes opened MOSS Code's own card"],
   [new RegExp(`^sealed: ${CARD} (?:\\S{1,40}) (visible|not visible) in (${SURF})$`), "sealed: a card's button is $1 in $2"],
   [new RegExp(`^sealed: press on ${CARD} \\S{1,40} in (?:${SURF}): fresh report (uncovered|none in time|covered) after (\\d{1,9}) ms$`), "sealed: a press: fresh report $1 after $2 ms"],
   [/^sealed: press on \S+ \S+ in .*/, "sealed: a press: (the page's word not kept)"],
