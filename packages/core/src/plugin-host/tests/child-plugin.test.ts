@@ -101,7 +101,9 @@ describe("a child plugin of a bot-built tree", () => {
       await opened.folders.installed("pack", "bot", { bot: "alpha" });
       const { card } = await opened.registry.installed("pack", "bot");
       const shown = broker.cards().find((c) => c.id === card)!;
-      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+      // As a window answers: the boxes ticked on the card go with the approve (an answer with no list ticks none).
+      const ticked = (shown.children ?? []).filter((c) => c.checked).map((c) => c.id);
+      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...(ticked.length > 0 ? { children: ticked } : {}) }, { role: "app" });
       await until("the child running", 15_000, () => (opened.registry.get("pack/kid")?.state === "waiting" || opened.registry.get("pack/kid")?.state === "running" ? true : undefined));
       expect(opened.registry.entries("ui").find((e) => e.pluginId === "pack/kid")).toMatchObject({ state: "waiting", reason: "waiting for `main`" });
       await opened.folders.installed("stubshell", "user-app");
