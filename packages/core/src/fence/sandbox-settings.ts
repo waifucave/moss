@@ -204,6 +204,8 @@ export function botSandboxSettings(policy: SandboxPolicy, o: {
   list?: (dir: string) => readonly { name: string; isDirectory(): boolean; isSymbolicLink(): boolean }[];
   /** Test seam for the Linux look (`linuxHoldProblem`): its own disk and limits. */
   linuxWalk?: Parameters<typeof linuxHoldProblem>[1];
+  /** Test seam: leave out the Linux roots the runtime's walk can't hold, whatever `LINUX_LEAVE_OUT_UNHELD` says. */
+  linuxLeaveOut?: boolean;
 }): SandboxSettingsConfig {
   const wide = o.level === "accept-edits" || o.level === "automatic";
   const os: Os = o.windows ? "windows" : process.platform === "darwin" ? "macos" : "linux";
@@ -233,8 +235,10 @@ export function botSandboxSettings(policy: SandboxPolicy, o: {
   // Linux (lane XC 3c): the runtime holds a pattern's matches only as far as its walk reaches (`linuxHoldProblem`); a
   // root of the user's whose walk can't finish there, or that holds a repository inside `node_modules`, isn't handed to
   // it at all, so the command runs with the narrower roots, and a write it can't make says why (`leftOutRoots`).
+  // Off for now (`LINUX_LEAVE_OUT_UNHELD`): every root is handed as before, until the owner decides with the runtime's
+  // budgeted walk (0.0.89).
   const leftOut: LeftOutRoot[] = [];
-  const keptWrite = os !== "linux" ? covered : covered.filter((r) => {
+  const keptWrite = os !== "linux" || !(o.linuxLeaveOut ?? LINUX_LEAVE_OUT_UNHELD) ? covered : covered.filter((r) => {
     if (!pathWithin(r, o.userHome, os) || pathWithin(r, o.mossHome, os) || own.some((f) => pathWithin(r, f, os))) return true;
     const why = linuxHoldProblem(r, o.linuxWalk);
     if (why === undefined) return true;
@@ -254,6 +258,11 @@ export function botSandboxSettings(policy: SandboxPolicy, o: {
   return settings;
 }
 
+/** Whether `botSandboxSettings` leaves out, on Linux, a user's write root the runtime's walk can't hold. Off: a
+ *  .git past 16 levels, past 50,000 entries or inside node_modules isn't held for a bot's shell at the wide levels
+ *  (the known limit), until the runtime's budgeted walk (0.0.89) is pinned and the owner decides. */
+export const LINUX_LEAVE_OUT_UNHELD = false;
+
 /** A write root MOSS didn't hand the runtime on Linux, and why (`linuxHoldProblem`). */
 export interface LeftOutRoot { root: string; why: string }
 const LEFT_OUT = new WeakMap<SandboxSettingsConfig, LeftOutRoot[]>();
@@ -264,7 +273,7 @@ export function leftOutRoots(settings: SandboxSettingsConfig | undefined): reado
   return settings === undefined ? [] : LEFT_OUT.get(settings) ?? [];
 }
 
-/** The runtime's own walk for a pattern-shaped deny on Linux (clover-agent-runtime's `expandPatterns`): at most
+/** The runtime's own walk for a pattern-shaped deny on Linux (the agent runtime's `expandPatterns`): at most
  *  50,000 entries and 16 levels down, `node_modules` skipped. What lies past it isn't held at all. */
 export const LINUX_WALK = { maxVisited: 50_000, maxDepth: 16 } as const;
 /** How many entries the look for repositories inside `node_modules` reads under one root. */

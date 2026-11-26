@@ -10,7 +10,7 @@ import { join } from "node:path";
 import type { Fence } from "../../src/contracts/fence";
 import { MossFence } from "../../src/fence/fence";
 import { fencedSpawner } from "../../src/fence/fenced-process";
-import { botSandboxSettings, leftOutRoots, linuxHoldProblem } from "../../src/fence/sandbox-settings";
+import { botSandboxSettings, leftOutRoots, LINUX_LEAVE_OUT_UNHELD, linuxHoldProblem } from "../../src/fence/sandbox-settings";
 import { leftOutNote } from "../../src/runtime-sdk/turn-loop/driver";
 
 const temps: string[] = [];
@@ -88,7 +88,13 @@ describe("leftOutNote: a refused write says which roots were left out and why", 
     mkdirSync(scratch, { recursive: true });
     mkdirSync(join(home, "app", "node_modules", "p", ".git"), { recursive: true });
     const fence = new MossFence({ os: "linux", home, mossHome: moss, temp: temp("xc3c-tmp-") });
-    const s = botSandboxSettings(fence.policy(), { mossHome: moss, userHome: home, level: "automatic", ownFolders: [scratch], pathFolders: [] });
+    // The leaving out is off for now (LINUX_LEAVE_OUT_UNHELD): the home stays one root, as before 3c.
+    const off = botSandboxSettings(fence.policy(), { mossHome: moss, userHome: home, level: "automatic", ownFolders: [scratch], pathFolders: [] });
+    expect(LINUX_LEAVE_OUT_UNHELD).toBe(false);
+    expect(off.filesystem?.allowWrite ?? []).toContain(home);
+    expect(leftOutRoots(off)).toEqual([]);
+    // Turned on, the home is left out with its reason.
+    const s = botSandboxSettings(fence.policy(), { mossHome: moss, userHome: home, level: "automatic", ownFolders: [scratch], pathFolders: [], linuxLeaveOut: true });
     expect(s.filesystem?.allowWrite ?? []).not.toContain(home);
     expect(leftOutRoots(s).map((l) => l.root)).toEqual([home]);
     expect(leftOutRoots(s)[0]!.why).toContain("inside node_modules");
