@@ -10,6 +10,10 @@
 //                                     `ps` and kept in shell history); the same four words
 //   moss device list                 the paired devices (`device.list`)
 //   moss device revoke <name>        removes one (`device.revoke`), after a y/N question
+//   moss device main                 which computer is the main one now (`main.get`)
+//   moss device main set <name>      makes a computer the main one (`main.set`), after a y/N question: this computer at once
+//                                     (the person's own terminal), another computer on its own sealed card there. The way
+//                                     back after a main computer restarts with its peer off (lane XC 5c)
 //
 // Never a yes/no for the words, never confirmed on its own, no flag that skips them: the words are the check that the
 // two devices are each other and not someone in between, and only typing them proves the person compared them. With no
@@ -33,11 +37,11 @@ export interface DeviceIo {
 
 export interface CliRun { code: number; output: string }
 
-export const DEVICE_USAGE = "usage: moss device pair [--join] | list | revoke <name>";
+export const DEVICE_USAGE = "usage: moss device pair [--join] | list | revoke <name> | main [set <name>]";
 
 type PairingEvent = { pairingId?: string; step?: string; words?: string[]; peerName?: string; reason?: string };
 type PairingView = { pairingId: string; code?: string; qr?: string; words?: string[] };
-type Device = { id: string; name: string; isThis?: boolean; kind?: string };
+type Device = { id: string; name: string; isThis?: boolean; kind?: string; runsCore?: boolean; isMain?: boolean };
 
 /** The words as typed, folded: spaces, commas or dashes between them, any letter case. */
 export function typedWords(line: string): string[] {
@@ -74,6 +78,7 @@ export async function runDevice(args: readonly string[], conn: DeviceConn, io: D
       if (r?.applied === false) return { code: 0, output: `removing ${plain(d.name)} waits for your OK on its card (in the app, or on a paired device)` };
       return { code: 0, output: `removed ${plain(d.name)}` };
     }
+    if (sub === "main") return await main(rest, conn, io);
     if (sub === "pair") return await pair(rest, conn, io);
     return { code: 2, output: DEVICE_USAGE };
   } catch (e) {
@@ -81,6 +86,30 @@ export async function runDevice(args: readonly string[], conn: DeviceConn, io: D
   } finally {
     conn.close();
   }
+}
+
+/** `moss device main [set <name>]`: which computer is the main one, or the person's choice of one. */
+async function main(rest: readonly string[], conn: DeviceConn, io: DeviceIo): Promise<CliRun> {
+  const { devices } = await conn.request<{ devices: Device[] }>("device.list", {});
+  if (rest.length === 0) {
+    const { lease } = await conn.request<{ lease: { holder?: string | null } }>("main.get", {});
+    const holder = lease?.holder ?? null;
+    if (holder === null) return { code: 0, output: "no computer is the main one now: choose one with `moss device main set <name>`" };
+    const d = devices.find((x) => x.id === holder);
+    return { code: 0, output: d === undefined ? "the main computer is one this computer doesn't know" : `${plain(d.name)}${d.isThis === true ? " (this computer)" : ""} is the main computer` };
+  }
+  if (rest[0] !== "set" || rest.length !== 2) return { code: 2, output: DEVICE_USAGE };
+  const name = rest[1]!;
+  const named = devices.filter((x) => x.name === name);
+  if (named.length === 0) return { code: 1, output: `no paired device is named ${plain(name)}` };
+  if (named.length > 1) return { code: 1, output: `${named.length} devices are named ${plain(name)}: rename one first` };
+  const d = named[0]!;
+  if (d.runsCore !== true) return { code: 1, output: `${plain(d.name)} doesn't run the engine, so it can't be the main computer` };
+  const answer = io.ask === undefined ? undefined : await io.ask(`Make ${plain(d.name)} the main computer? Your bots run there from now on. [y/N] `);
+  if (answer === undefined || !/^y(es)?$/i.test(answer.trim())) return { code: 1, output: "not changed" };
+  const r = await conn.request<{ applied?: boolean; card?: unknown }>("main.set", { device: d.id });
+  if (r?.applied === false) return { code: 0, output: `making ${plain(d.name)} the main computer waits for your OK on its card (on ${plain(d.name)}, or a device paired with it)` };
+  return { code: 0, output: `${plain(d.name)} is the main computer now` };
 }
 
 async function pair(rest: readonly string[], conn: DeviceConn, io: DeviceIo): Promise<CliRun> {

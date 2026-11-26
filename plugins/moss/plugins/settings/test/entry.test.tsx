@@ -130,17 +130,28 @@ describe("settings on the runtime", () => {
     expect(routes).toEqual([{ route: "plugins", params: {} }]);
   });
 
-  test("a computer's level and making a computer main are not offered; no bare call is made for them", async () => {
+  test("a computer's level is not offered; Make main is, and opening the page calls neither", async () => {
     const lv = await mount({ section: "levels" });
     const select = screen.getAllByRole("combobox")[0] as HTMLSelectElement;
     expect(select.value).toBe("ask-risky");
     expect(select.disabled).toBe(true);
     cleanup();
     const dv = await mount({ section: "devices" });
-    expect(screen.queryByRole("button", { name: "Make Laptop the main computer" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Make Laptop the main computer" })).toBeTruthy();
+    // The main one has no such button.
+    expect(screen.queryByRole("button", { name: "Make Studio the main computer" })).toBeNull();
     for (const { core } of [lv, dv]) expect(core.calls.some((c) => /^(computer\.setLevel|main\.set)/.test(c.method))).toBe(false);
     // Opening the page starts nothing: no pairing, no removal, until the user presses a control.
     expect(dv.core.calls.some((c) => /^device\.(pair|revoke)/.test(c.method))).toBe(false);
+  });
+
+  test("Devices: Make main asks the engine (main.set for that computer), which comes back its sealed card; the page applies nothing", async () => {
+    const { core } = await mount({ section: "devices" });
+    fireEvent.click(screen.getByRole("button", { name: "Make Laptop the main computer" }));
+    await act(() => settle());
+    expect(core.calls.filter((c) => c.method === "main.set").map((c) => c.params)).toEqual([{ device: "d2" }]);
+    // Until the card is answered, Studio is still the main one.
+    expect(screen.queryByRole("button", { name: "Make Studio the main computer" })).toBeNull();
   });
 
   test("appearance: the theme plugin through `ui.set`; light or dark only as the core's `appearance` (the one main applies), the text size as this plugin's setting; the language", async () => {

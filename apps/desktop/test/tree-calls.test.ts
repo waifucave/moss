@@ -28,7 +28,7 @@ function capsOf(pluginId: string): ReadonlySet<string> {
 const verdict = (part: string, method: string, params?: unknown) => treeVerdict(capsOf(part), method, params);
 /** The devices page's calls that are the user's press (`devices.manage`); `device.pair.confirm` is not among them (it is never a page's: `NEVER`),
  *  and `device.relay.get` is a read. */
-const DEVICE_CALLS = ["device.pair.begin", "device.pair.join", "device.pair.cancel", "device.revoke"] as const;
+const DEVICE_CALLS = ["device.pair.begin", "device.pair.join", "device.pair.cancel", "device.revoke", "main.set"] as const;
 /** The relay's calls: their own capability, `devices.relay` (a relay sees which devices are online and can drop traffic), never `devices.manage`'s. */
 const RELAY_CALLS = ["device.relay.get", "device.relay.set"] as const;
 
@@ -71,7 +71,7 @@ describe("the door for parts: by capability, never by id (F2)", () => {
   test("a send is never a bare call, the cards are never answered, trust-changing calls need a card", () => {
     for (const m of SEND_ONLY) expect(verdict("moss/composer", m)).toMatchObject({ ok: false, owned: true });
     for (const m of NEVER) expect(verdict("moss/settings", m)).toMatchObject({ ok: false, owned: true });
-    for (const m of ["computer.setLevel", "main.set"]) {
+    for (const m of ["computer.setLevel"]) {
       expect(verdict("moss/settings", m)).toMatchObject({ ok: false, owned: true });
       expect(verdict("moss/composer", m)).toMatchObject({ ok: false, owned: true });
     }
@@ -294,7 +294,7 @@ describe("routing a part's call", () => {
   });
 
   test("a bare session.send, a card answer and a trust-changing call never reach the core from the tree", async () => {
-    for (const method of ["session.send", "card.answer", "card.confirm", "computer.setLevel", "main.set"]) {
+    for (const method of ["session.send", "card.answer", "card.confirm", "computer.setLevel"]) {
       const { r, calls } = route({ method, gesture: true });
       await expect(routeCall(r)).rejects.toThrow();
       expect(calls).toEqual([]);
@@ -556,6 +556,7 @@ const WORST: Record<string, Worst> = {
   "device.relay.set": "user's permission press", // which relay the links use: a relay sees which devices are online, never what they say; the person's own press, https only, applied at once
   "device.pair.cancel": "harmless change", // ends a pairing under way
   "device.revoke": "sealed card", // removing a device: the engine raises the sealed card, and `applied: false` comes back until the user answers it
+  "main.set": "sealed card", // making a computer the main one: that computer's engine raises its sealed card, and `applied: false` comes back until the user answers it
   // The deletion lane: each ask raises the engine's sealed card (naming what goes and what stays); `applied: false` comes back until the user answers it.
   "session.delete": "sealed card",
   "account.delete": "sealed card",

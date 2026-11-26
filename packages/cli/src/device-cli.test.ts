@@ -5,7 +5,7 @@ import { runDevice, typedWords, type DeviceConn } from "./device-cli";
 const WORDS = ["amber", "river", "stone", "cloud"];
 
 /** A daemon that answers as the engine does for the `cli` role, and says the pairing's steps as events. */
-function fakeDaemon(o: { joinWords?: boolean; end?: "done" | "failed" } = {}) {
+function fakeDaemon(o: { joinWords?: boolean; end?: "done" | "failed"; mainHolder?: string } = {}) {
   const calls: { method: string; params: unknown }[] = [];
   let listener: (ev: Record<string, unknown>) => void = () => {};
   const say = (ev: Record<string, unknown>) => queueMicrotask(() => listener(ev));
@@ -27,8 +27,11 @@ function fakeDaemon(o: { joinWords?: boolean; end?: "done" | "failed" } = {}) {
           return { applied: true } as T;
         }
         case "device.pair.cancel": return { ok: true } as T;
-        case "device.list": return { devices: [{ id: "d1", name: "Server", isThis: true }, { id: "d2", name: "Laptop" }] } as T;
+        case "device.list": return { devices: [{ id: "d1", name: "Server", isThis: true, runsCore: true }, { id: "d2", name: "Laptop", runsCore: true }] } as T;
         case "device.revoke": return { applied: true } as T;
+        case "main.get": return { lease: { holder: o.mainHolder === undefined ? null : o.mainHolder } } as T;
+        // This computer from its own terminal: at once; another computer: its own sealed card there.
+        case "main.set": return ((params as { device: string }).device === "d1" ? { applied: true } : { applied: false, card: "card_x" }) as T;
         default: throw new Error(`unexpected ${method}`);
       }
     },
@@ -99,6 +102,43 @@ describe("moss device pair", () => {
     for (const args of [["pair", "--yes"], ["pair", "--join", "ABCD-EFGH"], ["pair", "--join", "x", "--yes"], ["pair", "--no-words"]]) {
       expect((await runDevice(args, fakeDaemon().conn, io(["amber river stone cloud"]))).code).toBe(2);
     }
+  });
+});
+
+describe("moss device main (lane XC 5c: the person's way back after a main computer restarts with its peer off)", () => {
+  test("says which computer is the main one, or that none is", async () => {
+    expect((await runDevice(["main"], fakeDaemon().conn, io([]))).output).toContain("no computer is the main one now");
+    expect((await runDevice(["main"], fakeDaemon({ mainHolder: "d1" }).conn, io([]))).output).toBe("Server (this computer) is the main computer");
+    expect((await runDevice(["main"], fakeDaemon({ mainHolder: "d2" }).conn, io([]))).output).toBe("Laptop is the main computer");
+  });
+
+  test("main set asks y/N; this computer is made the main at once, another waits for its own card; nothing on a no", async () => {
+    const no = fakeDaemon();
+    expect((await runDevice(["main", "set", "Server"], no.conn, io(["n"]))).output).toBe("not changed");
+    expect(no.calls.map((c) => c.method)).not.toContain("main.set");
+    const here = fakeDaemon();
+    expect((await runDevice(["main", "set", "Server"], here.conn, io(["y"]))).output).toBe("Server is the main computer now");
+    expect(here.calls.find((c) => c.method === "main.set")?.params).toEqual({ device: "d1" });
+    const there = fakeDaemon();
+    expect((await runDevice(["main", "set", "Laptop"], there.conn, io(["yes"]))).output).toContain("waits for your OK on its card");
+    // With no terminal to answer in, nothing is changed.
+    const silent = fakeDaemon();
+    expect((await runDevice(["main", "set", "Server"], silent.conn, { print: () => {} })).output).toBe("not changed");
+    expect(silent.calls.map((c) => c.method)).not.toContain("main.set");
+  });
+
+  test("main set refuses a device that doesn't run the engine, an unknown name, two of one name, and a bad form", async () => {
+    const phone = fakeDaemon();
+    const list = phone.conn.request.bind(phone.conn);
+    phone.conn.request = (async (method: string, params?: unknown) => method === "device.list"
+      ? { devices: [{ id: "d1", name: "Server", isThis: true, runsCore: true }, { id: "d3", name: "iPhone", runsCore: false }, { id: "d4", name: "Twin", runsCore: true }, { id: "d5", name: "Twin", runsCore: true }] }
+      : list(method, params)) as typeof phone.conn.request;
+    expect((await runDevice(["main", "set", "iPhone"], phone.conn, io(["y"]))).output).toContain("doesn't run the engine");
+    expect((await runDevice(["main", "set", "Twin"], phone.conn, io(["y"]))).output).toContain("2 devices are named Twin");
+    expect((await runDevice(["main", "set", "Nope"], phone.conn, io(["y"]))).code).toBe(1);
+    expect(phone.calls.map((c) => c.method)).not.toContain("main.set");
+    expect((await runDevice(["main", "pick", "Server"], fakeDaemon().conn, io(["y"]))).code).toBe(2);
+    expect((await runDevice(["main", "set"], fakeDaemon().conn, io(["y"]))).code).toBe(2);
   });
 });
 

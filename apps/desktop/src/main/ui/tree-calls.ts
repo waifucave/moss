@@ -185,6 +185,10 @@ export const TREE_CALLS: Readonly<Record<string, TreeCall>> = {
   "device.pair.join": press(DEVICES_MANAGE),
   "device.pair.cancel": press(DEVICES_MANAGE),
   "device.revoke": press(DEVICES_MANAGE),
+  // Making a computer the main one (lane XC 5c): the person's own press asks, and the engine decides on its own sealed
+  // card ("Make this computer the main computer?", raised by that computer itself: `main.set` answers `applied: false`
+  // with its card, here or on the other computer). As with removing a device, nothing here applies it.
+  "main.set": press(DEVICES_MANAGE),
   // Which relay the links use (spec §8.3): reading it, and the person's own choice of n0's relays, none, or a server of their own.
   // Its own capability, apart from `devices.manage`: a relay of someone's choosing learns which devices are online and from where, and can
   // drop traffic, and the plugin's OK card says so (`devices.relay`). Nothing in the engine can tell a plugin's frame from the user's own
@@ -198,7 +202,6 @@ export const TREE_CALLS: Readonly<Record<string, TreeCall>> = {
   "account.delete": press(DATA_DELETE),
   "home.erase": press(DATA_DELETE),
   "bot.delete": press(BOTS_EDIT),
-  "main.set": { disposition: "card" },
   // Not served by the daemon.
   "models.catalog": { disposition: "unserved" },
   "session.changes": { disposition: "unserved" },
