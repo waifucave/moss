@@ -130,6 +130,15 @@ final class CardFieldsTests: XCTestCase {
         model.open(Card.childrenField, of: many)
         XCTAssertFalse(model.mayAnswer(many), "opened is not read")
         model.readOnScreen(Card.childrenField, of: many)
+        XCTAssertFalse(model.mayAnswer(many), "the list's end alone: a fast scroll could have passed the middle boxes unseen")
+        let kids = many.children!.map(\.id)
+        for id in kids.prefix(4) + kids.suffix(4) { model.boxOnScreen(id, of: many) }
+        XCTAssertFalse(model.mayAnswer(many), "the first and last boxes seen, the middle ones not")
+        for id in kids { model.boxOnScreen(id, of: many) }
+        XCTAssertTrue(model.mayAnswer(many), "every box seen")
+        model.open(Card.childrenField, of: many)
+        XCTAssertFalse(model.mayAnswer(many), "opened again: every box is seen again")
+        for id in kids { model.boxOnScreen(id, of: many) }
         XCTAssertTrue(model.mayAnswer(many))
         await model.answer(many, with: many.options[1])
         let denied = await fake.answeredChildren[many.id]
@@ -310,6 +319,7 @@ final class CardFieldsTests: XCTestCase {
 @MainActor extension CardsModel {
     func seenOnScreen(_ card: Card) { report { sighted(card, on: "test") } }
     func readOnScreen(_ field: String, of card: Card) { report { readEnd(field, of: card, on: "test") } }
+    func boxOnScreen(_ child: String, of card: Card) { report { boxSeen(child, of: card, on: "test") } }
     private func report(_ make: () -> Void) {
         if !isPresented("test") {
             surface("test", inFront: true)

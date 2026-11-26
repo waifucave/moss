@@ -165,7 +165,9 @@ public final class CardsModel {
             switch report {
             case .sighted(let card): if cards.contains(card) { sighted.insert(Self.key(card)) }
             case .readEnd(let field, let card):
-                if cards.contains(card), opened[card.id]?.contains(field) == true { readToEnd.insert(Self.key(card, field)) }
+                // A box of a cut checkbox list counts once that list is opened; any other field once it is.
+                let owner = field.hasPrefix(Card.childrenField + "/") ? Card.childrenField : field
+                if cards.contains(card), opened[card.id]?.contains(owner) == true { readToEnd.insert(Self.key(card, field)) }
             }
         }
     }
@@ -188,11 +190,27 @@ public final class CardsModel {
     private static func key(_ c: Card, _ field: String) -> String { c.id + "#" + c.hash + "#" + field }
 
     /// Every cut field of the card was opened and read to its end (or it has none).
-    public func seenWhole(_ card: Card) -> Bool { card.cutFields.allSatisfy { readToEnd.contains(Self.key(card, $0)) } }
-    /// The person opened a cut field: it counts only once its end has been on screen, so an approve waits again.
+    /// A cut field counts once its end has been on screen; a cut list of checkboxes only once EVERY box has been, each in
+    /// a settled frame (a fast scroll to its end could skip the middle boxes, ticked by default on a group card).
+    public func seenWhole(_ card: Card) -> Bool {
+        card.cutFields.allSatisfy { field in
+            guard field == Card.childrenField else { return readToEnd.contains(Self.key(card, field)) }
+            return (card.children ?? []).allSatisfy { readToEnd.contains(Self.key(card, Self.boxField($0.id))) }
+        }
+    }
+    /// The read mark of one checkbox of a cut list.
+    private static func boxField(_ child: String) -> String { Card.childrenField + "/" + child }
+    /// The person opened a cut field: it counts only once its end has been on screen, so an approve waits again. Opening
+    /// the checkboxes forgets which boxes were seen: each is seen again in the opened list.
     public func open(_ field: String, of card: Card) {
         opened[card.id, default: []].insert(field)
         readToEnd.remove(Self.key(card, field))
+        if field == Card.childrenField { for c in card.children ?? [] { readToEnd.remove(Self.key(card, Self.boxField(c.id))) } }
+    }
+    /// The view's report: this checkbox of an opened cut list (of the card as it is now) has been on screen, on `surface`.
+    public func boxSeen(_ child: String, of card: Card, on surface: String) {
+        guard (card.children ?? []).contains(where: { $0.id == child }) else { return }
+        hold(.readEnd(Self.boxField(child), card), on: surface)
     }
     /// Whether this option answers now. Every option: drawn whole, not inside the moment after it showed or changed, not
     /// busy, nothing noted. An approve also: on screen from its heading (the view's report) and every cut part opened.

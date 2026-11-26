@@ -20,6 +20,8 @@ public struct CardView: View {
     /// A plugin OK's checkboxes: whether each is ticked now, and ticking one (kept in the model, sent with an approve).
     var ticked: (String) -> Bool = { _ in false }
     var onTick: (String) -> Void = { _ in }
+    /// The report that one box of an opened cut list has been on screen (box id, surface).
+    var onBoxSeen: (String, String) -> Void = { _, _ in }
     @Environment(\.nowMs) private var nowOverride
     @Environment(\.dynamicTypeSize) private var typeSize
 
@@ -40,6 +42,7 @@ public struct CardView: View {
                   onSettle: { model.note(for: card) == .failed ? model.clearFailure(card) : model.dismiss(card) })
         self.ticked = { model.isTicked($0, of: card) }
         self.onTick = { model.toggle($0, of: card) }
+        self.onBoxSeen = { model.boxSeen($0, of: card, on: $1) }
     }
     private var unopened: Int { card.cutFields.subtracting(opened).count }
 
@@ -161,6 +164,9 @@ public struct CardView: View {
                         .frame(minHeight: 44).contentShape(.rect)
                     }
                     .buttonStyle(.plain)
+                    // In an opened cut list each box reports itself seen (whole, in a settled frame): all must be, not
+                    // only the list's end, before Allow (a fast scroll could pass the middle unseen).
+                    .modifier(BoxSeen(active: opened.contains(name) && kids.count > Card.Cut.items, key: card.hash) { onBoxSeen(kid.id, $0) })
                     .disabled(busy || note != nil)
                     .accessibilityLabel(Card.Child.oneLine(Sealed.visible(kid.label)))
                     .accessibilityValue(on ? "ticked" : "not ticked")
@@ -170,6 +176,17 @@ public struct CardView: View {
                 if !open { showAll(name, "Cut short: \(kids.count - Card.Cut.items) more. Show all \(kids.count)") }
                 endMarker(name)
             }
+        }
+    }
+
+    /// A box's own seen report, only where its list is opened and cut (keyed on the card's content, so new content of the
+    /// same height is reported again).
+    private struct BoxSeen: ViewModifier {
+        let active: Bool
+        let key: String
+        let seen: (String) -> Void
+        func body(content: Content) -> some View {
+            if active { content.background { Color.clear.whenSeen(seen).id(key) } } else { content }
         }
     }
 
