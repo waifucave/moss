@@ -27,7 +27,51 @@ data class BotSummary(val id: String, val last: Last? = null, val unread: Boolea
     enum class From { user, bot, note }
 }
 
-enum class MessageRole { user, bot, note, agent }
+enum class MessageRole { user, bot, note, agent, question }
+
+/**
+ * A question asked in the conversation, drawn where it was asked with how it ended. Its state comes from the core's
+ * `QuestionEnd`, decided once there so every phone draws it the same.
+ */
+data class AskedQuestion(
+    val callId: String,
+    val header: String? = null,
+    val text: String,
+    val options: List<String> = emptyList(),
+    val state: QuestionState = QuestionState.Open,
+    /** This record only closes a question asked earlier (a `question_resolved`): its state goes onto that question's row. */
+    val closing: Boolean = false,
+)
+
+/** How an asked question stands. */
+sealed class QuestionState {
+    data object Open : QuestionState()
+    /** Answered by the person (here or on another device). */
+    data object Answered : QuestionState()
+    /** Answered by a plugin: a real answer, not the person's. `plugin` is its id, cleaned by the core. */
+    data class AnsweredByPlugin(val plugin: String) : QuestionState()
+    /** The person skipped a bot's open question: nothing was chosen. */
+    data object Skipped : QuestionState()
+    /** It ended with no answer, by one of the engine's endings: the turn ended or was stopped. */
+    data object Withdrawn : QuestionState()
+    /** The engine went away while it waited (a stop, an update's restart, a crash), not the person. */
+    data object EngineStopped : QuestionState()
+    /** Closed by something this phone doesn't know (a newer engine): neither answered nor withdrawn. */
+    data object Closed : QuestionState()
+
+    /** The row's status line, the phone's own words: a title, and the plugin's id (small, plain) when a plugin answered. */
+    data class Status(val title: String, val detail: String? = null)
+    val status: Status?
+        get() = when (this) {
+            Open -> null
+            Answered -> Status("Answered")
+            is AnsweredByPlugin -> Status("Answered by a plugin", plugin)
+            Skipped -> Status("Skipped")
+            Withdrawn -> Status("Withdrawn")
+            EngineStopped -> Status("Ended: your computer stopped")
+            Closed -> Status("Closed")
+        }
+}
 
 data class ChatFile(val name: String, /** "12 pages · 1.2 MB": what the engine says about the file. */ val detail: String)
 
@@ -42,7 +86,27 @@ data class ChatMessage(
     val device: String? = null,
     /** A file the message carries, drawn as its own card. */
     val file: ChatFile? = null,
+    /** For a `question` row: the question and how it ended. */
+    val question: AskedQuestion? = null,
 )
+
+/**
+ * Messages as a conversation shows them: a record that closes a question (a `question_resolved`) sets the state of the row
+ * where that question was asked, and is not a row of its own; one whose question isn't in these messages (asked before
+ * the page) stays as a row with its state only.
+ */
+fun foldQuestions(messages: List<ChatMessage>): List<ChatMessage> {
+    val out = ArrayList<ChatMessage>(messages.size)
+    for (m in messages) {
+        val q = m.question
+        if (q != null && q.closing) {
+            val i = out.indexOfLast { o -> o.question?.let { it.callId == q.callId && !it.closing } == true }
+            if (i >= 0) { out[i] = out[i].copy(question = out[i].question!!.copy(state = q.state)); continue }
+        }
+        out.add(m)
+    }
+    return out
+}
 
 // Sessions
 
@@ -148,6 +212,8 @@ sealed class EngineEvent {
     /** A turn's one status line for a bot or session; `null` when the turn ended. */
     data class StatusLine(val subject: String, val line: String?) : EngineEvent()
     data class Message(val subject: String, val message: ChatMessage) : EngineEvent()
+    /** A question was asked or closed in this session: an open conversation reads its open question again. */
+    data class QuestionChanged(val subject: String) : EngineEvent()
     data class SessionChanged(val session: SessionRow) : EngineEvent()
     data class CardRequested(val card: Card) : EngineEvent()
     data class CardResolved(val id: String) : EngineEvent()

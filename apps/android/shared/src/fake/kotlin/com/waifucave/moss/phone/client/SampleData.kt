@@ -43,6 +43,25 @@ object SampleData {
     /** The bots the person pinned: the phone keeps this itself (the engine has no such field). */
     val pinned: List<String> = listOf("luna", "juniper", "tansy")
 
+    /**
+     * A conversation with a question closed each way the phone draws, as the engine's log has them: each asked, then a
+     * record that closes it (folded onto the asked row by the screen), and one closed record whose question came earlier.
+     */
+    val questionEnds: List<ChatMessage> = run {
+        fun asked(n: Int, text: String) = ChatMessage("qa$n", MessageRole.question, text, ago(3000L - n * 300),
+            question = AskedQuestion("call_$n", text = text, options = listOf("This week", "Next week")))
+        fun closed(n: Int, state: QuestionState) = ChatMessage("qc$n", MessageRole.question, "", ago(2990L - n * 300),
+            question = AskedQuestion("call_$n", text = "", state = state, closing = true))
+        listOf(
+            asked(1, "Shall I book the dentist?"), closed(1, QuestionState.Answered),
+            asked(2, "Which calendar should this go in?"), closed(2, QuestionState.AnsweredByPlugin("calendar-sync")),
+            asked(3, "Do you want a reminder the day before?"), closed(3, QuestionState.Skipped),
+            asked(4, "Should I move the call to Friday?"), closed(4, QuestionState.Withdrawn),
+            asked(5, "Can I send the invoice now?"), closed(5, QuestionState.EngineStopped),
+            asked(6, "Archive last month's receipts?"), closed(6, QuestionState.Closed),
+        )
+    }
+
     fun conversation(bot: String): List<ChatMessage> = when (bot) {
         "alpha" -> listOf(
             ChatMessage("m1", MessageRole.user, "Can you ship the docs fix tonight?", ago(3900)),

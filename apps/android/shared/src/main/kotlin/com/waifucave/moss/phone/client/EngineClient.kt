@@ -83,6 +83,8 @@ interface EngineClient {
     /** The question waiting in a conversation, if any, and `session.answer`. */
     suspend fun pendingQuestion(session: String): AskQuestion?
     suspend fun answerQuestion(session: String, question: AskQuestion, answers: Map<String, String>)
+    /** Skips a bot's open question (`session.answer` with `skipped`): nothing chosen; the bot is told it was skipped. */
+    suspend fun skipQuestion(session: String, question: AskQuestion)
 
     /** The state of the link now (`events()` tells the changes), and forgetting this computer. */
     suspend fun connectionState(): ConnectionState

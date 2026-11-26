@@ -97,7 +97,8 @@ class BotsListModel(private val client: EngineClient, private val store: PinStor
             is EngineEvent.Message -> {
                 val b = bots.firstOrNull { it.mainSession == event.subject }
                 val m = event.message
-                if (b != null && m.role != MessageRole.note) {
+                // A note, or a record that only closes a question, is not the conversation's last word.
+                if (b != null && m.role != MessageRole.note && m.question?.closing != true) {
                     summaries[b.id] = BotSummary(b.id, BotSummary.Last(m.text, if (m.role == MessageRole.user) BotSummary.From.user else BotSummary.From.bot, m.at), unread = m.role != MessageRole.user)
                 }
             }

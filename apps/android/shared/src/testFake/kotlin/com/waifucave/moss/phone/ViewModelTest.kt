@@ -271,6 +271,43 @@ class ViewModelTest {
         assertNull(m.question)
     }
 
+    /** A bot's open question can be skipped; a coding agent's can't (it holds the agent until answered). */
+    @Test fun aBotsQuestionCanBeSkippedAnAgentsCant() = runTest {
+        val c = fake()
+        val luna = SampleData.bots.first { it.id == "luna" }
+        val m = ConversationModel(ConversationModel.Source.OfBot(luna), c)
+        m.loadComposer()
+        val q = m.question
+        assertNotNull(q)
+        assertTrue(m.canSkipQuestion)
+        assertTrue(m.skipQuestion())
+        assertNull(m.question)
+        assertEquals(listOf(luna.mainSession to q!!.callId), c.questionsSkipped)
+        val agent = ConversationModel(ConversationModel.Source.OfSession(SampleData.sessions.first { it.id == "c4" }), c)
+        agent.loadComposer()
+        assertFalse(agent.canSkipQuestion)
+        assertFalse(agent.skipQuestion())
+    }
+
+    /** Each closing record sets the state of the row where its question was asked, and is no row of its own. */
+    @Test fun aClosedQuestionIsDrawnWhereItWasAskedWithHowItEnded() = runTest {
+        val c = fake(Scenario.questionEnds)
+        val m = ConversationModel(ConversationModel.Source.OfBot(SampleData.bots.first { it.id == "luna" }), c)
+        m.load()
+        val rows = m.messages.mapNotNull { it.question }
+        assertEquals(6, rows.size)
+        assertTrue(rows.none { it.closing })
+        assertEquals(
+            listOf("Answered", "Answered by a plugin", "Skipped", "Withdrawn", "Ended: your computer stopped", "Closed"),
+            rows.map { it.state.status?.title },
+        )
+        assertEquals("calendar-sync", rows[1].state.status?.detail)
+        // A closing record that arrives live updates the row; one whose question isn't shown stays as its own row.
+        m.apply(EngineEvent.Message("s_luna", ChatMessage("x1", MessageRole.question, "", SampleData.now,
+            question = AskedQuestion("call_nowhere", text = "", state = QuestionState.Skipped, closing = true))))
+        assertEquals(7, m.messages.count { it.question != null })
+    }
+
     @Test fun listenerSeesTheSnapshotOfARunningTurn() = runTest {
         // A screen that opens mid-turn shows the status line the engine already has (the fake's first events).
         val c = fake(Scenario.midTurn)

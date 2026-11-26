@@ -255,6 +255,7 @@ class CoreEngineClient(
         synchronized(this) { if (i.session in followed) followed[i.session] = maxOf(followed[i.session] ?: 0, i.seq.toLong()) }
         if (i.kind is ItemKind.TurnEnded) events.tryEmit(EngineEvent.StatusLine(i.session, null))
         message(i)?.let { events.tryEmit(EngineEvent.Message(i.session, it)) }
+        if (i.kind is ItemKind.QuestionAsked || i.kind is ItemKind.QuestionResolved) events.tryEmit(EngineEvent.QuestionChanged(i.session))
     }
 
     private fun message(i: SessionItem): ChatMessage? {
@@ -568,6 +569,8 @@ class CoreEngineClient(
         // The engine keys an answer by the question's text (the screens key it by its header when it has one).
         c().answerQuestion(session, question.callId, mapOf(question.text to (answers.values.firstOrNull() ?: "")))
     }
+
+    override suspend fun skipQuestion(session: String, question: AskQuestion): Unit = io { c().skipQuestion(session, question.callId) }
 
     // The link
 

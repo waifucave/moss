@@ -1,7 +1,10 @@
 package com.waifucave.moss.phone.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.testTag
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -179,7 +182,9 @@ fun ConversationScreen(model: ConversationModel, cards: CardsModel, onBack: () -
                         }
                     }
                     val q = model.question
-                    if (q != null) QuestionComposer(q) { answers -> model.answerQuestion(answers) }
+                    // A bot's question doesn't hold the bot: it stays open until answered or skipped, so it can be skipped here.
+                    if (q != null) QuestionComposer(q, onSubmit = { answers -> model.answerQuestion(answers) },
+                        onSkip = if (model.canSkipQuestion) ({ model.skipQuestion() }) else null)
                     else Composer(model, preset, pickerOpen, onPicker = { pickerOpen = it })
                 }
             },
@@ -267,6 +272,42 @@ private fun MessageRow(message: ChatMessage, speaker: String, modifier: Modifier
         }
         MessageRole.note -> Text(message.text, style = MossType.footnote, color = c.secondary,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = modifier.fillMaxWidth().padding(vertical = 4.dp))
+        MessageRole.question -> message.question?.let { AskedQuestionRow(it, speaker, modifier) }
+    }
+}
+
+/**
+ * A question where it was asked: the question and its options as asked, in the bot's own box, and below it, apart, the
+ * phone's own line saying how it ended. An open one is answered in the composer's place; this row takes no answer.
+ */
+@Composable
+private fun AskedQuestionRow(question: AskedQuestion, asker: String, modifier: Modifier = Modifier) {
+    val c = MossTheme.colors
+    val shape = RoundedCornerShape(14.dp)
+    val status = question.state.status
+    val said = status?.let { s -> s.detail?.let { "${s.title}: $it" } ?: s.title } ?: "Waiting for your answer"
+    Column(
+        modifier.fillMaxWidth().padding(end = 32.dp).clip(shape).border(0.5.dp, c.stroke, shape)
+            .semantics(mergeDescendants = true) { contentDescription = "$asker asked: ${question.text}. $said" },
+    ) {
+        if (question.text.isNotEmpty()) {
+            // The bot's words, in their own box: nothing in them can pass for the status below.
+            Column(Modifier.fillMaxWidth().background(c.botBubble).padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                question.header?.let { Text(it, style = MossType.caption, fontWeight = FontWeight.SemiBold, color = c.secondary) }
+                Text(question.text, style = MossType.body, color = c.text, maxLines = 6, overflow = TextOverflow.Ellipsis)
+                if (question.options.isNotEmpty()) {
+                    Text(question.options.joinToString(" · "), style = MossType.footnote, color = c.secondary, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            HorizontalDivider(color = c.stroke)
+        }
+        // The phone's own footer: how the question ended.
+        Column(Modifier.fillMaxWidth().background(c.softButton).padding(horizontal = 12.dp, vertical = 8.dp).testTag("questionStatus"),
+            verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(status?.title ?: "Waiting for your answer below", style = MossType.footnote, fontWeight = FontWeight.SemiBold, color = c.secondary)
+            // The plugin's id, small and as plain text.
+            status?.detail?.let { Text(it, style = MossType.small, color = c.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        }
     }
 }
 

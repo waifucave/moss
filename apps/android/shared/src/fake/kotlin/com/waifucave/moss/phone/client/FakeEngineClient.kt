@@ -45,6 +45,8 @@ class FakeEngineClient(
         providerConsent,
         /** Paired; the one card waiting has more values than its area shows, so it waits to be scrolled to the end. */
         tallCard,
+        /** Paired; Luna's conversation has a question closed each way the phone draws, and her open one waits below. */
+        questionEnds,
     }
 
     class Failure(message: String) : Exception(message)
@@ -104,6 +106,7 @@ class FakeEngineClient(
             }
             Scenario.providerConsent -> cardList = mutableListOf(SampleData.providerConsentCard)
             Scenario.tallCard -> cardList = mutableListOf(SampleData.tallCard)
+            Scenario.questionEnds -> { cardList = mutableListOf(); conversations["s_luna"] = SampleData.questionEnds.toMutableList() }
             Scenario.cardStates -> {
                 // The first card ran out of time; the third one is answered on another device.
                 val i = cardList.indexOfFirst { it.id == "card_0a1b2c3d" }
@@ -260,6 +263,13 @@ class FakeEngineClient(
         maybeFail()
         answeredQuestions.add(question.callId)
         questionsAnswered.add(session to answers)
+    }
+    /** The questions skipped, by session. */
+    val questionsSkipped = mutableListOf<Pair<String, String>>()
+    override suspend fun skipQuestion(session: String, question: AskQuestion) {
+        maybeFail()
+        answeredQuestions.add(question.callId)
+        questionsSkipped.add(session to question.callId)
     }
 
     override suspend fun stop(session: String) {

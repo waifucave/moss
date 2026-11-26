@@ -356,7 +356,11 @@ private fun PickerBack(title: String, onClick: () -> Unit) {
 
 /** While a question waits, the composer's place becomes this box, in the composer's own material. */
 @Composable
-fun QuestionComposer(question: AskQuestion, onSubmit: suspend (Map<String, String>) -> Boolean) {
+fun QuestionComposer(
+    question: AskQuestion, onSubmit: suspend (Map<String, String>) -> Boolean,
+    /** Skips it: offered for a bot's question (open across turns until answered or skipped); `null` where it isn't. */
+    onSkip: (suspend () -> Boolean)? = null,
+) {
     val c = MossTheme.colors
     val scope = rememberCoroutineScope()
     var selected by remember(question.callId) { mutableStateOf(setOf<Int>()) }
@@ -405,7 +409,14 @@ fun QuestionComposer(question: AskQuestion, onSubmit: suspend (Map<String, Strin
                     modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Something else" })
             }
         }
-        Row(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            onSkip?.let { skip ->
+                TextButton(
+                    onClick = { submitting = true; scope.launch { skip(); submitting = false } },
+                    enabled = !submitting, modifier = Modifier.heightIn(min = 48.dp)
+                        .semantics { stateDescription = "Tells the bot you skipped it, then lets you write a message" },
+                ) { Text("Skip", color = c.secondary) }
+            }
             Spacer(Modifier.weight(1f))
             Button(
                 onClick = {

@@ -2,6 +2,7 @@ package com.waifucave.moss.phone.engine
 
 import com.waifucave.moss.phone.model.*
 import com.waifucave.moss.phonecore.ItemKind
+import com.waifucave.moss.phonecore.QuestionEnd
 import com.waifucave.moss.phonecore.SessionItem
 import com.waifucave.moss.phonecore.AgentBackend as CBackend
 import com.waifucave.moss.phonecore.AskQuestion as CQuestion
@@ -86,8 +87,25 @@ object Typed {
             is ItemKind.Note -> note(listOfNotNull(k.label?.takeIf { it.isNotBlank() }, k.text).joinToString(": "))
             is ItemKind.TurnError -> note("Something went wrong: ${k.text}")
             is ItemKind.TurnEnded -> if (k.reason == "aborted") note("Interrupted") else null
+            // A question where it was asked, then how it closed (the core decided the ending once: `QuestionEnd`).
+            is ItemKind.QuestionAsked -> k.question.questions.firstOrNull()?.let { q ->
+                ChatMessage(i.id, MessageRole.question, q.question, i.at,
+                    question = AskedQuestion(k.question.callId, q.header, q.question, q.options.map { it.label }))
+            }
+            is ItemKind.QuestionResolved -> ChatMessage(i.id, MessageRole.question, "", i.at,
+                question = AskedQuestion(k.callId, text = "", state = questionState(k.end), closing = true))
             else -> null
         }
+    }
+
+    /** How a question closed, as the core decided it (`QuestionEnd`), in the screens' words. */
+    fun questionState(e: QuestionEnd): QuestionState = when (e) {
+        is QuestionEnd.Answered -> QuestionState.Answered
+        is QuestionEnd.AnsweredByPlugin -> QuestionState.AnsweredByPlugin(e.plugin)
+        is QuestionEnd.Skipped -> QuestionState.Skipped
+        is QuestionEnd.Ended -> QuestionState.Withdrawn
+        is QuestionEnd.EngineStopped -> QuestionState.EngineStopped
+        is QuestionEnd.Closed -> QuestionState.Closed
     }
 
     /** The core's question as the screens' (the first of its questions: the phone asks one at a time). */

@@ -72,7 +72,7 @@ class ConversationModel(
         try {
             val p = page(null)
             sessionID = p.session
-            messages = p.messages
+            messages = foldQuestions(p.messages)
             hasEarlier = p.hasMore
             errorText = null
             val s = source
@@ -87,7 +87,7 @@ class ConversationModel(
         if (!hasEarlier) return
         try {
             val p = page(first.at)
-            messages = p.messages + messages
+            messages = foldQuestions(p.messages + messages)
             hasEarlier = p.hasMore
         } catch (e: CancellationException) { throw e } catch (e: Exception) { errorText = UNREACHABLE_TEXT }
     }
@@ -98,10 +98,12 @@ class ConversationModel(
         autoSend?.let { draft = it; send() }
     }) { apply(it) }
 
-    fun apply(event: EngineEvent) {
+    suspend fun apply(event: EngineEvent) {
         when (event) {
-            is EngineEvent.Message -> if (event.subject == sessionID && messages.none { it.id == event.message.id }) messages = messages + event.message
+            is EngineEvent.Message -> if (event.subject == sessionID && messages.none { it.id == event.message.id }) messages = foldQuestions(messages + event.message)
             is EngineEvent.StatusLine -> if (event.subject == sessionID) statusLine = event.line
+            // Asked or closed here or on another device: the composer's place shows what is open now.
+            is EngineEvent.QuestionChanged -> if (event.subject == sessionID) refreshQuestion()
             else -> {}
         }
     }
@@ -167,7 +169,30 @@ class ConversationModel(
     suspend fun answerQuestion(answers: Map<String, String>): Boolean {
         val q = question ?: return false
         return try { client.answerQuestion(sessionID, q, answers); question = null; true }
-        catch (e: CancellationException) { throw e } catch (e: Exception) { errorText = "That didn't work. The question is still waiting."; false }
+        catch (e: CancellationException) { throw e } catch (e: Exception) { failedOn(q); false }
+    }
+
+    /** A bot's question can be skipped (it stays open across turns until answered or skipped); a coding agent's can't. */
+    val canSkipQuestion: Boolean get() = source is Source.OfBot
+
+    /** Skips the open question: the bot is told it was skipped, and the composer is back. */
+    suspend fun skipQuestion(): Boolean {
+        val q = question ?: return false
+        if (!canSkipQuestion) return false
+        return try { client.skipQuestion(sessionID, q); question = null; true }
+        catch (e: CancellationException) { throw e } catch (e: Exception) { failedOn(q); false }
+    }
+
+    /** An answer or a skip that didn't go: if the question was closed elsewhere meanwhile, say so, not "still waiting". */
+    private suspend fun failedOn(q: AskQuestion) {
+        refreshQuestion()
+        errorText = if (question?.callId == q.callId) "That didn't work. The question is still waiting."
+            else "That question was answered or skipped on another device."
+    }
+
+    /** Reads the open question again. A read that fails keeps what is shown. */
+    suspend fun refreshQuestion() {
+        try { question = client.pendingQuestion(sessionID) } catch (e: CancellationException) { throw e } catch (e: Exception) {}
     }
 
     /** Sends the message that failed again. */
