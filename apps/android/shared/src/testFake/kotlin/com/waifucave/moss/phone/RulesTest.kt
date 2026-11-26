@@ -4,6 +4,7 @@ import com.waifucave.moss.phone.client.FakeEngineClient
 import com.waifucave.moss.phone.client.SampleData
 import com.waifucave.moss.phone.model.*
 import com.waifucave.moss.phone.ui.AgentLook
+import com.waifucave.moss.phone.ui.CHILDREN_FIELD
 import com.waifucave.moss.phone.ui.ComposerRules
 import com.waifucave.moss.phone.ui.Sealed
 import com.waifucave.moss.phone.ui.TimeText
@@ -245,6 +246,36 @@ class RulesTest {
         m.scrolled(plain, overflows = false, reachedEnd = false)
         m.answer(plain, plain.options[1])
         assertFalse(m.cards.any { it.id == plain.id })
+    }
+
+    /**
+     * A cut checkbox list (more than eight) counts as read only when every box, by id, was seen: the values' end alone
+     * leaves Allow locked, all boxes unlock it, and opening the list again forgets them.
+     */
+    @Test fun aCutCheckboxListNeedsEveryBoxSeen() = runTest {
+        val c = FakeEngineClient()
+        c.setOtherAppInstalled(false)
+        val m = CardsModel(c, PhoneApp.moss, { SampleData.now }, steppingClock())
+        m.load()
+        val base = m.cards.first { m.note(it) == null }
+        val options = listOf(CardOption("deny", CardOption.Kind.deny, "Deny"), CardOption("allow", CardOption.Kind.approve, "Allow"))
+        val kids = (1..10).map { CardChild("k$it", "Computer $it", true) }
+        val group = base.copy(id = "card_group0001", hash = "3".repeat(64), options = options, children = kids)
+        c.raise(group); m.apply(EngineEvent.CardRequested(group))
+        m.open(group, CHILDREN_FIELD)
+        m.scrolled(group, overflows = true, reachedEnd = true) // the end reached (a fast scroll past the middle)
+        m.boxSeen("k10", group)
+        m.answer(group, options[1])
+        assertEquals("Scroll through every checkbox first.", m.refusals[group.id])
+        kids.forEach { m.boxSeen(it.id, group) }
+        assertTrue(m.allBoxesSeen(group))
+        // Opening the list again forgets: each box is seen again.
+        m.open(group, CHILDREN_FIELD)
+        assertFalse(m.allBoxesSeen(group))
+        kids.forEach { m.boxSeen(it.id, group) }
+        m.answer(group, options[1])
+        assertFalse("allowed once every box was seen", m.cards.any { it.id == group.id })
+        assertEquals(kids.map { it.id }, c.answeredChildren[group.id])
     }
 
     /** A plugin OK's checkboxes start as the engine ticks them; the person's ticks go with an approve, none with a deny. */

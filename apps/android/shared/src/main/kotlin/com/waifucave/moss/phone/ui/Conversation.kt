@@ -153,6 +153,7 @@ fun ConversationScreen(model: ConversationModel, cards: CardsModel, onBack: () -
                                 onSettle = { if (cards.note(item.card) == CardNote.failed) cards.clearFailure(item.card) else cards.dismiss(item.card) },
                                 changed = item.card.id in cards.changed, wait = cards.waitLeft(item.card), waitKey = cards.armedAt[item.card.id], onOpen = { f -> cards.open(item.card, f) }, onScrolled = { o, e -> cards.scrolled(item.card, o, e) }, refusal = cards.refusals[item.card.id],
                             ticked = { cards.isTicked(it, item.card) }, onTick = { cards.toggle(it, item.card) },
+                            boxesSeen = cards.boxesSeen[item.card.id + "#" + item.card.hash] ?: emptySet(), onBoxSeen = { cards.boxSeen(it, item.card) },
                                 modifier = Modifier.padding(top = 6.dp))
                             Item.Status -> StatusLine(model.statusLine ?: "", Modifier.padding(start = 4.dp, top = 2.dp))
                         }

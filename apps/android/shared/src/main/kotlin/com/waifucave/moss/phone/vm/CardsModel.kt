@@ -5,6 +5,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.waifucave.moss.phone.client.EngineClient
 import com.waifucave.moss.phone.model.*
+import com.waifucave.moss.phone.ui.CHILDREN_FIELD
 import com.waifucave.moss.phone.ui.cutFields
 import com.waifucave.moss.phone.ui.drawable
 import kotlinx.coroutines.CancellationException
@@ -46,6 +47,8 @@ class CardsModel(
     fun open(card: Card, field: String) {
         val key = card.id + "#" + card.hash
         opened = opened + (key to ((opened[key] ?: emptySet()) + field))
+        // Opening the checkboxes (again) forgets which boxes were seen: each is seen again in the opened list.
+        if (field == CHILDREN_FIELD) boxesSeen = boxesSeen - key
     }
     private fun openedOn(card: Card): Set<String> = opened[card.id + "#" + card.hash] ?: emptySet()
 
@@ -152,6 +155,23 @@ class CardsModel(
         val set = ticks[key] ?: card.checkedByDefault
         ticks = ticks + (key to if (child in set) set - child else set + child)
     }
+    /**
+     * The boxes of an opened cut checkbox list that have been wholly on screen in a settled frame, per card (id and hash).
+     * A cut list counts as read only when EVERY box has been (its end alone could be reached by a fast scroll past the
+     * middle, whose boxes a group card ticks by default). Opening the list again forgets them.
+     */
+    var boxesSeen by mutableStateOf<Map<String, Set<String>>>(emptyMap())
+        private set
+    /** The view's report: this box of the card's opened cut checkbox list has been wholly on screen, the scroll at rest. */
+    fun boxSeen(child: String, card: Card) {
+        if (card.children.none { it.id == child } || CHILDREN_FIELD !in openedOn(card)) return
+        val key = card.id + "#" + card.hash
+        boxesSeen = boxesSeen + (key to ((boxesSeen[key] ?: emptySet()) + child))
+    }
+    /** Whether every box of the card's cut checkbox list has been seen (true when the list isn't cut). */
+    fun allBoxesSeen(card: Card): Boolean =
+        CHILDREN_FIELD !in card.cutFields() || (boxesSeen[card.id + "#" + card.hash] ?: emptySet()).containsAll(card.children.map { it.id })
+
     /** What an answer carries: with an approve, the ticked checkboxes (in the card's order); with a deny, none. */
     fun childrenFor(card: Card, option: CardOption): List<String> =
         if (option.kind != CardOption.Kind.approve) emptyList() else card.children.map { it.id }.filter { isTicked(it, card) }
@@ -168,6 +188,7 @@ class CardsModel(
         // until every cut part was opened and the screen has shown the values whole.
         if (option.kind == CardOption.Kind.approve) {
             if ((card.cutFields() - openedOn(card)).isNotEmpty()) return refuse("Open the rest first: some of this card is cut short.")
+            if (!allBoxesSeen(card)) return refuse("Scroll through every checkbox first.")
             if (card.id + "#" + card.hash !in seenWhole) return refuse("Scroll to the end of the card first.")
         }
         // Only the card as it stands now: one re-issued meanwhile (another hash) is answered from what is shown now.

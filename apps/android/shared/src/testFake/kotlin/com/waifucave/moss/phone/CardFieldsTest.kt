@@ -24,6 +24,7 @@ import com.waifucave.moss.phone.model.*
 import com.waifucave.moss.phone.ui.CARD_FIELDS
 import com.waifucave.moss.phone.ui.CARD_FIELD_LABELS
 import com.waifucave.moss.phone.ui.CardView
+import com.waifucave.moss.phone.ui.MAX_CHILD_LABEL
 import com.waifucave.moss.phone.ui.MossTheme
 import com.waifucave.moss.phone.ui.drawable
 import com.waifucave.moss.phone.ui.cutFields
@@ -169,6 +170,11 @@ class CardFieldsTest {
         assertFalse(plain.copy(children = listOf(CardChild("a", "Mail\nSend", true), CardChild("b", "Mail Send", false))).drawable())
         assertFalse(plain.copy(children = listOf(CardChild("a", "Calendar", true), CardChild("a", "Mail", false))).drawable())
         assertFalse(plain.copy(children = listOf(CardChild("a", "  ", true))).drawable())
+        // Labels are trimmed before the repeat check: " Calendar" and "Calendar " read the same.
+        assertFalse(plain.copy(children = listOf(CardChild("a", " Calendar", true), CardChild("b", "Calendar ", false))).drawable())
+        // A label too long to ever be wholly on screen sends the card to the computer.
+        assertFalse(plain.copy(children = listOf(CardChild("a", "x".repeat(MAX_CHILD_LABEL + 1), true))).drawable())
+        assertTrue(plain.copy(children = listOf(CardChild("a", "x".repeat(MAX_CHILD_LABEL), true))).drawable())
     }
 
     /** A checkbox label is one line of its own: a line break shows as ⏎, so it can't draw what looks like a second box. */
