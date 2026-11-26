@@ -2,6 +2,7 @@ import XCTest
 
 /// Runs Apple's accessibility audit on every screen of an app, at the default text size and at the largest accessibility
 /// size, and prints each element's spoken label (what VoiceOver reads). Headless on a simulator.
+@MainActor
 enum AuditRunner {
     static let screensByApp: [String: [(String, [String])]] = [
         "com.waifucave.moss.ios": [
