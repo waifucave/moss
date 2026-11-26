@@ -68,6 +68,7 @@ import { MISPLACED_SANDBOX_FLAG_REFUSAL, misplacedSandboxFlag, outsideSandboxFla
 import { BOT_KEY_PATHS, RUNTIME_STATE_STORES, RUNTIME_STATE_SUFFIXES, fenceSearchOutput, fileToolFenceRefusal, type FileFence } from "./file-fence";
 import { secretReadPlaces, type Fence } from "../../contracts/fence";
 import { runtimeDenyForms } from "../../fence/runtime-deny-forms";
+import { leftOutRoots, type LeftOutRoot } from "../../fence/sandbox-settings";
 import { TreeRouter, type TreeRoute, type TreeRouteDeps } from "../../tree/route";
 import type { TreeToolResult, TreeTools } from "../../tree/tools";
 
@@ -181,6 +182,23 @@ export function withBotKeyReads(sandbox: SandboxSettingsConfig, fence: Pick<File
  *  inside the MOSS home only its own folders are readable (`fileToolFenceRefusal`). */
 /** Lane XC: what another computer's tree call gave back, as the model reads a tool's result: the runtime's own shapes
  *  where there is one (Bash's output, Glob's paths one per line, Grep's `path:line:text`), the reason for an error. */
+/** A refused write's words, as the shell and the sandbox say them. */
+const WRITE_REFUSED = /Read-only file system|Operation not permitted|Permission denied|EROFS|EPERM|EACCES/;
+
+/** A Bash result with the note on the roots the sandbox left out (Linux, lane XC 3c), when its output says a write was
+ *  refused and some were; undefined otherwise. The note goes on its stderr (or after a plain text result). */
+export function leftOutNote(response: unknown, leftOut: readonly { root: string; why: string }[]): unknown {
+  if (leftOut.length === 0) return undefined;
+  const text = typeof response === "string" ? response : response !== null && typeof response === "object" ? JSON.stringify(response) : "";
+  if (!WRITE_REFUSED.test(text)) return undefined;
+  const note = `[MOSS] Shell commands can't write ${leftOut.map((l) => `${l.root} (${l.why})`).join("; ")}. Use Write or Edit there, which ask when they need to.`;
+  if (typeof response === "string") return `${response}\n${note}`;
+  if (response === null || typeof response !== "object") return undefined;
+  const r = response as Record<string, unknown>;
+  const stderr = typeof r.stderr === "string" ? r.stderr : "";
+  return { ...r, stderr: stderr === "" ? note : `${stderr.replace(/\n+$/, "")}\n${note}` };
+}
+
 export function treeResultText(tool: string, output: unknown): string {
   if (typeof output === "string") return output;
   if (output === null || typeof output !== "object") return String(output ?? "");
@@ -495,6 +513,8 @@ export class BotSessionDriver implements SessionDriver {
   readonly #router: TreeRouter | undefined;
   /** Calls `#preTool` found on another computer's path, by call id: `#treeHandOff` answers them; their results are the
    *  holder's, fenced there, so `#postTool` leaves them unfiltered. */
+  /** The write roots the host's sandbox left out (`leftOutRoots`), from its last read. */
+  #leftOut: readonly LeftOutRoot[] = [];
   readonly #remoteCalls = new Map<string, { ask?: string; askBy?: string; answered?: true; result?: Record<string, unknown> }>();
 
   /** Marks a call for the hand-off, with a plugin's ask. Bounded: the oldest mark goes past `REMOTE_MARKS_MAX` (a call
@@ -1024,7 +1044,9 @@ export class BotSessionDriver implements SessionDriver {
     const remote = this.#remoteCalls.delete(input.tool_use_id ?? toolUseId ?? "");
     // A search's hits through a link out of the session's folders are dropped before anyone sees them, plugins too.
     const fenced = this.#fileFence === undefined || remote ? undefined : fenceSearchOutput(name, input.tool_response, this.#fileFence, this.#ctx.paths.scratch, input.tool_input);
-    const result = await this.#hooks.toolAfter(this.#hookSession, { name, callId: input.tool_use_id ?? toolUseId ?? "" }, input.tool_input, fenced ?? input.tool_response, signal);
+    // Linux (lane XC 3c): a command whose write was refused under a root the sandbox left out is told why.
+    const noted = remote || name !== "Bash" ? undefined : leftOutNote(fenced ?? input.tool_response, this.#leftOut);
+    const result = await this.#hooks.toolAfter(this.#hookSession, { name, callId: input.tool_use_id ?? toolUseId ?? "" }, input.tool_input, noted ?? fenced ?? input.tool_response, signal);
     try { this.#d.observe?.toolResult?.(this.#ctx, name, input.tool_response, input.tool_input); } catch { /* an observer never fails the call */ }
     // A core tool asked for the turn to end here (`#continueWith`): the runtime stops after this round, and `turn`
     // goes on in a new runtime turn.
@@ -1514,6 +1536,9 @@ export class BotSessionDriver implements SessionDriver {
     if (this.#d.sandbox === undefined) return undefined;
     const settings = this.#d.sandbox(this.#ctx);
     if (settings === undefined) throw new Error("the host gave no sandbox for this session");
+    // What it left out (Linux, lane XC 3c): a refused write's result says why (`#postTool`). A change of it changes
+    // `allowWrite`, so the runtime reopens on the settings read here.
+    this.#leftOut = leftOutRoots(settings);
     return settings;
   }
 
