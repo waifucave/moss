@@ -42,6 +42,10 @@ export interface HostWorld {
    *  loses the host's own single-instance lock and quits, and the live host's reconnect says `host.ready`. The supervisor then waits a grace for that
    *  reconnect before starting one, and a start that quits at once is not yet a crash. */
   noLock?: boolean;
+  /** With `noLock`: whether a host may still be alive from before this engine started (the restart left the app open, or a recorded host pid still runs). Absent: assumed. A cold start (no) starts at once. */
+  mayHostBeAlive?(): boolean;
+  /** With `noLock`: a host said ready: the pid to keep for the next boot's `mayHostBeAlive`. */
+  noteHost?(pid: number): void;
 }
 
 export interface HostSupervisor {

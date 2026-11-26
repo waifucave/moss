@@ -15,6 +15,8 @@ import { hostOwnsScreen } from "./mounts";
 import { botSource } from "../bots/source";
 
 export interface HostSupervisionInput {
+  /** The engine came after a restart that left the app open (`DaemonPairSide.appKept`): a host may have outlived it. */
+  readonly appKept?: boolean;
   readonly home: string;
   readonly os: DaemonPlatform;
   readonly profile: MossProfile;
@@ -70,6 +72,7 @@ export function startHostSupervision(input: HostSupervisionInput): HostSupervisi
   const world = engineHostWorld({
     home: input.home, os: input.os, profile: input.profile, release: input.release, run: input.run, dist: input.dist, testBuild: input.testBuild, env: input.env,
     stopHost: (reason) => door?.stopHost(reason) ?? false,
+    ...(input.appKept === true ? { appKept: true } : {}),
     ...(input.source !== undefined ? { source: input.source } : {}),
     // A start that failed counts once, while the start is still the supervisor's (a host that already said ready is heard by
     // its connection's close instead).

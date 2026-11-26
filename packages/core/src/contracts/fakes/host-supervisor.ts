@@ -8,6 +8,10 @@ import type { HostStatus, HostSupervisor, HostWorld } from "../host-supervisor";
 export class FakeHostWorld implements HostWorld {
   holder: number | null = null;
   noLock: boolean | undefined;
+  alive: boolean | undefined;
+  readonly noted: number[] = [];
+  mayHostBeAlive(): boolean { return this.alive ?? true; }
+  noteHost(pid: number): void { this.noted.push(pid); }
   app: AppInstallRecord | undefined;
   readonly starts: { bundlePath: string; safeMode: boolean }[] = [];
   readonly stops: HostExitReason[] = [];

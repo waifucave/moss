@@ -68,6 +68,8 @@ export interface MossConn {
   /** A bridge connection's number from K's `accept` (`BridgeVerdict.connection`), for K's handlers to check
    *  `isLive(session, connection)` on every request. */
   readonly bridgeConnection?: number;
+  /** The kernel's pid for this connection's client (null where it can't be read): what the host door records as an adopted host's pid. */
+  readonly peerPid?: number;
   /** Areas this connection subscribed to (`events.subscribe`). */
   readonly areas: Set<string>;
   /** Send the client a request from the daemon (`app.quit`, `app.show`, `pluginHost.invoke`…); its id. */
@@ -517,7 +519,7 @@ export function createMossServer(deps: MossServerDeps): MossServer {
   // the connection's signed program is refused (`signed`, macOS); an older second copy of a program stops. It picks the
   // mount list only; it grants no method.
   const SURFACE_WHY = { "not-app": "surface is the app role's alone", "second-host": "a background host is already live for this home", "program-mismatch": "this connection's signature is another program's", "older-copy": "a newer copy of this program is running" } as const;
-  const register = (connId: number, h: MossHelloParams, caller: Caller, write: (bytes: Uint8Array) => void, extra: Pick<MossConn, "hostProcess" | "bridgeConnection">, signed?: Program, verdict: HelloVerdict = { kind: "unjudged" }): { conn: MossConn; result: MossHelloResult } => {
+  const register = (connId: number, h: MossHelloParams, caller: Caller, write: (bytes: Uint8Array) => void, extra: Pick<MossConn, "hostProcess" | "bridgeConnection" | "peerPid">, signed?: Program, verdict: HelloVerdict = { kind: "unjudged" }): { conn: MossConn; result: MossHelloResult } => {
     if (conns.has(connId)) throw new MossRpcError(ERR.INVALID_REQUEST, "that connection already said hello");
     // An app AHEAD of the engine holds the release door only and is kept out of the surface door's live set (release-door.ts `inertAdmission`).
     const admitted = verdict.kind === "door" ? inertAdmission({ role: h.role, surface: h.surface, signed }) : door.admit({ connId, role: h.role, ...(h.surface !== undefined ? { surface: h.surface } : {}), ...(signed !== undefined ? { signed } : {}), ...(h.release !== undefined ? { release: h.release } : {}) });
@@ -767,7 +769,7 @@ export function createMossServer(deps: MossServerDeps): MossServer {
       if (bridge) bridged.set(connId, { ...bridge, ...(end ? { end } : {}) });
       // The release rule judges the caller once it is known (so a client that proves nothing learns no release).
       const verdict = bridge ? ({ kind: "unjudged" } as const) : releaseVerdict(h);
-      const r = register(connId, h, caller, write, { ...(hostProcess ? { hostProcess } : {}), ...(bridge ? { bridgeConnection: bridge.connection } : {}) }, signed, verdict);
+      const r = register(connId, h, caller, write, { ...(hostProcess ? { hostProcess } : {}), ...(bridge ? { bridgeConnection: bridge.connection } : {}), ...(peer.pid !== null ? { peerPid: peer.pid } : {}) }, signed, verdict);
       if (end) ends.set(connId, end);
       // The pair (`pair.*`, the heartbeat and the kill of a hung app) is today's one app, MOSS Code's window: a `moss` or
       // `host` connection is never taken for it (lanes RT, then HS and RL, retire the pair).

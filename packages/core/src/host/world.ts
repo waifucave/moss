@@ -167,6 +167,9 @@ export function hostEnvArgs(env: Record<string, string | undefined>): string[] {
   return Object.entries(env).filter(([k, v]) => v !== undefined && keep(k)).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
 }
 
+/** The pid a host said ready as, kept in the home on an OS with no host lock: the next engine boot waits for a host only when it is still running. */
+const HOST_PID_FILE = "host.pid";
+
 export interface EngineHostWorldInput {
   readonly home: string;
   readonly os: DaemonPlatform;
@@ -182,6 +185,8 @@ export interface EngineHostWorldInput {
   source?(): AppInstallRecord | undefined;
   /** Sends the live host `host.stop`; false when no host is connected. */
   stopHost(reason: HostExitReason): boolean;
+  /** This engine's start came after a restart that left the app open (`takeAppKept`): a host may have outlived the engine. */
+  readonly appKept?: boolean;
   /** A start that failed (the signature, the OS): the supervisor counts it as an exit. */
   startFailed(why: string): void;
   log?(line: string): void;
@@ -198,6 +203,15 @@ export function engineHostWorld(input: EngineHostWorldInput): HostWorld & HostWo
   const exists = input.exists ?? existsSync;
   const command = input.dist ? undefined : parseHostCommand(input.env.MOSS_HOST_COMMAND);
   if (input.dist && input.env.MOSS_HOST_COMMAND) log("[host] ignoring MOSS_HOST_COMMAND: a release build starts only the host its apps carry");
+
+  const recordedHostAlive = (): boolean => {
+    try {
+      const pid = Number(readFileSync(join(input.home, HOST_PID_FILE), "utf8").trim());
+      if (!Number.isInteger(pid) || pid <= 0) return false;
+      process.kill(pid, 0);
+      return true;
+    } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
+  };
 
   const writeStartFile = (safeMode: boolean): void => {
     const path = join(input.home, HOST_START_FILE);
@@ -233,6 +247,11 @@ export function engineHostWorld(input: EngineHostWorldInput): HostWorld & HostWo
   return {
     lockHolder: () => hostLockHolder(input.home, input.os),
     noLock: input.os !== "darwin",
+    // No lock to find a host by: one may still be alive when the last engine restarted with the app kept, or when a host said ready and its recorded pid still runs.
+    mayHostBeAlive: () => input.appKept === true || recordedHostAlive(),
+    noteHost: (pid) => {
+      try { writeFileSync(join(input.home, HOST_PID_FILE), String(pid), { mode: 0o600 }); } catch { /* the next boot just starts without a grace */ }
+    },
     source: () => {
       if (command !== undefined) {
         return { record: 1, program: "code", bundlePath: command[0]!, release: input.release, carries: { engine: true, host: true }, seenAt: 0 };

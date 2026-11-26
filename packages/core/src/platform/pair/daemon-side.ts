@@ -39,6 +39,8 @@ export interface DaemonPairSide {
   readonly appToken: string;
   /** How the daemon starts the app, or null when it runs alone (no app installed). */
   readonly launcher: AppLauncher | null;
+  /** The daemon before this one stopped for a restart at once and left the app open (the mark read at start): a host may still be alive too. */
+  readonly appKept: boolean;
   /** Stop the timers and remove the token file (the daemon is stopping). */
   dispose(): void;
   /** The daemon stops to start again at once and leaves the app open: the next one's pair waits for it to come back. */
@@ -83,9 +85,11 @@ export async function startDaemonPairSide(input: DaemonPairSideInput): Promise<D
     ...(input.log ? { log: input.log } : {}),
   }, { ...input.options, desktop: launcher !== null });
   input.log?.(`[pair] ${typeof __MOSS_TEST_BUILD__ === "string" ? "a test-marked build: the daemon never starts the app" : launcher === null ? "the daemon starts no app: no app bundle holds this engine and MOSS_APP names none (the apps start the engine, and the engine starts the host)" : `the app starts with: ${launcher.how}`}`);
-  pair.start({ appKept: takeAppKept(input.runDir, now()) });
+  const appKept = takeAppKept(input.runDir, now());
+  pair.start({ appKept });
   return {
     pair,
+    appKept,
     appToken,
     launcher,
     dispose() { pair!.dispose(); removeAppToken(input.runDir); },

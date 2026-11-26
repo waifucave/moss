@@ -91,7 +91,7 @@ export class EngineHostSupervisor implements HostSupervisor {
       this.#arm(pid);
       return "adopted";
     }
-    if (this.#world.noLock === true && this.#graceMs > 0) {
+    if (this.#world.noLock === true && this.#graceMs > 0 && (this.#world.mayHostBeAlive?.() ?? true)) {
       // No lock to find a running host by on this OS: a host that outlived the engine reconnects by itself and says `host.ready`. Wait for it a while
       // before starting a second one (which would only lose the single-instance lock and quit).
       this.#log(`[host] no host lock on this OS: waiting up to ${this.#graceMs} ms for a running host to reconnect before starting one`);
@@ -123,6 +123,7 @@ export class EngineHostSupervisor implements HostSupervisor {
       this.#log(`[host] a start quit at once because a running host (pid ${info.pid}) holds the instance, and it said it is ready: adopted, no crash`);
     }
     this.#lostOnce = false;
+    if (this.#world.noLock === true && info.pid > 0) this.#world.noteHost?.(info.pid);
     this.#saidReady = true;
     this.#failedStarts = 0;
     this.#set({ state: info.safeMode ? "safe-mode" : "running", pid: info.pid, release: info.release, bundlePath: info.bundlePath, safeMode: info.safeMode }, ["gaveUp"]);

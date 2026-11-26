@@ -149,7 +149,7 @@ export function hostDoor(deps: HostDoorDeps): HostDoor {
       // Whether a window is in front now, on every ready (a host that comes up under a window in front hides its strip line at
       // once; one that reconnected forgets what it heard on its last connection).
       if (deps.windowFront !== undefined) queueMicrotask(() => { if (host?.connId === conn.connId) tellFront(conn, deps.windowFront!()); });
-      deps.supervisor.ready({ pid: deps.lockPid() ?? 0, release: p.release, bundlePath: p.bundlePath, safeMode: p.safeMode });
+      deps.supervisor.ready({ pid: deps.lockPid() ?? conn.peerPid ?? 0, release: p.release, bundlePath: p.bundlePath, safeMode: p.safeMode });
       log(`[host] ready: ${p.parts.surfaces} surfaces, ${p.parts.background} background parts, ${p.parts.tabs.length} tabs${p.safeMode ? ", in safe mode" : ""}`);
       return { ok: true };
     },

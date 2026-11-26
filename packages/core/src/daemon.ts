@@ -4107,6 +4107,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     profile: resolveMossProfile(), release: CORE_VERSION, run: bunRunner, dist: DIST_BUILD,
     testBuild: typeof __MOSS_TEST_BUILD__ === "string", env: process.env,
     connections: () => mossServer?.connections() ?? [],
+    ...(pairSide?.appKept === true ? { appKept: true } : {}),
     ask: (conn, method, params, ms) => mossServer === undefined ? Promise.reject(new Error("the daemon's endpoint isn't open")) : mossServer.ask(conn, method, params, ms),
     coreEvent: (event) => void mossServer?.coreEvent(event as Parameters<MossServer["coreEvent"]>[0]),
     busy: () => updateGate.verdict().busy,

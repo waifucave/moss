@@ -102,3 +102,33 @@ test("macOS (a lock) is unchanged: no grace, a held lock adopts, none starts at 
   expect(await host.boot()).toBe("started");
   expect(world.starts.length).toBe(1);
 });
+
+test("a cold start (no kept app, no live recorded host) starts at once, no grace", async () => {
+  const clock = new FakeClock();
+  const world = noLockWorld();
+  world.alive = false;
+  const host = new EngineHostSupervisor({ clock, world });
+  expect(await host.boot()).toBe("started");
+  expect(world.starts.length).toBe(1);
+});
+
+test("a boot that may have a live host (kept app, or a recorded pid still running) waits the grace", async () => {
+  const clock = new FakeClock();
+  const world = noLockWorld();
+  world.alive = true;
+  const host = new EngineHostSupervisor({ clock, world });
+  const booted = host.boot();
+  expect(world.starts).toEqual([]);
+  clock.advance(HOST_RECONNECT_GRACE_MS);
+  expect(await booted).toBe("started");
+});
+
+test("a ready keeps the host's pid for the next boot, and the peer's pid shows (never 0)", async () => {
+  const clock = new FakeClock();
+  const world = noLockWorld();
+  const host = new EngineHostSupervisor({ clock, world });
+  const booted = host.boot();
+  host.ready(ready);
+  await booted;
+  expect(world.noted).toEqual([7]);
+});
