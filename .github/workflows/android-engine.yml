@@ -14,6 +14,11 @@ on:
       - native/phone-core/**
       - .github/workflows/android-engine.yml
   workflow_dispatch:
+    inputs:
+      write_verification_metadata:
+        description: "Write apps/android/gradle/verification-metadata.xml (sha256 of every dependency this run resolves) and upload it"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -36,6 +41,10 @@ jobs:
       # Dependency downloads are retried (bounded) when Maven Central answers 429; tests are never run twice. This job runs
       # no Robolectric test (the engine client's JVM tests are plain JUnit), so it has no Robolectric cache.
       GRADLE_OPTS: -Dorg.gradle.internal.repository.max.retries=6 -Dorg.gradle.internal.repository.initial.backoff=2000
+      # Only on a by-hand run that asks for it: every Gradle call below records the sha256 of what it resolves (and checks
+      # nothing meanwhile); the file is uploaded for a person to commit. Otherwise empty, and Gradle verifies every
+      # dependency against the committed file.
+      VERIFY_ARGS: ${{ inputs.write_verification_metadata && '--write-verification-metadata sha256' || '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -83,7 +92,7 @@ jobs:
       - name: Build both apps in both variants, the instrumented tests, and the engine client's JVM tests
         working-directory: apps/android
         run: >
-          gradle --no-daemon --stacktrace --continue
+          gradle --no-daemon --stacktrace --continue $VERIFY_ARGS
           :engine:testDebugUnitTest
           :moss:assembleFakeDebug :code:assembleFakeDebug
           :moss:assembleRealDebug :code:assembleRealDebug
@@ -142,13 +151,31 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           working-directory: apps/android
-          script: gradle --no-daemon --stacktrace --continue :moss:connectedRealDebugAndroidTest :code:connectedRealDebugAndroidTest ; status=$? ; adb logcat -d -s MossE2E:V CodeE2E:V MossEngine:V TestRunner:V AndroidRuntime:E '*:F' > "$RUNNER_TEMP/logcat.txt" ; exit $status
+          script: gradle --no-daemon --stacktrace --continue $VERIFY_ARGS :moss:connectedRealDebugAndroidTest :code:connectedRealDebugAndroidTest ; status=$? ; adb logcat -d -s MossE2E:V CodeE2E:V MossEngine:V TestRunner:V AndroidRuntime:E '*:F' > "$RUNNER_TEMP/logcat.txt" ; exit $status
       - name: Logs
         if: always()
         run: |
           echo "--- engine"; cat "$RUNNER_TEMP/engine.log" || true
           echo "--- logcat"; cat "$RUNNER_TEMP/logcat.txt" || true
           find apps/android -path '*androidTest-results*' -name '*.xml' -exec cat {} \; 2>/dev/null | head -400 || true
+      # A by-hand run that writes the checksums: also resolve what android.yml's tests and pictures use (Robolectric and
+      # Roborazzi) and the build's own plugins, so one file covers both workflows. Their results don't matter here.
+      - name: Record the pictures workflow's dependencies too
+        if: ${{ inputs.write_verification_metadata }}
+        # Only in a by-hand checksum run, never a push: it resolves, the tests it runs are android.yml's to judge.
+        continue-on-error: true
+        working-directory: apps/android
+        # The test task resolves :shared's test classpaths (Robolectric, Roborazzi, Compose test); one plain JVM test class
+        # is enough to run it. A failure here still leaves the file, which the next step uploads.
+        run: gradle --no-daemon --continue $VERIFY_ARGS help :shared:testFakeDebugUnitTest --tests '*RulesTest'
+      - name: Upload the dependency checksums
+        if: ${{ always() && inputs.write_verification_metadata }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gradle-verification-metadata
+          path: apps/android/gradle/verification-metadata.xml
+          if-no-files-found: error
+          retention-days: 7
       - name: Upload the test reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
