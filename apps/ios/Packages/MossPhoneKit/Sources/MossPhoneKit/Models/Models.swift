@@ -290,6 +290,18 @@ public struct Card: Identifiable, Codable, Hashable, Sendable {
         public var label: String
         public var checked: Bool
         public init(id: String, label: String, checked: Bool) { self.id = id; self.label = label; self.checked = checked }
+        /// A checkbox's label as one line: every line break (and line or paragraph separator) shown as a visible ⏎, so
+        /// a label can never draw what looks like a second checkbox under the first ("Calendar\n☐ Send email as you").
+        public static func oneLine(_ label: String) -> String {
+            var out = ""
+            for s in label.unicodeScalars {
+                switch s.value {
+                case 0x0A, 0x0B, 0x0C, 0x0D, 0x85, 0x2028, 0x2029: out += " ⏎ "
+                default: out.unicodeScalars.append(s)
+                }
+            }
+            return out
+        }
         private enum Keys: String, CodingKey { case id, label, checked }
         /// The label is the protocol's `Text`: a string, or one per language (English first, else the first in order).
         public init(from decoder: Decoder) throws {
@@ -329,6 +341,8 @@ public struct Card: Identifiable, Codable, Hashable, Sendable {
             && fields["what"].map { if case .text = $0 { return true } else { return false } } ?? true
             && (children ?? []).allSatisfy { !$0.id.isEmpty && !$0.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             && Set((children ?? []).map(\.id)).count == (children ?? []).count
+            // Two checkboxes that read the same can't be told apart on the phone: answered on the computer.
+            && Set((children ?? []).map { Card.Child.oneLine($0.label) }).count == (children ?? []).count
             && characters <= Card.tooLargeCharacters
     }
 
@@ -593,6 +607,9 @@ public struct AskQuestion: Identifiable, Hashable, Sendable {
     public var id: String { callId }
     /// The first question's text: what a caption or a log line names the call by.
     public var text: String { questions.first?.text ?? "" }
+    /// Each answer is keyed by its question's text, so two questions with one text would share one answer: such a call
+    /// (an older engine may still send one) is answered on the computer, never here.
+    public var answerableHere: Bool { !questions.isEmpty && Set(questions.map(\.text)).count == questions.count }
     public init(callId: String, questions: [Part]) { self.callId = callId; self.questions = questions }
     /// A call asking one question.
     public init(callId: String, header: String? = nil, text: String, options: [Option], multiSelect: Bool = false) {

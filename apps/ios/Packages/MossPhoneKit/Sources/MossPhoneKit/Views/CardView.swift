@@ -153,14 +153,16 @@ public struct CardView: View {
                         HStack(spacing: 10) {
                             Image(systemName: on ? "checkmark.square.fill" : "square").font(.body)
                                 .foregroundStyle(on ? Theme.accent : Theme.subtle).accessibilityHidden(true)
-                            Text(Sealed.visible(kid.label)).font(.callout).foregroundStyle(.primary).multilineTextAlignment(.leading)
+                            // One line of its own: its line breaks shown (⏎), so a label never starts a row that looks like another
+                            // checkbox; a long label wraps under its own text, never in the boxes' column, and nothing of it is hidden.
+                            Text(Card.Child.oneLine(Sealed.visible(kid.label))).font(.callout).foregroundStyle(.primary).multilineTextAlignment(.leading)
                             Spacer(minLength: 0)
                         }
                         .frame(minHeight: 44).contentShape(.rect)
                     }
                     .buttonStyle(.plain)
                     .disabled(busy || note != nil)
-                    .accessibilityLabel(Sealed.visible(kid.label))
+                    .accessibilityLabel(Card.Child.oneLine(Sealed.visible(kid.label)))
                     .accessibilityValue(on ? "ticked" : "not ticked")
                     .accessibilityAddTraits(on ? .isSelected : [])
                     .accessibilityIdentifier("child-\(kid.id)")

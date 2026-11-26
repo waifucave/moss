@@ -129,7 +129,9 @@ stopped being true.
 The iPhone app connects straight to your Mac, encrypted end to end, with no account. Pick up any
 session, approve what Code wants to do, or send Dispatch a job from wherever you are. Chat runs on
 the phone itself, so it works even while your Mac sleeps. A TestFlight build is on its way; the
-link will land here.
+link will land here. A picture you send from the phone reaches your own computer as it was taken,
+with the details your phone keeps in it (such as where it was taken), just as a picture you add on
+the computer does.
 
 ### Make it yours
 

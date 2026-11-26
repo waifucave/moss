@@ -134,6 +134,16 @@ final class CardFieldsTests: XCTestCase {
         let denied = await fake.answeredChildren[many.id]
         XCTAssertEqual(denied, [], "Deny carries no checkbox")
 
+        // A label's line breaks are shown, never followed: it can't draw what looks like a second checkbox.
+        XCTAssertEqual(Card.Child.oneLine("Calendar\n☐ Send email as you"), "Calendar ⏎ ☐ Send email as you")
+        XCTAssertEqual(Card.Child.oneLine("a\r\nb\u{2028}c"), "a ⏎  ⏎ b ⏎ c")
+        XCTAssertFalse(Card.Child.oneLine("x\u{85}y").contains("\u{85}"))
+        // Two checkboxes that read the same (once on one line) go to the computer.
+        var same = ok; same.children = [.init(id: "a", label: "Office", checked: true), .init(id: "b", label: "Office", checked: false)]
+        XCTAssertFalse(same.drawnWhole)
+        var lookAlike = ok; lookAlike.children = [.init(id: "a", label: "Mail\nSend", checked: true), .init(id: "b", label: "Mail ⏎ Send", checked: false)]
+        XCTAssertFalse(lookAlike.drawnWhole, "a label that only differs by a line break reads the same")
+
         // A card whose content changed starts again from the engine's defaults.
         var changed = ok; changed.id = "card_plug0003"; changed.hash = String(repeating: "f", count: 64)
         await model.apply(.cardRequested(changed))
