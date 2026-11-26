@@ -1448,8 +1448,17 @@ async function questionRow(s: UnitState): Promise<string> {
   await sendInMoss(s, "MOSS", `${t} ${ask(t)}`);
   await s.w.waitFor("the question drawn in her conversation, pending", `[...document.querySelectorAll(${JSON.stringify(pendingSel)})].some((q) => q.textContent.includes(${JSON.stringify(t)}))`, 120_000);
   await s.w.waitFor("her turn ended with the question open (no Stop on the composer)", `!document.querySelector('[data-composer] [data-stop]') ? 'quiet' : null`, 120_000);
-  const fixed = s.x.fake.requests.slice(before).find((r) => r.toolResult?.text.startsWith("Asked. The person may answer whenever they like"));
-  if (fixed === undefined) s.x.fail(`the model's next request doesn't carry the fixed words of the ask (its tool results: ${s.x.fake.requests.slice(before).map((r) => JSON.stringify(r.toolResult?.text.slice(0, 80))).join(" | ")})`);
+  // The card is drawn the moment the call is made; the model's NEXT request (the one that carries the call's result) is made a beat later, and on a slow
+  // Linux runner "no Stop on the composer" can read true before it: so it is waited for, and what is missing is named.
+  const isFixed = (r: { toolResult?: { text: string } }) => r.toolResult?.text.startsWith("Asked. The person may answer whenever they like") === true;
+  const fixed = await s.x.until("the model's next request carrying the ask's result", 30_000, async () => s.x.fake.requests.slice(before).find(isFixed), 300).catch(() => undefined);
+  if (fixed === undefined) {
+    const after = s.x.fake.requests.slice(before);
+    const missing = after.length === 0 ? "no model request at all was made after the ask (the turn never went on)"
+      : after.every((r) => r.toolResult === undefined) ? `${after.length} request(s) followed but none carries a tool result (the ask's result never reached the model)`
+      : "a request carries a tool result, but not the fixed words";
+    s.x.fail(`the model's next request doesn't carry the fixed words of the ask: ${missing} (its tool results: ${after.map((r) => JSON.stringify(r.toolResult?.text.slice(0, 80))).join(" | ")})`);
+  }
   // The Agent tool the bot is offered is MOSS's own (packages/core/src/agents/tools.ts, shadowing the runtime's built-in one). The
   // runtime puts one family's aliases (fable, opus, sonnet, haiku) into the `model` property of any tool named Agent, so MOSS's takes
   // `model_id` (a plain string pointing at AgentModels) and has no `model` at all.
