@@ -131,3 +131,37 @@ on its computer, or the holder's. No later deny can come: the bot session's hook
 hand-off is the last of them, the session never runs in plan mode, the computer's saved rules and Tools-tab settings don't
 cover built-in tools, and the approval check passes only a call the hand-off answered. (Lane XC; the code:
 `packages/core/src/runtime-sdk/turn-loop/driver.ts`, `#treeHandOff`.)
+
+**The level, a deliberate rule stricter than spec §9.1's wording.** A call on another computer is judged at the
+strictest of three levels: the session's own (a side thread's or a routine's), the bot's level on the computer it runs
+on, and the level of the computer that holds the files. Why: a bot gets the same treatment away as at home, never a
+looser one. So "automatic" on the holder alone lets nothing more through from a computer that is stricter. And the
+holder's reviewer needs a model on the holder. A computer with no provider (a server, say) never has a reviewer, so at
+"ask for risky actions" it always asks.
+
+**The card, and who signs it.** When the holder's rules ask, its refusal carries its own card. The calling computer
+raises that card through its broker for the asking session (`brokerAsker`, `computers/ask-user.ts`). The person's yes
+comes back signed by the program they pressed it in:
+- MOSS, with its own program key;
+- MOSS Code, with the device's single answer key;
+- the host's island or fallback card, with the host's own key;
+- a phone, with its answer key.
+
+The call then goes again with that answer, and the holder checks it itself (`verifySignedAnswer`). A program-signed
+answer verifies only with that program's key on that device.
+
+The holder learns the other computer's program keys from that computer's own link (`link.device.programKeys`,
+`links/relay.ts` `shareProgramKeys`). Each key comes with its own registration, which must name that device and that
+program. They are stored in the device record. The first key of a program is kept, and a revoke drops them at once.
+
+Three refusals have their own words:
+- the person's no;
+- a yes with no signature (an app without an answer key);
+- a computer where no device of the person's signs answers, refused at once instead of a card that could never be
+  answered.
+
+A different key for a program the holder already holds (the app reinstalled there) isn't taken. Its answers are refused
+with words that say so; a key hand-over between computers is owed.
+
+On Linux and Windows the app role is not yet verified (the open before-release item), so a program key there proves "a
+process running as you that registered first", not the signed app.

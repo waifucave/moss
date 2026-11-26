@@ -68,12 +68,12 @@
 // had hidden (a bot's Write into its scratch refused as a project's `.moss`; a pasted `bun -e` server refused by the
 // load guard under a dot-folder; a wrapped skill folder missing from Glossary), the last two in a shipped build.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, createPublicKey, generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync, chmodSync, closeSync, lstatSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { DEFAULT_LEVEL, MOSS_PROTOCOL_VERSION } from "../../packages/protocol/src/index";
+import { DEFAULT_LEVEL, MOSS_PROTOCOL_VERSION, programAnswerKeyStatement, programCardAnswerSigningInput } from "../../packages/protocol/src/index";
 import { notOnLinux, onLinux, onUnfencedOs } from "./not-on-linux";
 import { TEST_KEYCHAIN_PASSWORD } from "../../packages/core/src/auth/login-keychain";
 import { HARNESS_TOKEN_FILE } from "../../packages/core/src/platform/pair/run-files";
@@ -137,7 +137,7 @@ import { AGENT_STEP, COLD_START_STEP, COPY_UPGRADE_STEPS, FULL_STEPS, IDLE_STEP,
 import { DISTRUST, answerKeyFileFor, keepStateProblem, oldHalfRow, readState, settingsWithFake, socketPathProblem, statePaths, treeDigest, writeState, type KeptState } from "./state";
 import { FAKE_ARTICLE_TEXT, FAKE_HIT_PATH, FAKE_PRIVATE_ADDRESS, FAKE_PRIVATE_SITE, FAKE_PUBLIC_SITE, FAKE_SEARCH_HIT, serveOutsideWorld, type OutsideWorld } from "./fake-exa";
 import { FAKE_LINKED_PATH, FAKE_LINKS_PATH } from "./fake-exa";
-import { BETA_MEMORY_DUMMY, BETA_NOTE, BETA_SECRETS_DUMMY, COMPUTERS_BASH_STEP, COMPUTERS_CARD_STEP, COMPUTERS_MOVE_STEP, COMPUTERS_OFFLINE_STEP, COMPUTERS_PAIR_STEP, COMPUTERS_READ_STEP, COMPUTERS_REFUSED_STEP, COMPUTERS_STEPS, COMPUTERS_WRITE_STEP, offlineWrong, refusedWrong, type Seen } from "./computers-step";
+import { BETA_MEMORY_DUMMY, BETA_NOTE, BETA_SECRETS_DUMMY, COMPUTERS_BASH_STEP, COMPUTERS_CARD_NO_STEP, COMPUTERS_CARD_STEP, COMPUTERS_MOVE_STEP, COMPUTERS_OFFLINE_STEP, COMPUTERS_PAIR_STEP, COMPUTERS_READ_STEP, COMPUTERS_REFUSED_STEP, COMPUTERS_STEPS, COMPUTERS_WRITE_STEP, offlineWrong, refusedWrong, type Seen } from "./computers-step";
 import { CODE_ADAPTER_STEP, codeAdapterWrong, GEMINI_MODEL, GEMINI_REPLY, GOOGLE_PLUGIN, OAUTH_MODEL, OAUTH_PLUGIN, OAUTH_REPLY, OAUTH_SIGN_IN_STEP, OPENAI_REPLY, OPENAI_WIRE_PROVIDERS, openAiWireWrong, THIRD_PARTY_KEY, THIRD_PARTY_MODEL, THIRD_PARTY_MODEL_STEP, THIRD_PARTY_PLUGIN, THIRD_PARTY_REPLY } from "./code-adapter-step";
 import { placeModelsFixture, startFakeModels, type FakeModels } from "./fake-models";
 import { placeOAuthFixture, startFakeOAuth, type FakeOAuth } from "./fake-oauth";
@@ -1424,7 +1424,7 @@ interface Turn { events: Ev[]; cards: string[]; changes: string[] }
 /** Sends the user's message and waits for its turn to end; gives back the events after it, and the cards the turn
  *  raised, each answered yes as the app would (a card nobody answers holds the turn until it is withdrawn), with each
  *  change card's subject (`changes`, e.g. `bot-provider`). */
-async function turn(c: MossClient, session: string, text: string, timeoutMs = 120_000, o: { /** The app's log the card's arrival is read from, for a run whose app logs to its own file. */ log?: string; press?: boolean | { cdp: Cdp; log: string; inConversation?: boolean; narrow?: boolean; onIsland?: boolean; always?: boolean; pick?: (card: Card) => { cdp: Cdp; log: string; onIsland?: boolean } | Promise<{ cdp: Cdp; log: string; onIsland?: boolean }> }; onPressed?: (how: string) => void; /** Looks at a card while it is pending, before it is pressed. */ inspect?: (card: Card) => Promise<void>; /** Answers a card that offers it "Always allow" (over RPC). */ always?: boolean; /** Answers every card no (over RPC). */ deny?: boolean } = {}): Promise<Turn> {
+async function turn(c: MossClient, session: string, text: string, timeoutMs = 120_000, o: { /** The app's log the card's arrival is read from, for a run whose app logs to its own file. */ log?: string; press?: boolean | { cdp: Cdp; log: string; inConversation?: boolean; narrow?: boolean; onIsland?: boolean; always?: boolean; pick?: (card: Card) => { cdp: Cdp; log: string; onIsland?: boolean } | Promise<{ cdp: Cdp; log: string; onIsland?: boolean }> }; onPressed?: (how: string) => void; /** Looks at a card while it is pending, before it is pressed. */ inspect?: (card: Card) => Promise<void>; /** Answers a card that offers it "Always allow" (over RPC). */ always?: boolean; /** Answers every card no (over RPC). */ deny?: boolean; /** Answers each card its own way (the computers unit signs as MOSS does); says how. */ answer?: (card: Card) => Promise<string> } = {}): Promise<Turn> {
   const known = new Set([...(await cards(c).catch(() => [])), ...raised].map((k) => k.id));
   const sent = await c.request<{ seq: number }>("session.send", { id: session, message: { text, clientMessageId: randomUUID() } }, 30_000);
   const asked = fake?.requests.length ?? 0;
@@ -1460,6 +1460,10 @@ async function turn(c: MossClient, session: string, text: string, timeoutMs = 12
             if (by!.inConversation === true) { const how = await pressInHerTab(by!.cdp, card, by!.log, by!.narrow === true); o.onPressed?.(how); seenCards.push(`a ${card.kind} card, ${how}`); continue; }
             await pressApprove(by!.cdp, card, by!.log);
             seenCards.push(`a ${card.kind} card, its Approve pressed in the window (the app signed, the broker checked the proof)`);
+            continue;
+          }
+          if (o.answer !== undefined) {
+            seenCards.push(await o.answer(card));
             continue;
           }
           if (o.deny === true) {
@@ -4040,6 +4044,41 @@ async function computersRun(): Promise<void> {
     const ta = await terminal(home);
     const tb = await terminal(betaHome);
 
+    // ── MOSS on Alpha, as the app is (apps/moss): the `app` role with `surface: "moss"`, its own answer key registered with
+    // `device.programKey.set` before any pairing (the app registers on every connection), so Beta learns it over the link
+    // and checks a yes pressed there. The bots live in MOSS, so this is the key a person's yes for a bot's call is signed with.
+    const mossHello = await hello(coreEndpoint(home), "app", tokenOf(home, "app.token"), "MOSS acceptance", MOSS_PROTOCOL_VERSION, { surface: "moss" });
+    const mossApp = mossHello.client;
+    opened.push(mossApp);
+    const alphaDevice = String(mossHello.result["device"] ?? "");
+    if (alphaDevice === "") fail("MOSS's hello on Alpha named no device");
+    const mossKey = generateKeyPairSync("ed25519").privateKey;
+    const mossPub = Buffer.from(String(createPublicKey(mossKey).export({ format: "jwk" }).x), "base64url").toString("base64");
+    const registered = await mossApp.request<{ applied?: boolean }>("device.programKey.set", {
+      publicKey: mossPub, held: "none", alg: "ed25519",
+      signature: sign(null, Buffer.from(programAnswerKeyStatement({ device: alphaDevice, program: "moss", publicKey: mossPub, held: "none", alg: "ed25519" })), mossKey).toString("base64"),
+    });
+    if (registered.applied !== true) fail("Alpha's engine didn't take MOSS's answer key");
+    /** A yes (or a no) on a card, as MOSS's sealed press sends it: a device proof signed with MOSS's key, naming the program. */
+    const pressAsMoss = async (card: Card, kind: "approve" | "deny"): Promise<void> => {
+      const option = card.options.find((x) => x.kind === kind && (x as { remember?: string }).remember === undefined);
+      if (option === undefined) fail(`card ${card.kind} has no ${kind} option`);
+      const at = Date.now();
+      const signature = sign(null, Buffer.from(programCardAnswerSigningInput({ program: "moss", id: card.id, hash: card.hash, option: option!.id, at })), mossKey).toString("base64");
+      const r = await mossApp.request<{ accepted: boolean; reason?: string }>("card.answer", { id: card.id, hash: card.hash, option: option!.id, proof: { via: "device", device: alphaDevice, at, signature, program: "moss" } });
+      if (!r.accepted) fail(`card.answer refused MOSS's signed ${kind} of the ${card.kind} card: ${r.reason ?? "no reason"}`);
+    };
+
+    /** Both computers at `level`, each set on its own terminal, and both seen at it on Alpha. */
+    const bothAt = async (level: string) => {
+      await ta.t.request("computer.setLevel", { name: "Alpha", level });
+      await tb.t.request("computer.setLevel", { name: "Beta", level });
+      await until(`Alpha and Beta at ${level} on Alpha`, 60_000, async () => {
+        const at = async (name: string) => (await c.request<{ computer: { level?: string } }>("computer.get", { name }).catch(() => undefined))?.computer.level;
+        return (await at("Alpha")) === level && (await at("Beta")) === level ? true : undefined;
+      });
+    };
+
     // ── pairing, through the product's own path ──
     try {
       // As a person pairs today (in the apps): Alpha's app begins, Beta's joins with the QR, the engine raises its own add
@@ -4056,11 +4095,12 @@ async function computersRun(): Promise<void> {
       }
       const listed = async (cl: MossClient) => (await cl.request<{ devices: { name: string }[] }>("device.list", {})).devices.map((d) => d.name).sort().join(",");
       await until("both engines listing Alpha and Beta", 60_000, async () => ((await listed(c)) === "Alpha,Beta" && (await listed(betaApp)) === "Alpha,Beta" ? true : undefined));
-      // Beta reachable from Alpha's tree, at fully automatic (its own terminal sets it), for the rows that ask nothing.
-      await tb.t.request("computer.setLevel", { name: "Beta", level: "automatic" });
-      await until("Beta online and fully automatic on Alpha", 60_000, async () => {
-        const got = await c.request<{ computer: { online?: boolean; state?: string; level?: string } }>("computer.get", { name: "Beta" }).catch(() => undefined);
-        return got !== undefined && (got.computer.online === true || got.computer.state === "online") && got.computer.level === "automatic" ? true : undefined;
+      // Beta reachable from Alpha's tree; BOTH computers at fully automatic (each set by its own terminal), for the rows
+      // that ask nothing: a call is judged at the strictest of the session's, the bot's computer's and the holder's levels.
+      await bothAt("automatic");
+      await until("Beta online on Alpha", 60_000, async () => {
+        const got = await c.request<{ computer: { online?: boolean; state?: string } }>("computer.get", { name: "Beta" }).catch(() => undefined);
+        return got !== undefined && (got.computer.online === true || got.computer.state === "online") ? true : undefined;
       });
       put(COMPUTERS_PAIR_STEP, "PASS", "paired over the two sidecars on loopback as a person does in the apps (Alpha's QR, Beta's join, the engine's add card on each side with the four words, each answered); each terminal heard the same words; both list Alpha and Beta; Beta online on Alpha");
     } catch (err) {
@@ -4071,9 +4111,9 @@ async function computersRun(): Promise<void> {
     // ── a bot on Alpha, on Beta's files ──
     mkdirSync(join(betaUser, "project"), { recursive: true });
     writeFileSync(join(betaUser, "project", "notes.md"), `${BETA_NOTE}\n`);
-    const callOn = async (tool: string, input: Record<string, unknown>, timeoutMs = 150_000): Promise<Seen | undefined> => {
+    const callOn = async (tool: string, input: Record<string, unknown>, timeoutMs = 150_000, answer?: (card: Card) => Promise<string>): Promise<Seen | undefined> => {
       const seen = fake!.requests.length;
-      await turn(c, bot, `ACCEPTANCE-CALL ${tool} ${JSON.stringify(input)}`, timeoutMs);
+      await turn(c, bot, `ACCEPTANCE-CALL ${tool} ${JSON.stringify(input)}`, timeoutMs, answer === undefined ? {} : { answer });
       return fake!.requests.slice(seen).map((r) => r.toolResult).find((r): r is Seen => r !== undefined);
     };
     const botScratch = join(home, "scratch");
@@ -4130,16 +4170,42 @@ async function computersRun(): Promise<void> {
       if (existsSync(join(userHome, "site"))) fail("still on Alpha");
       return "the folder is on Beta with its file, and gone from Alpha";
     });
+    /** Answers each card of a turn: the one naming Beta as MOSS presses it (`kind`), any other no (and counted). */
+    const namesBeta = (k: Card) => {
+      const x = k as Card & { computer?: string | null; binds?: { computer?: string } };
+      return x.computer === "Beta" || x.binds?.computer === "Beta";
+    };
+    /** MOSS's window in front showing the bot, as MOSS reports it (apps/moss presence.ts): the router places the bot's
+     *  cards there, and only a press from MOSS's own connection answers them. */
+    const mossInFront = () => mossApp.request("presence.report", { windows: [{ window: "main", focused: true, visible: true, showing: { kind: "bot", id: "alpha" } }] });
+    const carded = (kind: "approve" | "deny") => {
+      const shown: Card[] = [];
+      const answer = async (card: Card) => {
+        shown.push(card);
+        const names = namesBeta(card);
+        await pressAsMoss(card, names ? kind : "deny");
+        return `a ${card.kind} card${names ? " naming Beta" : ""}, ${names ? kind : "deny"} signed as MOSS`;
+      };
+      return { shown, answer, beta: () => shown.filter(namesBeta) };
+    };
     await step(COMPUTERS_CARD_STEP, async () => {
-      await tb.t.request("computer.setLevel", { name: "Beta", level: DEFAULT_LEVEL });
-      await until("Beta's default level on Alpha", 60_000, async () => ((await c.request<{ computer: { level?: string } }>("computer.get", { name: "Beta" })).computer.level === DEFAULT_LEVEL ? true : undefined));
-      const before = raised.length;
-      const r = await callOn("Write", { file_path: "home/Beta/project/carded.md", content: "after the yes" });
-      const card = raised.slice(before).find((k) => JSON.stringify(k).includes("Beta"));
-      if (card === undefined) fail(`no card naming Beta was raised on Alpha (${raised.length - before} card(s))`);
+      await bothAt(DEFAULT_LEVEL);
+      await mossInFront();
+      const a = carded("approve");
+      const r = await callOn("Write", { file_path: "home/Beta/project/carded.md", content: "after the yes" }, 150_000, a.answer);
+      if (a.beta().length !== 1 || a.shown.length !== 1) fail(`not one card naming Beta on Alpha (${a.shown.length} card(s), ${a.beta().length} naming Beta)`);
       const there = join(betaUser, "project", "carded.md");
-      if (r?.isError === true || !existsSync(there)) fail(`not written after the yes (${r?.text.slice(0, 160) ?? "no result"})`);
-      return `Beta's card (${DEFAULT_LEVEL}) raised on Alpha and answered there; the file landed after the yes`;
+      if (r?.isError === true || !existsSync(there) || readFileSync(there, "utf8") !== "after the yes") fail(`not written after the yes (${r?.text.slice(0, 160) ?? "no result"})`);
+      return `one card naming Beta (${DEFAULT_LEVEL}) raised on Alpha, its yes signed with MOSS's key and checked by Beta; the file landed after the yes`;
+    });
+    await step(COMPUTERS_CARD_NO_STEP, async () => {
+      await mossInFront();
+      const a = carded("deny");
+      const r = await callOn("Write", { file_path: "home/Beta/project/carded-no.md", content: "never" }, 150_000, a.answer);
+      if (a.beta().length !== 1) fail(`not one card naming Beta on Alpha (${a.shown.length} card(s), ${a.beta().length} naming Beta)`);
+      if (existsSync(join(betaUser, "project", "carded-no.md"))) fail("written on Beta after the no");
+      if (r === undefined || !r.text.includes("you said no to this on Beta's card")) fail(`the bot wasn't told the person said no (${r?.text.slice(0, 200) ?? "no result"})`);
+      return "the card naming Beta answered no: nothing on Beta's disk, and the bot was told the person said no";
     });
     await step(COMPUTERS_OFFLINE_STEP, async () => {
       betaProc.kill("SIGTERM");
