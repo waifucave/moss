@@ -17,9 +17,10 @@
 // time and never matches or saves a rule for them (the controller's ruling on #267).
 import { lstatSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, win32 } from "node:path";
 import type { CanUseTool } from "@waifucave/clover-agent-sdk";
 import { isReadOnlyShellCommand } from "@waifucave/clover-agent-runtime";
+import { getLongPathName } from "../platform/long-name";
 import { LEVELS, canonicalJson, type Level, type Os, type SealedValue, type TurnOrigin } from "@waifucave/moss-protocol";
 import type { ActionEffect, ApprovalBroker } from "../contracts/approval-broker";
 import { WRITE_EFFECTS } from "../contracts/approval-broker";
@@ -310,6 +311,26 @@ export function realFileWriteInput(tool: string, input: Record<string, unknown>,
 /** The path a file tool reads or writes, by tool (lane WS9). */
 const FILE_TOOL_PATH_KEY: ReadonlyMap<string, string> = new Map([["Read", "file_path"], ["Edit", "file_path"], ["Write", "file_path"], ["NotebookRead", "notebook_path"], ["NotebookEdit", "notebook_path"]]);
 
+/** A file tool's path with its 8.3 short names expanded and its case as the disk has it, and NO link followed: the nearest existing parent's long form with the
+ *  rest as given. A junction or a symlink inside the path stays as the model wrote it, because a rule on the link (a deny on `.claude/**` where `.claude` is a
+ *  junction) is matched on that spelling; the target's own spelling is judged by the fence separately. `~` expanded and made absolute against `cwd`, as `resolveSessionPath`. */
+export function longNameOf(path: string, cwd: string, o: { home?: string; long?: (path: string) => string | null } = {}): string {
+  const home = o.home ?? homedir();
+  const long = o.long ?? getLongPathName;
+  const expanded = path === "~" ? home : path.startsWith("~/") || path.startsWith("~\\") ? win32.join(home, path.slice(2)) : path;
+  const abs = win32.isAbsolute(expanded) ? win32.resolve(expanded) : win32.resolve(cwd, expanded);
+  const rest: string[] = [];
+  let at = abs;
+  for (;;) {
+    const found = long(at);
+    if (found !== null) return rest.length === 0 ? found : win32.join(found, ...rest.reverse());
+    const up = win32.dirname(at);
+    if (up === at) return abs;
+    rest.push(win32.basename(at));
+    at = up;
+  }
+}
+
 /**
  * Windows (lane WS9, the workshop row of a Windows acceptance run): a file tool's path in the one spelling the disk
  * gives it (`resolveSessionPath`: `realpathSync.native`, so 8.3 short names come back long, `/` becomes `\`, a `\\?\`
@@ -328,7 +349,7 @@ export function windowsFileToolInput(tool: string, input: unknown, cwd: string, 
   const i = input as Record<string, unknown>;
   const given = i[key];
   if (typeof given !== "string" || given.trim() === "" || given.trim().startsWith("~")) return undefined;
-  const real = (o.real ?? ((p, c) => resolveSessionPath(p, c)))(given.trim(), cwd);
+  const real = (o.real ?? ((p, c) => longNameOf(p, c)))(given.trim(), cwd);
   return real === given ? undefined : { ...i, [key]: real };
 }
 
