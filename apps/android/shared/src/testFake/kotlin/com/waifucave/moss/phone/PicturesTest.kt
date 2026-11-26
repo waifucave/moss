@@ -67,7 +67,6 @@ val PICTURES = listOf(
     moss("26-new-bot-refused", FakeLaunch.of(Screen.newBot, scenario = Scenario.botLimit, newBotName = "Hazel"), press = "Create"),
     moss("28-provider-consent", FakeLaunch.of(Screen.cards, scenario = Scenario.providerConsent)),
     moss("29-card-scroll", FakeLaunch.of(Screen.cards, scenario = Scenario.tallCard)),
-    moss("32-plugin-ok-checkboxes", FakeLaunch.of(Screen.cards, scenario = Scenario.pluginOk)),
     moss("31-several-questions", FakeLaunch.of(Screen.conversation, scenario = Scenario.severalQuestions, openID = "luna")),
     moss("30-question-ends", FakeLaunch.of(Screen.conversation, scenario = Scenario.questionEnds, openID = "luna", scrollTop = true)),
     moss("27-question-tall", FakeLaunch.of(Screen.conversation, scenario = Scenario.tallQuestion, openID = "luna")),
@@ -91,6 +90,8 @@ val PICTURES = listOf(
     code("16-empty", FakeLaunch.of(scenario = Scenario.empty)),
     code("17-largest-text", FakeLaunch.of(), fontScale = 2f),
     code("18-file-chip", FakeLaunch.of(Screen.session, scenario = Scenario.quiet, composer = FakeComposer(file = true))),
+    // A plugin's OK card is the computer's, no bot's: MOSS Code shows it (the fake's rule for cards of no bot).
+    code("19-plugin-ok-checkboxes", FakeLaunch.of(Screen.cards, scenario = Scenario.pluginOk)),
 )
 
 /**
