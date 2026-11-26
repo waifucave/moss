@@ -1,9 +1,9 @@
-// Lane XC 3c, the controller's ask on #95's review: what one Bash command costs a bot at fully automatic on Linux when
-// MOSS hands the runtime its home as top folders (`botSandboxSettings`, `homeTopFolders`), on the runtime MOSS ships
-// now. The runtime walks every write root for its held patterns at every spawn, so a home of many top folders adds that
-// walk to each command. One Bash turn on a tiny home, then one on a home of 100 top folders (about 300,000 entries, a
-// repo in every tenth, one pnpm tree); the difference is printed for the report, and the bot's own folder must be
-// written in both.
+// Lane XC 3c, the controller's ask on #95's review: what one Bash command costs a bot on Linux with today's write roots
+// (`botSandboxSettings`: the home as one root at fully automatic, its ordinary top folders at accept edits), on the
+// runtime MOSS ships now. The runtime walks every write root for its held patterns at every spawn, so each root adds
+// its walk to each command. At each level, one Bash turn on a tiny home, then one on a home of 100 top folders (about
+// 300,000 entries, a repo in every tenth, one pnpm tree); the difference is printed for the report (the cost a person
+// already pays), and the bot's own folder must be written every time.
 //
 // Run only: scripts/pinned-bun test packages/core/test/runtime-sdk/turn-loop/linux-walk-cost.e2e.test.ts (Linux, CI).
 import { afterAll, expect, test } from "bun:test";
@@ -62,9 +62,9 @@ function homeShaped(folders: number, perFolder: number): { userDir: string; moss
   return { userDir, mossHome };
 }
 
-describeWithEmbeddedRuntime("a bot's Bash at fully automatic on Linux: what the held-names walk adds per command", (spawn) => {
-  linuxTest("a home of 100 top folders (about 300,000 entries) against a tiny one: the added time per command", async () => {
-    const timeTurns = async (folders: number, perFolder: number) => {
+describeWithEmbeddedRuntime("a bot's Bash on Linux with today's write roots: what the held-names walk adds per command", (spawn) => {
+  linuxTest("a home of 100 top folders (about 300,000 entries) against a tiny one, at fully automatic and at accept edits", async () => {
+    const timeTurns = async (level: "automatic" | "accept-edits", folders: number, perFolder: number, turns = 2) => {
       const { userDir, mossHome } = homeShaped(folders, perFolder);
       const temp = join(userDir, "tmp-moss");
       mkdirSync(temp, { recursive: true });
@@ -76,7 +76,7 @@ describeWithEmbeddedRuntime("a bot's Bash at fully automatic on Linux: what the 
       let leftOut = 0;
       const sandbox = (c: BotSessionContext) => {
         const s = botSandboxSettings(fence.forCaller(c.caller).policy(), {
-          mossHome, userHome: userDir, level: "automatic", ownFolders: [c.paths.scratch, c.paths.root], pathFolders: [],
+          mossHome, userHome: userDir, level, ownFolders: [c.paths.scratch, c.paths.root], pathFolders: [],
         });
         roots = s.filesystem?.allowWrite?.length ?? 0;
         leftOut = leftOutRoots(s).length;
@@ -92,7 +92,7 @@ describeWithEmbeddedRuntime("a bot's Bash at fully automatic on Linux: what the 
       const ms: number[] = [];
       try {
         // Two turns: the first opens the runtime, the second is the steady cost of one command.
-        for (let i = 0; i < 2; i++) {
+        for (let i = 0; i < turns; i++) {
           rmSync(out, { force: true });
           const start = Date.now();
           const end = await driver.turn(user(`CALL Bash ${JSON.stringify({ command: `echo ok > ${JSON.stringify(out)}`, description: "time one command" })}`), control());
@@ -103,13 +103,16 @@ describeWithEmbeddedRuntime("a bot's Bash at fully automatic on Linux: what the 
       } finally {
         await driver.stop();
       }
-      return { steady: ms[1]!, first: ms[0]!, roots, leftOut };
+      return { steady: ms[1], first: ms[0]!, roots, leftOut };
     };
-    const tiny = await timeTurns(1, 10);
-    const big = await timeTurns(100, 3_000);
-    const added = big.steady - tiny.steady;
-    console.log(`linux walk cost: tiny home ${tiny.steady} ms (${tiny.roots} roots), 100-folder home ${big.steady} ms (${big.roots} roots, ${big.leftOut} left out), added per command ${added} ms`);
-    // The number is the point (the controller reads it); a bound so a runaway walk shows red.
-    expect(added).toBeLessThan(60_000);
-  }, 600_000);
+    // The numbers are the point (the controller reads them): printed for each level, no bound, so both always print.
+    // Fully automatic: two turns each (the second is the steady cost). Accept edits hands ~100 roots, each walked at
+    // every spawn (the split measured 220 s a command), so it times one turn each, first against first, to stay inside
+    // the shard's 20 minutes.
+    const auto = { tiny: await timeTurns("automatic", 1, 10), big: await timeTurns("automatic", 100, 3_000) };
+    console.log(`linux walk cost at automatic: tiny home ${auto.tiny.steady} ms (${auto.tiny.roots} roots), 100-folder home ${auto.big.steady} ms (${auto.big.roots} roots, ${auto.big.leftOut} left out), added per command ${auto.big.steady! - auto.tiny.steady!} ms`);
+    const edits = { tiny: await timeTurns("accept-edits", 1, 10, 1), big: await timeTurns("accept-edits", 100, 3_000, 1) };
+    console.log(`linux walk cost at accept-edits (first turns): tiny home ${edits.tiny.first} ms (${edits.tiny.roots} roots), 100-folder home ${edits.big.first} ms (${edits.big.roots} roots, ${edits.big.leftOut} left out), added per command ${edits.big.first - edits.tiny.first} ms`);
+    expect([auto.big.leftOut, edits.big.leftOut]).toEqual([0, 0]);
+  }, 1_100_000);
 });
