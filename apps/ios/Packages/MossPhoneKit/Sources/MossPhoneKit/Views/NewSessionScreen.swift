@@ -60,6 +60,8 @@ public struct NewSessionScreen: View {
                     if let e = model.errorText { Section { Label(e, systemImage: "exclamationmark.circle").foregroundStyle(.secondary) } }
                 }
             }
+            // A hard top edge, as in Settings: the first section's header sits right under the bar.
+            .scrollEdgeEffectStyle(.hard, for: .top)
             .navigationTitle("New session")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

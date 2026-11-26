@@ -71,11 +71,13 @@ enum AuditRunner {
               owed: "lane/iw-4"),
     ]
 
-    /// A known entry names an element by its label's first line (a question's label goes on over several lines); "-" is an
-    /// element the audit gives no label.
+    /// A known entry names an element by its label's first line (a question's label goes on over several lines), its
+    /// no-break spaces read as plain ones (a clock's "4:26 AM" carries U+202F before "AM"); "-" is an element the audit
+    /// gives no label.
     static func firstLine(_ label: String?) -> String {
         guard let label else { return "-" }
-        return String(label.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first ?? "")
+        let line = String(label.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first ?? "")
+        return line.replacingOccurrences(of: "\u{202F}", with: " ").replacingOccurrences(of: "\u{00A0}", with: " ")
     }
 
     /// Waits until the screen has stopped moving: every element's frame (so a scroll view's content and visible rect too)
@@ -123,6 +125,14 @@ enum AuditRunner {
 
     static func run(bundleID: String, size: String?, in test: XCTestCase) throws {
         test.continueAfterFailure = true
+        // Known entries this run matched; one that matched nothing is printed as AUDIT STALE (its fix may have worked:
+        // the entry is to be removed once a run shows it quiet), so the list can't keep an entry nobody needs.
+        var matchedKnown: Set<String> = []
+        defer {
+            for k in knownContrast where k.app == bundleID && !matchedKnown.contains("\(k.screen)\t\(k.element)") {
+                print("AUDIT STALE \(size ?? "default"): \(k.screen) :: \(k.element) matched nothing in this run")
+            }
+        }
         for (name, args) in screensByApp[bundleID] ?? [] {
             let app = XCUIApplication(bundleIdentifier: bundleID)
             // Still motion (as Reduce Motion asks, Debug builds only): the shimmering status line and a bot's face hold
@@ -146,6 +156,7 @@ enum AuditRunner {
                 guard issue.auditType == .contrast, !issue.compactDescription.localizedCaseInsensitiveContains("nearly") else { return nil }
                 let element = firstLine(issue.element?.label)
                 if let known = knownContrast.first(where: { $0.app == bundleID && $0.screen == name && $0.element == element }) {
+                    matchedKnown.insert("\(known.screen)\t\(known.element)")
                     print("AUDIT KNOWN \(name) \(size ?? "default"): \(known.element) (owed: \(known.owed))")
                     return nil
                 }

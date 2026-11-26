@@ -152,7 +152,7 @@ final class CardGateUITests: XCTestCase {
         XCTAssertTrue(fourth.waitForExistence(timeout: 10), "the first question, with four options")
         fourth.tap()
         XCTAssertTrue(fourth.isSelected, "the fourth option is picked")
-        XCTAssertTrue(app.staticTexts["Should the notes be public?"].waitForExistence(timeout: 40), "the second question took its place")
+        XCTAssertTrue(app.descendants(matching: .any)["Should the notes be public?"].waitForExistence(timeout: 40), "the second question took its place")
         XCTAssertEqual(app.state, .runningForeground, "no crash")
         XCTAssertFalse(app.buttons["Thursday"].exists, "the first question's options are gone")
         for label in ["Yes", "No"] { XCTAssertFalse(app.buttons[label].firstMatch.isSelected, "\(label) is not ticked: the person never chose it") }
@@ -187,8 +187,8 @@ final class CardGateUITests: XCTestCase {
     /// A call of two questions: both are drawn, Submit waits until each has an answer, and then answers both together.
     func testACallOfTwoQuestionsIsAnsweredTogether() throws {
         let app = launch(["-screen", "conversation", "-open", "juniper"])
-        XCTAssertTrue(app.staticTexts["Which day should I book the train for?"].waitForExistence(timeout: 10), "the first question")
-        XCTAssertTrue(app.staticTexts["Which seats do you want?"].exists, "and the second, in the same box")
+        XCTAssertTrue(app.descendants(matching: .any)["Which day should I book the train for?"].waitForExistence(timeout: 10), "the first question")
+        XCTAssertTrue(app.descendants(matching: .any)["Which seats do you want?"].exists, "and the second, in the same box")
         let submit = app.buttons["Submit"].firstMatch
         XCTAssertFalse(submit.isEnabled, "nothing chosen")
         app.buttons["Saturday"].firstMatch.tap()
@@ -200,7 +200,7 @@ final class CardGateUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Saturday"].firstMatch.isSelected, "the first question's pick stays")
         XCTAssertTrue(submit.isEnabled, "each question has an answer")
         submit.tap()
-        XCTAssertTrue(app.staticTexts["Which day should I book the train for?"].waitForNonExistence(timeout: 10), "answered: the box goes")
+        XCTAssertTrue(app.descendants(matching: .any)["Which day should I book the train for?"].waitForNonExistence(timeout: 10), "answered: the box goes")
         app.terminate()
     }
 }

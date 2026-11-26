@@ -84,8 +84,15 @@ public struct PairingScreen: View {
             VStack(spacing: 10) {
                 Button { Task { await model.confirm() } } label: { Text("They match").frame(maxWidth: .infinity).foregroundStyle(Color(uiColor: .systemBackground)) }
                     .buttonStyle(.borderedProminent).tint(Theme.accent).controlSize(.large)
-                Button { Task { await model.cancel() } } label: { Text("They don't match").frame(maxWidth: .infinity) }
-                    .buttonStyle(.bordered).tint(.primary).controlSize(.large)
+                // An opaque fill of its own, the size and shape of the large bordered button it replaces: the bordered
+                // fill is see-through, and over the bar's material the audit can't read the label against it.
+                Button { Task { await model.cancel() } } label: {
+                    Text("They don't match").font(.body).foregroundStyle(.primary)
+                        .frame(maxWidth: .infinity, minHeight: 50)
+                        .background(Theme.quietButtonFill, in: Capsule())
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(UndimmedButtonStyle())
             }
             .padding(.horizontal, 24).padding(.vertical, 12).background(.bar)
         }

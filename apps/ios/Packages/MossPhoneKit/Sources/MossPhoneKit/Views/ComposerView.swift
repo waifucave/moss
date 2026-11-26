@@ -440,7 +440,9 @@ struct QuestionComposerView: View {
                         .padding(.horizontal, 20).frame(height: 44)
                         .background(ready ? Color.primary : Color.primary.opacity(0.08), in: Capsule())
                 }
-                .buttonStyle(.plain).disabled(draft.answers == nil || submitting)
+                // Still disabled (VoiceOver says dimmed), but drawn in its own colours: the plain style would fade the
+                // waiting label to a grey the contrast audit fails.
+                .buttonStyle(UndimmedButtonStyle()).disabled(draft.answers == nil || submitting)
             }
         }
         .padding(16)
@@ -458,6 +460,11 @@ struct QuestionComposerView: View {
             // A tall question scrolls in its box, so it can never push its options away or pass itself off as one.
             ScrollView { Text(verbatim: q.text).font(.body).frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true) }
                 .frame(maxHeight: 140).scrollBounceBehavior(.basedOnSize)
+                // The box is the element, its label the whole question: VoiceOver reads every line, and the element's
+                // frame is the box (a tall text's own frame ran on under the options, where the audit read it).
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(Text(verbatim: q.text))
+                .accessibilityAddTraits(.isStaticText)
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(q.options.indices, id: \.self) { i in
                     if i > 0 { Divider() }

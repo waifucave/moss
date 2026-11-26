@@ -8,7 +8,18 @@ struct FormHeader: View {
     var body: some View { Text(title).font(.footnote).foregroundStyle(Theme.subtle).accessibilityAddTraits(.isHeader) }
 }
 
+/// A button drawn in its own colours whether or not it is enabled (still disabled for touch and for VoiceOver, which
+/// says dimmed): the plain style fades a disabled label to a grey that fails the contrast audit.
+struct UndimmedButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.opacity(configuration.isPressed ? 0.7 : 1)
+    }
+}
+
 public enum Theme {
+    /// A quiet button's opaque fill (a bordered button's own fill is see-through, and over a bar's material the audit
+    /// can't read the label's contrast against it).
+    public static let quietButtonFill = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.24, alpha: 1) : UIColor(white: 0.86, alpha: 1) })
     /// The person's bubble: black with white text (white with black text in dark mode), as the desktop draws it.
     public static let userBubble = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.93, alpha: 1) : UIColor(white: 0.07, alpha: 1) })
     public static let userBubbleText = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.07, alpha: 1) : .white })

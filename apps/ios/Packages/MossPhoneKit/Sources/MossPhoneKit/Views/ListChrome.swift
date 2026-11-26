@@ -15,10 +15,20 @@ struct RoundButton: View {
                 .glassEffect(.regular.interactive(), in: .circle)
                 .overlay(alignment: .topTrailing) {
                     if badge > 0 {
-                        Text("\(badge)").font(.caption2.weight(.bold)).foregroundStyle(.white)
-                            .padding(.horizontal, 5).frame(minWidth: 18, minHeight: 18)
-                            .background(Theme.waitingFill, in: Capsule())
-                            .offset(x: 6, y: -4)
+                        // The count's own frame sits wholly on the orange: the capsule is drawn behind it, larger than the
+                        // text, so no corner of the canvas around the capsule falls inside the text's frame (the contrast
+                        // audit reads that whole frame). The label above says the count; this is held at one size.
+                        let digits = "\(badge)"
+                        Text(digits).font(.caption2.weight(.bold)).foregroundStyle(.white)
+                            .dynamicTypeSize(...DynamicTypeSize.large)
+                            .fixedSize()
+                            .background {
+                                Capsule().fill(Theme.waitingFill)
+                                    .frame(width: 18 + CGFloat(max(0, digits.count - 1)) * 7, height: 18)
+                            }
+                            // No frame around the text: the element's frame stays the text's own. The offset puts the
+                            // capsule where the old 18-point one was (its centre 3 points in from the corner and 5 down).
+                            .offset(x: 0.5, y: -1.5)
                             .accessibilityHidden(true)
                     }
                 }
