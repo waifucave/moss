@@ -2609,8 +2609,9 @@ async function main(): Promise<void> {
 
       // P5 (the owner, 2026-11-15: "Yes, named on the card"): programs and folders of the user's outside the sandbox
       // (outside-step.ts).
-      // Linux: a plugin there runs as the user with no sandbox to be outside of (spec §5.2, item 58), so there is no "outside" to name or refuse.
-      if (!onLinux()) {
+      // Linux and Windows: a plugin there runs as the user with no sandbox to be outside of (spec §5.2, item 58), so there is no "outside" to name or
+      // refuse (the row's verdict below says so). On Windows the install of a drive-absolute program is the unit test's (plugin-sdk outside.test.ts).
+      if (!onUnfencedOs()) {
         const o = writeOutside(src, join(root, "outside-bin"), userHome);
         const named = await install({ from: "folder", path: o.named });
         const plain = await install({ from: "folder", path: o.plain });
