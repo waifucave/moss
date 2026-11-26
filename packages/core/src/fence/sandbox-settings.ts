@@ -258,9 +258,10 @@ export function botSandboxSettings(policy: SandboxPolicy, o: {
   return settings;
 }
 
-/** Whether `botSandboxSettings` leaves out, on Linux, a user's write root the runtime's walk can't hold. Off: a
- *  .git past 16 levels, past 50,000 entries or inside node_modules isn't held for a bot's shell at the wide levels
- *  (the known limit), until the runtime's budgeted walk (0.0.89) is pinned and the owner decides. */
+/** Whether `botSandboxSettings` leaves out, on Linux, a user's write root the runtime's walk can't hold. Off: from
+ *  agent runtime 0.0.89 the runtime fails closed itself (a root whose walk can't finish within its per-command budget
+ *  isn't handed as writable), so MOSS doesn't walk the roots a second time before each command; the check and its note
+ *  stay for a runtime that drops a root, and for turning this on. */
 export const LINUX_LEAVE_OUT_UNHELD = false;
 
 /** A write root MOSS didn't hand the runtime on Linux, and why (`linuxHoldProblem`). */
@@ -279,11 +280,12 @@ function shownPath(p: string): string {
   return t.length > 200 ? `${t.slice(0, 199)}…` : t;
 }
 
-/** The runtime's own walk for a pattern-shaped deny on Linux (the agent runtime's `expandPatterns`, 0.0.87): at most
- *  50,000 entries and 16 levels down, `node_modules` skipped. What lies past it isn't held at all. These must be the
- *  runtime's numbers, never larger: a root this check passes past the runtime's limit would hold an unheld `.git`. They
- *  rise with the runtime (its budgeted walk, 0.0.89, fails closed itself). */
-export const LINUX_WALK = { maxVisited: 50_000, maxDepth: 16 } as const;
+/** The runtime's own walk for a pattern-shaped deny on Linux (the agent runtime 0.0.89's `perCommandExpander`): one
+ *  budget per command, 400,000 entries and 3 s across every write root (the working folder first), 16 levels down,
+ *  `node_modules` walked to 64. A root the runtime can't finish it doesn't hand as writable (it fails closed itself).
+ *  These must be the runtime's numbers, never larger: a root this check passes past the runtime's limit would be one
+ *  the runtime drops anyway. */
+export const LINUX_WALK = { maxVisited: 400_000, maxDepth: 16 } as const;
 /** How many entries the look for repositories inside `node_modules` reads under one root. */
 const NODE_MODULES_BUDGET = 50_000;
 const HOLD_TTL_MS = 10_000;

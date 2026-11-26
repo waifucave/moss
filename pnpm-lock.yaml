@@ -270,17 +270,17 @@ importers:
   packages/core:
     dependencies:
       '@waifucave/clover-agent-runtime':
-        specifier: 0.0.88
-        version: 0.0.88
+        specifier: 0.0.89
+        version: 0.0.89
       '@waifucave/clover-agent-sdk':
-        specifier: 0.0.88
-        version: 0.0.88
+        specifier: 0.0.89
+        version: 0.0.89
       '@waifucave/clover-provider-catalog':
-        specifier: 0.0.88
-        version: 0.0.88
+        specifier: 0.0.89
+        version: 0.0.89
       '@waifucave/clover-provider-runtime':
-        specifier: 0.0.88
-        version: 0.0.88
+        specifier: 0.0.89
+        version: 0.0.89
       '@waifucave/moss-plugin-sdk':
         specifier: workspace:*
         version: link:../plugin-sdk
@@ -295,8 +295,8 @@ importers:
         version: 4.6.7
     devDependencies:
       '@waifucave/clover-provider-conformance':
-        specifier: 0.0.88
-        version: 0.0.88
+        specifier: 0.0.89
+        version: 0.0.89
       '@waifucave/moss-service-shared':
         specifier: workspace:*
         version: link:../../services/shared
@@ -808,11 +808,11 @@ importers:
   plugins/moss/plugins/model-azure-openai:
     dependencies:
       '@waifucave/clover-provider-catalog':
-        specifier: 0.0.88
-        version: 0.0.88
+        specifier: 0.0.89
+        version: 0.0.89
       '@waifucave/clover-provider-runtime':
-        specifier: 0.0.88
-        version: 0.0.88
+        specifier: 0.0.89
+        version: 0.0.89
     devDependencies:
       '@types/bun':
         specifier: 1.4.4
@@ -824,11 +824,11 @@ importers:
   plugins/moss/plugins/model-bedrock:
     dependencies:
       '@waifucave/clover-provider-catalog':
-        specifier: 0.0.88
-        version: 0.0.88
+        specifier: 0.0.89
+        version: 0.0.89
       '@waifucave/clover-provider-runtime':
-        specifier: 0.0.88
-        version: 0.0.88
+        specifier: 0.0.89
+        version: 0.0.89
     devDependencies:
       '@types/bun':
         specifier: 1.4.4
@@ -840,11 +840,11 @@ importers:
   plugins/moss/plugins/model-codex-oauth:
     dependencies:
       '@waifucave/clover-provider-catalog':
-        specifier: 0.0.88
-        version: 0.0.88
+        specifier: 0.0.89
+        version: 0.0.89
       '@waifucave/clover-provider-runtime':
-        specifier: 0.0.88
-        version: 0.0.88
+        specifier: 0.0.89
+        version: 0.0.89
     devDependencies:
       '@types/bun':
         specifier: 1.4.4
@@ -856,11 +856,11 @@ importers:
   plugins/moss/plugins/model-google:
     dependencies:
       '@waifucave/clover-provider-catalog':
-        specifier: 0.0.88
-        version: 0.0.88
+        specifier: 0.0.89
+        version: 0.0.89
       '@waifucave/clover-provider-runtime':
-        specifier: 0.0.88
-        version: 0.0.88
+        specifier: 0.0.89
+        version: 0.0.89
     devDependencies:
       '@types/bun':
         specifier: 1.4.4
@@ -872,11 +872,11 @@ importers:
   plugins/moss/plugins/model-vertex:
     dependencies:
       '@waifucave/clover-provider-catalog':
-        specifier: 0.0.88
-        version: 0.0.88
+        specifier: 0.0.89
+        version: 0.0.89
       '@waifucave/clover-provider-runtime':
-        specifier: 0.0.88
-        version: 0.0.88
+        specifier: 0.0.89
+        version: 0.0.89
     devDependencies:
       '@types/bun':
         specifier: 1.4.4
@@ -888,11 +888,11 @@ importers:
   plugins/moss/plugins/model-xai-oauth:
     dependencies:
       '@waifucave/clover-provider-catalog':
-        specifier: 0.0.88
-        version: 0.0.88
+        specifier: 0.0.89
+        version: 0.0.89
       '@waifucave/clover-provider-runtime':
-        specifier: 0.0.88
-        version: 0.0.88
+        specifier: 0.0.89
+        version: 0.0.89
     devDependencies:
       '@types/bun':
         specifier: 1.4.4
@@ -1447,8 +1447,8 @@ importers:
   plugins/moss/plugins/web:
     dependencies:
       '@waifucave/clover-web':
-        specifier: 0.0.88
-        version: 0.0.88
+        specifier: 0.0.89
+        version: 0.0.89
     devDependencies:
       '@types/bun':
         specifier: 1.4.4
@@ -2700,34 +2700,34 @@ packages:
   '@vitest/utils@4.1.12':
     resolution: {integrity: sha512-Q3awXrwOfEV+qc3WmO5ONyE0yO7Q1gQ9/oyHxGLZ/pl7N3NO/ZztqQwKLuwMkV+CA1JYSIeO3gkHnRDIo4AVaA==}
 
-  '@waifucave/clover-agent-runtime@0.0.88':
-    resolution: {integrity: sha512-YmGaJrBlAJSL9zMKjzqsPwnAUkbldjcDw5qjVNZjdwSfAg7MYq6GNwkP0486SHK71kRe+KNn1pb5btcMpCpmNg==, tarball: https://npm.pkg.github.com/download/@waifucave/clover-agent-runtime/0.0.88/78fd67361acb7fd2df0acd7f55610093d80c8492}
+  '@waifucave/clover-agent-runtime@0.0.89':
+    resolution: {integrity: sha512-fWtaqlz/gTYBxk4KBmvly2oegUtoWd2Ew1LmSRiCKIJ+q09qSeEccePGUMNEhVtHcQzFoyAVvX0HGwGkjgOjdQ==, tarball: https://npm.pkg.github.com/download/@waifucave/clover-agent-runtime/0.0.89/0ea814ac2e9cd1a8dc1d117757ad37c1724749e0}
     engines: {bun: '>=1.3'}
 
-  '@waifucave/clover-agent-sdk-darwin-arm64@0.0.88':
-    resolution: {integrity: sha512-U44UOdkpzjSF786aVLILHFK/YeKmDfAgVZ8w7KICQWdcl/HdjWqu+7P+uPT8iVP5giubdVuLS+wARNbDJnbbUw==, tarball: https://npm.pkg.github.com/download/@waifucave/clover-agent-sdk-darwin-arm64/0.0.88/c7744c303c84742db2de28f37e5c22d836c61cf9}
+  '@waifucave/clover-agent-sdk-darwin-arm64@0.0.89':
+    resolution: {integrity: sha512-NWQFvVvRU7Sw2un/LAcHNyZh7ujFQJRLNwzzwSNDIItqwtz6ndwiv9eK62DDLDCvsX9UJol3JvE8TowWNzH1DA==, tarball: https://npm.pkg.github.com/download/@waifucave/clover-agent-sdk-darwin-arm64/0.0.89/8b54e7dff62e786d26a2bfb200965d809e8b14b6}
     cpu: [arm64]
     os: [darwin]
     hasBin: true
 
-  '@waifucave/clover-agent-sdk@0.0.88':
-    resolution: {integrity: sha512-DT+MZrRh6DhZxA9udrScRFBevUbz/4djGDW9M7FN+cHJqffgPDw1IwkBqztAKVQVqny/vFWU7ll1YUJ/AZo7aA==, tarball: https://npm.pkg.github.com/download/@waifucave/clover-agent-sdk/0.0.88/4b116c950ae37184d1f18351583e2c6c4781b32d}
+  '@waifucave/clover-agent-sdk@0.0.89':
+    resolution: {integrity: sha512-keXTF3/+dfBIRL2m71vfHk5Xo/PdA4BB7GYHaS7BRWNxxz7cmdzl0niCrB6JrBnDg1MSjrEXtdSOXVjNXpYCXw==, tarball: https://npm.pkg.github.com/download/@waifucave/clover-agent-sdk/0.0.89/775b979a3f84f1993a11e9fa344201e06f4edf9e}
     engines: {node: '>=18'}
 
-  '@waifucave/clover-provider-catalog@0.0.88':
-    resolution: {integrity: sha512-iiN6Yp+ii72q/z0Ev1wClCXf3e8REiXNdH7oTrm1plyxYdpWZdY6esR8fLHhWGiNdXiDOsDAbO4uOH42oksejw==, tarball: https://npm.pkg.github.com/download/@waifucave/clover-provider-catalog/0.0.88/c3edbf9f9903cb12bfe4b6764504838a43cad594}
+  '@waifucave/clover-provider-catalog@0.0.89':
+    resolution: {integrity: sha512-MbrbVkL18cubQFEzffJorrYoirI85jjN454ACMexVlvHH5FGpydKwiXl1QE51hSPqBbtZh30VqsF4uOpkvyEdw==, tarball: https://npm.pkg.github.com/download/@waifucave/clover-provider-catalog/0.0.89/9def2886be45eae5a723bad8e361c7007e66be13}
     engines: {node: '>=18'}
 
-  '@waifucave/clover-provider-conformance@0.0.88':
-    resolution: {integrity: sha512-uwaSfbptC9Gh0XZs1xmLC7cC873LkCeQ64QTZ7mj7bVmsqZ3FGEorn6mqS/YMJAs0zNEPJ58Nf0/dP5fQeI1Yg==, tarball: https://npm.pkg.github.com/download/@waifucave/clover-provider-conformance/0.0.88/f157ab36b8bcb063f83c6f32b44627e190533e92}
+  '@waifucave/clover-provider-conformance@0.0.89':
+    resolution: {integrity: sha512-rXyiyGCwEkNSxDvCa3ZRQVTy8dkn9YqF1jC8ZCty8Au2FJ3Kz2x1yA4t4DvUYcLpOfphGZXIaI9xomKAUAljfA==, tarball: https://npm.pkg.github.com/download/@waifucave/clover-provider-conformance/0.0.89/de7bf64aec215365ef057ca8fc13f2f411fe40af}
     engines: {bun: '>=1.2'}
 
-  '@waifucave/clover-provider-runtime@0.0.88':
-    resolution: {integrity: sha512-KTK+IUDv2u8Ts2i2ABV85b4R4juvwZeuxPk3K/BCyxwWNiu8XWEfenwcZLByYkkrLNmHfFf+Q7w5S+0I+I+NBA==, tarball: https://npm.pkg.github.com/download/@waifucave/clover-provider-runtime/0.0.88/383810192622950faa3bb502c32742e865515c11}
+  '@waifucave/clover-provider-runtime@0.0.89':
+    resolution: {integrity: sha512-DusKZYE/5snV+/nx/N6WlVL8Eto2zHTFRzs6ku3aEyW4rjvrOfs0m3TBDAnYjj2nuYuGsND+FHSCz7TTPLUFFQ==, tarball: https://npm.pkg.github.com/download/@waifucave/clover-provider-runtime/0.0.89/22619634341bd59fcc7be2497aa2e30768ff98ca}
     engines: {node: '>=18'}
 
-  '@waifucave/clover-web@0.0.88':
-    resolution: {integrity: sha512-YIrW9vZ9pcOprBErVGpftJXvPVT3GuFuNzU2ac4lMH2TMY+SPMcRnhrwOKx4rPUfwxiuj6r+7QnK8Ni21u1uTA==, tarball: https://npm.pkg.github.com/download/@waifucave/clover-web/0.0.88/dc3a10d6802f9b5b72229a9f0e2f11631204f7bb}
+  '@waifucave/clover-web@0.0.89':
+    resolution: {integrity: sha512-ZZucQi0SJDJQaohOKA4Z4gBE82b18zcEue/m/l4fPYYHmIRPCeMtd/3RR7cjTgV7QMzK06HMXRzkzTqUF04K1w==, tarball: https://npm.pkg.github.com/download/@waifucave/clover-web/0.0.89/930b1fefa86ac3c33a5cf65d91232912644945d1}
     engines: {bun: '>=1.3', node: '>=20'}
 
   '@waifucave/mochi2d@0.13.0':
@@ -5534,37 +5534,37 @@ snapshots:
       convert-source-map: 2.0.0
       tinyrainbow: 3.2.0
 
-  '@waifucave/clover-agent-runtime@0.0.88':
+  '@waifucave/clover-agent-runtime@0.0.89':
     dependencies:
       '@modelcontextprotocol/client': 2.3.1
-      '@waifucave/clover-agent-sdk': 0.0.88
-      '@waifucave/clover-provider-catalog': 0.0.88
-      '@waifucave/clover-provider-runtime': 0.0.88
-      '@waifucave/clover-web': 0.0.88
+      '@waifucave/clover-agent-sdk': 0.0.89
+      '@waifucave/clover-provider-catalog': 0.0.89
+      '@waifucave/clover-provider-runtime': 0.0.89
+      '@waifucave/clover-web': 0.0.89
       ajv: 8.20.0
       ignore: 7.0.5
 
-  '@waifucave/clover-agent-sdk-darwin-arm64@0.0.88':
+  '@waifucave/clover-agent-sdk-darwin-arm64@0.0.89':
     optional: true
 
-  '@waifucave/clover-agent-sdk@0.0.88':
+  '@waifucave/clover-agent-sdk@0.0.89':
     dependencies:
-      '@waifucave/clover-provider-catalog': 0.0.88
+      '@waifucave/clover-provider-catalog': 0.0.89
     optionalDependencies:
-      '@waifucave/clover-agent-sdk-darwin-arm64': 0.0.88
+      '@waifucave/clover-agent-sdk-darwin-arm64': 0.0.89
 
-  '@waifucave/clover-provider-catalog@0.0.88': {}
+  '@waifucave/clover-provider-catalog@0.0.89': {}
 
-  '@waifucave/clover-provider-conformance@0.0.88':
+  '@waifucave/clover-provider-conformance@0.0.89':
     dependencies:
-      '@waifucave/clover-provider-catalog': 0.0.88
-      '@waifucave/clover-provider-runtime': 0.0.88
+      '@waifucave/clover-provider-catalog': 0.0.89
+      '@waifucave/clover-provider-runtime': 0.0.89
 
-  '@waifucave/clover-provider-runtime@0.0.88':
+  '@waifucave/clover-provider-runtime@0.0.89':
     dependencies:
-      '@waifucave/clover-provider-catalog': 0.0.88
+      '@waifucave/clover-provider-catalog': 0.0.89
 
-  '@waifucave/clover-web@0.0.88': {}
+  '@waifucave/clover-web@0.0.89': {}
 
   '@waifucave/mochi2d@0.13.0(pixi.js@8.22.0)(playwright@1.64.1)':
     optionalDependencies:

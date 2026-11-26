@@ -241,7 +241,9 @@ describe("child-parser contract (clover-sdk coerceMaterial)", () => {
     // packages/runtime/src/provider/keychain-store.ts` EMPTY; the mirror stands.
     // 0.0.87 → 0.0.88 (Windows file rules: a path outside a rule's folder, network and device paths): `git diff v0.0.87 v0.0.88 --
     // packages/runtime/src/provider/keychain-store.ts` EMPTY; the mirror stands.
-    expect(pkg.version).toBe("0.0.88");
+    // 0.0.88 → 0.0.89 (Linux: the held-names walk has one budget per command and fails closed): `git diff v0.0.88 v0.0.89 --
+    // packages/runtime/src/provider/keychain-store.ts` EMPTY; the mirror stands.
+    expect(pkg.version).toBe("0.0.89");
   });
 
 
