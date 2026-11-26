@@ -26,8 +26,30 @@ reach, because it needs something that isn't in a test run.
   real LAN, with its latency and its drops (a link that goes and comes back mid-call, a computer that sleeps), is
   unproven; "computer offline" is proven only for an engine stopped on the same machine.
 - **Two NATs.** Two computers each behind its own NAT, reaching each other by hole punching or a relay: unproven.
-- **A phone signing a holder's card.** A holder's card (a write at the holder's default level, a transfer between two
-  computers) is answered in the proofs by a test phone key or the harness's own sealed-frame answer. A real phone that
-  shows the card, signs the answer with its own key, and the holder checks it, is unproven.
+- **A phone signing a holder's card.** In the proofs, a holder's card (a write at the holder's default level, a transfer
+  between two computers) is answered in one of two ways: by a test phone key, or by the harness signing as MOSS does
+  (MOSS's own program key, registered as the app registers it). A real phone that shows the card and signs the answer
+  with its own key, checked by the holder, is unproven.
 - **Windows as one of the two.** The `computers` unit runs on macOS and Linux; Windows is out of its set for now (a
   peer's command there runs under the Windows fence, proven by its own jobs, not by a call from another computer).
+
+## Owed in the code
+
+- **A program key's rotation between computers.** The holder keeps the first answer key it takes for each of another
+  computer's programs (MOSS, MOSS Code where it has no single key, the host). A different key is not taken. Answers
+  signed with it are refused in words that say so, and pairing again doesn't help, because the device id is unchanged.
+  When a key changes:
+  - The key stays the same across app updates and reinstalls in a packaged app on macOS, Windows and Linux with the
+    Secret Service. It is in Electron's safeStorage in the app's user data, which an update or a reinstall keeps.
+  - It changes when that user data or its OS store item is deleted. The engine's own table on that computer then
+    refuses the new key too, until the person answers a hand-over card there.
+  - An unpackaged, headless or test run, and Linux with no Secret Service, keep the key in memory only: a new key on
+    every start, which that computer's own table already refuses after the first.
+
+  What's owed: a card on the HOLDER ("Studio's MOSS has a new key: accept it?"), answered there by the person, never
+  by the computer presenting the key. Lane XC, after step 4 merges.
+- **A program key on Linux and Windows.** The `app` role isn't verified there yet: no signature check, only the app
+  token and the caller check, which shuts out a sandboxed process or one the daemon started. So a program key there
+  proves "a process running as you that registered first", not the signed app. This is the open before-release item.
+  On macOS the app role takes only a peer signed with the team's Developer ID for one named program, and the hello's
+  surface must be that program.
