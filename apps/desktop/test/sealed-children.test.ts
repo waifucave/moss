@@ -20,10 +20,16 @@ type Said = { option: string; ticks?: readonly string[] };
 let seenBox: Map<Element, () => void> = new Map();
 // A page's script listens on the document, which outlives each test's page: the last page's listeners are taken off before the next loads.
 let listening: [string, EventListenerOrEventListenerObject, unknown][] = [];
+let marks: number[] = [];
 function load(html: string, said: Said[]) {
   const g = globalThis as unknown as Record<string, unknown>;
   for (const [t, f, o] of listening) document.removeEventListener(t, f, o as boolean);
   listening = [];
+  // An earlier page's 100 ms ready mark would go on marking this body ready by its own clock: its timers are cleared with its listeners.
+  for (const id of marks) clearInterval(id);
+  marks = [];
+  const realSetInterval = globalThis.setInterval.bind(globalThis);
+  (g as { setInterval: unknown }).setInterval = (fn: () => void, ms?: number) => { const id = realSetInterval(fn, ms); marks.push(id as unknown as number); return id; };
   const add = document.addEventListener.bind(document) as (t: string, f: EventListenerOrEventListenerObject, o?: unknown) => void;
   (document as unknown as { addEventListener: typeof add }).addEventListener = (t, f, o) => { listening.push([t, f, o]); add(t, f, o); };
   const body = /<body[^>]*>([\s\S]*?)<\/body>/.exec(html)?.[1] ?? "";
@@ -53,7 +59,12 @@ const click = (el: Element) => {
   el.dispatchEvent(e);
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const ready = async (doc: Document) => { doc.dispatchEvent(new Event("pointerover")); await wait(1_150); expect(doc.body.dataset.ready).toBe("yes"); };
+// The page says it is ready once the pointer is in and a second has passed (its own 100 ms mark): waited for by that mark, never by a fixed time.
+const ready = async (doc: Document) => {
+  doc.dispatchEvent(new Event("pointerover"));
+  for (let i = 0; i < 200 && doc.body.dataset.ready !== "yes"; i++) await wait(50);
+  expect(doc.body.dataset.ready).toBe("yes");
+};
 const box = (doc: Document, id: string) => doc.querySelector(`input[data-id="${id}"]`) as HTMLInputElement;
 const approve = (doc: Document) => doc.querySelector(".seal-button[data-kind=approve]")!;
 const deny = (doc: Document) => doc.querySelector(".seal-button[data-kind=deny]")!;
@@ -140,8 +151,9 @@ describe("a long list is a cut field that is opened and read to its end", () => 
     click(doc.querySelector(".kids-open")!);
     expect(list.hidden).toBe(false);
     expect(seenBox.size).toBe(12);
-    await wait(1_100);
-    doc.dispatchEvent(new Event("pointerover"));
+    // The page's own mark follows the move within 100 ms: let it say "not yet" before it is waited on to say "ready".
+    await wait(250);
+    expect(doc.body.dataset.ready).toBe("no");
     await ready(doc);
     click(approve(doc));
     await wait(FRESH_SETTLE_MS + 60);
@@ -184,7 +196,7 @@ describe("a part's own approve button on a card with boxes", () => {
     const btn = doc.querySelector(".seal-button")!;
     expect((btn as HTMLElement).dataset.review).toBe("yes");
     expect(btn.getAttribute("aria-label")).toBe(REVIEW_IN_MOSS_TEXT);
-    await wait(800);
+    await ready(doc);
     const e = new Event("pointerdown", { bubbles: true });
     Object.defineProperty(e, "isTrusted", { value: true });
     btn.dispatchEvent(e);
