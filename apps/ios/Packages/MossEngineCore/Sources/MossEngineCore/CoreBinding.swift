@@ -156,6 +156,28 @@ enum Records {
                                     efforts: o.efforts, effort: o.effort, models: o.models.map(choice), model: o.model,
                                     files: o.files != nil, fileLimit: o.files?.maxBytes, maxFiles: o.files.map { Int($0.perMessage) })
     }
+    /// A card as the screens draw it, typed by the core (every string already through its visible-text rule), or nil
+    /// when the core couldn't read all of it: the screen then draws "answer this one on your computer".
+    static func card(_ v: MossPhoneCore.CardView) -> MossPhoneKit.Card? {
+        let c = v.content()
+        guard c.unreadable.isEmpty else { return nil }
+        var fields: [String: MossPhoneKit.SealedValue] = [:]
+        for f in c.fields {
+            switch f.value {
+            case .text(let t): fields[f.name] = .text(t)
+            case .code(let s, let l): fields[f.name] = .code(s, language: l)
+            case .list(let items): fields[f.name] = .list(items)
+            case .rows(let rows): fields[f.name] = .rows(rows.map { .init(label: $0.label, value: $0.value) })
+            }
+        }
+        let options = c.options.compactMap { o in
+            MossPhoneKit.CardOption.Kind(rawValue: o.kind).map { MossPhoneKit.CardOption(id: o.id, kind: $0, label: o.label, rememberAlways: o.rememberAlways) }
+        }
+        guard options.count == c.options.count else { return nil }
+        return MossPhoneKit.Card(id: v.id(), kind: c.kind, computer: c.computer, session: v.session(), bot: v.bot(), origin: c.origin,
+                                 issuedAt: c.issuedAt, expiresAt: c.expiresAt ?? Int64.max, hash: v.hash(), fields: fields, options: options,
+                                 children: c.children.isEmpty ? nil : c.children.map { .init(id: $0.id, label: $0.label, checked: $0.checked) })
+    }
     static func question(_ q: MossPhoneCore.AskQuestion) -> MossPhoneKit.AskQuestion? {
         // Every question of the call, as the desktop's card draws them: they are answered together.
         guard !q.questions.isEmpty else { return nil }
@@ -171,10 +193,15 @@ final class ConnectionImpl: ConnectionLink, @unchecked Sendable {
     init(_ c: Connection) { self.c = c }
 
     static func shown(_ v: MossPhoneCore.CardView) -> ShownCard {
-        ShownCard(id: v.id(), hash: v.hash(), cardJSON: v.cardJson(), bot: v.bot(), session: v.session(), handle: v)
+        ShownCard(id: v.id(), hash: v.hash(), card: Records.card(v), bot: v.bot(), session: v.session(), handle: v)
     }
 
-    func call(_ method: String, _ paramsJSON: String) async throws -> String { try await mapped { try await c.call(method: method, paramsJson: paramsJSON) } }
+    func attach(session: String, since: UInt64?) async throws -> UInt64 { try await mapped { try await c.attach(session: session, since: since) } }
+    func detach(session: String) async throws { try await mapped { try await c.detach(session: session) } }
+    func pendingCardIDs() async throws -> [String] { try await mapped { try await c.pendingCardIds() } }
+    func cardOutcome(id: String) async throws -> LinkCardOutcome {
+        try await mapped { let o = try await c.cardOutcome(id: id); return LinkCardOutcome(outcome: o.outcome, option: o.option) }
+    }
 
     func nextEvent() async -> LinkEvent? {
         guard let e = await c.nextEvent() else { return nil }

@@ -12,13 +12,20 @@ private func cardJSON(_ id: String, hash: String = "h", fields: String = #"{"tit
                       bot: String? = nil, expires: String = "null") -> String {
     #"{"id":"\#(id)","kind":"change","computer":null,"origin":"user","issuedAt":1,"expiresAt":\#(expires),"hash":"\#(hash)","fields":\#(fields),"options":\#(options)\#(bot.map { #","bot":"\#($0)""# } ?? "")}"#
 }
+/// The test's stand-in for the core's typing of a card: its JSON decoded (no expiry: it waits), nil when unreadable.
+func testCard(_ json: String) -> Card? {
+    guard var o = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] else { return nil }
+    if o["expiresAt"] == nil || o["expiresAt"] is NSNull { o["expiresAt"] = Int64.max }
+    guard let data = try? JSONSerialization.data(withJSONObject: o) else { return nil }
+    return try? JSONDecoder().decode(Card.self, from: data)
+}
 private func shown(_ id: String, hash: String = "h", json: String? = nil) -> ShownCard {
-    ShownCard(id: id, hash: hash, cardJSON: json ?? cardJSON(id, hash: hash), handle: NSObject())
+    ShownCard(id: id, hash: hash, card: testCard(json ?? cardJSON(id, hash: hash)), handle: NSObject())
 }
 
 final class CardShelfTests: XCTestCase {
     func testOnlyTheIssuedCardAsDrawnIsAnswerable() throws {
-        var shelf = CardShelf(decode: { Doors.card($0) })
+        var shelf = CardShelf()
         let s = shown("card_aaaaaa")
         let card = shelf.issue(s)
         XCTAssertEqual(card.expiresAt, Int64.max, "no expiry: it waits")
@@ -31,7 +38,7 @@ final class CardShelfTests: XCTestCase {
     }
 
     func testACardThePhoneCantDrawWholeIsShownAsAnswerOnTheComputer() {
-        var shelf = CardShelf(decode: { Doors.card($0) })
+        var shelf = CardShelf()
         // A card first drawn whole, then re-issued with content the phone can't read: the stand-in replaces it on screen.
         let first = shelf.issue(shown("card_bbbbbb"))
         XCTAssertTrue(first.drawnWhole)
@@ -58,7 +65,7 @@ final class CardShelfTests: XCTestCase {
     }
 
     func testAResolveKeepsANewerIssueOfTheSameCard() {
-        var shelf = CardShelf(decode: { Doors.card($0) })
+        var shelf = CardShelf()
         let old = shown("card_ffff01")
         _ = shelf.issue(old)
         let new = shown("card_ffff01", hash: "h2")
@@ -68,9 +75,10 @@ final class CardShelfTests: XCTestCase {
     }
 
     func testAnUnknownFieldOfTheCardIsIgnored() throws {
-        // (The core types the rest of the engine's payloads; a card's JSON is what the client still reads.)
+        // (The core types the card for the client; this checks the screens' `Card` keeps decoding a card that carries
+        // more than it knows, as the tests' stand-in for the core does.)
         let json = cardJSON("card_eeeeee").replacingOccurrences(of: #""kind":"change""#, with: #""kind":"change","newThing":{"a":[1,2]},"children":[]"#)
-        XCTAssertNotNil(Doors.card(json))
+        XCTAssertNotNil(testCard(json))
     }
 
     /// Generated sequences of issues, re-lists and resolutions: the shelf answers for a card exactly when the last thing
@@ -79,7 +87,7 @@ final class CardShelfTests: XCTestCase {
         var rng = SystemRandomNumberGenerator()
         let ids = (0..<5).map { "card_seq00\($0)" }
         for _ in 0..<300 {
-            var shelf = CardShelf(decode: { Doors.card($0) })
+            var shelf = CardShelf()
             var model: [String: ShownCard] = [:]
             for _ in 0..<40 {
                 let id = ids.randomElement(using: &rng)!
@@ -96,7 +104,7 @@ final class CardShelfTests: XCTestCase {
                 }
                 for id in ids {
                     let expect = model[id]
-                    let card = expect.flatMap { Doors.card($0.cardJSON) }
+                    let card = expect.flatMap { $0.card }
                     if let card { XCTAssertTrue(shelf.shown(for: card) === expect) }
                     XCTAssertEqual(shelf.cards.contains { $0.id == id }, expect != nil)
                     XCTAssertEqual(Set(shelf.cards.map(\.id)).count, shelf.cards.count, "one card per id")
@@ -154,10 +162,22 @@ final class FakeConnection: ConnectionLink, @unchecked Sendable {
         queue.append(e); lock.unlock()
     }
     private func notOffered() -> LinkError { .rpc(code: -32001, words: "remote role may not call it", dataJSON: nil) }
-    func call(_ method: String, _ paramsJSON: String) async throws -> String {
+    /// A canned answer for a method (JSON), as the engine would give it.
+    private func call(_ method: String, _ paramsJSON: String) async throws -> [String: Any] {
         lock.withLock { calls.append((method, paramsJSON)) }
-        if let a = answers[method] { return a }
-        throw LinkError.rpc(code: -32601, words: "no such method", dataJSON: nil)
+        guard let a = answers[method] else { throw LinkError.rpc(code: -32601, words: "no such method", dataJSON: nil) }
+        return (try? JSONSerialization.jsonObject(with: Data(a.utf8))) as? [String: Any] ?? [:]
+    }
+    func attach(session: String, since: UInt64?) async throws -> UInt64 {
+        (try await call("session.attach", #"{"id":"\#(session)"}"#)["lastSeq"] as? NSNumber)?.uint64Value ?? 0
+    }
+    func detach(session: String) async throws { _ = try await call("session.detach", #"{"id":"\#(session)"}"#) }
+    func pendingCardIDs() async throws -> [String] {
+        ((try await call("card.list", "{}")["cards"] as? [[String: Any]]) ?? []).compactMap { $0["id"] as? String }
+    }
+    func cardOutcome(id: String) async throws -> LinkCardOutcome {
+        let o = try await call("card.get", #"{"id":"\#(id)"}"#)
+        return LinkCardOutcome(outcome: o["outcome"] as? String, option: o["option"] as? String)
     }
     func nextEvent() async -> LinkEvent? {
         await withCheckedContinuation { k in
@@ -180,8 +200,13 @@ final class FakeConnection: ConnectionLink, @unchecked Sendable {
     func stageImage(session: String, mediaType: String, data: Data) async throws -> String { "staged/1.png" }
     func bots() async throws -> [Bot] { botList }
     func botSummaries() async throws -> [BotSummary] { [] }
+    /// When set, the conversation's pages by where they start (nil: the newest): an answer in the newest, its question
+    /// in an older one.
+    var pages: [Int64?: LinkPage]?
+    var pagesRead: [Int64?] = []
     func conversation(bot: String, beforeSeq: Int64?, limit: UInt32) async throws -> LinkPage {
-        LinkPage(session: "s1", items: [(3, .message(ChatMessage(id: "s1#3", role: .agent, text: "Hi", at: 1))), (4, .turnEnded)], hasMore: true)
+        if let pages { pagesRead.append(beforeSeq); return pages[beforeSeq] ?? LinkPage(session: "s1", items: [], hasMore: false) }
+        return LinkPage(session: "s1", items: [(3, .message(ChatMessage(id: "s1#3", role: .agent, text: "Hi", at: 1))), (4, .turnEnded)], hasMore: true)
     }
     func markRead(bot: String, at: Int64) async throws {}
     func createBot(name: String, model: String?) async throws -> Bot {
@@ -264,6 +289,24 @@ final class ClientTests: XCTestCase {
         XCTAssertTrue(seen.contains(.statusLine(subject: "s1", line: "Alpha is thinking")))
         XCTAssertTrue(seen.contains(.message(subject: "s1", ChatMessage(id: "s1#5", role: .bot, text: "Hi", at: 11))), "a bot's words are the bot's")
         XCTAssertTrue(seen.contains(.statusLine(subject: "s1", line: nil)))
+    }
+
+    /// An answer whose question is in a page not loaded: the client reads back for the question's words (once), so the
+    /// answer's caption names it.
+    func testAnAnswerNamesItsQuestionFromAnOlderPage() async throws {
+        let conn = FakeConnection()
+        conn.botList = [Bot(id: "alpha", name: "Alpha", mainSession: "s1")]
+        let asked = ChatMessage(id: "s1#2", role: .question, text: "Which colour?", at: 1,
+                                question: AskedQuestion(callId: "ask_7", text: "Which colour?", options: ["Green"]))
+        let answer = ChatMessage(id: "s1#9", role: .user, text: "Green", at: 5, answersQuestion: "ask_7")
+        conn.pages = [nil: LinkPage(session: "s1", items: [(9, .message(answer))], hasMore: true),
+                      9: LinkPage(session: "s1", items: [(2, .message(asked))], hasMore: false)]
+        let (c, _) = client(conn)
+        let page = try await c.conversation(bot: "alpha", before: nil, limit: 60)
+        XCTAssertEqual(page.messages.first?.answersQuestionText, "Which colour?", "named from the older page")
+        XCTAssertEqual(conn.pagesRead, [nil, 9], "one page read back")
+        _ = try await c.conversation(bot: "alpha", before: nil, limit: 60)
+        XCTAssertEqual(conn.pagesRead, [nil, 9, nil], "known now: nothing read back again")
     }
 
     func testPagesByPlaceForTheScreensTime() async throws {

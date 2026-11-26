@@ -21,19 +21,28 @@ public struct LinkComputer: Sendable, Hashable {
 /// The link's state (`LinkState`).
 public enum LinkState: Sendable, Equatable { case connecting, up, down, unpaired, revoked, closed }
 
-/// A card the core issued for display (`CardView`, an object only the core makes). `cardJSON` is what the screen draws;
-/// `handle` is the core's own object, handed back unchanged to answer it: the client never builds one.
+/// A card the core issued for display (`CardView`, an object only the core makes). `card` is what the screen draws, as
+/// the core typed it (every string through its visible-text rule), or nil when the core couldn't read all of it (the
+/// screen then draws "answer this one on your computer"); `handle` is the core's own object, handed back unchanged to
+/// answer it: the client never builds one.
 public final class ShownCard: @unchecked Sendable {
     public let id: String
     public let hash: String
-    public let cardJSON: String
+    public let card: Card?
     /// Whose it is, as the core read it from the card: the bot or the session that raised it.
     public let bot: String?
     public let session: String?
     public let handle: AnyObject
-    public init(id: String, hash: String, cardJSON: String, bot: String? = nil, session: String? = nil, handle: AnyObject) {
-        self.id = id; self.hash = hash; self.cardJSON = cardJSON; self.bot = bot; self.session = session; self.handle = handle
+    public init(id: String, hash: String, card: Card?, bot: String? = nil, session: String? = nil, handle: AnyObject) {
+        self.id = id; self.hash = hash; self.card = card; self.bot = bot; self.session = session; self.handle = handle
     }
+}
+
+/// How a card was settled (`card.get`), read back after an answer timed out.
+public struct LinkCardOutcome: Sendable, Equatable {
+    public var outcome: String?
+    public var option: String?
+    public init(outcome: String?, option: String?) { self.outcome = outcome; self.option = option }
 }
 
 /// One event of a session's log as the core typed it (`SessionItem`): a message the conversation draws, a turn's start
@@ -114,10 +123,15 @@ public protocol PairingLink: AnyObject, Sendable {
 
 /// One computer's link and client connection (`Connection`): the core's typed calls, already decoded.
 public protocol ConnectionLink: AnyObject, Sendable {
-    /// For what the core doesn't type yet (`session.attach`, `session.detach`, `card.list`).
-    func call(_ method: String, _ paramsJSON: String) async throws -> String
     func nextEvent() async -> LinkEvent?
     func fetchCard(_ id: String) async throws -> ShownCard
+    /// Follows a conversation live (`session.attach`): the newest place in its log.
+    func attach(session: String, since: UInt64?) async throws -> UInt64
+    func detach(session: String) async throws
+    /// The ids of the cards pending now (`card.list`).
+    func pendingCardIDs() async throws -> [String]
+    /// How a card was settled (`card.get`).
+    func cardOutcome(id: String) async throws -> LinkCardOutcome
     /// Signs and sends the answer to the card the core issued (`answer_card`): `card.handle` goes back as it came.
     func answer(_ card: ShownCard, option: String, children: [String]) async throws -> (accepted: Bool, reason: String?)
     func sendMessage(session: String, text: String, clientMessageId: String, images: [String], files: [String]) async throws -> UInt64

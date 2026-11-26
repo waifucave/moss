@@ -8,9 +8,10 @@ import MossPhoneKit
 struct CardShelf {
     private(set) var held: [String: (card: Card, shown: ShownCard)] = [:]
     private(set) var order: [String] = []
-    let decode: (String) -> Card?
+    /// The card an issue draws: the one the core typed (a test gives its own).
+    let decode: (ShownCard) -> Card?
 
-    init(decode: @escaping (String) -> Card?) { self.decode = decode }
+    init(decode: @escaping (ShownCard) -> Card? = { $0.card }) { self.decode = decode }
 
     /// The cards held, in the order they were issued.
     var cards: [Card] { order.compactMap { held[$0]?.card } }
@@ -20,7 +21,7 @@ struct CardShelf {
     /// your computer": it replaces any earlier text of that id on screen, and it has no answer.
     mutating func issue(_ s: ShownCard) -> Card {
         let card: Card
-        if let c = decode(s.cardJSON), c.id == s.id, c.hash == s.hash { card = c } else { card = Self.standIn(s) }
+        if let c = decode(s), c.id == s.id, c.hash == s.hash { card = c } else { card = Self.standIn(s) }
         if held[s.id] == nil { order.append(s.id) }
         held[s.id] = (card, s)
         return card

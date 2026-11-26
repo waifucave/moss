@@ -873,6 +873,42 @@ pub async fn answer_question(c: &impl Caller, session: &str, call_id: &str, answ
     c.call_json("session.answer", json!({ "id": session, "callId": call_id, "answers": answers })).await.map(|_| ())
 }
 
+/// Follows a conversation live (`session.attach`): its events arrive as `SessionEvent`s from then on (and from `since`
+/// when given). Returns the newest place in its log.
+pub async fn attach(c: &impl Caller, session: &str, since: Option<u64>) -> Result<u64, CoreError> {
+    need_session(session)?;
+    let mut p = json!({ "id": session });
+    if let Some(s) = since { p["since"] = json!(s); }
+    let r = c.call_json("session.attach", p).await?;
+    Ok(get(&r, "lastSeq").and_then(Value::as_u64).unwrap_or(0))
+}
+
+/// Stops following a conversation (`session.detach`).
+pub async fn detach(c: &impl Caller, session: &str) -> Result<(), CoreError> {
+    need_session(session)?;
+    c.call_json("session.detach", json!({ "id": session })).await.map(|_| ())
+}
+
+/// The ids of the cards pending now (`card.list`): the cards themselves only ever come from the core's own issue.
+pub async fn pending_card_ids(c: &impl Caller) -> Result<Vec<String>, CoreError> {
+    let r = c.call_json("card.list", json!({})).await?;
+    Ok(arr(&r, "cards").iter().filter_map(|x| raw_str(x, "id")).filter(|i| crate::cards::is_card_id(i)).map(str::to_string).collect())
+}
+
+/// How a card was settled, read back after an answer timed out (`card.get`): its outcome (None while it waits) and the
+/// option that settled it.
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct CardOutcome {
+    pub outcome: Option<String>,
+    pub option: Option<String>,
+}
+
+pub async fn card_outcome(c: &impl Caller, id: &str) -> Result<CardOutcome, CoreError> {
+    if !crate::cards::is_card_id(id) { return Err(CoreError::invalid("not a card id")); }
+    let r = c.call_json("card.get", json!({ "id": id })).await?;
+    Ok(CardOutcome { outcome: raw_str(&r, "outcome").map(other), option: raw_str(&r, "option").map(other) })
+}
+
 /// Skips a bot's open question (`session.answer` with `skipped`): no answers; the engine tells the bot it was skipped.
 /// Only the person may skip, and only a bot's open question (a blocking one is answered).
 pub async fn skip_question(c: &impl Caller, session: &str, call_id: &str) -> Result<(), CoreError> {

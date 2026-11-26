@@ -151,6 +151,144 @@ impl CardView {
     pub fn outcome(&self) -> Option<String> {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
+    /// What the app draws, typed: every string through the visible-text rule, each `Text` in one language. A field
+    /// whose value isn't one the protocol has, or an option or checkbox the phone can't read, is named in `unreadable`:
+    /// the app then draws no buttons and sends the person to the computer (it fails closed).
+    pub fn content(&self) -> CardContent {
+        content_of(&serde_json::from_str(&self.card_json).unwrap_or(Value::Null))
+    }
+}
+
+/// One value of a card's sealed field, as the protocol's `SealedValue` has it.
+#[derive(Clone, Debug, PartialEq, uniffi::Enum)]
+pub enum SealedField {
+    Text { text: String },
+    Code { code: String, language: Option<String> },
+    List { items: Vec<String> },
+    Rows { rows: Vec<SealedRow> },
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct SealedRow {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct CardField {
+    pub name: String,
+    pub value: SealedField,
+}
+
+/// A card's button: its id, `approve` or `deny`, its label, and whether it saves MOSS's "always" rule.
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct CardButton {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    pub remember_always: bool,
+}
+
+/// A plugin OK's checkbox: its id, label and the engine's own tick.
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct CardCheckbox {
+    pub id: String,
+    pub label: String,
+    pub checked: bool,
+}
+
+/// A card as the app draws it.
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct CardContent {
+    pub kind: String,
+    pub computer: Option<String>,
+    pub origin: Option<String>,
+    pub issued_at: i64,
+    /// None: no expiry (the person's own turn), it waits until answered.
+    pub expires_at: Option<i64>,
+    /// In the card's own order of names (the app draws them in the protocol's order).
+    pub fields: Vec<CardField>,
+    pub options: Vec<CardButton>,
+    pub children: Vec<CardCheckbox>,
+    /// What the phone couldn't read (a field's name, `option`, `checkbox`): when not empty, no buttons.
+    pub unreadable: Vec<String>,
+}
+
+/// A `Text`: a string, or one per language (English first, else the first by name).
+fn text_value(v: Option<&Value>) -> Option<String> {
+    match v? {
+        Value::String(s) => Some(s.clone()),
+        Value::Object(m) => m.get("en").and_then(Value::as_str).or_else(|| {
+            let mut keys: Vec<&String> = m.keys().collect();
+            keys.sort();
+            keys.into_iter().find_map(|k| m[k].as_str())
+        }).map(str::to_string),
+        _ => None,
+    }
+}
+
+fn shown(s: &str) -> String {
+    crate::visible::sealed_escape(s, false)
+}
+
+fn sealed_field(v: &Value) -> Option<SealedField> {
+    let s = |k: &str| v.get(k).and_then(Value::as_str).map(shown);
+    match v.get("type").and_then(Value::as_str)? {
+        "text" => Some(SealedField::Text { text: s("text")? }),
+        "code" => Some(SealedField::Code { code: s("code")?, language: v.get("language").and_then(Value::as_str).map(str::to_string) }),
+        "list" => {
+            let a = v.get("items")?.as_array()?;
+            let items: Vec<String> = a.iter().filter_map(|x| x.as_str().map(shown)).collect();
+            (items.len() == a.len()).then_some(SealedField::List { items })
+        }
+        "rows" => {
+            let a = v.get("rows")?.as_array()?;
+            let rows: Vec<SealedRow> = a.iter().filter_map(|r| Some(SealedRow { label: shown(r.get("label")?.as_str()?), value: shown(r.get("value")?.as_str()?) })).collect();
+            (rows.len() == a.len()).then_some(SealedField::Rows { rows })
+        }
+        _ => None,
+    }
+}
+
+pub fn content_of(card: &Value) -> CardContent {
+    let mut unreadable = Vec::new();
+    let mut fields = Vec::new();
+    if let Some(m) = card.get("fields").and_then(Value::as_object) {
+        for (name, v) in m {
+            match sealed_field(v) {
+                Some(value) => fields.push(CardField { name: name.clone(), value }),
+                None => unreadable.push(name.clone()),
+            }
+        }
+    }
+    let mut options = Vec::new();
+    for o in card.get("options").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
+        let id = o.get("id").and_then(Value::as_str);
+        let kind = o.get("kind").and_then(Value::as_str).filter(|k| *k == "approve" || *k == "deny");
+        match (id, kind, text_value(o.get("label"))) {
+            (Some(id), Some(kind), Some(label)) => options.push(CardButton {
+                id: id.to_string(), kind: kind.to_string(), label: shown(&label),
+                remember_always: o.get("remember").and_then(Value::as_str) == Some("always"),
+            }),
+            _ => unreadable.push("option".into()),
+        }
+    }
+    let mut children = Vec::new();
+    for c in card.get("children").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
+        match (c.get("id").and_then(Value::as_str).filter(|i| is_checkbox_id(i)), text_value(c.get("label")), c.get("checked").and_then(Value::as_bool)) {
+            (Some(id), Some(label), Some(checked)) => children.push(CardCheckbox { id: id.to_string(), label: shown(&label), checked }),
+            _ => unreadable.push("checkbox".into()),
+        }
+    }
+    let int = |k: &str| card.get(k).and_then(Value::as_i64);
+    CardContent {
+        kind: card.get("kind").and_then(Value::as_str).unwrap_or("").to_string(),
+        computer: card.get("computer").and_then(Value::as_str).map(|c| crate::visible::sealed_escape(c, true)),
+        origin: card.get("origin").and_then(Value::as_str).map(str::to_string),
+        issued_at: int("issuedAt").unwrap_or(0),
+        expires_at: int("expiresAt"),
+        fields, options, children, unreadable,
+    }
 }
 
 /// A checked card's parts, before the connection that got it makes it a `CardView`.

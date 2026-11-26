@@ -1260,6 +1260,22 @@ impl Connection {
     pub async fn skip_question(&self, session: String, call_id: String) -> Result<(), CoreError> {
         typed!(self, |i| crate::engine::skip_question(&*i, &session, &call_id))
     }
+    /// Follows a conversation live (`session.attach`), from `since` when given: the newest place in its log.
+    pub async fn attach(&self, session: String, since: Option<u64>) -> Result<u64, CoreError> {
+        typed!(self, |i| crate::engine::attach(&*i, &session, since))
+    }
+    /// Stops following a conversation (`session.detach`).
+    pub async fn detach(&self, session: String) -> Result<(), CoreError> {
+        typed!(self, |i| crate::engine::detach(&*i, &session))
+    }
+    /// The ids of the cards pending now (`card.list`).
+    pub async fn pending_card_ids(&self) -> Result<Vec<String>, CoreError> {
+        typed!(self, |i| crate::engine::pending_card_ids(&*i))
+    }
+    /// How a card was settled (`card.get`'s outcome and option), read back after an answer timed out.
+    pub async fn card_outcome(&self, id: String) -> Result<crate::engine::CardOutcome, CoreError> {
+        typed!(self, |i| crate::engine::card_outcome(&*i, &id))
+    }
     pub async fn backends(&self) -> Result<Vec<crate::engine::AgentBackend>, CoreError> {
         typed!(self, |i| crate::engine::backends(&*i))
     }

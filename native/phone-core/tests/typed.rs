@@ -145,3 +145,42 @@ fn what_a_hostile_computer_sends_is_read_safely() {
     assert_eq!(c.commands[0].description, "Ship it");
     assert!(engine::composer_offers(&json!([1])).is_err());
 }
+
+/// A card typed for the app: every sealed value kind, buttons and checkboxes with `Text` labels, hidden characters
+/// shown; what the phone can't read is named, so the app sends the person to the computer.
+#[test]
+fn a_card_is_typed_for_the_app() {
+    use moss_phone_core::cards::{content_of, SealedField};
+    let c = content_of(&json!({
+        "id": "card_aaaaaaaa", "kind": "change", "computer": "Studio", "origin": "bot", "issuedAt": 5, "expiresAt": 9,
+        "fields": {
+            "title": { "type": "text", "text": "Turn on\u{202E} Office?" },
+            "command": { "type": "code", "code": "ls", "language": "sh" },
+            "paths": { "type": "list", "items": ["a", "b"] },
+            "detail": { "type": "rows", "rows": [{ "label": "k", "value": "v" }] },
+        },
+        "options": [{ "id": "approve", "kind": "approve", "label": { "fr": "Oui", "en": "Allow" }, "remember": "always" }, { "id": "deny", "kind": "deny", "label": "Deny" }],
+        "children": [{ "id": "office", "label": { "en": "Office" }, "checked": true }],
+    }));
+    assert_eq!((c.kind.as_str(), c.computer.as_deref(), c.issued_at, c.expires_at), ("change", Some("Studio"), 5, Some(9)));
+    let field = |n: &str| c.fields.iter().find(|f| f.name == n).map(|f| f.value.clone());
+    assert_eq!(field("title"), Some(SealedField::Text { text: "Turn onU+202E Office?".into() }), "a hidden character is shown");
+    assert_eq!(field("command"), Some(SealedField::Code { code: "ls".into(), language: Some("sh".into()) }));
+    assert!(matches!(field("paths"), Some(SealedField::List { items }) if items == ["a", "b"]));
+    assert!(matches!(field("detail"), Some(SealedField::Rows { rows }) if rows.len() == 1));
+    assert_eq!(c.options[0].label, "Allow", "a Text in English first");
+    assert!(c.options[0].remember_always);
+    assert_eq!((c.children[0].id.as_str(), c.children[0].label.as_str(), c.children[0].checked), ("office", "Office", true));
+    assert!(c.unreadable.is_empty());
+
+    // Fails closed: a value of an unknown kind, an option of an unknown kind, a checkbox with no label.
+    let bad = content_of(&json!({
+        "id": "card_bbbbbbbb", "kind": "change", "issuedAt": 1,
+        "fields": { "title": { "type": "text", "text": "x" }, "newThing": { "type": "picture", "url": "x" }, "paths": { "type": "list", "items": ["a", 3] } },
+        "options": [{ "id": "maybe", "kind": "maybe", "label": "?" }],
+        "children": [{ "id": "office", "checked": true }],
+    }));
+    let mut u = bad.unreadable.clone(); u.sort();
+    assert_eq!(u, ["checkbox", "newThing", "option", "paths"]);
+    assert_eq!(bad.expires_at, None, "no expiry: it waits until answered");
+}

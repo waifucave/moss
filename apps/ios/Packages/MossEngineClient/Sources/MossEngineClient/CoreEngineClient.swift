@@ -46,8 +46,7 @@ public actor CoreEngineClient: EngineClient {
         self.app = app
         self.clientName = clientName ?? (app == .moss ? "MOSS on iPhone" : "MOSS Code on iPhone")
         self.now = now
-        let visible = factory.visible
-        self.shelf = CardShelf(decode: { Doors.card($0, visible: visible) })
+        self.shelf = CardShelf()
     }
 
     private var linkApp: LinkApp { app == .moss ? .moss : .code }
@@ -155,7 +154,10 @@ public actor CoreEngineClient: EngineClient {
         let bot = botOfSession[session]
         switch item {
         case .message(let m):
-            emit(.message(subject: session, role(m, botSession: bot != nil)))
+            var out = role(m, botSession: bot != nil)
+            if let q = out.question { noteQuestionText(q.callId, q.text) }
+            if let id = out.answersQuestion { out.answersQuestionText = questionTexts[id] }
+            emit(.message(subject: session, out))
             if m.role == .question { emit(.questionChanged(subject: session)) }
         case .turnStarted: emit(.statusLine(subject: session, line: bot.map { "\($0.name) is thinking" } ?? "Working"))
         case .turnEnded: emit(.statusLine(subject: session, line: nil))
@@ -173,6 +175,7 @@ public actor CoreEngineClient: EngineClient {
         return p.items.compactMap { item -> ChatMessage? in
             guard case .message(let m) = item.item else { return nil }
             var out = role(m, botSession: botSession)
+            if let q = out.question { noteQuestionText(q.callId, q.text) }
             if let q = out.question, let state = questionStates[q.callId] { out.question?.state = state }
             return out
         }
@@ -203,7 +206,7 @@ public actor CoreEngineClient: EngineClient {
         let rows = (try? await c.sessions()) ?? []
         for r in rows { emit(.sessionChanged(r)) }
         for s in attachOrder {
-            guard let last = try? await Doors.attach(c, session: s, since: nil) else { continue }
+            guard let last = try? await c.attach(session: s, since: nil) else { continue }
             attached[s] = last
             let bot = botOfSession[s]
             guard let p = try? await (bot != nil ? c.conversation(bot: bot!.id, beforeSeq: nil, limit: 60) : c.history(session: s, beforeSeq: nil, limit: 60)) else { continue }
@@ -211,6 +214,11 @@ public actor CoreEngineClient: EngineClient {
             let running = rows.first { $0.id == s }.map { $0.motion == .running } ?? false
             emit(.statusLine(subject: s, line: running ? (bot.map { "\($0.name) is thinking" } ?? "Working") : nil))
         }
+    }
+
+    /// A typed call whose door the linked engine may not offer: its refusal reads as `NotAvailableYet`.
+    private func notOfferedMapped<T>(_ method: String, _ body: () async throws -> T) async throws -> T {
+        do { return try await body() } catch let e as LinkError where e.isNotOffered { throw NotAvailableYet(method) }
     }
 
     /// Forgets a session it followed (deleted): nothing re-attaches it after a reconnect.
@@ -222,13 +230,13 @@ public actor CoreEngineClient: EngineClient {
 
     private func follow(_ c: ConnectionLink, _ session: String) async {
         guard attached[session] == nil else { return }
-        guard let last = try? await Doors.attach(c, session: session, since: nil) else { return }
+        guard let last = try? await c.attach(session: session, since: nil) else { return }
         attached[session] = last
         attachOrder.append(session)
         if attachOrder.count > Self.attachMax {
             let old = attachOrder.removeFirst()
             attached[old] = nil
-            await Doors.detach(c, session: old)
+            try? await c.detach(session: old)
         }
     }
 
@@ -362,8 +370,38 @@ public actor CoreEngineClient: EngineClient {
         let sid = p.session
         if bot != nil, sid != session { await follow(c, sid) }
         if let low = p.items.map(\.seq).min() { oldestSeq[sid] = min(oldestSeq[sid] ?? Int64(low), Int64(low)) }
-        let messages = messages(of: p, botSession: botSession)
+        var messages = messages(of: p, botSession: botSession)
+        // An answer whose question is in a page not read yet: the log is read back a little (at most two pages, once per
+        // call) for the question's words, so the answer's caption can name it.
+        let missing = Set(messages.compactMap { m in m.answersQuestion.flatMap { questionTexts[$0] == nil ? $0 : nil } })
+        if !missing.isEmpty, let low = p.items.map(\.seq).min(), p.hasMore {
+            await findQuestions(missing, c, bot: bot, session: session, before: Int64(low))
+        }
+        for i in messages.indices { if let id = messages[i].answersQuestion { messages[i].answersQuestionText = questionTexts[id] } }
         return MessagePage(session: sid, messages: messages, hasMore: p.hasMore)
+    }
+
+    /// Each question's words read so far, by call id (bounded; the oldest forgotten first).
+    private var questionTexts: [String: String] = [:]
+    private var questionTextOrder: [String] = []
+    /// The calls already looked for in older pages: each is looked for once.
+    private var lookedFor: Set<String> = []
+    private func noteQuestionText(_ id: String, _ text: String) {
+        if questionTexts.updateValue(text, forKey: id) == nil { questionTextOrder.append(id) }
+        if questionTextOrder.count > 2000 { questionTexts[questionTextOrder.removeFirst()] = nil }
+    }
+    private func findQuestions(_ ids: Set<String>, _ c: ConnectionLink, bot: String?, session: String, before: Int64) async {
+        var want = ids.subtracting(lookedFor)
+        lookedFor.formUnion(want)
+        var beforeSeq = before
+        for _ in 0..<2 where !want.isEmpty {
+            guard let p = try? await (bot != nil ? c.conversation(bot: bot!, beforeSeq: beforeSeq, limit: 200) : c.history(session: session, beforeSeq: beforeSeq, limit: 200)) else { return }
+            for i in p.items {
+                if case .message(let m) = i.item, let q = m.question { noteQuestionText(q.callId, q.text); want.remove(q.callId) }
+            }
+            guard p.hasMore, let low = p.items.map(\.seq).min() else { return }
+            beforeSeq = Int64(low)
+        }
     }
 
     public func markRead(bot: String) async throws { try await link().markRead(bot: bot, at: now()) }
@@ -392,7 +430,7 @@ public actor CoreEngineClient: EngineClient {
     /// doesn't hold is fetched through the core (which checks it), and one no longer listed leaves the shelf.
     public func cards() async throws -> [Card] {
         let c = try await link()
-        let ids = try await Doors.pendingCardIDs(c)
+        let ids = try await notOfferedMapped("card.list") { try await c.pendingCardIDs() }
         let listed = Set(ids)
         for held in shelf.order where !listed.contains(held) { shelf.resolve(held) }
         for id in ids where shelf.held[id] == nil {
@@ -416,7 +454,7 @@ public actor CoreEngineClient: EngineClient {
             // A timeout after the answer began going out may have reached the computer: it is read back, never sent
             // again by itself. Settled with the option this phone sent: taken. Settled any other way: answered elsewhere.
             // Still pending: the timeout stands, and the card stays for the person to try again.
-            guard let back = try? await Doors.cardOutcome(c, id: card.id), back.outcome != nil else { throw LinkError.timeout(t) }
+            guard let back = try? await c.cardOutcome(id: card.id), back.outcome != nil else { throw LinkError.timeout(t) }
             shelf.resolve(card.id, ifStill: shown)
             if back.option == option.id { return }
             throw card.expiresAt <= now() ? CardAnswerError.expired : CardAnswerError.answeredElsewhere

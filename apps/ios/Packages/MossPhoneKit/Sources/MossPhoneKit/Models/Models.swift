@@ -124,6 +124,8 @@ public struct ChatMessage: Identifiable, Hashable, Sendable {
     public var question: AskedQuestion?
     /// The person's message is their answer to (or skip of) this question (its `callId`).
     public var answersQuestion: String?
+    /// That question's words, when the client knows them (from any page it read, or one it read back for them).
+    public var answersQuestionText: String?
     public init(id: String, role: MessageRole, text: String, at: Int64, device: String? = nil, file: ChatFile? = nil,
                 question: AskedQuestion? = nil, answersQuestion: String? = nil) {
         self.id = id; self.role = role; self.text = text; self.at = at; self.device = device; self.file = file

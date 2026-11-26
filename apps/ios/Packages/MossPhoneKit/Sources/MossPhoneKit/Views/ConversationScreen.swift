@@ -148,7 +148,7 @@ struct MessageRow: View {
             VStack(alignment: .trailing, spacing: 2) {
                 if let id = message.answersQuestion {
                     // The person's answer to (or skip of) a question asked above: said so, never read as a plain message.
-                    Label(answered[id].map { "Answer to: \($0)" } ?? "Answer to a question", systemImage: "arrowshape.turn.up.left")
+                    Label((answered[id] ?? message.answersQuestionText).map { "Answer to: \($0)" } ?? "Answer to a question", systemImage: "arrowshape.turn.up.left")
                         .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Text(message.text)
