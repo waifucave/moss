@@ -232,6 +232,7 @@ export function engineHostWorld(input: EngineHostWorldInput): HostWorld & HostWo
 
   return {
     lockHolder: () => hostLockHolder(input.home, input.os),
+    noLock: input.os !== "darwin",
     source: () => {
       if (command !== undefined) {
         return { record: 1, program: "code", bundlePath: command[0]!, release: input.release, carries: { engine: true, host: true }, seenAt: 0 };

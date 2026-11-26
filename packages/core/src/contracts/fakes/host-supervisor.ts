@@ -7,6 +7,7 @@ import type { HostStatus, HostSupervisor, HostWorld } from "../host-supervisor";
 
 export class FakeHostWorld implements HostWorld {
   holder: number | null = null;
+  noLock: boolean | undefined;
   app: AppInstallRecord | undefined;
   readonly starts: { bundlePath: string; safeMode: boolean }[] = [];
   readonly stops: HostExitReason[] = [];

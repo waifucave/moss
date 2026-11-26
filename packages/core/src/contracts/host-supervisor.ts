@@ -38,6 +38,10 @@ export interface HostWorld {
   start(bundlePath: string, opts: { safeMode: boolean }): void;
   /** Asks the running host to stop (`host.stop`). */
   stop(reason: HostExitReason): void;
+  /** True on an OS that has no host lock to find a running host by (Windows, Linux): `lockHolder` is always null there, a second start over a live host
+   *  loses the host's own single-instance lock and quits, and the live host's reconnect says `host.ready`. The supervisor then waits a grace for that
+   *  reconnect before starting one, and a start that quits at once is not yet a crash. */
+  noLock?: boolean;
 }
 
 export interface HostSupervisor {
