@@ -58,6 +58,13 @@ enum AuditRunner {
               owed: "lane/iw-4"),
     ]
 
+    /// A known entry names an element by its label's first line (a question's label goes on over several lines); "-" is an
+    /// element the audit gives no label.
+    static func firstLine(_ label: String?) -> String {
+        guard let label else { return "-" }
+        return String(label.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first ?? "")
+    }
+
     static func run(bundleID: String, size: String?, in test: XCTestCase) throws {
         test.continueAfterFailure = true
         for (name, args) in screensByApp[bundleID] ?? [] {
@@ -85,7 +92,7 @@ enum AuditRunner {
                 if issue.auditType == .sufficientElementDescription, issue.element?.label.contains("/") == true { return true }
                 if issue.auditType == .contrast {
                     if issue.compactDescription.localizedCaseInsensitiveContains("nearly") { return true }
-                    if let known = knownContrast.first(where: { $0.app == bundleID && $0.screen == name && $0.element == (issue.element?.label ?? "-") }) {
+                    if let known = knownContrast.first(where: { $0.app == bundleID && $0.screen == name && $0.element == firstLine(issue.element?.label) }) {
                         print("AUDIT KNOWN \(name) \(size ?? "default"): \(known.element) (owed: \(known.owed))")
                         return true
                     }
