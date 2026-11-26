@@ -384,7 +384,8 @@ export function offerWrong(o: { bot: readonly string[]; coding: readonly string[
   // when.os is the computer's own: macOS offers the macos server, and another system (Linux) must not.
   if (platform === "darwin" && !offered(o.bot, "FieldsMac")) wrong.push("Alpha wasn't offered FieldsMac (when.os macos)");
   if (platform !== "darwin" && offered(o.bot, "FieldsMac")) wrong.push("Alpha was offered FieldsMac on a computer that isn't a Mac (when.os macos)");
-  if (offered(o.bot, "FieldsWin")) wrong.push("Alpha was offered FieldsWin (when.os windows)");
+  if (platform === "win32" && !offered(o.bot, "FieldsWin")) wrong.push("Alpha wasn't offered FieldsWin (when.os windows)");
+  if (platform !== "win32" && offered(o.bot, "FieldsWin")) wrong.push("Alpha was offered FieldsWin on a computer that isn't Windows (when.os windows)");
   if (offered(o.bot, "AgentsOnly")) wrong.push("Alpha was offered AgentsOnly (scope: agents)");
   if (!offered(o.bot, "CcOnly")) wrong.push("Alpha wasn't offered CcOnly (onlyBackends never narrows a bot)");
   if (!offered(o.coding, AGENTS_ONLY_SHORT)) wrong.push(`the coding session wasn't offered AgentsOnly under its short name ${AGENTS_ONLY_SHORT} (scope: agents; its full bridge name is too long)`);

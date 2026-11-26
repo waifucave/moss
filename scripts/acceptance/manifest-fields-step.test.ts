@@ -120,8 +120,12 @@ test("the offer verdict names each field that went wrong", () => {
   expect(offerWrong({ bot: bot.filter((t) => !t.endsWith("FieldsMac")), coding }, "darwin")).toEqual(["Alpha wasn't offered FieldsMac (when.os macos)"]);
   expect(offerWrong({ bot: bot.filter((t) => !t.endsWith("FieldsMac")), coding }, "linux")).toEqual([]);
   expect(offerWrong({ bot, coding }, "linux")).toEqual(["Alpha was offered FieldsMac on a computer that isn't a Mac (when.os macos)"]);
+  // The windows server is Windows' alone: offered there is right, missing there is wrong, offered anywhere else is wrong.
+  const winBot = [...bot.filter((t) => !t.endsWith("FieldsMac")), "mcp__acc-fields-win__FieldsWin"];
+  expect(offerWrong({ bot: winBot, coding }, "win32")).toEqual([]);
+  expect(offerWrong({ bot: winBot.filter((t) => !t.endsWith("FieldsWin")), coding }, "win32")).toEqual(["Alpha wasn't offered FieldsWin (when.os windows)"]);
   expect(offerWrong({ bot: [...bot, "mcp__acc-fields-win__FieldsWin"], coding: [...coding, "mcp__x__CcOnly"] }, "darwin")).toEqual([
-    "Alpha was offered FieldsWin (when.os windows)",
+    "Alpha was offered FieldsWin on a computer that isn't Windows (when.os windows)",
     "the coding session on MOSS's own agent was offered CcOnly (onlyBackends: claude-code)",
   ]);
 });
