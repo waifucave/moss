@@ -16,7 +16,7 @@
 // * A source checkout (not a dist build) may name its own start (`MOSS_HOST_COMMAND`, a JSON argv), which the engine
 //   runs as its child in its own process group, so a run that started the engine ends the host with it.
 import { execFileSync, spawn } from "node:child_process";
-import { closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { APP_RECORDS_DIR, AppInstallRecord, HOST_LOCK_FILE, HOST_START_FILE, PROGRAM_IDENTIFIERS, compareReleases, type HostExitReason } from "@waifucave/moss-protocol";
 import { DEVELOPER_ID_CLAUSES, MOSS_TEAM_ID } from "../bundled-identities";
@@ -210,7 +210,7 @@ export function engineHostWorld(input: EngineHostWorldInput): HostWorld & HostWo
       if (!Number.isInteger(pid) || pid <= 0) return false;
       process.kill(pid, 0);
       return true;
-    } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
+    } catch { return false; } // EPERM too: a host of this user always answers, so another user's process under a planted pid is no host
   };
 
   const writeStartFile = (safeMode: boolean): void => {
@@ -250,7 +250,16 @@ export function engineHostWorld(input: EngineHostWorldInput): HostWorld & HostWo
     // No lock to find a host by: one may still be alive when the last engine restarted with the app kept, or when a host said ready and its recorded pid still runs.
     mayHostBeAlive: () => input.appKept === true || recordedHostAlive(),
     noteHost: (pid) => {
-      try { writeFileSync(join(input.home, HOST_PID_FILE), String(pid), { mode: 0o600 }); } catch { /* the next boot just starts without a grace */ }
+      // As the other run files are written: a temp file renamed into place (a rename replaces a link at the name, never follows it).
+      const path = join(input.home, HOST_PID_FILE);
+      const tmp = `${path}.${process.pid}.tmp`;
+      try {
+        writeFileSync(tmp, String(pid), { mode: 0o600, flag: "wx" });
+        renameSync(tmp, path);
+      } catch {
+        try { rmSync(tmp, { force: true }); } catch { /* gone */ }
+        /* the next boot just starts without a grace */
+      }
     },
     source: () => {
       if (command !== undefined) {

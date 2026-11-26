@@ -21,3 +21,17 @@ test("no kept app and no recorded host: none alive; a recorded live pid or a kep
     expect(w.mayHostBeAlive?.()).toBe(false);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
+
+test("host.pid is written as a temp file renamed into place: a link planted at the name is replaced, never followed", () => {
+  const { symlinkSync, readFileSync, lstatSync } = require("node:fs") as typeof import("node:fs");
+  const home = mkdtempSync(join(tmpdir(), "host-alive-"));
+  const elsewhere = join(home, "elsewhere");
+  try {
+    writeFileSync(elsewhere, "keep");
+    try { symlinkSync(elsewhere, join(home, "host.pid")); } catch { return; /* no symlinks here (Windows without the privilege) */ }
+    make(home).noteHost?.(process.pid);
+    expect(readFileSync(elsewhere, "utf8")).toBe("keep");
+    expect(lstatSync(join(home, "host.pid")).isSymbolicLink()).toBe(false);
+    expect(readFileSync(join(home, "host.pid"), "utf8")).toBe(String(process.pid));
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
