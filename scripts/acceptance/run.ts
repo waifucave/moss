@@ -1573,7 +1573,14 @@ async function pressApprove(cdp: Cdp, card: Card, appLog = join(logs, "app.log")
   let fallbackChecked = false;
   // A card with boxes is never answered by a part's button (the island's, a plugin page's): that button says "Review in MOSS" and brings MOSS Code's own
   // card forward, where the boxes are drawn and the person answers. So the island's review is pressed first (once), then the own card's Approve.
-  let reviewed = (card.children ?? []).length === 0;
+  // The review is for a card the ISLAND holds (placed island, or elsewhere with the island drawn): a card the router placed in a window in front (the strip or the
+  // conversation) is answered by that window's own card, which is the Approve pressed below.
+  const placedNow = () => [...readLog(appLog).matchAll(new RegExp(`router: ${card.id} placed (\\w+)`, "g"))].at(-1)?.[1];
+  // The window's log hears of a placement a beat after the engine raises the card.
+  if ((card.children ?? []).length > 0) await until(`the router placing ${card.id}`, scaled(5_000), () => placedNow(), 200).catch(() => undefined);
+  const placedAt = placedNow();
+  const inWindow = placedAt === "strip" || placedAt === "conversation";
+  let reviewed = (card.children ?? []).length === 0 || inWindow;
   while (Date.now() < deadline) {
     if (!reviewed) {
       reviewed = true;
