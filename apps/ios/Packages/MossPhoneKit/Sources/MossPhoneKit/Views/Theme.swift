@@ -5,14 +5,7 @@ import SwiftUI
 struct FormHeader: View {
     let title: String
     init(_ title: String) { self.title = title }
-    /// The text keeps its own width (a spacer fills the row): a header's frame as wide as the row took in the soft
-    /// shadow of the bar's glass buttons above its right end, and the contrast audit read the grey against it.
-    var body: some View {
-        HStack(spacing: 0) {
-            Text(title).font(.footnote).foregroundStyle(Theme.subtle).accessibilityAddTraits(.isHeader)
-            Spacer(minLength: 0)
-        }
-    }
+    var body: some View { Text(title).font(.footnote).foregroundStyle(Theme.subtle).accessibilityAddTraits(.isHeader) }
 }
 
 /// A button drawn in its own colours whether or not it is enabled (still disabled for touch and for VoiceOver, which

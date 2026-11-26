@@ -31,8 +31,10 @@ public struct SessionsScreen: View {
     public var body: some View {
         let waiting = waiting
         List {
+            // Room under the bar: the first project's header row sat inside the soft shadow of the bar's glass buttons, and
+            // the contrast audit read its grey against that shadow (the header's element is the whole row).
             TopBar(waiting: cards.waitingCount, plusLabel: "New session", onSettings: onSettings, onBell: onBell, onSearch: { searching = true }, onPlus: onNew)
-                .listRow()
+                .listRow(bottom: 16)
             if searching {
                 SearchField(text: $query, prompt: "Search sessions", onCancel: { searching = false; query = "" }).listRow(top: 8, bottom: 8)
             }
@@ -49,13 +51,8 @@ public struct SessionsScreen: View {
                             .listRowBackground(Color.clear)
                     }
                 } header: {
-                    // The text keeps its own width (a spacer fills the row): a frame as wide as the row took in the soft
-                    // shadow of the top bar's glass buttons, and the contrast audit read the grey against it.
-                    HStack(spacing: 0) {
-                        Text(group.project).font(.footnote).foregroundStyle(Theme.subtle).textCase(nil)
-                            .padding(.leading, 4).accessibilityAddTraits(.isHeader)
-                        Spacer(minLength: 0)
-                    }
+                    Text(group.project).font(.footnote).foregroundStyle(Theme.subtle).textCase(nil)
+                        .padding(.leading, 4).accessibilityAddTraits(.isHeader)
                 }
                 .listSectionSeparator(.hidden)
             }

@@ -32,6 +32,9 @@ public struct SettingsScreen: View {
                     LabeledContent("Version", value: model.version)
                 } header: { FormHeader("About") }
             }
+            // Room under the bar: the first section's header row sat inside the soft shadow of the bar's glass Done
+            // button, and the contrast audit read its grey against that shadow (the header's element is the whole row).
+            .contentMargins(.top, 20, for: .scrollContent)
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done", action: onDone) } }

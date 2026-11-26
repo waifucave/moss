@@ -24,20 +24,14 @@ enum AuditRunner {
     /// either size); any other failed contrast fails the audit. The list is to be emptied, never grown without an owner.
     struct KnownContrast { let app: String; let screen: String; let element: String; let reason: String; let owed: String }
     static let knownContrast: [KnownContrast] = [
-        .init(app: "com.waifucave.moss.ios", screen: "home", element: "2",
-              reason: "the bell's count: its text frame took in the white corners round the orange circle (the pictures show it); now a numbered circle symbol, to be removed when a run shows it stale",
-              owed: "lane/iw-4"),
         .init(app: "com.waifucave.moss.ios", screen: "settings", element: "Paired computer",
-              reason: "the first form header: its row-wide frame took in the soft shadow of the Done glass button (the pictures show it); now the text keeps its own width, to be removed when a run shows it stale",
-              owed: "lane/iw-4"),
-        .init(app: "com.waifucave.moss.code.ios", screen: "sessions", element: "1",
-              reason: "the bell's count, as on MOSS's home (same cause, same fix)",
+              reason: "the first form header: its row-wide frame took in the soft shadow of the Done glass button (the pictures show it); the row is the element whatever its text's width, so the screen now leaves room under the bar; to be removed when a run shows it stale",
               owed: "lane/iw-4"),
         .init(app: "com.waifucave.moss.code.ios", screen: "sessions", element: "moss",
-              reason: "the first project header: its row-wide frame took in the top bar's glass-button shadow (the pictures show it); now the text keeps its own width, to be removed when a run shows it stale",
+              reason: "the first project header: its row-wide frame took in the top bar's glass-button shadow (the pictures show it); the row is the element whatever its text's width, so the screen now leaves room under the bar; to be removed when a run shows it stale",
               owed: "lane/iw-4"),
         .init(app: "com.waifucave.moss.code.ios", screen: "newSession", element: "-",
-              reason: "the audit gives it no element; the screen's only light-grey text is the folder field's placeholder, now in the readable grey, to be removed when a run shows it stale",
+              reason: "the audit gives it no element; the screen's only light-grey text is the folder field's placeholder, which the system draws fainter than any colour given it; now drawn by the app in the readable grey, to be removed when a run shows it stale",
               owed: "lane/iw-4"),
         .init(app: "com.waifucave.moss.code.ios", screen: "settings", element: "Paired computer",
               reason: "as on MOSS's settings (same cause, same fix)",
