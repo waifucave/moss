@@ -417,8 +417,20 @@ writeFileSync(stubBin, "#!/bin/sh\necho 'acceptance: the app tried to start a da
 // daemon binary answers them, where `start` only asks the run (a line in launch-requests) and the run starts the core
 // when, and only when, no daemon of its is running: as launchd starts the job only once the old process has gone.
 const launchRequests = join(root, "launch-requests");
-const standInBin = join(root, "bin", "moss-core-launch-stand-in");
-writeFileSync(standInBin, `#!/bin/sh
+const standInBin = join(root, "bin", process.platform === "win32" ? "moss-core-launch-stand-in.exe" : "moss-core-launch-stand-in");
+if (process.platform === "win32") {
+  // Windows starts no script: the stand-in is a compiled program (the app runs it with execFile, which will not start a .cmd).
+  const source = join(root, "bin", "stand-in.ts");
+  writeFileSync(source, `import { appendFileSync } from "node:fs";
+const [a, b] = process.argv.slice(2);
+if (a === "autostart" && b === "status") console.log(JSON.stringify({ registered: true, running: false }));
+else if (a === "autostart" && b === "enable") console.log("autostart: registered (stand-in)");
+else if (a === "autostart" && b === "start") { appendFileSync(${JSON.stringify(launchRequests)}, Math.floor(Date.now() / 1000) + "\\n"); console.log("autostart: start asked (stand-in: the acceptance run starts the core)"); }
+else { console.error("acceptance: the stand-in launcher doesn't do " + a + " " + b); process.exit(1); }
+`);
+  const built = spawnSync(process.execPath, ["build", "--compile", source, "--outfile", standInBin], { encoding: "utf8" });
+  if (built.status !== 0) console.error(`acceptance: the stand-in launcher did not compile (the reopen rows will fail): ${built.stderr}`);
+} else writeFileSync(standInBin, `#!/bin/sh
 case "$1 $2" in
   "autostart status") echo '{"registered":true,"running":false}' ;;
   "autostart enable") echo "autostart: registered (stand-in)" ;;
@@ -759,8 +771,18 @@ async function cleanup(): Promise<ReapResult | undefined> {
     }
     // The plugins' own logs (a stdio server's stderr: why it crashed), from the same temp home.
     try { cpSync(join(home, "logs", "plugins"), join(keepLogs, "plugins"), { recursive: true }); } catch { /* none, or best effort */ }
-    // The sessions' own event logs (a turn's end reason, its tool results), beside the kept ones: the index database stays out.
-    try { cpSync(join(home, "sessions"), join(keepLogs, "..", "home-sessions"), { recursive: true, filter: (src) => !/index\.db/.test(src) }); } catch { /* none, or best effort */ }
+    // The sessions' own event logs (a turn's end reason, its tool results), in the kept logs: file by file, the index database left out, and what could not be copied said.
+    try {
+      const sessionsFrom = join(home, "sessions");
+      const walk = (dir: string, to: string): void => {
+        mkdirSync(to, { recursive: true });
+        for (const e of readdirSync(dir, { withFileTypes: true })) {
+          if (/index\.db/.test(e.name)) continue;
+          try { if (e.isDirectory()) walk(join(dir, e.name), join(to, e.name)); else cpSync(join(dir, e.name), join(to, e.name)); } catch (err) { console.error(`acceptance: could not keep ${join(dir, e.name)}: ${String(err).slice(0, 120)}`); }
+        }
+      };
+      if (existsSync(sessionsFrom)) walk(sessionsFrom, join(keepLogs, "sessions")); else console.error(`acceptance: no sessions folder at ${sessionsFrom}`);
+    } catch (err) { console.error(`acceptance: the sessions' logs were not kept: ${String(err).slice(0, 120)}`); }
     // Windows runs: the whole of the home's logs, beside the kept ones (not in them: the verdict reads those), to see a turn's own error.
     if (process.platform === "win32") { try { cpSync(join(home, "logs"), join(keepLogs, "..", "home-logs"), { recursive: true }); } catch { /* best effort */ } }
   }

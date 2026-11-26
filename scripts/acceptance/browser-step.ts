@@ -239,7 +239,7 @@ export async function browserStep(ctx: ExampleCtx, session: string, fixture: Bro
           await term.request("events.subscribe", { areas: ["computers"] });
           const open = (await term.request("terminal.open", { computer, cwd: root, session: codeSession, cols: 80, rows: 24 })) as { terminalId: string };
           await term.request("terminal.resize", { terminalId: open.terminalId, cols: 100, rows: 30 });
-          await term.request("terminal.write", { terminalId: open.terminalId, data: "echo moss-panel-$((20+22))\r" });
+          await term.request("terminal.write", { terminalId: open.terminalId, data: process.platform === "win32" ? "\"moss-panel-$(20+22)\"\r" : "echo moss-panel-$((20+22))\r" });
           const until2 = Date.now() + scaled(15_000);
           const out = () => term.heard("terminal_output").map((e) => (e as unknown as { terminalId: string; data: string })).filter((e) => e.terminalId === open.terminalId).map((e) => e.data).join("");
           while (!/moss-panel-42/.test(out()) && Date.now() < until2) await new Promise((r) => setTimeout(r, 100));
