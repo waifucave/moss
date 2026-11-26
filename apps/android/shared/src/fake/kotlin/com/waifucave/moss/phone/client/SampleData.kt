@@ -103,6 +103,13 @@ object SampleData {
         options = listOf(
             AskQuestion.Option("Ship it", "Build, sign and upload\nthe release now", preview = (1..30).joinToString("\n") { "step $it:\trun the release task number $it" }),
             AskQuestion.Option("Wait", "Keep it for tomorrow")))
+    /** A call of two questions, each with its own options, answered together. */
+    val severalQuestions = AskQuestion("ask_two", listOf(
+        AskQuestion.Part("Day", "Which day suits you for the dentist?", listOf(AskQuestion.Option("Tuesday"), AskQuestion.Option("Thursday"))),
+        AskQuestion.Part("Reminders", "Which reminders should I set?",
+            listOf(AskQuestion.Option("The day before"), AskQuestion.Option("An hour before")), multiSelect = true),
+    ))
+
     val questions: Map<String, AskQuestion> = mapOf(
         "c4" to AskQuestion("ask_1", header = "Tag colour", text = "Which colour should the new tag have?", options = listOf(
             AskQuestion.Option("Green", "Matches the success states"), AskQuestion.Option("Amber", "Stands out on the white page"),

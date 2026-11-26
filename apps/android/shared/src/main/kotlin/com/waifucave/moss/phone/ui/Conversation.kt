@@ -183,8 +183,11 @@ fun ConversationScreen(model: ConversationModel, cards: CardsModel, onBack: () -
                     }
                     val q = model.question
                     // A bot's question doesn't hold the bot: it stays open until answered or skipped, so it can be skipped here.
-                    if (q != null) QuestionComposer(q, onSubmit = { answers -> model.answerQuestion(answers) },
-                        onSkip = if (model.canSkipQuestion) ({ model.skipQuestion() }) else null)
+                    // Answers and a skip carry the call the composer drew: the model refuses them for another one.
+                    if (q != null) key(q.callId) {
+                        QuestionComposer(q, onSubmit = { callId, answers -> model.answerQuestion(callId, answers) },
+                            onSkip = if (model.canSkipQuestion) ({ callId -> model.skipQuestion(callId) }) else null)
+                    }
                     else Composer(model, preset, pickerOpen, onPicker = { pickerOpen = it })
                 }
             },

@@ -308,17 +308,66 @@ class StagedImage(val path: String, val thumbnail: ByteArray) {
     override fun hashCode() = path.hashCode()
 }
 
-/** An `AskUserQuestion` waiting in a conversation (`session.answer` answers it). */
-data class AskQuestion(
-    val callId: String,
-    val header: String? = null,
-    val text: String,
-    val options: List<Option>,
-    val multiSelect: Boolean = false,
-) {
+/**
+ * An `AskUserQuestion` call waiting in a conversation (`session.answer` answers it): one to four questions, drawn whole and
+ * answered together, as the desktop's card does. Each answer is keyed by its question's text.
+ */
+data class AskQuestion(val callId: String, val questions: List<Part>) {
+    /** A call of one question. */
+    constructor(callId: String, header: String? = null, text: String, options: List<Option>, multiSelect: Boolean = false) :
+        this(callId, listOf(Part(header, text, options, multiSelect)))
+
+    /** One question of the call: its header, its text, its options. */
+    data class Part(val header: String? = null, val text: String, val options: List<Option>, val multiSelect: Boolean = false)
+
     /** `detail` is the option's description and `preview` its preview (a snippet drawn beside it): the computer's text, plain. */
     data class Option(val label: String, val detail: String? = null, val preview: String? = null)
     val id: String get() = callId
+
+    /**
+     * Each answer is keyed by its question's text, so two questions with one text would share one answer: such a call (an
+     * older engine may still send one; a new one refuses it when asked) is answered on the computer, never here.
+     */
+    val answerableHere: Boolean get() = questions.isNotEmpty() && questions.map { it.text }.toSet().size == questions.size
+}
+
+/**
+ * What the person has chosen so far for one question call: per question, the options picked and the words typed in its
+ * "Something else" box. [answers] is there only once every question has one.
+ */
+data class QuestionDraft(
+    val question: AskQuestion,
+    /** Per question (its index in the call): the options picked, by index. */
+    val picked: Map<Int, Set<Int>> = emptyMap(),
+    /** Per question: the words typed instead of (or as well as) an option. */
+    val other: Map<Int, String> = emptyMap(),
+) {
+    fun isPicked(option: Int, part: Int): Boolean = picked[part]?.contains(option) == true
+
+    /** Picks or unpicks an option: one question's pick never touches another's. A single-choice question keeps one. */
+    fun toggle(option: Int, part: Int): QuestionDraft {
+        val p = question.questions.getOrNull(part) ?: return this
+        if (option !in p.options.indices) return this
+        val set = picked[part] ?: emptySet()
+        val next = if (p.multiSelect) (if (option in set) set - option else set + option) else (if (option in set) emptySet() else setOf(option))
+        return copy(picked = picked + (part to next))
+    }
+
+    fun typed(part: Int, words: String): QuestionDraft = if (part in question.questions.indices) copy(other = other + (part to words)) else this
+
+    /** One question's answer as the engine takes it: the picked labels in their order, then the typed words. */
+    fun answer(part: Int): String {
+        val p = question.questions.getOrNull(part) ?: return ""
+        val labels = (picked[part] ?: emptySet()).sorted().filter { it in p.options.indices }.map { p.options[it].label }
+        return (labels + listOfNotNull(other[part]?.trim()?.ifEmpty { null })).joinToString(", ")
+    }
+
+    /** How many of the call's questions still have no answer. */
+    val unanswered: Int get() = question.questions.indices.count { answer(it).isEmpty() }
+
+    /** Every question's answer, keyed by its own text exactly as the engine sent it; `null` while one has none. */
+    val answers: Map<String, String>?
+        get() = if (unanswered == 0 && question.answerableHere) question.questions.withIndex().associate { (i, p) -> p.text to answer(i) } else null
 }
 
 /** A file staged for the next message: what the engine wrote, and how it reads in the chip. */

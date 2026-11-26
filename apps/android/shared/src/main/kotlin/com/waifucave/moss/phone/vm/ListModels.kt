@@ -42,6 +42,8 @@ internal class Listener {
 }
 
 const val UNREACHABLE_TEXT = "Can't reach your computer."
+/** A question call two of whose questions read the same: one answer would stand for both, so it is answered on the computer. */
+const val SAME_TEXT = "Answer this one on your computer: two of its questions read the same."
 
 class BotsListModel(private val client: EngineClient, private val store: PinStore) {
     var rows by mutableStateOf<List<BotRow>>(emptyList())

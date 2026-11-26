@@ -265,10 +265,49 @@ class ViewModelTest {
         val m = ConversationModel(ConversationModel.Source.OfSession(SampleData.sessions.first { it.id == "c4" }), c)
         m.loadComposer()
         assertNotNull(m.question)
-        assertTrue(m.answerQuestion(mapOf("Tag colour" to "Green")))
+        assertTrue(m.answerQuestion("ask_1", mapOf("Which colour should the new tag have?" to "Green")))
         assertNull(m.question)
         m.loadComposer()
         assertNull(m.question)
+    }
+
+    /** An answer or a skip carries the call the composer drew: for another call it is refused, and nothing is sent. */
+    @Test fun anAnswerForAnotherCallIsRefused() = runTest {
+        val c = fake()
+        val m = ConversationModel(ConversationModel.Source.OfBot(SampleData.bots.first { it.id == "luna" }), c)
+        m.loadComposer()
+        assertEquals("ask_2", m.question?.callId)
+        assertFalse(m.answerQuestion("ask_old", mapOf("Which folder should I keep this week's receipts in?" to "Taxes")))
+        assertFalse(m.skipQuestion("ask_old"))
+        assertTrue(c.questionsAnswered.isEmpty() && c.questionsSkipped.isEmpty())
+        assertEquals("ask_2", m.question?.callId)
+        assertNotNull(m.errorText)
+    }
+
+    /** A call of several questions is answered together: no answers until each has one, then each keyed by its own text. */
+    @Test fun aCallOfSeveralQuestionsIsAnsweredTogether() = runTest {
+        val q = AskQuestion("ask_3", listOf(
+            AskQuestion.Part("Day", "Which day?", listOf(AskQuestion.Option("Monday"), AskQuestion.Option("Friday"))),
+            AskQuestion.Part("Time", "What time?", listOf(AskQuestion.Option("Morning"), AskQuestion.Option("Evening")), multiSelect = true),
+        ))
+        var d = QuestionDraft(q).toggle(1, 0)
+        assertNull(d.answers)
+        assertEquals(1, d.unanswered)
+        d = d.toggle(0, 1).toggle(1, 1).typed(1, "  or late  ")
+        assertEquals(mapOf("Which day?" to "Friday", "What time?" to "Morning, Evening, or late"), d.answers)
+        // A single-choice pick replaces the earlier one; a pick in one question never touches another's.
+        assertEquals(setOf(0), d.toggle(0, 0).picked[0])
+        assertEquals(setOf(0, 1), d.toggle(0, 0).picked[1])
+    }
+
+    /** Two questions that read the same would share one answer: never answered here, with the line that says so. */
+    @Test fun aCallWhoseQuestionsReadTheSameGoesToTheComputer() = runTest {
+        val twin = AskQuestion("ask_twin", listOf(
+            AskQuestion.Part(null, "Which one?", listOf(AskQuestion.Option("A"))),
+            AskQuestion.Part(null, "Which one?", listOf(AskQuestion.Option("B"))),
+        ))
+        assertFalse(twin.answerableHere)
+        assertNull(QuestionDraft(twin).toggle(0, 0).toggle(0, 1).answers)
     }
 
     /** A bot's open question can be skipped; a coding agent's can't (it holds the agent until answered). */
@@ -280,13 +319,13 @@ class ViewModelTest {
         val q = m.question
         assertNotNull(q)
         assertTrue(m.canSkipQuestion)
-        assertTrue(m.skipQuestion())
+        assertTrue(m.skipQuestion(q!!.callId))
         assertNull(m.question)
-        assertEquals(listOf(luna.mainSession to q!!.callId), c.questionsSkipped)
+        assertEquals(listOf(luna.mainSession to q.callId), c.questionsSkipped)
         val agent = ConversationModel(ConversationModel.Source.OfSession(SampleData.sessions.first { it.id == "c4" }), c)
         agent.loadComposer()
         assertFalse(agent.canSkipQuestion)
-        assertFalse(agent.skipQuestion())
+        assertFalse(agent.skipQuestion("ask_1"))
     }
 
     /** Each closing record sets the state of the row where its question was asked, and is no row of its own. */

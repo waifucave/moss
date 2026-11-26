@@ -47,6 +47,8 @@ class FakeEngineClient(
         tallCard,
         /** Paired; Luna's conversation has a question closed each way the phone draws, and her open one waits below. */
         questionEnds,
+        /** Paired; Luna asks a call of two questions, answered together. */
+        severalQuestions,
     }
 
     class Failure(message: String) : Exception(message)
@@ -88,7 +90,7 @@ class FakeEngineClient(
         when (scenario) {
             Scenario.quiet -> cardList = mutableListOf()
             Scenario.idle, Scenario.loading, Scenario.sendFails -> {}
-            Scenario.botLimit, Scenario.tallQuestion -> cardList = mutableListOf()
+            Scenario.botLimit, Scenario.tallQuestion, Scenario.severalQuestions -> cardList = mutableListOf()
             Scenario.midTurn -> {
                 statusLines["s_alpha"] = "Alpha is working"
                 statusLines["c1"] = "Working"
@@ -256,7 +258,11 @@ class FakeEngineClient(
     override suspend fun runCommand(session: String, command: String) { maybeFail(); commandsRun.add(command) }
     override suspend fun pendingQuestion(session: String): AskQuestion? {
         maybeFail()
-        val q = (if (scenario == Scenario.tallQuestion) SampleData.tallQuestion else SampleData.questions[session]) ?: return null
+        val q = when (scenario) {
+            Scenario.tallQuestion -> SampleData.tallQuestion
+            Scenario.severalQuestions -> SampleData.severalQuestions.takeIf { session == "s_luna" }
+            else -> SampleData.questions[session]
+        } ?: return null
         return if (q.callId in answeredQuestions) null else q
     }
     override suspend fun answerQuestion(session: String, question: AskQuestion, answers: Map<String, String>) {

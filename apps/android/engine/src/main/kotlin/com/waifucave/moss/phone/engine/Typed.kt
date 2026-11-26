@@ -108,10 +108,12 @@ object Typed {
         is QuestionEnd.Closed -> QuestionState.Closed
     }
 
-    /** The core's question as the screens' (the first of its questions: the phone asks one at a time). */
+    /** The core's question call as the screens': every question of it (up to four), drawn and answered together. */
     fun question(q: CQuestion?): AskQuestion? {
-        val first = q?.questions?.firstOrNull() ?: return null
-        return AskQuestion(q.callId, first.header, first.question, first.options.map { AskQuestion.Option(it.label, it.description, it.preview) }, first.multiSelect)
+        if (q == null || q.questions.isEmpty()) return null
+        return AskQuestion(q.callId, q.questions.map { p ->
+            AskQuestion.Part(p.header, p.question, p.options.map { AskQuestion.Option(it.label, it.description, it.preview) }, p.multiSelect)
+        })
     }
 
     /** A backend a person can start here: user-startable and installed on the computer this phone is linked to. */

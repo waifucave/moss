@@ -166,20 +166,33 @@ class ConversationModel(
     }
     fun unstageFile(file: StagedFile) { stagedFiles = stagedFiles.filter { it != file } }
     fun unstage(image: StagedImage) { staged = staged.filter { it != image } }
-    suspend fun answerQuestion(answers: Map<String, String>): Boolean {
-        val q = question ?: return false
-        return try { client.answerQuestion(sessionID, q, answers); question = null; true }
+    /**
+     * Answers the question call the composer drew (`callId`): refused when the open question is another one now (a refresh
+     * between the press and the call), so one question's answers never go to another.
+     */
+    suspend fun answerQuestion(callId: String, answers: Map<String, String>): Boolean {
+        val q = drawn(callId) ?: return false
+        // Questions that read the same would share one answer: never answered here.
+        if (!q.answerableHere) { errorText = SAME_TEXT; return false }
+        return try { client.answerQuestion(sessionID, q, answers); question = null; errorText = null; true }
         catch (e: CancellationException) { throw e } catch (e: Exception) { failedOn(q); false }
+    }
+
+    /** The open question, if it is the one drawn; otherwise says the question changed and gives nothing. */
+    private fun drawn(callId: String): AskQuestion? {
+        val q = question
+        if (q == null || q.callId != callId) { errorText = "That question changed while you answered. Read it again."; return null }
+        return q
     }
 
     /** A bot's question can be skipped (it stays open across turns until answered or skipped); a coding agent's can't. */
     val canSkipQuestion: Boolean get() = source is Source.OfBot
 
-    /** Skips the open question: the bot is told it was skipped, and the composer is back. */
-    suspend fun skipQuestion(): Boolean {
-        val q = question ?: return false
+    /** Skips the question call the composer drew: the bot is told it was skipped, and the composer is back. */
+    suspend fun skipQuestion(callId: String): Boolean {
         if (!canSkipQuestion) return false
-        return try { client.skipQuestion(sessionID, q); question = null; true }
+        val q = drawn(callId) ?: return false
+        return try { client.skipQuestion(sessionID, q); question = null; errorText = null; true }
         catch (e: CancellationException) { throw e } catch (e: Exception) { failedOn(q); false }
     }
 

@@ -566,8 +566,11 @@ class CoreEngineClient(
     override suspend fun pendingQuestion(session: String): AskQuestion? = io { c().openQuestions(session).lastOrNull()?.let(Typed::question) }
 
     override suspend fun answerQuestion(session: String, question: AskQuestion, answers: Map<String, String>): Unit = io {
-        // The engine keys an answer by the question's text (the screens key it by its header when it has one).
-        c().answerQuestion(session, question.callId, mapOf(question.text to (answers.values.firstOrNull() ?: "")))
+        // The engine keys each answer by its question's text: every question of the call answered, by those texts only, and
+        // never a call whose texts repeat (one answer would stand for two questions).
+        require(question.answerableHere) { "two of this call's questions read the same" }
+        require(answers.keys == question.questions.map { it.text }.toSet() && answers.values.all { it.isNotBlank() }) { "every question needs its own answer" }
+        c().answerQuestion(session, question.callId, answers)
     }
 
     override suspend fun skipQuestion(session: String, question: AskQuestion): Unit = io { c().skipQuestion(session, question.callId) }

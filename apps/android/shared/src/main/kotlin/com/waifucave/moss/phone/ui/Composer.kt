@@ -65,7 +65,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.waifucave.moss.phone.model.AskQuestion
 import com.waifucave.moss.phone.model.ComposerOffers
+import com.waifucave.moss.phone.model.QuestionDraft
 import com.waifucave.moss.phone.vm.ConversationModel
+import com.waifucave.moss.phone.vm.SAME_TEXT
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 
@@ -357,16 +359,18 @@ private fun PickerBack(title: String, onClick: () -> Unit) {
 /** While a question waits, the composer's place becomes this box, in the composer's own material. */
 @Composable
 fun QuestionComposer(
-    question: AskQuestion, onSubmit: suspend (Map<String, String>) -> Boolean,
+    question: AskQuestion,
+    /** Answers the call drawn (its `callId`), every question at once, each keyed by its text. */
+    onSubmit: suspend (callId: String, answers: Map<String, String>) -> Boolean,
     /** Skips it: offered for a bot's question (open across turns until answered or skipped); `null` where it isn't. */
-    onSkip: (suspend () -> Boolean)? = null,
+    onSkip: (suspend (callId: String) -> Boolean)? = null,
 ) {
     val c = MossTheme.colors
     val scope = rememberCoroutineScope()
-    var selected by remember(question.callId) { mutableStateOf(setOf<Int>()) }
-    var other by remember(question.callId) { mutableStateOf("") }
+    // A new question call is a new draft: nothing picked for one is ever shown, or sent, for another.
+    var draft by remember(question.callId) { mutableStateOf(QuestionDraft(question)) }
     var submitting by remember { mutableStateOf(false) }
-    val answer = (selected.sorted().map { question.options[it].label } + listOfNotNull(other.trim().ifEmpty { null })).joinToString(", ")
+    val several = question.questions.size > 1
     val shape = RoundedCornerShape(28.dp)
     Column(
         Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp).fillMaxWidth()
@@ -374,19 +378,61 @@ fun QuestionComposer(
             .background(c.softButton, shape).border(0.5.dp, c.stroke, shape).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        question.header?.let { Text(it, style = MossType.footnote, fontWeight = FontWeight.SemiBold, color = c.secondary) }
+        // Every question of the call, each with its own options and its own "Something else"; together they scroll inside
+        // the box, so Submit and Skip stay on screen however many there are.
+        Column(Modifier.heightIn(max = if (several) 440.dp else 600.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            question.questions.forEachIndexed { part, p ->
+                QuestionPart(p, part, draft, onToggle = { o -> draft = draft.toggle(o, part) }, onType = { w -> draft = draft.typed(part, w) })
+            }
+        }
+        if (!question.answerableHere) {
+            // Two of its questions read the same: one answer would stand for both, so it is answered on the computer.
+            Text(SAME_TEXT, style = MossType.footnote, color = c.secondary)
+        } else if (several && draft.unanswered > 0) {
+            Text(if (draft.unanswered == 1) "1 question still needs an answer." else "${draft.unanswered} questions still need an answer.",
+                style = MossType.footnote, color = c.secondary)
+        }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            onSkip?.let { skip ->
+                TextButton(
+                    onClick = { submitting = true; scope.launch { skip(question.callId); submitting = false } },
+                    enabled = !submitting, modifier = Modifier.heightIn(min = 48.dp)
+                        .semantics { stateDescription = "Tells the bot you skipped it, then lets you write a message" },
+                ) { Text("Skip", color = c.secondary) }
+            }
+            Spacer(Modifier.weight(1f))
+            val answers = draft.answers
+            if (question.answerableHere) Button(
+                onClick = {
+                    val a = answers ?: return@Button
+                    submitting = true
+                    scope.launch { onSubmit(question.callId, a); submitting = false }
+                },
+                enabled = answers != null && !submitting,
+                colors = ButtonDefaults.buttonColors(containerColor = c.inverse, contentColor = c.onInverse,
+                    disabledContainerColor = c.inverse.copy(alpha = 0.12f), disabledContentColor = c.secondary),
+            ) { Text("Submit", fontWeight = FontWeight.SemiBold) }
+        }
+    }
+}
+
+/** One question of a call: its header, its text, its options, and its own "Something else". */
+@Composable
+private fun QuestionPart(p: AskQuestion.Part, part: Int, draft: QuestionDraft, onToggle: (Int) -> Unit, onType: (String) -> Unit) {
+    val c = MossTheme.colors
+    val other = draft.other[part] ?: ""
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        p.header?.let { Text(it, style = MossType.footnote, fontWeight = FontWeight.SemiBold, color = c.secondary) }
         // The computer's text, plain (no markup), each part in its own container and capped with its own scroll, so a tall
         // question or preview can never push the options or Submit off the screen, nor read as one of the options.
-        ScrollCapped(160.dp) { Text(question.text, style = MossType.body, color = c.text) }
+        ScrollCapped(160.dp) { Text(p.text, style = MossType.body, color = c.text) }
         Column {
-            question.options.forEachIndexed { i, o ->
+            p.options.forEachIndexed { i, o ->
                 if (i > 0) HorizontalDivider(color = c.stroke)
-                val on = i in selected
+                val on = draft.isPicked(i, part)
                 Row(
                     Modifier.fillMaxWidth().heightIn(min = 48.dp)
-                        .selectable(selected = on, role = if (question.multiSelect) Role.Checkbox else Role.RadioButton) {
-                            selected = if (question.multiSelect) (if (on) selected - i else selected + i) else setOf(i)
-                        }
+                        .selectable(selected = on, role = if (p.multiSelect) Role.Checkbox else Role.RadioButton) { onToggle(i) }
                         .padding(vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -405,28 +451,9 @@ fun QuestionComposer(
             HorizontalDivider(color = c.stroke)
             Box(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
                 if (other.isEmpty()) Text("Something else", style = MossType.body, color = c.secondary)
-                BasicTextField(other, { other = it }, textStyle = MossType.body.copy(color = c.text), cursorBrush = SolidColor(c.text),
-                    modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Something else" })
+                BasicTextField(other, onType, textStyle = MossType.body.copy(color = c.text), cursorBrush = SolidColor(c.text),
+                    modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Something else" + (p.header?.let { ", $it" } ?: "") })
             }
-        }
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            onSkip?.let { skip ->
-                TextButton(
-                    onClick = { submitting = true; scope.launch { skip(); submitting = false } },
-                    enabled = !submitting, modifier = Modifier.heightIn(min = 48.dp)
-                        .semantics { stateDescription = "Tells the bot you skipped it, then lets you write a message" },
-                ) { Text("Skip", color = c.secondary) }
-            }
-            Spacer(Modifier.weight(1f))
-            Button(
-                onClick = {
-                    submitting = true
-                    scope.launch { onSubmit(mapOf((question.header ?: question.text) to answer)); submitting = false }
-                },
-                enabled = answer.isNotEmpty() && !submitting,
-                colors = ButtonDefaults.buttonColors(containerColor = c.inverse, contentColor = c.onInverse,
-                    disabledContainerColor = c.inverse.copy(alpha = 0.12f), disabledContentColor = c.secondary),
-            ) { Text("Submit", fontWeight = FontWeight.SemiBold) }
         }
     }
 }
