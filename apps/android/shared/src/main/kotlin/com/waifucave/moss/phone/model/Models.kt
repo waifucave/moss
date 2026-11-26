@@ -184,12 +184,33 @@ data class Card(
     val hash: String,
     val fields: Map<String, SealedValue>,
     val options: List<CardOption>,
-    /** The card carries `children` (a plugin's OK card with a checkbox per child): this phone draws no checkboxes yet. */
-    val hasChildren: Boolean = false,
+    /**
+     * A plugin OK's checkboxes (`children`), one per child plugin: drawn on the card, and the ticked ones go with an approve
+     * (signed with it), as the desktop's card does. `checked` is the engine's own default.
+     */
+    val children: List<CardChild> = emptyList(),
 ) {
     val title: String get() = text("title") ?: "Needs your answer"
     val what: String? get() = text("what")
     private fun text(name: String): String? = (fields[name] as? SealedValue.Text)?.text
+    /** The checkboxes ticked when the card arrived (the engine's own defaults). */
+    val checkedByDefault: Set<String> get() = children.filter { it.checked }.map { it.id }.toSet()
+}
+
+/** One checkbox of a plugin OK card: its id (what an answer carries), its label, and whether the engine ticks it. */
+data class CardChild(val id: String, val label: String, val checked: Boolean) {
+    companion object {
+        /**
+         * A checkbox's label as one line: every line break (and line or paragraph separator) shown as a visible ⏎, so a
+         * label can never draw what looks like a second checkbox under the first.
+         */
+        fun oneLine(label: String): String = buildString {
+            for (ch in label) when (ch.code) {
+                0x0A, 0x0B, 0x0C, 0x0D, 0x85, 0x2028, 0x2029 -> append(" ⏎ ")
+                else -> append(ch)
+            }
+        }
+    }
 }
 
 // Pairing and events

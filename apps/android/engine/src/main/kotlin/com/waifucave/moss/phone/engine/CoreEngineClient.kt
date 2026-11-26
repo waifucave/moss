@@ -401,20 +401,25 @@ class CoreEngineClient(
         views.filter { it.pending() }.mapNotNull(::cardOf)
     }
 
-    override suspend fun answer(card: Card, option: CardOption): Unit = io {
+    override suspend fun answer(card: Card, option: CardOption, children: List<String>): Unit = io {
         val c = c()
         val view = synchronized(this) { issued[card.id] } ?: throw CardAnswerException(CardAnswerError.answeredElsewhere)
         // The card the screen drew must be exactly what this view draws: same hash, same content, the option one of its own.
         if (view.hash() != card.hash || cardOf(view) != card) throw IllegalStateException("the card on screen isn't the one the core issued")
         if (option.id !in view.options() || card.options.none { it == option }) throw IllegalArgumentException("not one of the card's options")
         // Drawn whole, judged here on the card this client read from the core's view (not on what the screen says): a card
-        // holding a field this phone can't draw, too much to show, or children (checkboxes this phone doesn't draw) is
-        // answered on the computer.
+        // holding a field this phone can't draw, too much to show, or checkboxes that can't be told apart is answered on the
+        // computer.
         val issuedCard = cardOf(view) ?: throw IllegalStateException("this card is answered on the computer")
         if (!issuedCard.drawable()) throw IllegalStateException("this card is answered on the computer")
+        // The ticked checkboxes go only with an approve, each one the card has, once.
+        val ids = issuedCard.children.map { it.id }.toSet()
+        if (children.isNotEmpty() && (option.kind != CardOption.Kind.approve || !ids.containsAll(children) || children.toSet().size != children.size)) {
+            throw IllegalArgumentException("not the card's own checkboxes")
+        }
         if (!view.pending()) throw CardAnswerException(if (view.outcome() == "expired") CardAnswerError.expired else CardAnswerError.answeredElsewhere)
         val outcome = try {
-            c.answerCard(view, option.id, emptyList())
+            c.answerCard(view, option.id, children)
         } catch (e: CancellationException) { throw e } catch (e: Exception) {
             if (!uncertain(e)) throw e
             // The answer may have reached the computer: read the card back before anything is tried again.

@@ -29,6 +29,10 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.Role
+import androidx.compose.foundation.selection.toggleable
+import com.waifucave.moss.phone.model.CardChild
 import androidx.compose.ui.unit.dp
 import com.waifucave.moss.phone.model.Card
 import com.waifucave.moss.phone.model.CardOption
@@ -94,9 +98,19 @@ val CARD_FIELD_LABELS = mapOf(
 const val VALUE_LINES = 6
 val FIELDS_MAX = 360.dp
 
-/** Whether this build can draw all of a card: every field one it knows, every value of a kind it draws. */
+/**
+ * Whether this build can draw all of a card: every field one it knows, every value of a kind it draws, each checkbox with
+ * an id of its own and a label, no two checkboxes that read the same on one line (they couldn't be told apart), and not
+ * too much to read on a phone. Otherwise it is answered on the computer.
+ */
 fun Card.drawable(): Boolean =
-    !hasChildren && options.isNotEmpty() && fields.all { (name, v) -> name in CARD_FIELDS && v !is SealedValue.Unsupported } && size() <= MAX_DRAWN_CHARS
+    options.isNotEmpty() && fields.all { (name, v) -> name in CARD_FIELDS && v !is SealedValue.Unsupported } && size() <= MAX_DRAWN_CHARS &&
+        children.all { it.id.isNotEmpty() && it.label.isNotBlank() } &&
+        children.map { it.id }.toSet().size == children.size &&
+        children.map { CardChild.oneLine(it.label) }.toSet().size == children.size
+
+/** The name the checkboxes go by where a field's name would (opening them when they are cut). */
+const val CHILDREN_FIELD = "children"
 
 /** A card larger than this, in characters over all its values, is answered on the computer: too much to read on a phone. */
 const val MAX_DRAWN_CHARS = 60_000
@@ -114,7 +128,7 @@ private fun Card.size(): Int = fields.values.sumOf { v ->
         is SealedValue.Rows -> v.rows.sumOf { it.label.length + it.value.length }
         SealedValue.Unsupported -> 0
     }
-}
+} + children.sumOf { it.label.length }
 
 /**
  * The fields a card shows cut (some lines, characters or items left out until "Show all" is pressed). Its buttons take no
@@ -130,7 +144,7 @@ fun Card.cutFields(): Set<String> = fields.filter { (name, v) ->
         is SealedValue.Rows -> v.rows.any { r -> Sealed.cutLines(r.value, ROW_CHARS, ROW_LINES).let { it.hiddenLines > 0 || it.hiddenChars > 0 } || Sealed.cutLines(r.label, 120, 1).let { it.hiddenLines > 0 || it.hiddenChars > 0 } }
         SealedValue.Unsupported -> false
     }
-}.keys
+}.keys + (if (children.size > LIST_SHOWN) setOf(CHILDREN_FIELD) else emptySet())
 private const val TEXT_CHARS = 600
 private const val CODE_CHARS = 800
 
@@ -154,6 +168,9 @@ fun CardView(
     onScrolled: (overflows: Boolean, reachedEnd: Boolean) -> Unit = { _, _ -> },
     /** Why the model refused the last press on this card, in one line ("Wait a moment", "Open the rest first"). */
     refusal: String? = null,
+    /** A plugin OK's checkboxes: whether each is ticked now (`CardsModel.isTicked`), and ticking one (kept in the model). */
+    ticked: (String) -> Boolean = { id -> card.children.any { it.id == id && it.checked } },
+    onTick: (String) -> Unit = {},
 ) {
     val c = MossTheme.colors
     val now = nowMs()
@@ -236,6 +253,33 @@ fun CardView(
                     }
                     SealedValue.Unsupported -> Text("Can't be shown on the phone", style = MossType.footnote, color = c.secondary)
                 }
+                }
+            }
+        }
+        // A plugin OK's checkboxes, one per child, last in the values (so passed, and scrolled past, on the way to the
+        // buttons), as the desktop draws them: a ticked one is covered by Allow. More than eight are cut like a list.
+        if (card.children.isNotEmpty() && card.drawable()) {
+            val open = CHILDREN_FIELD in expanded || card.children.size <= LIST_SHOWN
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("Also allow", style = MossType.caption, color = c.secondary)
+                (if (open) card.children else card.children.take(LIST_SHOWN)).forEach { kid ->
+                    val on = ticked(kid.id)
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                            .toggleable(on, enabled = !busy && note == null, role = Role.Checkbox) { onTick(kid.id) }
+                            .semantics { contentDescription = CardChild.oneLine(kid.label) }
+                            .testTag("child-${kid.id}"),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(checked = on, onCheckedChange = null)
+                        Spacer(Modifier.width(8.dp))
+                        // One line of its own: a line break in a label shows as ⏎, so it can't draw a second checkbox.
+                        Text(CardChild.oneLine(kid.label), style = MossType.body, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+                if (!open) TextButton(onClick = { openField(CHILDREN_FIELD) }, contentPadding = PaddingValues(0.dp)) {
+                    Text("and ${card.children.size - LIST_SHOWN} more. Show all ${card.children.size}",
+                        style = MossType.footnote.copy(textDecoration = TextDecoration.Underline), color = c.secondary)
                 }
             }
         }
@@ -360,7 +404,8 @@ fun NeedsYouScreen(model: CardsModel, who: (Card) -> String, onBack: () -> Unit)
                                 onAnswer = { o -> scope.launch { model.answer(card, o) } },
                                 onSettle = { if (model.note(card) == CardNote.failed) model.clearFailure(card) else model.dismiss(card) },
                                 changed = card.id in model.changed, wait = model.waitLeft(card), waitKey = model.armedAt[card.id], onOpen = { f -> model.open(card, f) },
-                                onScrolled = { o, e -> model.scrolled(card, o, e) }, refusal = model.refusals[card.id])
+                                onScrolled = { o, e -> model.scrolled(card, o, e) }, refusal = model.refusals[card.id],
+                                ticked = { model.isTicked(it, card) }, onTick = { model.toggle(it, card) })
                         }
                     }
                 }

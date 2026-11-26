@@ -72,10 +72,14 @@ class DecodeTest {
 
     @Test
     fun childrenAreReadAndAnUnreadableCardIsShownForTheComputer() {
-        val withChildren = """{"id":"card_123456","kind":"plugin-ok","issuedAt":1,"fields":{"title":{"type":"text","text":"T"}},"options":[{"id":"a","kind":"approve","label":"A"}],"children":[{"id":"c1","label":"Child","checked":true}]}"""
+        val withChildren = """{"id":"card_123456","kind":"plugin-ok","issuedAt":1,"fields":{"title":{"type":"text","text":"T"}},"options":[{"id":"a","kind":"approve","label":"A"}],"children":[{"id":"c1","label":"Child","checked":true},{"id":"c2","label":{"fr":"Deux","en":"Two"},"checked":false}]}"""
         val c = Decode.card(withChildren, "h")!!
-        assertTrue(c.hasChildren)
-        assertTrue(!c.drawable())
+        assertEquals(listOf(CardChild("c1", "Child", true), CardChild("c2", "Two", false)), c.children)
+        assertEquals(setOf("c1"), c.checkedByDefault)
+        assertTrue(c.drawable())
+        // A checkbox that can't be read drops the card (shown as one for the computer), never a box fewer.
+        val broken = withChildren.replace(""""checked":false""", """"checked":"no"""")
+        assertNull(Decode.card(broken, "h"))
         val u = Decode.unreadable("card_123456", "h", "luna", null)
         assertTrue(!u.drawable())
         assertTrue(u.options.isEmpty())

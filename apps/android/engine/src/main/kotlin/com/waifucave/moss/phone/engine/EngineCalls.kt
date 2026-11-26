@@ -63,10 +63,18 @@ object Decode {
             CardOption(oid, k, clean(text(op["label"]) ?: return null), op["remember"].str() == "always")
         }
         if (options.isEmpty()) return null
+        // A plugin OK's checkboxes: each with its id, its label (a string, or one per language) and the engine's tick. One
+        // that can't be read drops the card (an unreadable card, answered on the computer): never fewer boxes than it has.
+        val children = o["children"].arr().map { ch ->
+            val cid = ch["id"].str() ?: return null
+            val label = text(ch["label"]) ?: return null
+            val checked = (ch["checked"] as? JsonPrimitive)?.booleanOrNull ?: return null
+            CardChild(cid, clean(label), checked)
+        }
         return Card(
             id = id, kind = kind, computer = o["computer"].str()?.let(clean), session = o["session"].str(), bot = o["bot"].str(), origin = o["origin"].str(),
             issuedAt = o["issuedAt"].long() ?: 0, expiresAt = o["expiresAt"].long() ?: Long.MAX_VALUE, hash = hash, fields = fields, options = options,
-            hasChildren = o["children"].arr().isNotEmpty(),
+            children = children,
         )
     }
 

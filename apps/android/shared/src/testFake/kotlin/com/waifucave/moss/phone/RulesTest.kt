@@ -246,4 +246,29 @@ class RulesTest {
         m.answer(plain, plain.options[1])
         assertFalse(m.cards.any { it.id == plain.id })
     }
+
+    /** A plugin OK's checkboxes start as the engine ticks them; the person's ticks go with an approve, none with a deny. */
+    @Test fun theTickedCheckboxesGoWithAnApproveOnly() = runTest {
+        val c = FakeEngineClient()
+        c.setOtherAppInstalled(false)
+        val m = CardsModel(c, PhoneApp.moss, { SampleData.now }, steppingClock())
+        m.load()
+        val base = m.cards.first { m.note(it) == null }
+        val options = listOf(CardOption("deny", CardOption.Kind.deny, "Deny"), CardOption("allow", CardOption.Kind.approve, "Allow"))
+        val ok = base.copy(id = "card_ok000001", hash = "5".repeat(64), options = options,
+            children = listOf(CardChild("cal", "Calendar", true), CardChild("mail", "Mail", false), CardChild("files", "Files", true)))
+        c.raise(ok); m.apply(EngineEvent.CardRequested(ok))
+        assertTrue(m.isTicked("cal", ok)); assertFalse(m.isTicked("mail", ok))
+        m.toggle("mail", ok); m.toggle("files", ok)
+        m.toggle("nope", ok) // not one of its boxes: nothing
+        assertEquals(listOf("cal", "mail"), m.childrenFor(ok, options[1]))
+        assertEquals(emptyList<String>(), m.childrenFor(ok, options[0]))
+        m.answerShown(ok, options[1])
+        assertEquals(listOf("cal", "mail"), c.answeredChildren[ok.id])
+        // A deny carries no checkboxes, whatever is ticked.
+        val again = ok.copy(id = "card_ok000002", hash = "4".repeat(64))
+        c.raise(again); m.apply(EngineEvent.CardRequested(again))
+        m.answerShown(again, options[0])
+        assertEquals(emptyList<String>(), c.answeredChildren[again.id])
+    }
 }

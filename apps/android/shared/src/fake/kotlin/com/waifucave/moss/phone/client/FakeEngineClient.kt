@@ -49,6 +49,8 @@ class FakeEngineClient(
         questionEnds,
         /** Paired; Luna asks a call of two questions, answered together. */
         severalQuestions,
+        /** Paired; the one card waiting is a plugin's OK card with a checkbox per child plugin. */
+        pluginOk,
     }
 
     class Failure(message: String) : Exception(message)
@@ -108,6 +110,7 @@ class FakeEngineClient(
             }
             Scenario.providerConsent -> cardList = mutableListOf(SampleData.providerConsentCard)
             Scenario.tallCard -> cardList = mutableListOf(SampleData.tallCard)
+            Scenario.pluginOk -> cardList = mutableListOf(SampleData.pluginOkCard)
             Scenario.questionEnds -> { cardList = mutableListOf(); conversations["s_luna"] = SampleData.questionEnds.toMutableList() }
             Scenario.cardStates -> {
                 // The first card ran out of time; the third one is answered on another device.
@@ -307,7 +310,11 @@ class FakeEngineClient(
     /** Runs while an answer is in flight (a test re-issues the card then). */
     var beforeAnswer: suspend () -> Unit = {}
 
-    override suspend fun answer(card: Card, option: CardOption) {
+    /** The checkboxes each answer carried, by card. */
+    val answeredChildren = mutableMapOf<String, List<String>>()
+
+    override suspend fun answer(card: Card, option: CardOption, children: List<String>) {
+        answeredChildren[card.id] = children
         beforeAnswer()
         maybeFail()
         if (card.id in answeredElsewhereIDs) { cardList.removeAll { it.id == card.id }; throw CardAnswerException(CardAnswerError.answeredElsewhere) }

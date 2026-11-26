@@ -150,6 +150,22 @@ object SampleData {
         options = listOf(CardOption("deny", CardOption.Kind.deny, "No"), CardOption("approve", CardOption.Kind.approve, "Yes")),
     )
 
+    /** A plugin's OK card with a checkbox per child plugin; one label holds a line break (drawn as ⏎). */
+    val pluginOkCard = Card("card_6c5d4e3f", "plugin-ok", computer = computerName, origin = "user",
+        issuedAt = ago(15), expiresAt = Long.MAX_VALUE, hash = "e".repeat(64),
+        fields = linkedMapOf(
+            "title" to SealedValue.Text("Turn on Office?"),
+            "what" to SealedValue.Text("Office adds documents, sheets and slides. It comes with these parts."),
+            "source" to SealedValue.Code("office 2.1.0"),
+        ),
+        options = listOf(CardOption("deny", CardOption.Kind.deny, "Not now"), CardOption("approve", CardOption.Kind.approve, "Turn on")),
+        children = listOf(
+            CardChild("office-docs", "Documents", true),
+            CardChild("office-sheets", "Sheets", true),
+            CardChild("office-mail", "Mail\nSend email as you", false),
+        ),
+    )
+
     /** A card whose values overflow their area: a 6-line command and detail, 8 paths, the site, and the rule last. */
     val tallCard = Card("card_7d6e5f4a", "tool", computer = computerName, bot = "luna", origin = "user",
         issuedAt = ago(20), expiresAt = Long.MAX_VALUE, hash = "d".repeat(64),

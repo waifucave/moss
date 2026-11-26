@@ -50,7 +50,8 @@ interface EngineClient {
      * card object the screen drew, never an id: the core signs only over the card the person saw.
      */
     suspend fun cards(): List<Card>
-    suspend fun answer(card: Card, option: CardOption)
+    /** `children`: with an approve of a plugin OK card, the ids of the checkboxes ticked (signed with the answer); else none. */
+    suspend fun answer(card: Card, option: CardOption, children: List<String> = emptyList())
     /** The engine's answer to which cards this app shows: a setting of the client's answer, never a split the screens hard-code. */
     suspend fun shows(card: Card, app: PhoneApp): Boolean
 

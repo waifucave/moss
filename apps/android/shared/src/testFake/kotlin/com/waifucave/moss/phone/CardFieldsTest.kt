@@ -155,11 +155,34 @@ class CardFieldsTest {
         assertEquals(c.options[1], pressed)
     }
 
-    /** A plugin's OK card with checkboxes (children) and one too large to read are answered on the computer. */
-    @Test fun childrenOrTooMuchMeansTheComputer() {
-        assertFalse(card(mapOf("title" to SealedValue.Text("T"))).copy(hasChildren = true).drawable())
+    /**
+     * A card too large to read goes to the computer, and so does one whose checkboxes can't be told apart (two labels that
+     * read the same on one line, or two with one id); distinct checkboxes are drawn here.
+     */
+    @Test fun repeatedCheckboxesOrTooMuchMeansTheComputer() {
+        val plain = card(mapOf("title" to SealedValue.Text("T")))
         assertFalse(card(mapOf("title" to SealedValue.Text("T"), "detail" to SealedValue.Code("x".repeat(70_000)))).drawable())
-        assertTrue(card(mapOf("title" to SealedValue.Text("T"))).drawable())
+        assertTrue(plain.drawable())
+        assertTrue(plain.copy(children = listOf(CardChild("a", "Calendar", true), CardChild("b", "Mail", false))).drawable())
+        assertFalse(plain.copy(children = listOf(CardChild("a", "Calendar", true), CardChild("b", "Calendar", false))).drawable())
+        // A line break reads as ⏎ on one line: "Mail\nSend" and "Mail⏎Send" are told apart only if they differ there.
+        assertFalse(plain.copy(children = listOf(CardChild("a", "Mail\nSend", true), CardChild("b", "Mail Send", false))).drawable())
+        assertFalse(plain.copy(children = listOf(CardChild("a", "Calendar", true), CardChild("a", "Mail", false))).drawable())
+        assertFalse(plain.copy(children = listOf(CardChild("a", "  ", true))).drawable())
+    }
+
+    /** A checkbox label is one line of its own: a line break shows as ⏎, so it can't draw what looks like a second box. */
+    @Test fun aCheckboxLabelIsOneLine() {
+        assertEquals("Calendar ⏎ ☐ Send email as you", CardChild.oneLine("Calendar\n☐ Send email as you"))
+        val c = card(mapOf("title" to SealedValue.Text("Turn on Office?"))).copy(children = listOf(
+            CardChild("cal", "Calendar\n☐ Send email as you", true), CardChild("mail", "Mail", false)))
+        var ticks = c.checkedByDefault
+        compose.setContent { MossTheme(false) { CardView(c, busy = false, note = null, onAnswer = {}, onSettle = {}, ticked = { it in ticks }, onTick = { id -> ticks = if (id in ticks) ticks - id else ticks + id }) } }
+        compose.waitForIdle()
+        assertTrue(compose.onAllNodes(hasText("Calendar ⏎ ☐ Send email as you")).fetchSemanticsNodes().isNotEmpty())
+        assertTrue("no line of its own", compose.onAllNodes(hasText("☐ Send email as you")).fetchSemanticsNodes().isEmpty())
+        compose.onNodeWithTag("child-mail").performClick()
+        assertEquals(setOf("cal", "mail"), ticks)
     }
 
     private fun scrollValuesToEnd() {

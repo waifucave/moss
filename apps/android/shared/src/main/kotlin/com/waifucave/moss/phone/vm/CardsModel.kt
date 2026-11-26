@@ -139,6 +139,23 @@ class CardsModel(
         }
     }
 
+    /** A plugin OK's checkboxes as the person has them now, per card as it is now (id and hash): new content starts again
+     *  from the engine's own ticks. */
+    var ticks by mutableStateOf<Map<String, Set<String>>>(emptyMap())
+        private set
+    /** Whether this checkbox of the card is ticked now. */
+    fun isTicked(child: String, card: Card): Boolean = (ticks[card.id + "#" + card.hash] ?: card.checkedByDefault).contains(child)
+    /** Ticks or unticks one of the card's checkboxes (only one it has, on a card shown and not being answered). */
+    fun toggle(child: String, card: Card) {
+        if (cards.none { it.id == card.id && it.hash == card.hash } || card.children.none { it.id == child } || card.id in answering) return
+        val key = card.id + "#" + card.hash
+        val set = ticks[key] ?: card.checkedByDefault
+        ticks = ticks + (key to if (child in set) set - child else set + child)
+    }
+    /** What an answer carries: with an approve, the ticked checkboxes (in the card's order); with a deny, none. */
+    fun childrenFor(card: Card, option: CardOption): List<String> =
+        if (option.kind != CardOption.Kind.approve) emptyList() else card.children.map { it.id }.filter { isTicked(it, card) }
+
     suspend fun answer(card: Card, option: CardOption) {
         if (card.id in answering || note(card) != null) return
         refusals = refusals - card.id
@@ -158,7 +175,7 @@ class CardsModel(
         answering = answering + card.id
         try {
             answeredHere.add(card.id)
-            client.answer(card, option)
+            client.answer(card, option, childrenFor(card, option))
             // The card answered goes; one re-issued under its id while the answer was in flight stays.
             show(cards.filter { !(it.id == card.id && it.hash == card.hash) })
             notes = notes - card.id
