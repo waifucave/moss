@@ -35,6 +35,11 @@ function temp(prefix: string): string {
 
 const PEER: Caller = { kind: "peer", device: "dev_alpha", sessionId: "b_luna" };
 
+/** The macOS holder's rules, judged over this host's real folders: POSIX paths only (on a Windows runner the folders
+ *  are `C:\…`, which the macOS rules rightly never take). The Windows and Linux holders' rule (no folder) is tested
+ *  on every runner below. */
+const posixTest = process.platform === "win32" ? test.skip : test;
+
 /** A home with a project (a repo in it), a Documents folder and the secret and run-later places. */
 function world() {
   const root = temp("xc-peer-write-");
@@ -55,7 +60,7 @@ const decide = (w: ReturnType<typeof world>, os: Os, by: PeerPassBy, level: Leve
   peerFolderFor({ holder: "Beta", folder: extra.folder ?? w.project, by, level, readOnly: extra.readOnly ?? false, ...(extra.verdict ? { verdict: extra.verdict } : {}) }, floorOf(w, os));
 
 describe("which folder a peer's command gets (peerFolderFor: the local rule, mirrored)", () => {
-  test("the person's yes: the folder on macOS; never on Linux or Windows", () => {
+  posixTest("the person's yes: the folder on macOS; never on Linux or Windows", () => {
     const w = world();
     expect(decide(w, "macos", "answer", "ask")).toEqual({ folder: w.project });
     expect(decide(w, "macos", "answer", "ask-risky")).toEqual({ folder: w.project });
@@ -63,12 +68,12 @@ describe("which folder a peer's command gets (peerFolderFor: the local rule, mir
     expect(decide(w, "windows", "answer", "ask")).toEqual({ why: expect.stringContaining("Windows") });
   });
 
-  test("the reviewer's safe at ask for risky actions: the card for the folder on macOS (the peer's RequestAccess)", () => {
+  posixTest("the reviewer's safe at ask for risky actions: the card for the folder on macOS (the peer's RequestAccess)", () => {
     const w = world();
     expect(decide(w, "macos", "reviewer", "ask-risky")).toEqual({ ask: expect.stringContaining(w.project) });
   });
 
-  test("the reviewer's safe at accept edits: the folder where an ordinary top-level folder covers it, else the card", () => {
+  posixTest("the reviewer's safe at accept edits: the folder where an ordinary top-level folder covers it, else the card", () => {
     const w = world();
     expect(decide(w, "macos", "reviewer", "accept-edits")).toEqual({ folder: w.project });
     // A folder outside the home: no level's roots cover it.
@@ -76,7 +81,7 @@ describe("which folder a peer's command gets (peerFolderFor: the local rule, mir
     expect(decide(w, "macos", "reviewer", "accept-edits", { folder: outside })).toEqual({ why: expect.stringContaining("sensitive") });
   });
 
-  test("fully automatic: never a card; the folder only on the reviewer's safe; the reason in the result otherwise", () => {
+  posixTest("fully automatic: never a card; the folder only on the reviewer's safe; the reason in the result otherwise", () => {
     const w = world();
     expect(decide(w, "macos", "level", "automatic", { verdict: "safe" })).toEqual({ folder: w.project });
     const unavailable = decide(w, "macos", "level", "automatic", { verdict: "unavailable" });
@@ -88,7 +93,7 @@ describe("which folder a peer's command gets (peerFolderFor: the local rule, mir
     }
   });
 
-  test("a home reached through a link (macOS's /var): the executor judges by real paths, so its folders are in the home", () => {
+  posixTest("a home reached through a link (macOS's /var): the executor judges by real paths, so its folders are in the home", () => {
     const w = world();
     const linked = join(w.root, "linked-home");
     symlinkSync(w.home, linked);
@@ -155,7 +160,7 @@ describe("which folder a peer's command gets (peerFolderFor: the local rule, mir
     expect(decide(w, "macos", "level", "automatic", { readOnly: true })).toEqual({});
   });
 
-  test("never given, whatever passed it: the home, its Library, a .git, a dot-folder, the MOSS home's holder, secrets, glob names, outside", () => {
+  posixTest("never given, whatever passed it: the home, its Library, a .git, a dot-folder, the MOSS home's holder, secrets, glob names, outside", () => {
     const w = world();
     const never = [
       w.home, join(w.home, "Library"), join(w.project, ".git"), join(w.project, ".git", "hooks"), join(w.home, ".ssh"),
@@ -180,7 +185,7 @@ describe("which folder a peer's command gets (peerFolderFor: the local rule, mir
 });
 
 describe("the denies inside the folder: the local bot sandbox's own", () => {
-  test("macOS: `**` globs from `/` for every .git and run-later name, as Seatbelt regexes", () => {
+  posixTest("macOS: `**` globs from `/` for every .git and run-later name, as Seatbelt regexes", () => {
     const w = world();
     const d = peerFolderDenies(w.project, floorOf(w, "macos"));
     expect(d).toContain("/**/*.[gG][iI][tT]");
