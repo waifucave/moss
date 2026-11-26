@@ -38,6 +38,8 @@ public actor FakeEngineClient: EngineClient {
         /// Paired; Alpha asks a question with four options, and a few seconds after it is first read a question with two
         /// takes its place (the switch a person may be tapping through).
         case questionSwitch
+        /// Paired; two plugin OKs wait: three checkboxes (one unticked), and twelve (cut at eight).
+        case pluginOK
     }
 
     public struct Failure: Error, Equatable, Sendable { public var message: String; public init(_ m: String) { message = m } }
@@ -117,6 +119,9 @@ public actor FakeEngineClient: EngineClient {
             cardList = [SampleData.tallCard]
         case .questionSwitch:
             paired = PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName)
+        case .pluginOK:
+            paired = PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName)
+            cardList = [SampleData.pluginOKCard, SampleData.manyChildrenCard]
         }
         if paired != nil, scenario != .unreachable, scenario != .empty { paired?.lastSeen = SampleData.now - 20_000 }
     }
@@ -349,9 +354,14 @@ public actor FakeEngineClient: EngineClient {
         for c in cardList { delivered[c.id] = c }
         return cardList
     }
-    public func answer(card: Card, option: CardOption) async throws {
+    /// The checkboxes each answer carried, by card id.
+    public private(set) var answeredChildren: [String: [String]] = [:]
+    public func answer(card: Card, option: CardOption, children: [String]) async throws {
         try await maybeFail()
         guard delivered[card.id] == card, card.options.contains(option) else { throw Failure("that is not a card this client delivered") }
+        // Only the card's own checkboxes, as the engine checks.
+        guard children.allSatisfy({ id in (card.children ?? []).contains { $0.id == id } }) else { throw Failure("a checkbox the card doesn't have") }
+        answeredChildren[card.id] = children
         if answeredElsewhereIDs.contains(card.id) { cardList.removeAll { $0.id == card.id }; throw CardAnswerError.answeredElsewhere }
         if card.expiresAt <= clock() { throw CardAnswerError.expired }
         guard cardList.contains(where: { $0.id == card.id }) else { throw CardAnswerError.answeredElsewhere }

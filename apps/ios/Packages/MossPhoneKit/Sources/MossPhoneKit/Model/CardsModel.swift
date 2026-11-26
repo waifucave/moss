@@ -285,6 +285,24 @@ public final class CardsModel {
         }
     }
 
+    /// A plugin OK's checkboxes as the person has them now, per card as it is now (id and hash): new content starts again
+    /// from the engine's own defaults.
+    public private(set) var ticked: [String: Set<String>] = [:]
+    /// Whether this checkbox of the card is ticked now.
+    public func isTicked(_ child: String, of card: Card) -> Bool { (ticked[Self.key(card)] ?? card.checkedByDefault).contains(child) }
+    /// Ticks or unticks one of the card's checkboxes (only one it has).
+    public func toggle(_ child: String, of card: Card) {
+        guard cards.contains(card), (card.children ?? []).contains(where: { $0.id == child }), !answering.contains(card.id) else { return }
+        var set = ticked[Self.key(card)] ?? card.checkedByDefault
+        if set.contains(child) { set.remove(child) } else { set.insert(child) }
+        ticked[Self.key(card)] = set
+    }
+    /// What an answer carries: an approve, the ticked checkboxes; anything else, none.
+    func children(for card: Card, with option: CardOption) -> [String] {
+        guard option.kind == .approve, let kids = card.children, !kids.isEmpty else { return [] }
+        return kids.map(\.id).filter { isTicked($0, of: card) }
+    }
+
     public func answer(_ card: Card, with option: CardOption) async {
         // Only the card as it is on screen now, whole, every cut field opened, and not inside its wait.
         guard cards.contains(card), mayAnswer(card, with: option) else { return }
@@ -292,7 +310,7 @@ public final class CardsModel {
         defer { answering.remove(card.id) }
         do {
             answeredHere.insert(card.id)
-            try await client.answer(card: card, option: option)
+            try await client.answer(card: card, option: option, children: children(for: card, with: option))
             replace(with: cards.filter { $0.id != card.id })
             notes[card.id] = nil
         } catch let e as CardAnswerError {

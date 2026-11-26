@@ -1,6 +1,13 @@
 import SwiftUI
 
 /// The plain theme of the desktop, on Apple's own components: neutral greys, no blue accent.
+/// A form section's header in the readable grey (the system's own falls short of the contrast audit).
+struct FormHeader: View {
+    let title: String
+    init(_ title: String) { self.title = title }
+    var body: some View { Text(title).font(.footnote).foregroundStyle(Theme.subtle).accessibilityAddTraits(.isHeader) }
+}
+
 public enum Theme {
     /// The person's bubble: black with white text (white with black text in dark mode), as the desktop draws it.
     public static let userBubble = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.93, alpha: 1) : UIColor(white: 0.07, alpha: 1) })
@@ -13,8 +20,15 @@ public enum Theme {
     public static let link = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(red: 0.30, green: 0.75, blue: 0.85, alpha: 1) : UIColor(red: 0.05, green: 0.52, blue: 0.64, alpha: 1) })
     /// The inverse of the canvas: the Send, Stop and voice circles (black on light, near white on dark).
     public static let inverse = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.93, alpha: 1) : UIColor(white: 0.07, alpha: 1) })
-    /// "Needs you".
+    /// "Needs you": the dot.
     public static let waiting = Color(uiColor: .systemOrange)
+    /// "Needs you" as text: an orange dark enough to read on white (5:1), the system's own on dark.
+    public static let waitingText = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? .systemOrange : UIColor(red: 0.70, green: 0.31, blue: 0, alpha: 1) })
+    /// Behind white text (the bell's count): the same readable orange in both appearances.
+    public static let waitingFill = Color(uiColor: UIColor(red: 0.70, green: 0.31, blue: 0, alpha: 1))
+    /// Quiet text that still reads (labels, headers, times, small notes): a neutral grey past 4.5:1 on the canvas, the
+    /// grouped background and the card, where the system's secondary falls short on the smaller sizes.
+    public static let subtle = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.68, alpha: 1) : UIColor(white: 0.36, alpha: 1) })
     /// A soft round button's fill.
     public static let softButton = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.17, alpha: 1) : UIColor(white: 0.955, alpha: 1) })
     public static let ink = Color(red: 0x1B / 255, green: 0x1D / 255, blue: 0x2B / 255)

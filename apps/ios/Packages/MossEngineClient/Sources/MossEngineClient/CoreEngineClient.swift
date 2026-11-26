@@ -401,15 +401,17 @@ public actor CoreEngineClient: EngineClient {
         return shelf.cards
     }
 
-    public func answer(card: Card, option: CardOption) async throws {
-        // A card the phone can't draw whole (an unknown field, a plugin OK's checkboxes, too long) is answered on the computer.
+    public func answer(card: Card, option: CardOption, children: [String]) async throws {
+        // A card the phone can't draw whole (an unknown field, too long) is answered on the computer.
         guard card.drawnWhole else { throw CardAnswerError.notShownWhole }
         // Only the core's own issue of exactly the card on screen is signed; nothing is fetched in between.
         guard let shown = shelf.shown(for: card), card.options.contains(option) else { throw CardNotShown() }
+        // Only checkboxes the drawn card has (the core checks them against its own copy too, and signs them).
+        guard children.allSatisfy({ id in (card.children ?? []).contains { $0.id == id } }) else { throw CardNotShown() }
         let c = try await link()
         let r: (accepted: Bool, reason: String?)
         do {
-            r = try await c.answer(shown, option: option.id, children: [])
+            r = try await c.answer(shown, option: option.id, children: children)
         } catch LinkError.timeout(let t) {
             // A timeout after the answer began going out may have reached the computer: it is read back, never sent
             // again by itself. Settled with the option this phone sent: taken. Settled any other way: answered elsewhere.

@@ -17,6 +17,9 @@ public struct CardView: View {
     let onSighted: (String) -> Void
     /// The report that an opened field's last line has been on screen.
     let onReadEnd: (String, String) -> Void
+    /// A plugin OK's checkboxes: whether each is ticked now, and ticking one (kept in the model, sent with an approve).
+    var ticked: (String) -> Bool = { _ in false }
+    var onTick: (String) -> Void = { _ in }
     @Environment(\.nowMs) private var nowOverride
     @Environment(\.dynamicTypeSize) private var typeSize
 
@@ -35,6 +38,8 @@ public struct CardView: View {
                   waitReason: model.waitReason(card), onSighted: { model.sighted(card, on: $0) }, onReadEnd: { model.readEnd($0, of: card, on: $1) },
                   onAnswer: { o in Task { await model.answer(card, with: o) } },
                   onSettle: { model.note(for: card) == .failed ? model.clearFailure(card) : model.dismiss(card) })
+        self.ticked = { model.isTicked($0, of: card) }
+        self.onTick = { model.toggle($0, of: card) }
     }
     private var unopened: Int { card.cutFields.subtracting(opened).count }
 
@@ -45,27 +50,28 @@ public struct CardView: View {
                 // down to the buttons is passed on the way to them.
                 Text(Sealed.visible(card.title)).font(.headline)
                     .overlay(alignment: .top) { Color.clear.frame(height: 12).whenSeen(onSighted).id(card.hash) }
-                if let what = card.what { cutText(what, name: "what", limit: Card.Cut.text).font(.subheadline).foregroundStyle(.secondary) }
+                if let what = card.what { cutText(what, name: "what", limit: Card.Cut.text).font(.subheadline).foregroundStyle(Theme.subtle) }
             }
             ForEach(shownFields, id: \.0) { name, value in
                 field(name, value)
             }
+            if let kids = card.children, !kids.isEmpty { checkboxes(kids) }
             footer
             if let note {
                 VStack(alignment: .leading, spacing: 8) {
                     Label(note.text, systemImage: note == .failed ? "exclamationmark.circle" : "clock.badge.xmark")
-                        .font(.footnote).foregroundStyle(.secondary)
+                        .font(.footnote).foregroundStyle(Theme.subtle)
                     Button { onSettle() } label: { Text(note == .failed ? "Try again" : "Dismiss").frame(maxWidth: .infinity) }
-                        .buttonStyle(.bordered).tint(.secondary)
+                        .buttonStyle(.bordered).tint(.primary)
                 }
             } else if !card.drawnWhole {
                 // A field this phone doesn't know how to draw: what the person would approve isn't all on screen.
                 Label("Answer this one on your computer: it carries something this phone can't show.", systemImage: "desktopcomputer")
-                    .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .font(.footnote).foregroundStyle(Theme.subtle).fixedSize(horizontal: false, vertical: true)
             } else {
                 // Why the buttons wait, in one line, never silently: what is approved is what was on screen.
                 if let why = waitReason ?? (unopened > 0 ? (unopened == 1 ? "Open the part cut short above first." : "Open the \(unopened) parts cut short above first.") : nil) {
-                    Label(why, systemImage: "hand.raised").font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Label(why, systemImage: "hand.raised").font(.footnote).foregroundStyle(Theme.subtle).fixedSize(horizontal: false, vertical: true)
                 }
                 (card.options.count > 2 ? AnyLayout(VStackLayout(spacing: 8)) : AnyLayout(HStackLayout(spacing: 8))) {
                     ForEach(card.options) { option in
@@ -73,7 +79,7 @@ public struct CardView: View {
                             Text(Sealed.visible(option.label)).frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.bordered)
-                        .tint(option.kind == .approve ? Theme.accent : .secondary)
+                        .tint(option.kind == .approve ? Theme.accent : Theme.subtle)
                         .controlSize(.regular)
                         .disabled(busy || !ready(option) || (option.kind == .approve && unopened > 0))
                         .accessibilityLabel(option.rememberAlways ? "\(option.label), and remember" : option.label)
@@ -85,7 +91,7 @@ public struct CardView: View {
         .padding(14)
         .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Color.primary.opacity(0.14), lineWidth: 0.5))
-        .opacity(note == nil || note == .failed ? 1 : 0.75)
+        // A settled card keeps its full contrast: its note says it is settled (a faded card failed the contrast audit).
         .accessibilityElement(children: .contain)
     }
 
@@ -123,7 +129,7 @@ public struct CardView: View {
                 let open = opened.contains(name) || rows.count <= Card.Cut.items
                 ForEach(Array((open ? rows : Array(rows.prefix(Card.Cut.items))).enumerated()), id: \.offset) { _, r in
                     (typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 0)) : AnyLayout(HStackLayout(alignment: .firstTextBaseline))) {
-                        Text(Sealed.visible(r.label)).foregroundStyle(.secondary)
+                        Text(Sealed.visible(r.label)).foregroundStyle(Theme.subtle)
                         if !typeSize.isAccessibilitySize { Spacer(minLength: 12) }
                         Text(Sealed.visible(r.value)).multilineTextAlignment(typeSize.isAccessibilitySize ? .leading : .trailing)
                     }.font(.callout)
@@ -134,15 +140,47 @@ public struct CardView: View {
         }
     }
 
+    /// A plugin OK's checkboxes, one per child, above the buttons (so passed on the way to them), as the desktop draws them:
+    /// a ticked one is covered by Allow. More than eight are cut like a list, and opened and read to their end before Allow.
+    @ViewBuilder private func checkboxes(_ kids: [Card.Child]) -> some View {
+        let name = Card.childrenField
+        let open = opened.contains(name) || kids.count <= Card.Cut.items
+        labelled(name) {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(open ? kids : Array(kids.prefix(Card.Cut.items)), id: \.id) { kid in
+                    let on = ticked(kid.id)
+                    Button { onTick(kid.id) } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: on ? "checkmark.square.fill" : "square").font(.body)
+                                .foregroundStyle(on ? Theme.accent : Theme.subtle).accessibilityHidden(true)
+                            Text(Sealed.visible(kid.label)).font(.callout).foregroundStyle(.primary).multilineTextAlignment(.leading)
+                            Spacer(minLength: 0)
+                        }
+                        .frame(minHeight: 44).contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(busy || note != nil)
+                    .accessibilityLabel(Sealed.visible(kid.label))
+                    .accessibilityValue(on ? "ticked" : "not ticked")
+                    .accessibilityAddTraits(on ? .isSelected : [])
+                    .accessibilityIdentifier("child-\(kid.id)")
+                }
+                if !open { showAll(name, "Cut short: \(kids.count - Card.Cut.items) more. Show all \(kids.count)") }
+                endMarker(name)
+            }
+        }
+    }
+
     private func labelled<C: View>(_ name: String, @ViewBuilder _ content: () -> C) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            if let l = Self.labels[name] { Text(l).font(.caption).foregroundStyle(.secondary) }
+            if let l = Self.labels[name] { Text(l).font(.caption).foregroundStyle(Theme.subtle) }
             content()
         }
     }
     /// The desktop's words for each field (its sealed page's `FIELD_TITLES`); `rule` has none there, so it says what it is.
     static let labels = ["command": "Command", "computer": "Computer", "risk": "Risk", "reason": "Why", "source": "From", "host": "Site",
-                         "paths": "Files", "detail": "Everything it sends", "expires": "Expires", "rule": "What Always would save"]
+                         "paths": "Files", "detail": "Everything it sends", "expires": "Expires", "rule": "What Always would save",
+                         "children": "Allow covers the ticked ones"]
 
     /// A long field is cut openly: it says how much is hidden and offers the rest.
     @ViewBuilder private func cutText(_ s: String, name: String, limit: Int) -> some View {
@@ -161,7 +199,7 @@ public struct CardView: View {
     private func showAll(_ name: String, _ label: String) -> some View {
         // A footnote-sized line, but a full 44-point target (the accessibility audit's hit area), the whole row's width.
         Button { onOpen(name) } label: {
-            Text(label).font(.footnote).foregroundStyle(.secondary).underline()
+            Text(label).font(.footnote).foregroundStyle(Theme.subtle).underline()
                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(.rect)
         }
         .buttonStyle(.plain)
@@ -174,7 +212,7 @@ public struct CardView: View {
             if !typeSize.isAccessibilitySize { Spacer() }
             if let left = secondsLeft { Text("Expires in \(left / 60) min") }
         }
-        .font(.caption).foregroundStyle(.secondary)
+        .font(.caption).foregroundStyle(Theme.subtle)
     }
     private var secondsLeft: Int64? {
         let now = nowOverride ?? Int64(Date().timeIntervalSince1970 * 1000)
@@ -198,7 +236,7 @@ public struct CardsScreen: View {
                 // In the order they came: a new card joins at the end and never moves the list under the person's finger.
                 ForEach(model.cards) { card in
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(who(card)).font(.footnote).foregroundStyle(.secondary).padding(.leading, 6)
+                        Text(who(card)).font(.footnote).foregroundStyle(Theme.subtle).padding(.leading, 6)
                             .accessibilityAddTraits(.isHeader)
                         CardView(card: card, in: model)
                     }

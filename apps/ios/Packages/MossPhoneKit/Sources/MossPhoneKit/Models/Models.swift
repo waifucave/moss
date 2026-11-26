@@ -280,13 +280,29 @@ public struct Card: Identifiable, Codable, Hashable, Sendable {
     public var hash: String
     public var fields: [String: SealedValue]
     public var options: [CardOption]
-    /// A plugin OK's checkboxes (`children`): the phone doesn't draw them yet, so such a card is answered on the computer.
+    /// A plugin OK's checkboxes (`children`), one per child plugin (and its parts beside its bot): drawn on the card, and
+    /// the ticked ones go with the answer (signed with it), as the desktop's card does.
     public var children: [Child]?
     public struct Child: Codable, Hashable, Sendable {
         public var id: String
         public var label: String
         public var checked: Bool
         public init(id: String, label: String, checked: Bool) { self.id = id; self.label = label; self.checked = checked }
+        private enum Keys: String, CodingKey { case id, label, checked }
+        /// The label is the protocol's `Text`: a string, or one per language (English first, else the first in order).
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: Keys.self)
+            id = try c.decode(String.self, forKey: .id)
+            checked = try c.decode(Bool.self, forKey: .checked)
+            if let s = try? c.decode(String.self, forKey: .label) { label = s }
+            else {
+                let byLanguage = try c.decode([String: String].self, forKey: .label)
+                guard let s = byLanguage["en"] ?? byLanguage.keys.sorted().first.flatMap({ byLanguage[$0] }) else {
+                    throw DecodingError.dataCorruptedError(forKey: .label, in: c, debugDescription: "a label with no text")
+                }
+                label = s
+            }
+        }
     }
 
     public init(id: String, kind: String, computer: String? = nil, session: String? = nil, bot: String? = nil,
@@ -302,13 +318,15 @@ public struct Card: Identifiable, Codable, Hashable, Sendable {
     public static let fieldNames = ["title", "what", "command", "computer", "risk", "reason", "source", "host", "paths", "detail", "expires", "rule"]
     /// The fields drawn under the heading (title and what), in the protocol's order.
     public static var bodyFields: [String] { fieldNames.filter { $0 != "title" && $0 != "what" } }
-    /// The phone can draw all of it: every field it carries is one the phone draws, the heading's two are text, it has no
-    /// checkboxes, and it isn't too large to read on a phone. Otherwise it is answered on the computer (no buttons here).
+    /// The phone can draw all of it: every field it carries is one the phone draws, the heading's two are text, each
+    /// checkbox has a label and its own id, and it isn't too large to read on a phone. Otherwise it is answered on the
+    /// computer (no buttons here). An unknown sealed field is never drawn: such a card always goes to the computer.
     public var drawnWhole: Bool {
         fields.keys.allSatisfy(Card.fieldNames.contains)
             && fields["title"].map { if case .text = $0 { return true } else { return false } } ?? true
             && fields["what"].map { if case .text = $0 { return true } else { return false } } ?? true
-            && (children ?? []).isEmpty
+            && (children ?? []).allSatisfy { !$0.id.isEmpty && !$0.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            && Set((children ?? []).map(\.id)).count == (children ?? []).count
             && characters <= Card.tooLargeCharacters
     }
 
@@ -328,7 +346,7 @@ public struct Card: Identifiable, Codable, Hashable, Sendable {
             case .list(let i): return n + i.reduce(0) { $0 + $1.count }
             case .rows(let r): return n + r.reduce(0) { $0 + $1.label.count + $1.value.count }
             }
-        }
+        } + (children ?? []).reduce(0) { $0 + $1.label.count }
     }
     /// The fields shown cut, which the person must open once before the card can be answered: what is approved is what was on screen.
     public var cutFields: Set<String> {
@@ -344,8 +362,14 @@ public struct Card: Identifiable, Codable, Hashable, Sendable {
         }
         // The heading's `what` is cut like the rest (the title is short by its nature and drawn whole).
         if case .text(let t)? = fields["what"], Sealed.visible(t).count > Cut.text { out.insert("what") }
+        // A plugin OK's checkboxes are cut like a list: more than eight, and the rest is opened and read before Allow.
+        if (children?.count ?? 0) > Cut.items { out.insert(Card.childrenField) }
         return out
     }
+    /// The name the checkboxes go by where a field's name would (opening them, reading them to their end).
+    public static let childrenField = "children"
+    /// The checkboxes ticked when the card arrived (the engine's own defaults).
+    public var checkedByDefault: Set<String> { Set((children ?? []).filter(\.checked).map(\.id)) }
     public var what: String? { text("what") }
     private func text(_ name: String) -> String? {
         if case .text(let t)? = fields[name] { return t }

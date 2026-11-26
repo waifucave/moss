@@ -160,6 +160,30 @@ final class CardGateUITests: XCTestCase {
         app.terminate()
     }
 
+    /// A plugin OK on the phone: its checkboxes are drawn with the engine's ticks, the person's tick shows, Allow answers
+    /// it; a card of twelve is cut at eight and Allow waits until the rest is opened and read.
+    func testAPluginOKIsAnsweredWithItsCheckboxes() throws {
+        let app = launch(["-screen", "cards", "-scenario", "pluginOK"])
+        let mail = app.buttons["child-office-mail"].firstMatch
+        XCTAssertTrue(mail.waitForExistence(timeout: 10), "the checkboxes are drawn")
+        XCTAssertTrue(app.buttons["child-office"].firstMatch.isSelected, "ticked by the engine")
+        XCTAssertFalse(mail.isSelected, "unticked by the engine")
+        mail.tap()
+        XCTAssertTrue(mail.isSelected, "the person's tick shows")
+        let allow = app.buttons["Allow"].firstMatch
+        scroll(app, up: true, until: { allow.isHittable && allow.isEnabled })
+        XCTAssertTrue(allow.isEnabled, "seen whole, nothing cut: Allow answers")
+        allow.tap()
+        XCTAssertTrue(app.staticTexts["Turn on the Office plugin?"].waitForNonExistence(timeout: 10), "answered: the card goes")
+        // Twelve checkboxes: cut at eight, and the last one is not on screen until opened.
+        XCTAssertFalse(app.buttons["child-studio-12"].exists, "cut at eight")
+        let show = app.buttons["showAll-children"].firstMatch
+        scroll(app, up: true, until: { show.isHittable })
+        show.tap()
+        XCTAssertTrue(app.buttons["child-studio-12"].waitForExistence(timeout: 5), "opened in place")
+        app.terminate()
+    }
+
     /// A call of two questions: both are drawn, Submit waits until each has an answer, and then answers both together.
     func testACallOfTwoQuestionsIsAnsweredTogether() throws {
         let app = launch(["-screen", "conversation", "-open", "juniper"])

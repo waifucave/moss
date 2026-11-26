@@ -35,6 +35,7 @@ public struct AppLaunch {
             case "providerConsent": l.scenario = .providerConsent
             case "botLimit": l.scenario = .botLimit
             case "questionSwitch": l.scenario = .questionSwitch
+            case "pluginOK": l.scenario = .pluginOK
             default: break
             }
         }

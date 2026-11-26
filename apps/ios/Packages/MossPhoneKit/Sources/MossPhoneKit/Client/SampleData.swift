@@ -128,6 +128,21 @@ public enum SampleData {
     }
 
     /// The provider-consent card (core/src/bots/provider-consent.ts): the provider whose stored key is used is in `host` only.
+    /// A plugin OK with three checkboxes, one of them unticked by the engine: Allow covers the ticked ones.
+    public static let pluginOKCard = Card(id: "card_plug0001", kind: "change", computer: computerName, bot: "alpha", origin: "bot",
+             issuedAt: ago(40), expiresAt: now + 560_000, hash: String(repeating: "d", count: 64),
+             fields: ["title": .text("Turn on the Office plugin?"), "what": .text("Alpha asks for the Office plugin and what comes with it.")],
+             options: [CardOption(id: "approve", kind: .approve, label: "Allow"), CardOption(id: "deny", kind: .deny, label: "Deny")],
+             children: [Card.Child(id: "office", label: "Office", checked: true),
+                        Card.Child(id: "office-sheets", label: "Office: spreadsheets", checked: true),
+                        Card.Child(id: "office-mail", label: "Office: sends mail", checked: false)])
+    /// A plugin OK with twelve checkboxes: cut at eight, opened and read to its end before Allow.
+    public static let manyChildrenCard = Card(id: "card_plug0002", kind: "change", computer: computerName, bot: "alpha", origin: "bot",
+             issuedAt: ago(30), expiresAt: now + 570_000, hash: String(repeating: "e", count: 64),
+             fields: ["title": .text("Turn on the Studio pack?")],
+             options: [CardOption(id: "approve", kind: .approve, label: "Allow"), CardOption(id: "deny", kind: .deny, label: "Deny")],
+             children: (1...12).map { Card.Child(id: "studio-\($0)", label: $0 == 12 ? "Studio: reads your mail" : "Studio part \($0)", checked: true) })
+
     public static let providerConsentCard = Card(id: "card_prov0001", kind: "change", computer: computerName, bot: "alpha", origin: "bot",
              issuedAt: ago(60), expiresAt: now + 540_000, hash: String(repeating: "c", count: 64),
              fields: [

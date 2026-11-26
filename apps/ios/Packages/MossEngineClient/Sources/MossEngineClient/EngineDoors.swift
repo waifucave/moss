@@ -61,6 +61,7 @@ enum Doors {
             }
         }
         card.options = card.options.map { var o = $0; o.label = visible(o.label); return o }
+        card.children = card.children?.map { var ch = $0; ch.label = visible(ch.label); return ch }
         return card
     }
 }

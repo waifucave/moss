@@ -101,6 +101,45 @@ final class CardFieldsTests: XCTestCase {
         XCTAssertFalse(model.mayAnswer(second))
     }
 
+    /// A plugin OK's checkboxes: drawn and answered on the phone under the same gate. The ticked ones (the engine's defaults,
+    /// then the person's own ticks) go with Allow; Deny sends none; more than eight are cut and must be read to their end.
+    @MainActor
+    func testAPluginOKIsAnsweredWithItsTickedCheckboxes() async {
+        let fake = FakeEngineClient(scenario: .pluginOK)
+        let model = CardsModel(client: fake, app: .moss, now: { SampleData.now }, settleWait: .zero)
+        await model.load()
+        let ok = SampleData.pluginOKCard, many = SampleData.manyChildrenCard
+        XCTAssertTrue(ok.drawnWhole); XCTAssertTrue(many.drawnWhole)
+        XCTAssertTrue(ok.cutFields.isEmpty, "three checkboxes are drawn whole")
+        XCTAssertFalse(model.mayAnswer(ok), "refused by default: not seen yet")
+        XCTAssertTrue(model.isTicked("office", of: ok)); XCTAssertFalse(model.isTicked("office-mail", of: ok))
+        model.toggle("office-mail", of: ok); model.toggle("office-sheets", of: ok)
+        model.toggle("not-a-child", of: ok)
+        XCTAssertTrue(model.isTicked("office-mail", of: ok)); XCTAssertFalse(model.isTicked("office-sheets", of: ok))
+        model.seenOnScreen(ok)
+        XCTAssertTrue(model.mayAnswer(ok))
+        await model.answer(ok, with: ok.options[0])
+        let sent = await fake.answeredChildren[ok.id]
+        XCTAssertEqual(sent, ["office", "office-mail"], "Allow carries exactly the ticked ones, in the card's order")
+
+        // Twelve: cut at eight, like a list. Allow waits until they are opened and read to their end; Deny sends none.
+        XCTAssertEqual(many.cutFields, [Card.childrenField])
+        model.seenOnScreen(many)
+        XCTAssertFalse(model.mayAnswer(many), "the checkboxes past the eighth haven't been on screen")
+        model.open(Card.childrenField, of: many)
+        XCTAssertFalse(model.mayAnswer(many), "opened is not read")
+        model.readOnScreen(Card.childrenField, of: many)
+        XCTAssertTrue(model.mayAnswer(many))
+        await model.answer(many, with: many.options[1])
+        let denied = await fake.answeredChildren[many.id]
+        XCTAssertEqual(denied, [], "Deny carries no checkbox")
+
+        // A card whose content changed starts again from the engine's defaults.
+        var changed = ok; changed.id = "card_plug0003"; changed.hash = String(repeating: "f", count: 64)
+        await model.apply(.cardRequested(changed))
+        XCTAssertFalse(model.isTicked("office-mail", of: changed), "a new card's ticks are the engine's, not the last card's")
+    }
+
     /// The Android review's card: a 6-line command, a 6-line detail and 8 paths push `host` and `rule` (what "Always" would
     /// save, the last field) far down. On the phone the card is one column with its buttons last; the buttons answer only
     /// once its heading has been on screen, so a person who reaches them has scrolled through every field, `rule` included.

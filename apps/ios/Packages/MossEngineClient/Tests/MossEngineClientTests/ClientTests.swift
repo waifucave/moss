@@ -44,10 +44,17 @@ final class CardShelfTests: XCTestCase {
         XCTAssertFalse(c.drawnWhole)
         let d = shelf.issue(shown("card_dddddd", hash: "other", json: cardJSON("card_dddddd", hash: "h")))
         XCTAssertFalse(d.drawnWhole, "the issue's hash and the drawn one agree, or nothing is answerable")
-        // A plugin OK's checkboxes aren't drawn on the phone: answered on the computer.
-        let ok = shelf.issue(shown("card_eeeee1", json: cardJSON("card_eeeee1").replacingOccurrences(of: #""kind":"change""#, with: #""kind":"change","children":[{"id":"pack-a","label":"A","checked":true}]"#)))
-        XCTAssertFalse(ok.drawnWhole)
-        XCTAssertNil(shelf.shown(for: ok))
+        // A plugin OK's checkboxes are drawn on the phone and answered there; a label may come by language.
+        let ok = shelf.issue(shown("card_eeeee1", json: cardJSON("card_eeeee1").replacingOccurrences(of: #""kind":"change""#, with: #""kind":"change","children":[{"id":"pack-a","label":"A","checked":true},{"id":"pack-b","label":{"fr":"B fr","en":"B"},"checked":false}]"#)))
+        XCTAssertTrue(ok.drawnWhole)
+        XCTAssertEqual(ok.children?.map(\.label), ["A", "B"])
+        XCTAssertEqual(ok.checkedByDefault, ["pack-a"])
+        XCTAssertNotNil(shelf.shown(for: ok))
+        // A checkbox with no label, or two with one id, can't be drawn whole: answered on the computer.
+        let blank = shelf.issue(shown("card_eeeee2", json: cardJSON("card_eeeee2").replacingOccurrences(of: #""kind":"change""#, with: #""kind":"change","children":[{"id":"pack-a","label":" ","checked":true}]"#)))
+        XCTAssertFalse(blank.drawnWhole)
+        let twice = shelf.issue(shown("card_eeeee3", json: cardJSON("card_eeeee3").replacingOccurrences(of: #""kind":"change""#, with: #""kind":"change","children":[{"id":"pack-a","label":"A","checked":true},{"id":"pack-a","label":"A2","checked":false}]"#)))
+        XCTAssertFalse(twice.drawnWhole)
     }
 
     func testAResolveKeepsANewerIssueOfTheSameCard() {

@@ -48,7 +48,8 @@ public protocol EngineClient: AnyObject, Sendable {
     /// `card.list`, and `card.answer` with a signed answer over the card's hash. `answer` throws `CardAnswerError` when the
     /// card expired or another device answered it first.
     func cards() async throws -> [Card]
-    func answer(card: Card, option: CardOption) async throws
+    /// `children`: the ids of the checkboxes ticked on a plugin OK (signed with the answer), empty for any other card.
+    func answer(card: Card, option: CardOption, children: [String]) async throws
     /// The engine's answer to which cards this app shows (MOSS the bots' cards, MOSS Code the rest, and every pending card
     /// when the other app is not installed): a setting of the client's answer, never a split the screens hard-code.
     func shows(_ card: Card, in app: PhoneApp) async -> Bool
@@ -90,5 +91,9 @@ public protocol EngineClient: AnyObject, Sendable {
 public extension EngineClient {
     func send(session: String, text: String, clientMessageId: String) async throws {
         try await send(session: session, text: text, clientMessageId: clientMessageId, images: [], files: [])
+    }
+    /// An answer to a card with no checkboxes.
+    func answer(card: Card, option: CardOption) async throws {
+        try await answer(card: card, option: option, children: [])
     }
 }

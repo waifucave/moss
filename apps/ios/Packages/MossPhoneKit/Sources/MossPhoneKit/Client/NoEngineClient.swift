@@ -19,7 +19,7 @@ public final class NoEngineClient: EngineClient, @unchecked Sendable {
     public func send(session: String, text: String, clientMessageId: String, images: [String], files: [String]) async throws { throw NoEngine() }
     public func stop(session: String) async throws { throw NoEngine() }
     public func cards() async throws -> [Card] { throw NoEngine() }
-    public func answer(card: Card, option: CardOption) async throws { throw NoEngine() }
+    public func answer(card: Card, option: CardOption, children: [String]) async throws { throw NoEngine() }
     public func shows(_ card: Card, in app: PhoneApp) async -> Bool { false }
     public func backends() async throws -> [AgentBackend] { throw NoEngine() }
     public func startOptions(backend: String) async throws -> BackendOptions { throw NoEngine() }
