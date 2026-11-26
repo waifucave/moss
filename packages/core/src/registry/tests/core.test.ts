@@ -102,4 +102,25 @@ describe("RegistryCore: its records", () => {
     await Bun.sleep(0);
     expect(reg.get("other")?.state).toBe("refused");
   });
+
+  // An answer that carries no list ticked none: never the engine's own defaults, which the person may never have seen drawn.
+  test.each([
+    ["no list", undefined, []],
+    ["an empty list", [] as string[], []],
+    ["a partial list", ["pack/b"], ["pack/b"]],
+  ])("a card with children: an answer with %s runs only the ticked ones (the parent still runs)", async (_name, ticked, running) => {
+    let answer: ((a: { approved: boolean; children?: readonly string[] }) => void) | undefined;
+    const cards: OkCardRaiser = { raise: (_req, answered) => { answer = answered; return "card_okx"; } };
+    const reg = new RegistryCore({ catalog: catalogPointDecl, store: memoryRegistryStore(), cards });
+    reg.putAll([
+      { id: "pack", manifest: m({ name: "Pack" }), treeHash: "sha256:p", approved: false },
+      { id: "pack/a", manifest: m({ name: "A" }), treeHash: "sha256:p", approved: false },
+      { id: "pack/b", manifest: m({ name: "B" }), treeHash: "sha256:p", approved: false },
+    ]);
+    await reg.installed("pack", "app");
+    answer!({ approved: true, ...(ticked === undefined ? {} : { children: ticked }) });
+    await Bun.sleep(0);
+    expect(reg.list().filter((r) => r.id.startsWith("pack/") && r.state === "running").map((r) => r.id)).toEqual(running);
+    expect(reg.get("pack")?.state).toBe("running");
+  });
 });

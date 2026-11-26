@@ -463,6 +463,32 @@ describe("recovery after another member removed this one (two voters)", () => {
   }, 40_000);
 });
 
+describe("a card's answer with no list of ticks ticks none (the invite card's boxes)", () => {
+  test("the recovery card answered with no list (or an empty one) invites nobody: the computer it names stays in the old group", async () => {
+    const hs = service({ rollbackMs: 1 });
+    const net = new MemoryNetwork();
+    const [a, b, c] = [await daemon(net, hs, "Studio"), await daemon(net, hs, "Laptop"), await daemon(net, hs, "Server")];
+    await pair(a, b);
+    await pair(a, c);
+    const g = groupOf(a)!;
+    await waitFor(() => hs.groups.get(g)?.members.size === 3);
+    await Bun.sleep(5);
+    const bKey = ed25519FromSecret((await b.store.get(groupKeyRef(g)))!.value);
+    const aKey = a.links.registry.group()!.ownKey;
+    const t = b.client.now();
+    await b.client.removeGroupMember(g, bKey, aKey, { t, removes: [{ by: toBase64Url(bKey.publicKey), sig: toBase64Url(bKey.sign(removeStatement(g, aKey, t))) }] });
+    await revokeDevice(a.links.revokeOptions(), b.links.key.id, "lost");
+    void a.links.refresh();
+    // Approve, with no `children` at all: the card's one box (the server, ticked when it arrived) is not ticked by the engine for the person.
+    const named = await answer(a, "device-add", true);
+    expect(named).toEqual(["Server"]);
+    await waitFor(() => groupOf(a) !== undefined && groupOf(a) !== g);
+    await Bun.sleep(50);
+    expect(c.broker.cards()).toHaveLength(0);
+    expect(groupOf(c)).toBe(g);
+  }, 40_000);
+});
+
 describe("registrations past the service's window (H-M1's review)", () => {
   test("a pair and a group the service never took are signed again, the peer's half over the link", async () => {
     let down = true;
