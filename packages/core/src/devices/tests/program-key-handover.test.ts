@@ -77,6 +77,29 @@ describe("part 2: a rotation's hand-over chain, taken by the holder with no card
     expect(await w.send([w.entry(k3, [w.step(k1, k2, t), w.step(k2, k3, t + 1000)])])).toBe(true);
     expect(w.held()).toBe(b64(k3));
     expect(await w.verifies(k2)).toBe(false);
+    // K2, which the chain passed through, is retired with K1: refused outright later, never asked about on a card.
+    expect(await w.send([w.entry(k2)])).toBe(true);
+    expect(w.held()).toBe(b64(k3));
+    expect(w.b.registry.pendingProgramKeys()).toEqual([]);
+    expect(await w.send([w.entry(k1)])).toBe(true);
+    expect(w.b.registry.pendingProgramKeys()).toEqual([]);
+  });
+
+  test("a step from a key that isn't Ed25519 after the first (a P-256 point) is refused, not guessed at: the card asks", async () => {
+    const w = await world();
+    const k1 = generateEd25519(), k3 = generateEd25519();
+    await w.send([w.entry(k1)]);
+    w.clock.advance(60_000);
+    const t = w.clock.now();
+    const ec = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair;
+    const p256 = Buffer.from(await crypto.subtle.exportKey("raw", ec.publicKey)).toString("base64");
+    const toEc: ProgramKeyHandOverStep = { from: b64(k1), to: p256, at: t, signature: toBase64(k1.sign(enc(programAnswerKeyRotateStatement({ device: w.a.key.id, program: "moss", from: b64(k1), to: p256, at: t })))) };
+    const st = enc(programAnswerKeyRotateStatement({ device: w.a.key.id, program: "moss", from: p256, to: b64(k3), at: t + 1 }));
+    const ecSig = new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, ec.privateKey, st));
+    const fromEc: ProgramKeyHandOverStep = { from: p256, to: b64(k3), at: t + 1, signature: toBase64(ecSig) };
+    expect(await w.send([w.entry(k3, [toEc, fromEc])])).toBe(true);
+    expect(w.held()).toBe(b64(k1));
+    expect(w.b.registry.pendingProgramKeys().map((p) => p.key.publicKey)).toEqual([b64(k3)]);
   });
 
   test("a forged step, one naming another device or another program, or a chain that doesn't start at the held key: not taken (a card asks)", async () => {

@@ -157,29 +157,34 @@ export const MAX_RETIRED_PROGRAM_KEYS = 64;
  *  the key (the local hand-over's own skew, `PROGRAM_KEY_HAND_OVER_SKEW_MS`). */
 export const PROGRAM_HAND_OVER_CLOCK_SLACK_MS = 5 * 60 * 1000;
 
-/** Whether `handOvers` walks from `from` (the key held here) to `to`, each step signed by the key it replaces over
- *  `programAnswerKeyRotateStatement` naming this device and this program, its first step no earlier than `notBefore`
- *  and each later step no earlier than the one before. Steps from before the held key are skipped. */
-function provesProgramHandOver(id: string, program: Program, from: { publicKey: string; alg?: AnswerKeyAlg }, to: string, handOvers: unknown, notBefore: number): boolean {
-  if (!Array.isArray(handOvers)) return false;
+/** The keys `handOvers` walks through from `from` (the key held here) to `to`, excluding `to` (so the held key first),
+ *  or null when it doesn't: each step signed by the key it replaces over `programAnswerKeyRotateStatement` naming this
+ *  device and this program, its first step no earlier than `notBefore` and each later step no earlier than the one
+ *  before. Steps from before the held key are skipped. Only the last `MAX_PROGRAM_HAND_OVERS` steps are read: a longer
+ *  chain whose start is cut off doesn't reach the held key, and the new key falls back to the person's card. */
+function programHandOverPath(id: string, program: Program, from: { publicKey: string; alg?: AnswerKeyAlg }, to: string, handOvers: unknown, notBefore: number): string[] | null {
+  if (!Array.isArray(handOvers)) return null;
   let current = from.publicKey;
   let alg = algOf(from);
   let last = notBefore;
+  const path: string[] = [];
   for (const h of handOvers.slice(-MAX_PROGRAM_HAND_OVERS) as Partial<ProgramKeyHandOverStep>[]) {
-    if (typeof h !== "object" || h === null || typeof h.from !== "string" || typeof h.to !== "string" || !Number.isSafeInteger(h.at) || typeof h.signature !== "string") return false;
+    if (typeof h !== "object" || h === null || typeof h.from !== "string" || typeof h.to !== "string" || !Number.isSafeInteger(h.at) || typeof h.signature !== "string") return null;
     if (h.from !== current) continue;
-    if (h.at! < last) return false;
+    if (h.at! < last) return null;
+    // The held key signs with its own algorithm. A key between two hand-overs is the app's own Ed25519 key (MOSS, MOSS
+    // Code and the host make no other); a step from a key that isn't one (a P-256 point) is refused, not guessed at.
     const k = answerKeyBytes(alg, h.from);
     const sig = fromBase64(h.signature);
     const statement = programAnswerKeyRotateStatement({ device: id, program, from: h.from, to: h.to, at: h.at! });
-    if (k === null || sig === null || !verifyKeySignature(alg, k, utf8(statement), sig)) return false;
+    if (k === null || sig === null || !verifyKeySignature(alg, k, utf8(statement), sig)) return null;
+    path.push(current);
     current = h.to;
-    // A program key between two hand-overs is the app's own Ed25519 key (MOSS, MOSS Code and the host make no other).
     alg = "ed25519";
     last = h.at!;
-    if (current === to) return true;
+    if (current === to) return path;
   }
-  return false;
+  return null;
 }
 
 const capped = (list: readonly string[], add: string, max: number): string[] => [...list.filter((x) => x !== add), add].slice(-max);
@@ -586,8 +591,11 @@ export class FileDeviceRegistry implements DeviceRegistry {
       // A hand-over chain from the held key (xc-6): each step signed by the key it replaces, its first step after this
       // holder took the held key (within the clocks' slack), so an old hand-over can't be spliced in.
       const takenAt = this.#state.programTakenAt?.[id]?.[program] ?? d.addedAt;
-      if (provesProgramHandOver(id, program, held, k.publicKey, k.handOvers, takenAt - PROGRAM_HAND_OVER_CLOCK_SLACK_MS)) {
-        this.#takeProgramKey(d, program, key, now);
+      const path = programHandOverPath(id, program, held, k.publicKey, k.handOvers, takenAt - PROGRAM_HAND_OVER_CLOCK_SLACK_MS);
+      if (path !== null) {
+        // Every key the chain passed through is retired with the held one (K1 -> K2 -> K3 taken at once: K2 is refused
+        // outright later, never asked about on a card).
+        this.#takeProgramKey(d, program, key, now, path);
         changed = true;
         if (this.#state.programPending?.[id]?.[program] !== undefined) {
           delete this.#state.programPending[id]![program];
@@ -610,12 +618,16 @@ export class FileDeviceRegistry implements DeviceRegistry {
     return true;
   }
 
-  /** Holds `key` as `program`'s on `d`, retiring the key it replaces (never taken again) and noting when it was taken. */
-  #takeProgramKey(d: DeviceRecord, program: Program, key: { publicKey: string; held: AnswerKeyHolder; alg?: AnswerKeyAlg }, now: number): void {
+  /** Holds `key` as `program`'s on `d`, retiring the key it replaces and every key a hand-over chain passed through
+   *  (`through`; never taken again), and noting when it was taken. */
+  #takeProgramKey(d: DeviceRecord, program: Program, key: { publicKey: string; held: AnswerKeyHolder; alg?: AnswerKeyAlg }, now: number, through: readonly string[] = []): void {
     const old = d.answerKeys?.[program];
-    if (old !== undefined && old.publicKey !== key.publicKey) {
+    const gone = [...(old !== undefined ? [old.publicKey] : []), ...through].filter((k) => k !== key.publicKey);
+    if (gone.length > 0) {
       const retired = ((this.#state.programRetired ??= {})[d.id] ??= {});
-      retired[program] = capped(retired[program] ?? [], old.publicKey, MAX_RETIRED_PROGRAM_KEYS);
+      let list = retired[program] ?? [];
+      for (const k of gone) list = capped(list, k, MAX_RETIRED_PROGRAM_KEYS);
+      retired[program] = list;
     }
     d.answerKeys = { ...d.answerKeys, [program]: key };
     ((this.#state.programTakenAt ??= {})[d.id] ??= {})[program] = now;
