@@ -222,6 +222,7 @@ const REDUCED: [string, string][] = [
   [`sealed: answer refused (${SECRET})`, "sealed: answer refused (reason not kept)"],
   [`sealed: core refused answer (${SECRET})`, "sealed: the core refused an answer"],
   [`sealed: answer accepted for ${CARD}`, "sealed: an answer was accepted"],
+  [`sealed: review opened for ${CARD}`, "sealed: a part's approve on a card with boxes opened MOSS Code's own card"],
   [`sealed: ${CARD} own visible in the main window`, "sealed: a card's button is visible in the main window"],
   [`sealed: press on ${CARD} own in the main window: fresh report uncovered after 120 ms`, "sealed: a press: fresh report uncovered after 120 ms"],
   [`sealed: press on ${CARD} own in the main window: ${SECRET}`, "sealed: a press: (the page's word not kept)"],
@@ -389,7 +390,7 @@ describe("what MOSS Code writes to its log file", () => {
       if (m > 0) dynamic[rel] = m;
     }
     expect(counts).toEqual({
-      "answer-key.ts": 16, "browser/frame-sender.ts": 2, "host-runtime.ts": 6, "housing.ts": 1, "card-replace.ts": 2, "index.ts": 182, "overlap.ts": 1, "pair/optional-calls.ts": 1,
+      "answer-key.ts": 16, "browser/frame-sender.ts": 2, "host-runtime.ts": 6, "housing.ts": 1, "card-replace.ts": 2, "index.ts": 183, "overlap.ts": 1, "pair/optional-calls.ts": 1,
       "pair/pair.ts": 19, "pair/setup-retry.ts": 2, "prefs.ts": 1, "preview-control.ts": 4, "touch-tap.ts": 5, "tray.ts": 1, "ui/electron.ts": 17, "ui/model.ts": 2,
       "ui/runtime.ts": 13, "ui/strings.ts": 2, "ui/theme.ts": 5, "ui/web-views.ts": 10,
     });

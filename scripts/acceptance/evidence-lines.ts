@@ -32,6 +32,7 @@ export const EVIDENCE_LINES: readonly EvidenceLine[] = [
   { for: "a surface asking to be placed", re: /^surface: a request/, example: "surface: a request visible=true (headless)" },
   { for: "a surface put away, summoned or shown again", re: /^surface: \S+ /, example: "surface: moss/pill put away from the tray" },
   { for: "an answer to a sealed card, accepted or refused", re: /^sealed: answer (?:accepted|refused)/, example: "sealed: answer accepted for card_abc123" },
+  { for: "a part's approve on a card with boxes opening MOSS Code's own card", re: /^sealed: review opened for \S+/, example: "sealed: review opened for card_abc123" },
   { for: "a sealed press's fresh visibility report", re: /^sealed: press on \S+ .*: fresh report /, example: "sealed: press on card_abc123 approve in window 1: fresh report uncovered after 120 ms" },
   { for: "a plugin's command key ran, held, repeated, or the commands' keys bound", re: /^keys: /, example: "keys: acc.ping ran from its key" },
   { for: "a command key's held down and up", re: /^keys: \S+ (?:down|up) from its key/, example: "keys: acc.held down from its key" },
