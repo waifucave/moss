@@ -1265,7 +1265,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       const devDir = makePlugin(devId, "Acceptance dev plugin", {}, {});
       ctx.setPick!(devDir);
       const devList = async () => (await rpc.request<{ folders: { path: string; pluginId?: string; addedAt: number; expiresAt: number; lastReloadAt?: number }[] }>("plugin.dev.list")).folders;
-      const mine = async () => (await devList()).find((f) => f.path.endsWith(`/${devId}`));
+      const mine = async () => (await devList()).find((f) => f.path.replace(/\\/g, "/").endsWith(`/${devId}`));
       // The window's document can load again just after a plugin with a layer goes (the removal above), which wipes the page's
       // state, so the pick is made again until its Add button stands.
       const addLabel = `Add ${devId} as a development folder`;
