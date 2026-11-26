@@ -130,7 +130,7 @@ export class Doc {
       // with no GPU may paint no frame, so the page is brought forward first, and a picture that still cannot be taken is
       // said and skipped while the row's own checks go on.
       let shot: { data: string } | undefined;
-      if (process.platform === "linux") {
+      if (process.platform === "linux" || process.platform === "win32") {
         await this.cdp.send("Page.bringToFront", {}, s).catch(() => undefined);
         shot = await this.cdp.send<{ data: string }>("Page.captureScreenshot", { format: "png" }, s).catch((e: unknown) => { console.error(`acceptance: setup pictures: no picture of ${name} in the ${scheme} scheme (${e instanceof Error ? e.message : String(e)})`); return undefined; });
       } else {
