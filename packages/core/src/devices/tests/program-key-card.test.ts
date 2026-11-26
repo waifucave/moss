@@ -35,19 +35,8 @@ async function world(dir = mkdtempSync(join(tmpdir(), "moss-xc6-card-")), clock 
     if (e.type === "requested") shown.push(e.card);
     else gone.push(e.cardId);
   });
-  // The broker's opener, with whether the person answered on the card itself (yes or no), as lane-int's opener gives it
-  // (`answered`: the decision was by the card, not an expiry, a withdrawal or a cancel).
-  const base = brokerCardOpener(broker);
-  const openCard: typeof base = async (req, opts) => {
-    let resolved: (by: boolean) => void = () => undefined;
-    const answered = new Promise<boolean>((r) => (resolved = r));
-    const opened = await base(req, opts);
-    const off = broker.watch((e: ApprovalEvent) => {
-      if (e.type === "resolved" && e.cardId === opened.card) { off(); resolved(e.outcome === "approved" || e.outcome === "denied"); }
-    });
-    return { ...opened, answered } as typeof opened;
-  };
-  const stop = askAboutNewProgramKeys({ registry, openCard });
+  // The daemon's own opener: its `answered` says the decision was the person's, on the card (not a withdrawal or a stop).
+  const stop = askAboutNewProgramKeys({ registry, openCard: brokerCardOpener(broker) });
   let at = 0;
   const send = (k: Ed25519Key) => {
     const registration = toBase64(k.sign(enc(programAnswerKeyStatement({ device: a.id, program: "moss", publicKey: b64(k), held: "none" }))));
