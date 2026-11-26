@@ -5995,11 +5995,25 @@ function freePort(): number {
 }
 
 /** An app as the owner starts it (headless here, with a DevTools port), the launcher stand-in its daemon binary. */
-function openApp(app: { exe: string; args: string[] }, label: string): { proc: ChildProcess; log: string; port: number } {
+function openApp(app: { exe: string; args: string[] }, label: string): { proc: ChildProcess; log: string; port: number; screen?: string } {
   const port = freePort();
-  const env = { ...baseEnv(), MOSS_DAEMON_BIN: standInBin, ...(target === "source" ? { MOSS_DEV_DEBUG: "1" } : { MOSS_TEST_DEBUG: "1" }) };
+  // Windows: the app's quit is a line in its screen seam's file (a signal ends a Windows process without letting it answer).
+  const screen = process.platform === "win32" ? join(root, `${label}.screen`) : undefined;
+  const env = { ...baseEnv(), ...(screen !== undefined ? { MOSS_TEST_SCREEN_FILE: screen } : {}), MOSS_DAEMON_BIN: standInBin, ...(target === "source" ? { MOSS_DEV_DEBUG: "1" } : { MOSS_TEST_DEBUG: "1" }) };
   const p = startChild(label, app.exe, [...app.args, "--moss-headless", `--moss-capture=${join(root, "capture.png")}`, "--use-mock-keychain", `--remote-debugging-port=${port}`], env);
-  return { ...p, port };
+  return { ...p, port, ...(screen !== undefined ? { screen } : {}) };
+}
+
+/** The owner's quit of an app: SIGTERM where an app answers it; on Windows the seam's "quit" line (the Quit menu's own path), given `graceMs`
+ *  to end. True when the app quit by itself, false when it had to be killed. */
+async function quitApp(app: { proc: ChildProcess; screen?: string }, graceMs: number): Promise<boolean> {
+  if (process.platform !== "win32" || app.screen === undefined) return endChild(app.proc, graceMs);
+  if (!alive(app.proc)) return true;
+  const exited = new Promise<boolean>((r) => app.proc.once("exit", () => r(true)));
+  writeFileSync(app.screen, "1 quit\n");
+  const quit = await Promise.race([exited, new Promise<boolean>((r) => setTimeout(() => r(false), graceMs))]);
+  if (!quit) await endChild(app.proc, graceMs);
+  return quit;
 }
 
 /** The window filled (the shell drawn) within `ms`; on a timeout, what the window and the app's pair said. */
@@ -6382,8 +6396,10 @@ async function reopenSteps(app: { exe: string; args: string[] }): Promise<void> 
           for (const p of [appA.proc, old.proc]) { if (process.platform === "win32") killTree(p.pid!); else { try { process.kill(-p.pid!, "SIGKILL"); } catch { /* gone */ } } }
           await waitGone(old, 10_000);
           await until("the killed app to go", 10_000, () => (alive(appA!.proc) ? undefined : true), 200);
-          const left = ["core.sock", "core.lock"].filter((f) => existsSync(join(home, "run", f)));
-          if (left.length < 2) block(`killing the daemon left ${left.join(", ") || "nothing"} in run/, not a stale core.sock and core.lock`);
+          // Windows' endpoint is a named pipe, which leaves no file once its process is gone: only core.lock (its owner dead) stays, and the next start reclaims it.
+          const staleFiles = process.platform === "win32" ? ["core.lock"] : ["core.sock", "core.lock"];
+          const left = staleFiles.filter((f) => existsSync(join(home, "run", f)));
+          if (left.length < staleFiles.length) block(`killing the daemon left ${left.join(", ") || "nothing"} in run/, not a stale ${staleFiles.join(" and ")}`);
           stand.arm();
           appB = openApp(app, `reopen-${i + 1}-b`);
           const took = await windowFills(appB, 60_000);
@@ -6431,7 +6447,7 @@ async function reopenSteps(app: { exe: string; args: string[] }): Promise<void> 
           // machine's Electron is slow to go), and the old daemon must take the quit (its pair stops) before the reopen.
           // An app that had to be killed never quit: the step didn't test what it names. An app that quit while its
           // daemon never took it is the bug the step exists for.
-          const quitAlone = await endChild(appA.proc, 20_000);
+          const quitAlone = await quitApp(appA, 20_000);
           const quitTaken = await until("the old daemon to take the app's quit", 30_000, () => (!alive(old.proc) || /\[pair\] stopping the daemon/.test(readLog(old.log).slice(oldLogAt)) ? true : undefined), 200).catch(() => false);
           if (quitTaken !== true) {
             if (!quitAlone) block(`the app didn't quit within 20 s on this machine and was killed, so the old daemon never got its quit: the step didn't test a quit (${lastLines(appA.log, 2)})`);

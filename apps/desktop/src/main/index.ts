@@ -977,6 +977,8 @@ async function ready(): Promise<void> {
         else if (command === "display-metrics-changed") emitOn(screen, command, {}, real, ["scaleFactor"]);
         else if (command === "suspend" || command === "resume" || command === "unlock-screen") emitOn(powerMonitor, command);
         else if ((command === "front" || command === "back") && program === "host") hostDeps().front?.(command === "front");
+        // The owner's Quit, as the Quit menu runs it (the engine told, the windows closed): Windows has no SIGTERM an app can answer, so a test's quit is a line here.
+        else if (command === "quit") { log("test: screen seam quit"); void requestQuit("menu"); continue; }
         else continue;
         log(`test: screen seam ${command}`);
       }
