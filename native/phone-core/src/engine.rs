@@ -367,8 +367,41 @@ pub enum ItemKind {
     /// `skipped`: the person skipped a bot's open question (nothing chosen: draw it "Skipped", never as answered);
     /// `to_bot`: the answer went to the bot as the person's message; `cause`: why an aborted one ended
     /// (`engine-stopped`: the engine went away while it waited, not the person).
-    QuestionResolved { call_id: String, by: Option<String>, skipped: bool, to_bot: bool, cause: Option<String> },
+    QuestionResolved { call_id: String, by: Option<String>, skipped: bool, to_bot: bool, cause: Option<String>, end: QuestionEnd },
     Other { kind: String },
+}
+
+/// How a question closed, decided once here so every app draws it the same: from `by`, `skipped` and `cause`.
+#[derive(Clone, Debug, PartialEq, uniffi::Enum)]
+pub enum QuestionEnd {
+    /// The person answered it (`by` is `user`, or absent in an older record).
+    Answered,
+    /// A plugin answered it (`by` is `plugin:<id>`): a real answer, not the person's. `plugin` is its id, cleaned.
+    AnsweredByPlugin { plugin: String },
+    /// The person skipped a bot's open question.
+    Skipped,
+    /// It ended with no answer, by one of the engine's known endings (`aborted`, `expired`, `timeout`, `cancelled`,
+    /// `superseded`, `emit-failure`): the turn ended or was stopped.
+    Ended,
+    /// It ended because the engine went away while it waited (`cause` is `engine-stopped`), not the person.
+    EngineStopped,
+    /// Closed by something this phone doesn't know (a newer engine's value): neither answered nor withdrawn.
+    Closed,
+}
+
+/// The engine's own ways for a question to end with no answer.
+const QUESTION_ENDINGS: [&str; 6] = ["aborted", "expired", "timeout", "cancelled", "superseded", "emit-failure"];
+
+pub fn question_end(by: Option<&str>, skipped: bool, cause: Option<&str>) -> QuestionEnd {
+    if skipped { return QuestionEnd::Skipped; }
+    match by {
+        None | Some("user") => QuestionEnd::Answered,
+        // The id folded onto one line (any run of spaces or line breaks is one space) and clamped, hidden characters shown.
+        Some(b) if b.starts_with("plugin:") && !b["plugin:".len()..].trim().is_empty() =>
+            QuestionEnd::AnsweredByPlugin { plugin: other(&b["plugin:".len()..].split_whitespace().collect::<Vec<_>>().join(" ")) },
+        Some(b) if QUESTION_ENDINGS.contains(&b) => if cause == Some("engine-stopped") { QuestionEnd::EngineStopped } else { QuestionEnd::Ended },
+        Some(_) => QuestionEnd::Closed,
+    }
 }
 
 /// One event of a session's log.
@@ -441,6 +474,7 @@ pub fn session_item(v: &Value) -> Option<SessionItem> {
             skipped: boolean(v, "skipped").unwrap_or(false),
             to_bot: boolean(v, "toBot").unwrap_or(false),
             cause: raw_str(v, "cause").map(other),
+            end: question_end(raw_str(v, "by"), boolean(v, "skipped").unwrap_or(false), raw_str(v, "cause")),
         },
         x => ItemKind::Other { kind: other(x) },
     };
@@ -1005,7 +1039,8 @@ impl SessionItem {
             ItemKind::Note { label, text } => opt(label) + text.len(),
             ItemKind::TurnEnded { reason } => reason.len(),
             ItemKind::QuestionAsked { question } => question.size(),
-            ItemKind::QuestionResolved { call_id, by, cause, .. } => call_id.len() + opt(by) + opt(cause) + 2,
+            ItemKind::QuestionResolved { call_id, by, cause, end, .. } =>
+                call_id.len() + opt(by) + opt(cause) + 2 + if let QuestionEnd::AnsweredByPlugin { plugin } = end { plugin.len() } else { 0 },
             ItemKind::Other { kind } => kind.len(),
         };
         self.id.len() + self.session.len() + 32 + kind

@@ -116,6 +116,27 @@ fn what_a_hostile_computer_sends_is_read_safely() {
     let ItemKind::User { answers_question, .. } = &plain.kind else { panic!("{plain:?}") };
     assert!(answers_question.is_none());
 
+    // How a question closed, in four classes (and skip, and the engine going away): one decision for every app.
+    use engine::QuestionEnd;
+    let end = |by: Option<&str>, cause: Option<&str>| {
+        let mut v = json!({ "type": "question_resolved", "seq": 20, "sessionId": "s1", "ts": 6, "callId": "c9", "answers": {} });
+        if let Some(b) = by { v["by"] = json!(b); }
+        if let Some(c) = cause { v["cause"] = json!(c); }
+        let ItemKind::QuestionResolved { end, .. } = engine::session_item(&v).unwrap().kind else { panic!() };
+        end
+    };
+    assert_eq!(end(Some("user"), None), QuestionEnd::Answered);
+    assert_eq!(end(None, None), QuestionEnd::Answered, "an older record without `by`");
+    assert_eq!(end(Some("plugin:acme.tools"), None), QuestionEnd::AnsweredByPlugin { plugin: "acme.tools".into() });
+    assert_eq!(end(Some("plugin:acme\n   tools"), None), QuestionEnd::AnsweredByPlugin { plugin: "acme tools".into() }, "folded onto one line");
+    let QuestionEnd::AnsweredByPlugin { plugin } = end(Some(&format!("plugin:{}", "x".repeat(300))), None) else { panic!() };
+    assert_eq!(plugin.chars().count(), 64, "clamped");
+    for e in ["aborted", "expired", "timeout", "cancelled", "superseded", "emit-failure"] { assert_eq!(end(Some(e), None), QuestionEnd::Ended, "{e}"); }
+    assert_eq!(end(Some("aborted"), Some("engine-stopped")), QuestionEnd::EngineStopped);
+    assert_eq!(end(Some("a-new-engine-value"), None), QuestionEnd::Closed, "unknown: neither answered nor withdrawn");
+    assert_eq!(end(Some("plugin:"), None), QuestionEnd::Closed, "a plugin with no id is not a plugin's answer");
+    assert_eq!(engine::question_end(Some("user"), true, None), QuestionEnd::Skipped);
+
     // Composer offers: limits only when whole.
     let c = engine::composer_offers(&json!({ "kind": "coding", "pictures": true, "files": { "maxBytes": 10 }, "pictureChunks": { "maxBytes": 6, "chunkBytes": 2 },
         "commands": [{ "name": "deploy", "description": { "en": "Ship it" } }], "models": [], "efforts": [] })).unwrap();

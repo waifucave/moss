@@ -240,15 +240,6 @@ extension EnvironmentValues {
 struct AskedQuestionRow: View {
     let question: AskedQuestion
     let asker: String
-    private var status: (String, String)? {
-        switch question.state {
-        case .open: return nil
-        case .answered: return ("Answered", "checkmark.circle")
-        case .skipped: return ("Skipped", "forward")
-        case .withdrawn: return ("Withdrawn", "xmark.circle")
-        case .engineStopped: return ("Ended: your computer stopped", "power")
-        }
-    }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // The bot's words, in their own box: nothing in them can pass for the status below.
@@ -265,8 +256,13 @@ struct AskedQuestionRow: View {
             // The phone's own footer, apart from the bot's box: how the question ended.
             Divider()
             Group {
-                if let s = status { Label(s.0, systemImage: s.1).font(.footnote.weight(.semibold)) }
-                else { Label("Waiting for your answer below", systemImage: "questionmark.bubble").font(.footnote) }
+                if let s = question.state.status {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label(s.title, systemImage: s.symbol).font(.footnote.weight(.semibold))
+                        // The plugin's id, small and as plain text.
+                        if let d = s.detail { Text(verbatim: d).font(.caption2).lineLimit(1).truncationMode(.middle) }
+                    }
+                } else { Label("Waiting for your answer below", systemImage: "questionmark.bubble").font(.footnote) }
             }
             .foregroundStyle(.secondary)
             .padding(.horizontal, 12).padding(.vertical, 8)
@@ -278,6 +274,6 @@ struct AskedQuestionRow: View {
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.primary.opacity(0.12), lineWidth: 0.5))
         .padding(.trailing, 32)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(asker) asked: \(question.text). \(status?.0 ?? "Waiting for your answer")")
+        .accessibilityLabel("\(asker) asked: \(question.text). \(question.state.status.map { s in s.detail.map { "\(s.title): \($0)" } ?? s.title } ?? "Waiting for your answer")")
     }
 }

@@ -55,14 +55,32 @@ public enum MessageRole: String, Codable, Sendable { case user, bot, note, agent
 public struct AskedQuestion: Hashable, Sendable {
     public enum State: Hashable, Sendable {
         case open
-        /// Answered (here or on another device); the person's answer is the message that names it.
+        /// Answered by the person (here or on another device); their answer is the message that names it.
         case answered
+        /// Answered by a plugin (its id, cleaned by the core): a real answer, not the person's.
+        case answeredByPlugin(String)
         /// The person skipped it (here or on another device): nothing was chosen.
         case skipped
         /// It ended without an answer: the turn ended or was stopped.
         case withdrawn
         /// The engine went away while it waited (a stop, an update's restart, a crash), not the person.
         case engineStopped
+        /// Closed by something this phone doesn't know (a newer engine): neither answered nor withdrawn.
+        case closed
+
+        /// The question row's status line, the phone's own words: a title, and the plugin's id (small, plain) when a plugin
+        /// answered. `nil` while it is open.
+        public var status: (title: String, symbol: String, detail: String?)? {
+            switch self {
+            case .open: return nil
+            case .answered: return ("Answered", "checkmark.circle", nil)
+            case .answeredByPlugin(let id): return ("Answered by a plugin", "puzzlepiece.extension", id)
+            case .skipped: return ("Skipped", "forward", nil)
+            case .withdrawn: return ("Withdrawn", "xmark.circle", nil)
+            case .engineStopped: return ("Ended: your computer stopped", "power", nil)
+            case .closed: return ("Closed", "circle.slash", nil)
+            }
+        }
     }
     public var callId: String
     public var header: String?

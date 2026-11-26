@@ -133,12 +133,17 @@ enum Records {
             return .message(ChatMessage(id: i.id, role: .question, text: first.question, at: i.at,
                                         question: AskedQuestion(callId: q.callId, header: first.header, text: first.question,
                                                                 options: first.options.map(\.label))))
-        case .questionResolved(let callId, let by, let skipped, _, let cause):
-            // Answered only by the person (`by` is "user", or absent in an older record); anything else closed it without
-            // their answer: the turn ended, a plugin or the engine did, or the engine went away.
-            let state: AskedQuestion.State = skipped ? .skipped
-                : (by == nil || by == "user") ? .answered
-                : cause == "engine-stopped" ? .engineStopped : .withdrawn
+        case .questionResolved(let callId, _, _, _, _, let end):
+            // How it closed is the core's decision (`QuestionEnd`), the same for every app.
+            let state: AskedQuestion.State
+            switch end {
+            case .answered: state = .answered
+            case .answeredByPlugin(let plugin): state = .answeredByPlugin(plugin)
+            case .skipped: state = .skipped
+            case .ended: state = .withdrawn
+            case .engineStopped: state = .engineStopped
+            case .closed: state = .closed
+            }
             return .questionResolved(callId: callId, state: state)
         case .other(let kind): return kind == "turn_started" ? .turnStarted : .other
         }

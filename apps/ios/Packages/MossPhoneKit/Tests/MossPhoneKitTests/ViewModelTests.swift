@@ -362,6 +362,21 @@ final class ViewModelTests: XCTestCase {
         XCTAssertNotNil(m.errorText, "the person is told nothing was sent")
     }
 
+    /// How a closed question reads, in its four classes: the person's answer, a plugin's (with its id), one of the engine's
+    /// endings, and anything unknown, which is neither answered nor withdrawn.
+    func testAClosedQuestionReadsAsItsClass() {
+        XCTAssertEqual(AskedQuestion.State.answered.status?.title, "Answered")
+        let plugin = AskedQuestion.State.answeredByPlugin("acme.tools").status
+        XCTAssertEqual(plugin?.title, "Answered by a plugin"); XCTAssertEqual(plugin?.detail, "acme.tools")
+        XCTAssertEqual(AskedQuestion.State.withdrawn.status?.title, "Withdrawn")
+        XCTAssertEqual(AskedQuestion.State.engineStopped.status?.title, "Ended: your computer stopped")
+        let unknown = AskedQuestion.State.closed.status?.title
+        XCTAssertEqual(unknown, "Closed")
+        XCTAssertNotEqual(unknown, "Answered"); XCTAssertNotEqual(unknown, "Withdrawn")
+        XCTAssertEqual(AskedQuestion.State.skipped.status?.title, "Skipped")
+        XCTAssertNil(AskedQuestion.State.open.status)
+    }
+
     func testFileOverTheLimitIsRefusedWithAPlainLine() async {
         let c = fake()
         let m = ConversationModel(source: .bot(SampleData.bots[0]), client: c)
