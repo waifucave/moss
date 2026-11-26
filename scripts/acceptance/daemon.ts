@@ -46,7 +46,9 @@ const linkBin = process.env.MOSS_ACCEPTANCE_LINK_BIN;
 const publicTime = { sample: async () => ({ offsetMs: 37.5 + Math.random(), rttMs: 1.25 }) };
 const links = linkBin !== undefined && linkBin !== ""
   ? {
-    binary: linkBin, sidecar: { relay: "disabled" as const, n0Lookup: false, bind: "127.0.0.1:0" },
+    // A port the run picked (MOSS_ACCEPTANCE_LINK_PORT), so an engine the run starts again on the same home comes back on
+    // the same loopback address: with no relay and no lookup, a peer reaches it only where it was. Otherwise any port.
+    binary: linkBin, sidecar: { relay: "disabled" as const, n0Lookup: false, bind: `127.0.0.1:${/^\d{1,5}$/.test(process.env.MOSS_ACCEPTANCE_LINK_PORT ?? "") ? process.env.MOSS_ACCEPTANCE_LINK_PORT : "0"}` },
     // Two daemons on one machine: each its own computer name (Alpha, Beta), never the machine's one for both.
     self: { name: process.env.MOSS_ACCEPTANCE_COMPUTER_NAME || "Alpha", kind: "desktop" as const, os: process.platform === "darwin" ? "macos" as const : "linux" as const },
     handshake: null, account: null, driver: false as const, watch: () => () => {}, publicTime,

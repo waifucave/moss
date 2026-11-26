@@ -68,12 +68,14 @@
 // had hidden (a bot's Write into its scratch refused as a project's `.moss`; a pasted `bun -e` server refused by the
 // load guard under a dot-folder; a wrapped skill folder missing from Glossary), the last two in a shipped build.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { createHash, createPublicKey, generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
+import { createHash, createPublicKey, generateKeyPairSync, type KeyObject, randomBytes, randomUUID, sign } from "node:crypto";
+import { createSocket } from "node:dgram";
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync, chmodSync, closeSync, lstatSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { DEFAULT_LEVEL, MOSS_PROTOCOL_VERSION, programAnswerKeyStatement, programCardAnswerSigningInput } from "../../packages/protocol/src/index";
+import { DEFAULT_LEVEL, MOSS_PROTOCOL_VERSION, programAnswerKeyRotateStatement, programAnswerKeyStatement, programCardAnswerSigningInput } from "../../packages/protocol/src/index";
+import { answerKeyWords } from "../../packages/core/src/identity/sas";
 import { notOnLinux, onLinux, onUnfencedOs } from "./not-on-linux";
 import { TEST_KEYCHAIN_PASSWORD } from "../../packages/core/src/auth/login-keychain";
 import { HARNESS_TOKEN_FILE } from "../../packages/core/src/platform/pair/run-files";
@@ -137,7 +139,7 @@ import { AGENT_STEP, COLD_START_STEP, COPY_UPGRADE_STEPS, FULL_STEPS, IDLE_STEP,
 import { DISTRUST, answerKeyFileFor, keepStateProblem, oldHalfRow, readState, settingsWithFake, socketPathProblem, statePaths, treeDigest, writeState, type KeptState } from "./state";
 import { FAKE_ARTICLE_TEXT, FAKE_HIT_PATH, FAKE_PRIVATE_ADDRESS, FAKE_PRIVATE_SITE, FAKE_PUBLIC_SITE, FAKE_SEARCH_HIT, serveOutsideWorld, type OutsideWorld } from "./fake-exa";
 import { FAKE_LINKED_PATH, FAKE_LINKS_PATH } from "./fake-exa";
-import { BETA_MEMORY_DUMMY, BETA_NOTE, BETA_SECRETS_DUMMY, COMPUTERS_BASH_STEP, COMPUTERS_CARD_NO_STEP, COMPUTERS_CARD_STEP, COMPUTERS_MOVE_STEP, COMPUTERS_OFFLINE_STEP, COMPUTERS_PAIR_STEP, COMPUTERS_READ_STEP, COMPUTERS_REFUSED_STEP, COMPUTERS_STEPS, COMPUTERS_WRITE_STEP, offlineWrong, refusedWrong, type Seen } from "./computers-step";
+import { BETA_MEMORY_DUMMY, BETA_NOTE, BETA_SECRETS_DUMMY, COMPUTERS_BASH_STEP, COMPUTERS_CARD_NO_STEP, COMPUTERS_CARD_STEP, COMPUTERS_REINSTALL_STEP, COMPUTERS_ROTATE_STEP, COMPUTERS_MOVE_STEP, COMPUTERS_OFFLINE_STEP, COMPUTERS_PAIR_STEP, COMPUTERS_READ_STEP, COMPUTERS_REFUSED_STEP, COMPUTERS_STEPS, COMPUTERS_WRITE_STEP, offlineWrong, refusedWrong, type Seen } from "./computers-step";
 import { CODE_ADAPTER_STEP, codeAdapterWrong, GEMINI_MODEL, GEMINI_REPLY, GOOGLE_PLUGIN, OAUTH_MODEL, OAUTH_PLUGIN, OAUTH_REPLY, OAUTH_SIGN_IN_STEP, OPENAI_REPLY, OPENAI_WIRE_PROVIDERS, openAiWireWrong, THIRD_PARTY_KEY, THIRD_PARTY_MODEL, THIRD_PARTY_MODEL_STEP, THIRD_PARTY_PLUGIN, THIRD_PARTY_REPLY } from "./code-adapter-step";
 import { placeModelsFixture, startFakeModels, type FakeModels } from "./fake-models";
 import { placeOAuthFixture, startFakeOAuth, type FakeOAuth } from "./fake-oauth";
@@ -4035,8 +4037,16 @@ async function computersRun(): Promise<void> {
   appless = true;
   try {
     // ── the two engines ──
-    await startDaemonProc({ ...linkEnv, MOSS_ACCEPTANCE_COMPUTER_NAME: "Alpha" });
-    const c = (await appDriver()).client;
+    // Alpha's link on a port the run picked, so the reinstall row's restart comes back where Beta knows it.
+    const alphaPort = await new Promise<number>((resolve, reject) => {
+      const s = createSocket("udp4");
+      s.once("error", reject);
+      s.bind(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => resolve(p)); });
+    });
+    const alphaEnv = { ...linkEnv, MOSS_ACCEPTANCE_COMPUTER_NAME: "Alpha", MOSS_ACCEPTANCE_LINK_PORT: String(alphaPort) };
+    let alpha = await startDaemonProc(alphaEnv);
+    // Alpha's connections: made again when the reinstall row starts Alpha's engine again on the same home.
+    let c = (await appDriver()).client;
     await signInKey(c);
     const bot = await keyedSession(c);
     mkdirSync(betaUser, { recursive: true });
@@ -4067,23 +4077,25 @@ async function computersRun(): Promise<void> {
       await t.request("events.subscribe", { areas: ["devices"] });
       return { t, words };
     };
-    const ta = await terminal(home);
+    let ta = await terminal(home);
     const tb = await terminal(betaHome);
 
     // ── MOSS on Alpha, as the app is (apps/moss): the `app` role with `surface: "moss"`, its own answer key registered with
     // `device.programKey.set` before any pairing (the app registers on every connection), so Beta learns it over the link
     // and checks a yes pressed there. The bots live in MOSS, so this is the key a person's yes for a bot's call is signed with.
     const mossHello = await hello(coreEndpoint(home), "app", tokenOf(home, "app.token"), "MOSS acceptance", MOSS_PROTOCOL_VERSION, { surface: "moss" });
-    const mossApp = mossHello.client;
+    let mossApp = mossHello.client;
     opened.push(mossApp);
     const alphaDevice = String(mossHello.result["device"] ?? "");
     if (alphaDevice === "") fail("MOSS's hello on Alpha named no device");
-    const mossKey = generateKeyPairSync("ed25519").privateKey;
-    const mossPub = Buffer.from(String(createPublicKey(mossKey).export({ format: "jwk" }).x), "base64url").toString("base64");
-    const registered = await mossApp.request<{ applied?: boolean }>("device.programKey.set", {
-      publicKey: mossPub, held: "none", alg: "ed25519",
-      signature: sign(null, Buffer.from(programAnswerKeyStatement({ device: alphaDevice, program: "moss", publicKey: mossPub, held: "none", alg: "ed25519" })), mossKey).toString("base64"),
-    });
+    const rawPub = (k: KeyObject) => Buffer.from(String(createPublicKey(k).export({ format: "jwk" }).x), "base64url").toString("base64");
+    /** MOSS's own registration of `k`, signed by the key itself as the app signs it. */
+    const registration = (k: KeyObject, pub = rawPub(k)) =>
+      sign(null, Buffer.from(programAnswerKeyStatement({ device: alphaDevice, program: "moss", publicKey: pub, held: "none", alg: "ed25519" })), k).toString("base64");
+    // MOSS's key: replaced by the rotation row (with the held key's hand-over) and by the reinstall row (a new first key).
+    let mossKey = generateKeyPairSync("ed25519").privateKey;
+    let mossPub = rawPub(mossKey);
+    const registered = await mossApp.request<{ applied?: boolean }>("device.programKey.set", { publicKey: mossPub, held: "none", alg: "ed25519", signature: registration(mossKey) });
     if (registered.applied !== true) fail("Alpha's engine didn't take MOSS's answer key");
     /** A yes (or a no) on a card, as MOSS's sealed press sends it: a device proof signed with MOSS's key, naming the program. */
     const pressAsMoss = async (card: Card, kind: "approve" | "deny"): Promise<void> => {
@@ -4232,6 +4244,86 @@ async function computersRun(): Promise<void> {
       if (existsSync(join(betaUser, "project", "carded-no.md"))) fail("written on Beta after the no");
       if (r === undefined || !r.text.includes("you said no to this on Beta's card")) fail(`the bot wasn't told the person said no (${r?.text.slice(0, 200) ?? "no result"})`);
       return "the card naming Beta answered no: nothing on Beta's disk, and the bot was told the person said no";
+    });
+    /** Whether Beta holds `pub` as Alpha's MOSS key: Beta's own device list shows its four words on Alpha's row. */
+    const betaHolds = async (pub: string) => {
+      const list = await betaApp.request<{ devices: { name: string; keys?: { program: string; words: string[] }[] }[] }>("device.list", {}).catch(() => undefined);
+      const words = list?.devices.find((d) => d.name === "Alpha")?.keys?.find((k) => k.program === "moss")?.words.join(" ");
+      return words === answerKeyWords(pub).join(" ");
+    };
+    /** A write on Beta at the default levels, its card answered yes as MOSS signs it now. */
+    const cardedWrite = async (file: string) => {
+      await mossInFront();
+      const a = carded("approve");
+      const r = await callOn("Write", { file_path: `home/Beta/project/${file}`, content: file }, 150_000, a.answer);
+      return { r, landed: existsSync(join(betaUser, "project", file)), cards: a.beta().length };
+    };
+    await step(COMPUTERS_ROTATE_STEP, async () => {
+      // MOSS replaces its key with the held key's hand-over; Alpha's own card for it is answered on Alpha, in MOSS's window.
+      const next = generateKeyPairSync("ed25519").privateKey;
+      const nextPub = rawPub(next);
+      const at = Date.now();
+      const rotation = { from: mossPub, at, signature: sign(null, Buffer.from(programAnswerKeyRotateStatement({ device: alphaDevice, program: "moss", from: mossPub, to: nextPub, at })), mossKey).toString("base64") };
+      await mossInFront();
+      const asked = await mossApp.request<{ applied?: boolean; card?: string }>("device.programKey.set", { publicKey: nextPub, held: "none", alg: "ed25519", signature: registration(next, nextPub), rotation });
+      if (asked.applied === true || asked.card === undefined) fail(`Alpha's engine didn't ask on a card for the replacement (${JSON.stringify(asked)})`);
+      const card = await until("Alpha's card for the replacement", 30_000, async () => (await cards(c)).find((k) => k.id === asked.card));
+      await approve(mossApp, card);
+      await until("Beta holding MOSS's new key from the hand-over", 60_000, async () => ((await betaHolds(nextPub)) ? true : undefined));
+      if ((await cards(betaApp)).some((k) => k.change === "peer-answer-key")) fail("Beta asked on a card for a key that came with its hand-over");
+      mossKey = next;
+      mossPub = nextPub;
+      const w = await cardedWrite("rotated.md");
+      if (w.cards !== 1 || !w.landed) fail(`the write answered with the new key didn't land (${w.cards} card(s) naming Beta; ${w.r?.text.slice(0, 160) ?? "no result"})`);
+      return "MOSS's key replaced on Alpha with its hand-over (Alpha's own card); Beta took the new key with no card, and a write on Beta answered with it landed";
+    });
+    await step(COMPUTERS_REINSTALL_STEP, async () => {
+      // A key lost with no hand-over, as it can happen today: Alpha's engine stops, its program-key table is gone, it starts
+      // again on the same home (the same device and link), and MOSS registers a new first key there.
+      alpha.proc.kill("SIGTERM");
+      const stopped = alpha.proc;
+      await until("Alpha's engine to stop", 30_000, () => (alive(stopped) ? undefined : true));
+      rmSync(join(home, "devices", "program-keys.json"), { force: true });
+      alpha = await startDaemonProc(alphaEnv);
+      c = (await appDriver()).client;
+      ta = await terminal(home);
+      const again = await hello(coreEndpoint(home), "app", tokenOf(home, "app.token"), "MOSS acceptance", MOSS_PROTOCOL_VERSION, { surface: "moss" });
+      mossApp = again.client;
+      opened.push(mossApp);
+      const fresh = generateKeyPairSync("ed25519").privateKey;
+      const freshPub = rawPub(fresh);
+      const r0 = await mossApp.request<{ applied?: boolean }>("device.programKey.set", { publicKey: freshPub, held: "none", alg: "ed25519", signature: registration(fresh, freshPub) });
+      if (r0.applied !== true) fail("Alpha's engine, its table gone, didn't take MOSS's new first key");
+      mossKey = fresh;
+      mossPub = freshPub;
+      await until("Beta online on Alpha again", 60_000, async () => {
+        const got = await c.request<{ computer: { online?: boolean; state?: string } }>("computer.get", { name: "Beta" }).catch(() => undefined);
+        return got !== undefined && (got.computer.online === true || got.computer.state === "online") ? true : undefined;
+      });
+      // Alpha holds the bots' lease again. Beta took it while Alpha was down (the lease follows the computer that is up),
+      // and keeps it until it lets go: the person hands it back on Beta's own terminal, as "Hand over" does.
+      const holderOn = async (cl: MossClient) => (await cl.request<{ lease: { holder: string | null } }>("main.get", {}).catch(() => undefined))?.lease.holder ?? null;
+      const known = await until("a lease holder known on either computer", 120_000, async () => (await holderOn(c)) ?? (await holderOn(tb.t)) ?? undefined);
+      if (known !== alphaDevice) await tb.t.request("main.handOver", {});
+      await until("Alpha holding the bots' lease again", 120_000, async () => {
+        const got = await c.request<{ lease: { holder: string | null } }>("main.get", {}).catch(() => undefined);
+        return got?.lease.holder === alphaDevice ? true : undefined;
+      });
+      // Beta's card, in Beta's app, with the new key's four words.
+      const card = await until("Beta's card for Alpha's new MOSS key", 60_000, async () => (await cards(betaApp)).find((k) => k.change === "peer-answer-key"));
+      if (!JSON.stringify(card).includes(answerKeyWords(freshPub).join(" "))) fail("Beta's card doesn't show the new key's four words");
+      if ((await cards(c)).some((k) => k.id === card.id)) fail("Alpha was sent Beta's card about its own key");
+      // Before the yes, Beta refuses an answer signed with the new key, and says where to accept it.
+      await bothAt(DEFAULT_LEVEL);
+      const before = await cardedWrite("reinstall-before.md");
+      if (before.landed) fail("Beta took an answer signed with a key it hadn't accepted");
+      if (before.r === undefined || !before.r.text.includes("accept its new key on Beta's card")) fail(`the bot wasn't told where to accept the new key (${before.r?.text.slice(0, 200) ?? "no result"})`);
+      // The person says yes on Beta, in Beta's app.
+      await approve(betaApp, card);
+      await until("Beta holding MOSS's new key after the yes", 60_000, async () => ((await betaHolds(freshPub)) ? true : undefined));
+      const after = await cardedWrite("reinstall-after.md");
+      if (!after.landed) fail(`the write answered with the accepted key didn't land (${after.r?.text.slice(0, 160) ?? "no result"})`);
+      return "Alpha's MOSS key replaced with no hand-over (its table gone): Beta refused it and showed its card in Beta's app with the key's four words; after the yes there, a write answered with the new key landed";
     });
     await step(COMPUTERS_OFFLINE_STEP, async () => {
       betaProc.kill("SIGTERM");

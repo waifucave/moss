@@ -13,12 +13,14 @@ export const COMPUTERS_BASH_STEP = "computers: a bot on Alpha runs a command in 
 export const COMPUTERS_REFUSED_STEP = "computers: Beta refuses what no bot reaches: its run folder's token, its secrets file and another bot's memory never reach the bot on Alpha";
 export const COMPUTERS_CARD_STEP = "computers: at the default levels a write on Beta raises one card on Alpha naming Beta, answered yes as MOSS signs it, and lands on Beta's disk after the yes";
 export const COMPUTERS_CARD_NO_STEP = "computers: the same card answered no: nothing written on Beta, and the bot told the person said no";
+export const COMPUTERS_ROTATE_STEP = "computers: MOSS on Alpha replaces its key with the old key's hand-over (its own card on Alpha): Beta takes the new key with no card, and a write on Beta is answered with it";
+export const COMPUTERS_REINSTALL_STEP = "computers: MOSS on Alpha gets a new key with no hand-over (its key table gone): Beta refuses it, asks in Beta's app with the key's four words, and after the yes there a write is answered with it";
 export const COMPUTERS_MOVE_STEP = "computers: mv of a small folder from Alpha to Beta: on Beta with its files, gone from Alpha";
 export const COMPUTERS_OFFLINE_STEP = "computers: with Beta's engine stopped, a read on Beta says \"computer offline\" within the bound";
 
 export const COMPUTERS_STEPS = [
   COMPUTERS_PAIR_STEP, COMPUTERS_READ_STEP, COMPUTERS_WRITE_STEP, COMPUTERS_BASH_STEP, COMPUTERS_REFUSED_STEP,
-  COMPUTERS_CARD_STEP, COMPUTERS_CARD_NO_STEP, COMPUTERS_MOVE_STEP, COMPUTERS_OFFLINE_STEP,
+  COMPUTERS_CARD_STEP, COMPUTERS_CARD_NO_STEP, COMPUTERS_ROTATE_STEP, COMPUTERS_REINSTALL_STEP, COMPUTERS_MOVE_STEP, COMPUTERS_OFFLINE_STEP,
 ] as const;
 
 /** The dummy texts the run plants on Beta (never a secret: each says so). */
