@@ -4289,14 +4289,14 @@ async function computersRun(): Promise<void> {
     });
     await step(COMPUTERS_REINSTALL_STEP, async () => {
       // A key lost with no hand-over, as it can happen today: Alpha's program-key table is gone while its device stays (the
-      // same home, device and link port), and MOSS registers a new first key there. The row is about keys, not the lease:
-      // with no handshake service the bots' lease can't move back between two computers (docs/across-computers-owed.md),
-      // so both engines restart in order, Beta first down and last up, and Alpha holds the lease alone before Beta returns.
+      // same home, device and link port), and MOSS registers a new first key there. Only Alpha restarts: with no handshake
+      // service and no address lookup, where a peer is lives only in the running link sidecars, so Beta (still up, its
+      // sidecar knowing Alpha's fixed port) is the one that dials Alpha back; had both restarted, neither could find the
+      // other (docs/across-computers-owed.md).
       const stop = async (p: ChildProcess, who: string) => {
         p.kill("SIGTERM");
         await until(`${who}'s engine to stop`, 30_000, () => (alive(p) ? undefined : true));
       };
-      await stop(betaProc, "Beta");
       await stop(alpha.proc, "Alpha");
       rmSync(join(home, "devices", "program-keys.json"), { force: true });
       alpha = await startDaemonProc(alphaEnv);
@@ -4307,7 +4307,7 @@ async function computersRun(): Promise<void> {
       // the main from its own terminal (`main.set`, which a terminal applies at once).
       const chosen = await ta.t.request<{ applied?: boolean }>("main.set", { device: alphaDevice });
       if (chosen.applied !== true) fail(`Alpha's terminal couldn't make Alpha the main (${JSON.stringify(chosen)})`);
-      await until("Alpha holding the bots' lease alone", 120_000, async () => {
+      await until("Alpha holding the bots' lease", 120_000, async () => {
         const got = await c.request<{ lease: { holder: string | null } }>("main.get", {}).catch(() => undefined);
         return got?.lease.holder === alphaDevice ? true : undefined;
       });
@@ -4320,11 +4320,6 @@ async function computersRun(): Promise<void> {
       if (r0.applied !== true) fail("Alpha's engine, its table gone, didn't take MOSS's new first key");
       mossKey = fresh;
       mossPub = freshPub;
-      // Beta comes back on its own home and port, its app and terminal with it.
-      betaProc = await startBeta();
-      betaApp = (await hello(coreEndpoint(betaHome), "app", tokenOf(betaHome, "app.token"), "moss-acceptance", MOSS_PROTOCOL_VERSION)).client;
-      opened.push(betaApp);
-      tb = await terminal(betaHome);
       await until("Beta online on Alpha again", 120_000, async () => {
         const got = await c.request<{ computer: { online?: boolean; state?: string } }>("computer.get", { name: "Beta" }).catch(() => undefined);
         return got !== undefined && (got.computer.online === true || got.computer.state === "online") ? true : undefined;

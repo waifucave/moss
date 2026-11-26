@@ -25,7 +25,9 @@ reach, because it needs something that isn't in a test run.
 - **The short pairing code.** The typed code (40 bits naming a rendezvous slot, 80 bits of secret,
   `links/pairing.ts`) waits in a slot the service holds. The proofs pair with the QR, which carries the host's key and
   addresses itself, so the code's round trip through a deployed rendezvous is unproven.
-- **The relays.** With `relay: "disabled"` and no lookup, the sidecars reach each other only on loopback. A connection
+- **The relays.** With `relay: "disabled"` and no lookup, the sidecars reach each other only on loopback, and only
+  while one of them keeps running: where a peer is then lives only in a running sidecar (the QR's address, a dial
+  that came in), so after both engines restart neither can find the other. The restart row restarts one engine only. A connection
   through the n0 relays (or MOSS's own), and the fallback to a relay when no direct path opens, is unproven here.
 - **The memory mailbox** (step 5's part 3, B-M2): a write to a bot's memory while the computer that holds it is offline
   needs a place to wait that is up when neither computer is; its design waits on the controller.
