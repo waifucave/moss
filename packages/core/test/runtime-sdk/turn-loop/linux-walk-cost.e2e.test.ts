@@ -105,14 +105,24 @@ describeWithEmbeddedRuntime("a bot's Bash on Linux with today's write roots: wha
       }
       return { steady: ms[1], first: ms[0]!, roots, leftOut };
     };
-    // The numbers are the point (the controller reads them): printed for each level, no bound, so both always print.
-    // Fully automatic: two turns each (the second is the steady cost). Accept edits hands ~100 roots, each walked at
-    // every spawn (the split measured 220 s a command), so it times one turn each, first against first, to stay inside
-    // the shard's 20 minutes.
-    const auto = { tiny: await timeTurns("automatic", 1, 10), big: await timeTurns("automatic", 100, 3_000) };
-    console.log(`linux walk cost at automatic: tiny home ${auto.tiny.steady} ms (${auto.tiny.roots} roots), 100-folder home ${auto.big.steady} ms (${auto.big.roots} roots, ${auto.big.leftOut} left out), added per command ${auto.big.steady! - auto.tiny.steady!} ms`);
-    const edits = { tiny: await timeTurns("accept-edits", 1, 10, 1), big: await timeTurns("accept-edits", 100, 3_000, 1) };
-    console.log(`linux walk cost at accept-edits (first turns): tiny home ${edits.tiny.first} ms (${edits.tiny.roots} roots), 100-folder home ${edits.big.first} ms (${edits.big.roots} roots, ${edits.big.leftOut} left out), added per command ${edits.big.first - edits.tiny.first} ms`);
-    expect([auto.big.leftOut, edits.big.leftOut]).toEqual([0, 0]);
-  }, 1_100_000);
+    // The numbers are the point (the controller reads them): printed, no bound. With the MOSS home inside the user's
+    // home, fully automatic already draws the home as its entries (sandboxSettingsOf's `except`), about 100 roots
+    // here, each walked at every spawn: one command cost about 300 s on run 45833809470, so the 20-minute shard holds
+    // one timed turn per home (first against first, each opening the runtime). Accept edits draws the home's ordinary
+    // top folders: its roots are counted (on the same layout, with few files) rather than timed again; the same roots
+    // cost the same walk.
+    const auto = { tiny: await timeTurns("automatic", 1, 10, 1), big: await timeTurns("automatic", 100, 3_000, 1) };
+    console.log(`linux walk cost at automatic: tiny home ${auto.tiny.first} ms (${auto.tiny.roots} roots), 100-folder home ${auto.big.first} ms (${auto.big.roots} roots, ${auto.big.leftOut} left out), added per command ${auto.big.first - auto.tiny.first} ms`);
+    const rootsAt = (level: "automatic" | "accept-edits") => {
+      const { userDir, mossHome } = homeShaped(100, 10);
+      const temp = join(userDir, "tmp-moss");
+      mkdirSync(temp, { recursive: true });
+      const own = botPaths(mossHome, "luna");
+      const fence = new MossFence({ os: "linux", home: userDir, mossHome, temp });
+      const s = botSandboxSettings(fence.forCaller(context(mossHome).caller).policy(), { mossHome, userHome: userDir, level, ownFolders: [own.scratch, own.root], pathFolders: [] });
+      return s.filesystem?.allowWrite?.length ?? 0;
+    };
+    console.log(`linux walk cost at accept-edits: the same 100-folder layout draws ${rootsAt("accept-edits")} roots (fully automatic ${rootsAt("automatic")})`);
+    expect(auto.big.leftOut).toBe(0);
+  }, 1_000_000);
 });
