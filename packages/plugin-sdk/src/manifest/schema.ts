@@ -336,6 +336,17 @@ export const ServiceSchema = z.strictObject({
   ...declares,
 });
 
+/** A `relays` entry (§8.3): a service, and whether its handler keeps sync mail (`putMail`, `takeMail`, `ackMail`): only
+ *  a relay that says so is the memory mailbox, and only those count when MOSS asks how many mail relays are on. */
+export const RelaySchema = z.strictObject({
+  id: EntryId,
+  name: Text.optional(),
+  handler: HandlerName,
+  runsOn: RunsOn.optional(),
+  mail: z.boolean().optional(),
+  ...declares,
+});
+
 // -------------------------------------------------------------------------------------------------
 // The app's core points (§5.3, §5.5)
 // -------------------------------------------------------------------------------------------------
@@ -421,7 +432,7 @@ export const CORE_CONTRIBUTION_SCHEMAS = {
   turns: z.array(TurnEntrySchema).max(64),
   computerProviders: z.array(ComputerProviderSchema).max(16),
   computer: ComputerSchema,
-  relays: z.array(ServiceSchema).max(16),
+  relays: z.array(RelaySchema).max(16),
   notifiers: z.array(ServiceSchema).max(16),
   companions: z.array(ServiceSchema).max(16),
   themes: z.array(ThemeEntrySchema).max(256),

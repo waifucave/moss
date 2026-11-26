@@ -22,8 +22,17 @@ export const TWO_RELAYS_NOTICE = "Two relays are on, so MOSS keeps no mail for y
 /** One relay that is on: the plugin and its `relays` entry's handler. */
 export interface RelayOn { pluginId: string; handler: string }
 
+/** The mail relays among the registry's `relays` entries: active, declaring `"mail": true`, with a handler. A link-only
+ *  relay is never the mailbox and never counts toward "two relays". */
+export function mailRelaysOf(entries: readonly { pluginId: string; state: string; value: unknown }[]): RelayOn[] {
+  return entries.flatMap((e) => {
+    const v = (e.value ?? {}) as { mail?: unknown; handler?: unknown };
+    return e.state === "active" && v.mail === true && typeof v.handler === "string" ? [{ pluginId: e.pluginId, handler: v.handler }] : [];
+  });
+}
+
 export interface RelayMailSource {
-  /** The `relays` entries that are on now. */
+  /** The mail relays that are on now (`mailRelaysOf`). */
   relays(): readonly RelayOn[];
   /** Calls the relay's handler as the core. */
   invoke(relay: RelayOn, method: "putMail" | "takeMail" | "ackMail", args: Record<string, unknown>): Promise<unknown>;

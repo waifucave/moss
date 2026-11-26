@@ -272,6 +272,24 @@ describe("a bot's memory across computers", () => {
     await waitFor(() => w.at("Laptop").read("MEMORY.md") === "while the laptop was off\n");
   });
 
+  test("a relay that hangs holds neither a read of the mail nor a stop's last send past their budget (lane XC 5b)", async () => {
+    const hang = <T>() => new Promise<T>(() => {});
+    const w = await world(["Studio", "Laptop"], {
+      mail: true,
+      mailbox: () => ({ put: () => hang<void>(), take: () => hang<{ id: string; sealed: Uint8Array }[]>(), ack: () => hang<void>() }),
+    });
+    await w.linkAll();
+    let start = Date.now();
+    expect(await w.at("Laptop").sync.takeMail({ budgetMs: 150 })).toBe(0);
+    expect(Date.now() - start).toBeLessThan(2_000);
+    w.c.net.partition(w.at("Laptop").d.key.publicKey);
+    await waitFor(() => !w.at("Studio").d.transport.links().some((l) => l.up));
+    w.at("Studio").write("MEMORY.md", "for the laptop\n");
+    start = Date.now();
+    await w.at("Studio").sync.flushMail({ budgetMs: 150 });
+    expect(Date.now() - start).toBeLessThan(2_000);
+  });
+
   test("mail its sender's key didn't sign is dropped", async () => {
     const w = await world(["Studio", "Laptop", "Server"], { mail: true });
     await w.linkAll();

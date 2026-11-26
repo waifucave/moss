@@ -95,7 +95,7 @@ declare const __MOSS_TEST_BUILD__: string | false | undefined;
 import { claimDaemonChildren } from "./platform/daemon-children";
 import { MossSecretStore, KeychainValues, memoryVault, openMossSecretStore, secretStoreWarning } from "./secrets/moss-secret-store";
 import { defaultDeviceName, openOnBroker, startDaemonLinks, type DaemonLinks, type DaemonLinksInput } from "./ipc/device-links";
-import { PluginRelayMailbox } from "./sync/relay-mailbox";
+import { mailRelaysOf, PluginRelayMailbox } from "./sync/relay-mailbox";
 import { botApprovalCheck, botToolRequest, runsLaterPlace, type BundledToolKind } from "./approvals/bot-check";
 import { builtCopy } from "./approvals/bundled-tools";
 import { sendMessageTarget } from "./bots/tools";
@@ -5174,8 +5174,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
         const host = pluginHost?.host;
         if (registry === undefined || host === undefined) return undefined;
         return {
-          relays: () => registry.entries("relays").filter((e) => e.state === "active")
-            .flatMap((e) => { const handler = (e.value as { handler?: unknown } | undefined)?.handler; return typeof handler === "string" ? [{ pluginId: e.pluginId, handler }] : []; }),
+          // Only a relay whose entry declares mail (`"mail": true`): a link-only relay is never the mailbox and never counts.
+          relays: () => mailRelaysOf(registry.entries("relays")),
           invoke: (relay, method, args) => host.invoke({ pluginId: relay.pluginId, handler: relay.handler, method, args, caller: { kind: "core" } }),
         };
       },

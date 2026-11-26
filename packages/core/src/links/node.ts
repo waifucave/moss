@@ -154,6 +154,10 @@ export function fencingLease(lease: MainComputerHandle["lease"]): Lease {
   };
 }
 
+/** How long one read of memory mail, or a stop's last send, may take in all (lane XC 5b): a relay slower than this
+ *  leaves the rest for the next read. */
+export const MAIL_BUDGET_MS = 10_000;
+
 export async function startDeviceLinks(o: DeviceLinksOptions): Promise<DeviceLinks> {
   const key = await DeviceKey.loadOrCreate(o.store);
   const boxKey = await BoxKey.loadOrCreate(o.store);
@@ -345,6 +349,7 @@ export async function startDeviceLinks(o: DeviceLinksOptions): Promise<DeviceLin
     ...(o.memory ?? {}), ...(o.log ? { log: o.log } : {}),
   });
 
+  let mailReading = false;
   const revokeOptions = (): RevokeOptions => ({
     registry, store: o.store, ...(o.handshake ? { handshake: o.handshake } : {}), ...(o.account ? { account: o.account } : {}),
     ...(o.services ? { services: o.services } : {}),
@@ -357,8 +362,12 @@ export async function startDeviceLinks(o: DeviceLinksOptions): Promise<DeviceLin
     // A revocation's steps the services haven't confirmed yet (S5).
     await retryRevokes(revokeOptions()).catch(() => undefined);
     await resolveScope().catch(() => undefined);
-    // Memory mail for this computer, kept while it was off (the driver calls this at start and on a timer).
-    await memory?.takeMail().catch(() => undefined);
+    // Memory mail for this computer, kept while it was off (the driver calls this at start and on a timer). Detached and
+    // bounded (lane XC 5b): a slow relay never holds the pairing and revoke retries above, and one read runs at a time.
+    if (memory && !mailReading) {
+      mailReading = true;
+      void memory.takeMail({ budgetMs: MAIL_BUDGET_MS }).catch(() => undefined).finally(() => { mailReading = false; });
+    }
   };
   const driver = o.driver === false ? undefined : new DirectoryDriver({
     registry, ...(directory ? { pairs: directory } : {}), ...(accountDirectory ? { account: accountDirectory } : {}),
@@ -404,6 +413,8 @@ export async function startDeviceLinks(o: DeviceLinksOptions): Promise<DeviceLin
     async close() {
       driver?.close();
       groups?.close();
+      // Mail still waiting for its delay goes now, within the same budget as a read (a slow relay never holds the stop).
+      await memory?.flushMail({ budgetMs: MAIL_BUDGET_MS }).catch(() => undefined);
       memory?.close();
       main?.close();
       sharedClock.close();

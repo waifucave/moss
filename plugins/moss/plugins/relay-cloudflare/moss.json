@@ -25,6 +25,6 @@
     }
   ],
   "contributes": {
-    "relays": [{ "id": "cloudflare", "name": { "en": "Your Cloudflare relay" }, "handler": "relay" }]
+    "relays": [{ "id": "cloudflare", "name": { "en": "Your Cloudflare relay" }, "handler": "relay", "mail": true }]
   }
 }

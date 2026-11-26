@@ -4,7 +4,7 @@ import type { z } from "zod";
 import type {
   AgentBackendSchema, AgentDefSchema, AuthSchema, BotSchema, CommandSchema, ComputerProviderSchema, ComputerSchema,
   ContributionsSchema, DeclaresSchema, HookSchema, LocaleEntrySchema, ManifestSchema, McpServerSchema, ModelSchema,
-  PointDeclSchema, ServiceSchema, SettingSchema, ThemeEntrySchema, TriggerSchema, UiSchema, TurnEntrySchema,
+  PointDeclSchema, RelaySchema, ServiceSchema, SettingSchema, ThemeEntrySchema, TriggerSchema, UiSchema, TurnEntrySchema,
 } from "./schema";
 
 export type Manifest = z.infer<typeof ManifestSchema>;
@@ -25,6 +25,7 @@ export type TurnEntry = z.infer<typeof TurnEntrySchema>;
 export type ComputerProvider = z.infer<typeof ComputerProviderSchema>;
 export type Computer = z.infer<typeof ComputerSchema>;
 export type Service = z.infer<typeof ServiceSchema>;
+export type Relay = z.infer<typeof RelaySchema>;
 export type ThemeEntry = z.infer<typeof ThemeEntrySchema>;
 export type LocaleEntry = z.infer<typeof LocaleEntrySchema>;
 export type Ui = z.infer<typeof UiSchema>;
@@ -43,7 +44,7 @@ export interface CoreEntries {
   turns: TurnEntry;
   computerProviders: ComputerProvider;
   computer: Computer;
-  relays: Service;
+  relays: Relay;
   notifiers: Service;
   companions: Service;
   themes: ThemeEntry;

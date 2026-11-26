@@ -261,13 +261,19 @@ export class MemorySync {
     return taken;
   }
 
-  /** Reads this computer's mail and takes what's in it; returns the versions taken. */
-  async takeMail(): Promise<number> {
+  /** Reads this computer's mail and takes what's in it; returns the versions taken. `budgetMs` bounds the whole read
+   *  (every round's take together, lane XC 5b): a relay slower than that leaves the rest for the next read, and what was
+   *  taken but not acked stays there to be taken again. */
+  async takeMail(o: { budgetMs?: number } = {}): Promise<number> {
     const box = this.#o.mailbox;
     if (!box || !this.#o.boxKey) return 0;
+    const until = o.budgetMs === undefined ? undefined : Date.now() + o.budgetMs;
     let taken = 0;
     for (let rounds = 0; rounds < 64; rounds++) {
-      const pieces = await box.take({ max: 16 });
+      const left = until === undefined ? undefined : until - Date.now();
+      if (left !== undefined && left <= 0) break;
+      const pieces = left === undefined ? await box.take({ max: 16 }) : await withinMs(box.take({ max: 16 }), left);
+      if (pieces === undefined) break;
       if (pieces.length === 0) break;
       for (const p of pieces) {
         // Bounded before it is parsed, and each piece once (S5).
@@ -279,16 +285,21 @@ export class MemorySync {
           return 0;
         });
       }
-      await box.ack(pieces.map((p) => p.id));
+      // An ack that doesn't come back in time leaves those pieces at the relay; each is taken once here (`#mailSeen`).
+      const ackLeft = until === undefined ? undefined : until - Date.now();
+      if (ackLeft === undefined) await box.ack(pieces.map((p) => p.id));
+      else if ((await withinMs(box.ack(pieces.map((p) => p.id)).then(() => true), Math.max(ackLeft, 1))) === undefined) break;
     }
     return taken;
   }
 
-  /** Sends mail waiting for its delay now. */
-  async flushMail(): Promise<void> {
+  /** Sends mail waiting for its delay now. `budgetMs` bounds the wait (a stop's, lane XC 5b): a relay slower than that
+   *  doesn't hold it up, and what wasn't kept goes again next time this computer runs (the sync re-queues on failure). */
+  async flushMail(o: { budgetMs?: number } = {}): Promise<void> {
     if (this.#mailTimer) clearTimeout(this.#mailTimer);
     this.#mailTimer = undefined;
-    await this.#sendMail();
+    if (o.budgetMs === undefined) await this.#sendMail();
+    else await withinMs(this.#sendMail(), o.budgetMs);
   }
 
   /** What this computer knows of a bot's memory: each file's current version. For tests and `memory.list`. */
@@ -1068,6 +1079,19 @@ function conflictPath(rel: string, tag: string): { names: string[]; rel: string;
   const ext = dot > 0 ? last.slice(dot) : "";
   const p = memoryPath([...names, `${stem} (conflict ${tag})${ext}`].join("/"));
   return "refused" in p ? undefined : p;
+}
+
+/** `p`'s value, or undefined when it takes longer than `ms` (it isn't cancelled: its result, when it comes, is dropped;
+ *  a rejection after the deadline is swallowed). */
+async function withinMs<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), ms); });
+  p.catch(() => undefined);
+  try {
+    return await Promise.race([p, late]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 function errText(e: unknown): string {

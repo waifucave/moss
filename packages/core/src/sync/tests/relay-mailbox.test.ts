@@ -3,7 +3,7 @@
 // more: none is used, and the person is told once.
 import { describe, expect, test } from "bun:test";
 import { MemoryMailRelay } from "../mailbox";
-import { PluginRelayMailbox, TWO_RELAYS_NOTICE, type RelayMailSource, type RelayOn } from "../relay-mailbox";
+import { mailRelaysOf, PluginRelayMailbox, TWO_RELAYS_NOTICE, type RelayMailSource, type RelayOn } from "../relay-mailbox";
 import { CLOUDFLARE_RELAY as CF, fakeRelayPlugin } from "./relay-plugin-fake";
 const OTHER: RelayOn = { pluginId: "someone/relay", handler: "relay" };
 const piece = (id: string, to = "laptop0000000000aa") => ({ to, id, sealed: new Uint8Array([1, 2, 3]), expiresAt: Date.now() + 60_000 });
@@ -65,6 +65,25 @@ describe("PluginRelayMailbox", () => {
     await box.put(piece("m4"));
     await box.put(piece("m5"));
     expect(told.length).toBe(2);
+  });
+
+  test("only relays that declare mail count: one mail relay and one link-only relay is the mailbox, with no notice", async () => {
+    const entries = [
+      { pluginId: "moss/relay-cloudflare", entryId: "cloudflare", state: "active", value: { id: "cloudflare", handler: "relay", mail: true } },
+      { pluginId: "someone/iroh-relay", entryId: "iroh", state: "active", value: { id: "iroh", handler: "relay" } },
+      { pluginId: "someone/off-relay", entryId: "off", state: "off", value: { id: "off", handler: "relay", mail: true } },
+      { pluginId: "someone/odd", entryId: "odd", state: "active", value: { id: "odd", mail: "yes", handler: "relay" } },
+    ];
+    expect(mailRelaysOf(entries)).toEqual([{ pluginId: "moss/relay-cloudflare", handler: "relay" }]);
+    const relay = new MemoryMailRelay();
+    const plugin = fakeRelayPlugin(relay);
+    const told: string[] = [];
+    const box = new PluginRelayMailbox({ source: () => ({ relays: () => mailRelaysOf(entries), invoke: plugin.invoke }), self: () => "s0000000000000000a", onMany: (t) => told.push(t) });
+    await box.put(piece("m1"));
+    expect(relay.held("laptop0000000000aa").length).toBe(1);
+    expect(told).toEqual([]);
+    // The link-only relay is never called.
+    expect(plugin.calls.every((c) => c.relay.pluginId === "moss/relay-cloudflare")).toBe(true);
   });
 
   test("a relay's malformed answer gives no pieces; a relay that fails makes the put fail (the sync queues it again)", async () => {
