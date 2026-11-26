@@ -78,8 +78,8 @@ describe("the pid-reuse check between reading a connection's pid and opening the
   test("a process created after the connection was made is a later one (a fake clock)", () => {
     const connected = Date.parse("2026-11-25T10:00:00Z");
     expect(pidReusedSince(connected - 60_000, connected)).toBe(false); // created a minute before the connection: the connected one
-    expect(pidReusedSince(connected + 1_000, connected)).toBe(false); // within the clocks' slack
-    expect(pidReusedSince(connected + 2_001, connected)).toBe(true); // created after: not the one that connected
+    expect(pidReusedSince(connected + 40, connected)).toBe(false); // within the clocks' slack
+    expect(pidReusedSince(connected + 51, connected)).toBe(true); // created after: not the one that connected
     expect(pidReusedSince(connected + 5, connected, 0)).toBe(true);
     expect(fileTimeToUnixMs(116_444_736_000_000_000n)).toBe(0); // the Unix epoch in FILETIME ticks
     expect(fileTimeToUnixMs(116_444_736_000_000_000n + 10_000n * 1_500n)).toBe(1_500);

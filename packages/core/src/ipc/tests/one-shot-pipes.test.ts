@@ -18,6 +18,8 @@ function rig(over: Partial<ConstructorParameters<typeof OneShotPipes>[0]> = {}) 
     listen: (path, h) => { const l = { h: h as unknown as H, stopped: false }; listeners.set(path, l); return { stop: () => { l.stopped = true; log.push(`stop ${path.slice(-4)}`); } }; },
     lock: () => 1,
     userOf: () => "S-1-5-21-1",
+    createdAt: () => 1_000, // long before any connection
+    now: () => 1_000_000,
     ...over,
   });
   return { pipes, log, adopted, closed, opened, listeners };
@@ -135,5 +137,32 @@ describe("OneShotPipes", () => {
     const sm = {};
     lm.h.open(sm);
     expect(mine.adopted).toEqual([[sm, 11]]);
+  });
+
+  test("a pid whose process was created after the connection (a reused pid) is refused in open, never named and never judged by whoever holds it now", () => {
+    const { pipes, adopted, closed, opened, listeners } = rig({ ends: () => ({ used: 1, pids: [4242] }), now: () => 1_000_000, createdAt: () => 1_000_051 });
+    const l = listeners.get(pipes.issue().pipe)!;
+    const s = {};
+    l.h.open(s);
+    expect(adopted).toEqual([]);
+    expect(closed).toEqual([s]);
+    expect(opened).toEqual([s]); // told to the handlers so they see it close, never adopted
+  });
+
+  test("a process created within 50 ms after the connection's time is the same one (the clocks' resolution)", () => {
+    const { pipes, adopted, listeners } = rig({ ends: () => ({ used: 1, pids: [4242] }), now: () => 1_000_000, createdAt: () => 1_000_050 });
+    const l = listeners.get(pipes.issue().pipe)!;
+    const s = {};
+    l.h.open(s);
+    expect(adopted).toEqual([[s, 4242]]);
+  });
+
+  test("a creation time that cannot be read refuses the connection (fail closed)", () => {
+    const { pipes, adopted, closed, listeners } = rig({ ends: () => ({ used: 1, pids: [4242] }), createdAt: () => null });
+    const l = listeners.get(pipes.issue().pipe)!;
+    const s = {};
+    l.h.open(s);
+    expect(adopted).toEqual([]);
+    expect(closed).toEqual([s]);
   });
 });

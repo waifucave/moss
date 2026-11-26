@@ -6,6 +6,7 @@
 // named. The client's pid is read from that end (`GetNamedPipeClientProcessId`), and the connection is judged as that process from there on.
 import { randomBytes } from "node:crypto";
 import { pipeEndsOf } from "../platform/caller-probe";
+import { pidReusedSince, processCreatedMs } from "../platform/peer-handle";
 import { lockPipeDacl, processIdentity } from "../platform/win-pipe";
 
 type Handlers<D> = {
@@ -27,6 +28,8 @@ export interface OneShotDeps<D> {
   ends?: (path: string) => { used: number; pids: number[] } | null;
   /** The user (a SID string) a process runs as; the client must be this user's. */
   userOf?: (pid: number) => string | null;
+  /** When a process was created (ms), null when unreadable. */
+  createdAt?: (pid: number) => number | null;
   lock?: (path: string, sid: string) => number;
   now?: () => number;
   ttlMs?: number;
@@ -77,7 +80,11 @@ export class OneShotPipes<D = unknown> {
         const pid = ends !== null && ends.used === 1 && ends.pids.length === 1 ? ends.pids[0]! : null;
         // And the client is this user's: the access list is locked just after the listener opens, and in that moment another account could connect.
         const mine = pid !== null && sameUserSid((d.userOf ?? ((p: number) => processIdentity(p)?.userSid ?? null))(pid), sid);
-        if (!first || pid === null || !mine) { d.handlers.open(socket); d.closeAtOnce(socket); return; } // refused: unnamed, ambiguous or not this user's
+        // And it is the process that connected: the pid was read after the connection, so one created after it is a later process that took a reused pid.
+        // That is refused here, never judged by whatever now holds the pid (an unreadable creation time is refused too).
+        const created = mine ? (d.createdAt ?? processCreatedMs)(pid!) : null;
+        const same = created !== null && !pidReusedSince(created, at);
+        if (!first || pid === null || !mine || !same) { d.handlers.open(socket); d.closeAtOnce(socket); return; } // refused: unnamed, ambiguous or not this user's
         d.adopt(socket, pid, at);
         d.handlers.open(socket);
       },

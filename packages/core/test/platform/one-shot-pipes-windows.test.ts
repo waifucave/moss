@@ -11,7 +11,7 @@ import { currentUserSid } from "../../src/platform/win-pipe";
 
 const win = process.platform === "win32";
 
-function rig() {
+function rig(over: Partial<ConstructorParameters<typeof OneShotPipes>[0]> = {}) {
   const endpoint = resolveEndpoint(mkdtempSync(join(tmpdir(), "moss-one-shot-"))).path;
   const named = new Map<object, number>();
   const refused: object[] = [];
@@ -23,6 +23,7 @@ function rig() {
     adopt: (s, pid) => { named.set(s, pid); },
     closeAtOnce: (s) => { refused.push(s); (s as { terminate(): void }).terminate(); },
     userSid: currentUserSid,
+    ...over,
   });
   const until = async (cond: () => boolean) => { for (let i = 0; i < 400 && !cond(); i++) await Bun.sleep(10); };
   return { pipes, named, refused, sockets, texts, until };
@@ -116,5 +117,14 @@ describe.skipIf(!win)("one-shot pipes, real", () => {
     h!.close();
     expect(peerHandle(null, "win32", child.pid, Date.now() - 60_000)).toBeNull(); // "connected" before this process existed
     child.kill();
+  });
+
+  test("a client whose process looks created after its connection (a reused pid) is refused at open, on a real pipe", async () => {
+    const r = rig({ createdAt: () => Date.now() + 60_000 });
+    const c = clientTo(r.pipes.issue().pipe, 3000);
+    await r.until(() => r.refused.length === 1);
+    expect(r.refused.length).toBe(1);
+    expect(r.named.size).toBe(0);
+    c.kill();
   });
 });

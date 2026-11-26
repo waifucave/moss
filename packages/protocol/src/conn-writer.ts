@@ -46,7 +46,7 @@ export class ConnWriter {
     if (this.dead) return false;
     if (this.buffered === 0) {
       let n: number;
-      try { n = this.socket.write(buf); } catch { return this.gone(); } // Windows: a pipe whose client has left throws EPIPE from write; the connection is over, the daemon is not
+      try { n = this.socket.write(buf); } catch (err) { return this.gone(err); } // Windows: a pipe whose client has left throws EPIPE from write; the connection is over, the daemon is not
       if (n >= buf.length) return true;
       buf = buf.subarray(Math.max(0, n));
     }
@@ -56,7 +56,9 @@ export class ConnWriter {
   }
 
   /** The socket cannot be written to any more: nothing more is queued for it, and the socket is closed. */
-  private gone(): false {
+  private gone(err?: unknown): false {
+    // Said once per connection: the thrown error's code (EPIPE and the like), so a Windows pipe's end is told from a fault.
+    if (!this.dead) console.error(`conn-writer: a write failed (${(err as { code?: string } | undefined)?.code ?? "no code"}); the connection is closed`);
     this.dead = true;
     this.queue.length = 0;
     this.buffered = 0;
@@ -80,7 +82,7 @@ export class ConnWriter {
     while (this.queue.length > 0) {
       const head = this.queue[0]!;
       let n: number;
-      try { n = this.socket.write(head); } catch { this.gone(); return; }
+      try { n = this.socket.write(head); } catch (err) { this.gone(err); return; }
       const written = Math.max(0, n);
       this.buffered -= written;
       // A drained byte of the bulk backlog is never room again.

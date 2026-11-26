@@ -104,8 +104,21 @@ function pidOnly(pid: number): PeerHandle {
 export function fileTimeToUnixMs(ticks: bigint): number { return Number(ticks / 10_000n) - 11_644_473_600_000; }
 
 /** Whether a process created at `createdMs` is NOT the one whose pid a connection made at `connectedMs` reported: it was created after the connection
- *  (the pid was reused between the pid being read and the process being opened). `slackMs` covers the clocks' resolution. */
-export function pidReusedSince(createdMs: number, connectedMs: number, slackMs = 2000): boolean { return createdMs > connectedMs + slackMs; }
+ *  (the pid was reused between the pid being read and the process being opened). `slackMs` covers the clocks' resolution (a client is created well before it connects: a tight bound). */
+export function pidReusedSince(createdMs: number, connectedMs: number, slackMs = 50): boolean { return createdMs > connectedMs + slackMs; }
+
+/** When the process `pid` was created (ms since the epoch), or null when it cannot be opened or read (gone, or not this user's); Windows only. */
+export function processCreatedMs(pid: number): number | null {
+  const k = win();
+  if (!k) return null;
+  const h = BigInt(k.OpenProcess!(0x1000 /* QUERY_LIMITED */, 0, pid) as number | bigint);
+  if (h === 0n) return null;
+  try {
+    const created = new BigUint64Array(1), rest = [new BigUint64Array(1), new BigUint64Array(1), new BigUint64Array(1)];
+    if ((k.GetProcessTimes!(h, ptr(created), ptr(rest[0]!), ptr(rest[1]!), ptr(rest[2]!)) as number) === 0) return null;
+    return fileTimeToUnixMs(created[0]!);
+  } finally { k.CloseHandle!(h); }
+}
 
 export function peerHandle(fd: number | null, os: DaemonPlatform, knownPid?: number | null, connectedAtMs?: number): PeerHandle | null {
   if (os === "win32") {
