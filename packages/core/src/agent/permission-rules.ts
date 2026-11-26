@@ -1,4 +1,5 @@
 import { advanceAuthorityRevision } from "../authority-revision";
+import { insideFolded } from "../fence/spelling";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, type Stats, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import { hasShellHazards } from "./shell-scan";
@@ -458,7 +459,7 @@ export class PermissionRules {
   private isControlPlanePath(projectRoot: string): boolean {
     const root = canon(projectRoot);
     const home = canon(this.deps.mossHome);
-    return root === home || root.startsWith(home + sep);
+    return insideFolded(root, home);
   }
 
   private projectRulesFile(root: string): string {

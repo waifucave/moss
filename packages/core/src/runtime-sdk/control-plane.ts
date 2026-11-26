@@ -1,4 +1,5 @@
 import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { foldedSpelling } from "../fence/spelling";
 import { readdirSync, statSync } from "node:fs";
 import { canonicalizeForWrite, resolveLeafSymlinks } from "../agent/paths";
 import { PROJECT_DIR_NAMES } from "../old-names";
@@ -176,7 +177,7 @@ function pathSpellings(path: string, cwd: string): string[] {
   const raw = resolve(isAbsolute(path) ? path : resolve(cwd || "/", path));
   const out = [raw];
   try { out.push(canonicalizeForWrite(resolveLeafSymlinks(raw))); } catch { /* literal still binds */ }
-  return [...new Set(out.map((p) => p.toLowerCase()))];
+  return [...new Set(out.map((p) => foldedSpelling(p)))];
 }
 function within(candidate: string, root: string): boolean { return candidate === root || candidate.startsWith(`${root}/`); }
 
@@ -230,12 +231,12 @@ export function homeFenceTarget(path: string, cwd: string, fence: HomeFence): { 
   const canonDir = (d: string): string[] => {
     const out = [resolve(d)];
     try { out.push(canonicalizeForWrite(resolve(d))); } catch { /* not creatable/resolvable: the literal spelling stands */ }
-    return out.map((x) => x.toLowerCase());
+    return out.map((x) => foldedSpelling(x));
   };
   const dirs = fence.dirs.flatMap(canonDir);
   const files = fence.files.flatMap(canonDir);
   const storageRoots = [...(fence.coworkRoots ?? []), ...(fence.coordinationDir ? [fence.coordinationDir] : [])].flatMap(canonDir);
-  for (const candidate of new Set([raw.toLowerCase(), canonical.toLowerCase()])) {
+  for (const candidate of new Set([foldedSpelling(raw), foldedSpelling(canonical)])) {
     if (storageRoots.some((r) => within(r, candidate))) return { path, canonical, home: true };
     if (dirs.some((d) => candidate === d || candidate.startsWith(`${d}/`))) return { path, canonical, home: true };
     if (files.includes(candidate)) return { path, canonical, home: true };

@@ -50,6 +50,7 @@ import { MossFence } from "../fence/fence";
 import { runLaterExtras } from "../fence/run-later";
 import { OLD_PROJECT_DIR } from "../old-names";
 import { secretFilesFolder } from "./secret-files";
+import { foldedSpelling, insideFolded } from "../fence/spelling";
 
 /** What the agent runtime's `sandbox.denyLaunchServices` denies (`@waifucave/clover-agent-runtime`'s
  *  `LAUNCH_SERVICES_DENIES`, not exported; a test holds this equal to the installed runtime's). */
@@ -469,15 +470,17 @@ function longSocketFolders(sockets: readonly string[]): string[] {
 /** The folders between a project folder (itself included) and each of `denied` inside it, real and as given: write-
  *  denied as literals, so none can be renamed and the denied path planted under a new name (#321's holders, #352's
  *  review). A file inside them can still be written. */
-function holdersWithin(denied: readonly string[], projects: readonly string[]): string[] {
+export function holdersWithin(denied: readonly string[], projects: readonly string[]): string[] {
   const out = new Set<string>();
   const roots = paths(projects);
   for (const d of paths(denied)) {
     for (const root of roots) {
-      if (!(d === root || d.startsWith(root + sep))) continue;
-      for (let h = dirname(d); h.length >= root.length; h = dirname(h)) {
+      if (!insideFolded(d, root)) continue;
+      const rootFolded = foldedSpelling(root);
+      if (foldedSpelling(d) === rootFolded) continue; // the project itself: no folder between it and itself
+      for (let h = dirname(d); ; h = dirname(h)) {
         out.add(h);
-        if (h === root) break;
+        if (h === root || foldedSpelling(h) === rootFolded || dirname(h) === h) break;
       }
     }
   }

@@ -19,6 +19,7 @@
 // The sdk tier is anchored at `sdkHomeFor(home)` — `<home>/sdk`, literally the router's `sdkHome` — not
 // at `storeHomeFor(home)`: the set is the router's, and on a build whose router applies no run home
 // the store still lives at `<home>` and nothing loads `<home>/sdk/skills` (DECISION 11).
+import { foldedSpelling } from "../fence/spelling";
 import { realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
@@ -129,17 +130,17 @@ export function protectedWriteDeniedMessage(toolName: string, path: string, mode
 
 /** Every spelling of a directory this module compares against: literal and realpath, lowercased. */
 function spellings(dir: string): string[] {
-  const out = new Set<string>([resolve(dir).toLowerCase()]);
-  try { out.add(realpathSync(dir).toLowerCase()); } catch { /* not created yet: the literal spelling stands */ }
-  try { out.add(canonicalizeForWrite(resolve(dir)).toLowerCase()); } catch { /* ditto */ }
+  const out = new Set<string>([foldedSpelling(resolve(dir))]);
+  try { out.add(foldedSpelling(realpathSync(dir))); } catch { /* not created yet: the literal spelling stands */ }
+  try { out.add(foldedSpelling(canonicalizeForWrite(resolve(dir)))); } catch { /* ditto */ }
   return [...out];
 }
 
 /** A target's raw and canonical spellings, lowercased. */
 function targetSpellings(path: string, cwd: string): string[] {
   const raw = isAbsolute(path) ? resolve(path) : resolve(cwd || "/", path);
-  const out = new Set<string>([raw.toLowerCase()]);
-  try { out.add(canonicalizeForWrite(resolveLeafSymlinks(raw)).toLowerCase()); } catch { /* the raw spelling is still tested */ }
+  const out = new Set<string>([foldedSpelling(raw)]);
+  try { out.add(foldedSpelling(canonicalizeForWrite(resolveLeafSymlinks(raw)))); } catch { /* the raw spelling is still tested */ }
   return [...out];
 }
 
