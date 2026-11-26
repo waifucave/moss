@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ICON_FILE_MAX_BYTES } from "@waifucave/moss-protocol";
 import { runBackendIconsConformance } from "../../contracts/conformance/backend-icons";
-import { EngineBackendIcons, nodeIconFiles } from "../backend-icons";
+import { EngineBackendIcons, insidePluginFolder, nodeIconFiles } from "../backend-icons";
 
 runBackendIconsConformance((files) => new EngineBackendIcons(files));
 
@@ -81,5 +81,20 @@ describe("the real reader over a plugin folder on disk", () => {
     edge.set(PNG);
     writeFileSync(join(plugin, "marks", "edge.png"), edge);
     expect(await reader().read(plugin, "marks/edge.png")).toMatchObject({ icon: { mediaType: "image/png" } });
+  });
+});
+
+describe("insidePluginFolder (the real paths a Windows disk gives back)", () => {
+  test("backslashes and the disk's case are one spelling on Windows", () => {
+    expect(insidePluginFolder("C:\\Users\\RUNNER~1\\plug\\claude-code.svg", "C:\\Users\\RUNNER~1\\plug", true)).toBe(true);
+    expect(insidePluginFolder("c:\\users\\runner~1\\Plug\\a.svg", "C:\\Users\\RUNNER~1\\plug", true)).toBe(true);
+  });
+  test("a sibling folder with the same prefix and another drive are outside", () => {
+    expect(insidePluginFolder("C:\\Users\\r\\plug-evil\\a.svg", "C:\\Users\\r\\plug", true)).toBe(false);
+    expect(insidePluginFolder("D:\\Users\\r\\plug\\a.svg", "C:\\Users\\r\\plug", true)).toBe(false);
+  });
+  test("elsewhere nothing is folded: case and a backslash in a name stay exact", () => {
+    expect(insidePluginFolder("/p/Plug/a.svg", "/p/plug", false)).toBe(false);
+    expect(insidePluginFolder("/p/plug/a.svg", "/p/plug", false)).toBe(true);
   });
 });

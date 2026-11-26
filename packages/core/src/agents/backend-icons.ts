@@ -13,6 +13,14 @@ import { ICON_FILE_MAX_BYTES } from "@waifucave/moss-protocol";
 import { isInside, normalizePosix } from "../contracts/common";
 import { sniffIcon, svgIsInert, type BackendIcons, type IconFiles, type IconRead } from "../contracts/backend-icons";
 
+/** Whether a real path stays inside the plugin's real folder. On Windows the real paths come back with backslashes and the
+ *  disk's own case, which `isInside` (forward slashes, exact case) calls outside every time; both sides are brought to one
+ *  spelling first (a link is already followed, so only the spelling is folded here). */
+export function insidePluginFolder(real: string, root: string, win32: boolean): boolean {
+  const one = (p: string) => (win32 ? p.replace(/\\/g, "/").toLowerCase() : p);
+  return isInside(one(real), one(root));
+}
+
 export class EngineBackendIcons implements BackendIcons {
   constructor(private readonly files: IconFiles = nodeIconFiles()) {}
 
@@ -32,7 +40,7 @@ export class EngineBackendIcons implements BackendIcons {
     const root = f.realpath(pluginRoot);
     const real = f.realpath(normalizePosix(`${pluginRoot}/${icon}`));
     if (root === undefined || real === undefined) return { none: "missing", why: `${icon} isn't in the plugin's folder` };
-    if (!isInside(real, root)) return { none: "refused", why: `${icon} leads outside the plugin's folder` };
+    if (!insidePluginFolder(real, root, process.platform === "win32")) return { none: "refused", why: `${icon} leads outside the plugin's folder` };
     const size = f.size(real);
     if (size === undefined) return { none: "missing", why: `${icon} isn't a file` };
     if (size > ICON_FILE_MAX_BYTES) return { none: "refused", why: `${icon} is over ${ICON_FILE_MAX_BYTES} bytes` };
