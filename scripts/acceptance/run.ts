@@ -759,6 +759,8 @@ async function cleanup(): Promise<ReapResult | undefined> {
     }
     // The plugins' own logs (a stdio server's stderr: why it crashed), from the same temp home.
     try { cpSync(join(home, "logs", "plugins"), join(keepLogs, "plugins"), { recursive: true }); } catch { /* none, or best effort */ }
+    // The sessions' own event logs (a turn's end reason, its tool results), beside the kept ones: the index database stays out.
+    try { cpSync(join(home, "sessions"), join(keepLogs, "..", "home-sessions"), { recursive: true, filter: (src) => !/index\.db/.test(src) }); } catch { /* none, or best effort */ }
     // Windows runs: the whole of the home's logs, beside the kept ones (not in them: the verdict reads those), to see a turn's own error.
     if (process.platform === "win32") { try { cpSync(join(home, "logs"), join(keepLogs, "..", "home-logs"), { recursive: true }); } catch { /* best effort */ } }
   }
