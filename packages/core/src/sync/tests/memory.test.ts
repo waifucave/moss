@@ -18,6 +18,8 @@ import { keyCommit, keyStatement } from "../memory-keys";
 import { COUNTER_STEP, type MemoryEntry, type MemoryLimits, MemorySync, type PushResult, type SkipReason, versionStatement } from "../memory";
 import { memoryPath, readMemoryFile, removeMemoryFile, writeMemoryFile } from "../memory-files";
 import { tombstoneBot } from "../../deletion/tombstones";
+import { PluginRelayMailbox } from "../relay-mailbox";
+import { CLOUDFLARE_RELAY, fakeRelayPlugin } from "./relay-plugin-fake";
 
 const clock = new SystemClock();
 // A link cut and healed again re-dials with its backoff: give those tests room.
@@ -222,6 +224,52 @@ describe("a bot's memory across computers", () => {
     expect(await w.at("Laptop").sync.takeMail()).toBe(1);
     expect(w.at("Laptop").read("MEMORY.md")).toBe("a secret only the laptop may read\n");
     expect(w.relay.held(w.at("Laptop").d.id)).toEqual([]);
+  });
+
+  test("through the relay plugin that is on (lane XC 5b): a write reaches a computer that was off from the plugin's mail, with no live link between them", async () => {
+    const plugins: ReturnType<typeof fakeRelayPlugin>[] = [];
+    const w = await world(["Studio", "Laptop"], {
+      mail: true,
+      mailbox: (relay, device) => {
+        const p = fakeRelayPlugin(relay);
+        plugins.push(p);
+        return new PluginRelayMailbox({ source: () => ({ relays: () => [CLOUDFLARE_RELAY], invoke: p.invoke }), self: () => device });
+      },
+    });
+    await w.linkAll();
+    w.at("Studio").write("MEMORY.md", "first\n");
+    await waitFor(() => w.at("Laptop").read("MEMORY.md") === "first\n");
+    w.c.net.partition(w.at("Laptop").d.key.publicKey);
+    await waitFor(() => !w.at("Studio").d.transport.links().some((l) => l.up));
+    w.at("Studio").write("MEMORY.md", "kept for the laptop\n");
+    await waitFor(() => w.relay.held(w.at("Laptop").d.id).length === 1);
+    expect(fromUtf8(w.relay.held(w.at("Laptop").d.id)[0]!)).not.toContain("kept for the laptop");
+    // The studio goes off; the laptop is back and reads its mail through the plugin, as the core, naming itself.
+    w.c.net.partition(w.at("Studio").d.key.publicKey);
+    w.c.net.heal(w.at("Laptop").d.key.publicKey);
+    expect(await w.at("Laptop").sync.takeMail()).toBe(1);
+    expect(w.at("Laptop").read("MEMORY.md")).toBe("kept for the laptop\n");
+    expect(w.relay.held(w.at("Laptop").d.id)).toEqual([]);
+    const takes = plugins.flatMap((p) => p.calls).filter((c) => c.method === "takeMail" || c.method === "ackMail");
+    expect(takes.some((c) => c.method === "takeMail" && c.args["device"] === w.at("Laptop").d.id)).toBe(true);
+    for (const c of takes) expect([w.at("Studio").d.id, w.at("Laptop").d.id]).toContain(c.args["device"] as string);
+  });
+
+  test("with no relay on (the default): nothing is kept and nothing fails; the computer gets the write over its link once it's back", async () => {
+    const w = await world(["Studio", "Laptop"], {
+      mail: true,
+      mailbox: (_relay, device) => new PluginRelayMailbox({ source: () => ({ relays: () => [], invoke: async () => { throw new Error("no relay should be called"); } }), self: () => device }),
+    });
+    await w.linkAll();
+    w.c.net.partition(w.at("Laptop").d.key.publicKey);
+    await waitFor(() => !w.at("Studio").d.transport.links().some((l) => l.up));
+    w.at("Studio").write("MEMORY.md", "while the laptop was off\n");
+    await w.at("Studio").sync.flushMail();
+    expect(w.relay.held(w.at("Laptop").d.id)).toEqual([]);
+    expect(await w.at("Laptop").sync.takeMail()).toBe(0);
+    w.c.net.heal(w.at("Laptop").d.key.publicKey);
+    await w.link("Studio", "Laptop");
+    await waitFor(() => w.at("Laptop").read("MEMORY.md") === "while the laptop was off\n");
   });
 
   test("mail its sender's key didn't sign is dropped", async () => {

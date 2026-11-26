@@ -41,6 +41,7 @@ import type { UpdateRestartGate } from "../lease/main";
 import { safeDeviceName } from "../devices/names";
 import { HandshakeClient } from "../links/handshake";
 import { MemoryNetwork } from "../links/memory-wire";
+import type { SyncMailbox } from "../sync/mailbox";
 import { startDeviceLinks, type DeviceLinks, type DeviceLinksOptions } from "../links/node";
 import { bundledLinkBinary } from "../links/sidecar-binary";
 import { mountPeerCall } from "../links/peer-call";
@@ -110,6 +111,9 @@ export interface DaemonLinksInput {
   onRegistry?: DeviceLinksOptions["onRegistry"];
   /** This computer's program answer keys (lane RT's table), sent to its peers (lane XC, `shareProgramKeys`). */
   programKeys?: DeviceLinksOptions["programKeys"];
+  /** The memory sync's mailbox (lane XC 5b): the relay plugin's mail, late-bound (sync/relay-mailbox.ts). Without it,
+   *  memory reaches a computer that was off only over its link once it's back. */
+  memoryMailbox?: SyncMailbox;
   answerKeyServed?: true;
   /** Lane XC: whether one of the person's apps or phones is connected to this engine now (`devicesMethods`' `personAt`):
    *  then a pairing or a removal made in a terminal also needs the engine's own card. */
@@ -194,6 +198,7 @@ export async function startDaemonLinks(input: DaemonLinksInput): Promise<DaemonL
     openCard,
     ...(input.onRegistry ? { onRegistry: input.onRegistry } : {}),
     ...(input.programKeys ? { programKeys: input.programKeys } : {}),
+    ...(input.memoryMailbox ? { memory: { mailbox: input.memoryMailbox } } : {}),
     log,
   });
   const offs: Array<() => void> = [];

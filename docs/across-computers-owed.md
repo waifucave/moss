@@ -29,8 +29,12 @@ reach, because it needs something that isn't in a test run.
   while one of them keeps running: where a peer is then lives only in a running sidecar (the QR's address, a dial
   that came in), so after both engines restart neither can find the other. The restart row restarts one engine only. A connection
   through the n0 relays (or MOSS's own), and the fallback to a relay when no direct path opens, is unproven here.
-- **The memory mailbox** (step 5's part 3, B-M2): a write to a bot's memory while the computer that holds it is offline
-  needs a place to wait that is up when neither computer is; its design waits on the controller.
+- **The memory mailbox through a deployed relay** (step 5's part 3, 5b). A memory change for a computer that is off is
+  kept as sealed mail by the one relay plugin that is on (sync/relay-mailbox.ts): sealed to that computer's box key,
+  signed with the sender's link key, 30 days at most. It is proven on the in-memory relay only. A real relay
+  (relay-cloudflare in the person's own Cloudflare account) keeping and handing back that mail is unproven until one is
+  deployed. With no relay on, which is the default, memory reaches a computer that was off over its link once it's
+  back. With two on, none is used and the person is told.
 
 ## Needs real hardware
 

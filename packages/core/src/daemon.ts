@@ -95,6 +95,7 @@ declare const __MOSS_TEST_BUILD__: string | false | undefined;
 import { claimDaemonChildren } from "./platform/daemon-children";
 import { MossSecretStore, KeychainValues, memoryVault, openMossSecretStore, secretStoreWarning } from "./secrets/moss-secret-store";
 import { defaultDeviceName, openOnBroker, startDaemonLinks, type DaemonLinks, type DaemonLinksInput } from "./ipc/device-links";
+import { PluginRelayMailbox } from "./sync/relay-mailbox";
 import { botApprovalCheck, botToolRequest, runsLaterPlace, type BundledToolKind } from "./approvals/bot-check";
 import { builtCopy } from "./approvals/bundled-tools";
 import { sendMessageTarget } from "./bots/tools";
@@ -5165,8 +5166,28 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       await untilStoreAnswers();
       if (partsStopping) return;
     }
+    // The memory mailbox (lane XC 5b): the one relay plugin that is on, looked up at each call (the plugin registry comes
+    // after the links); none on, memory goes over the links only; two or more on, none is used and the person is told once.
+    const memoryMailbox = new PluginRelayMailbox({
+      source: () => {
+        const registry = partsRegistry?.registry;
+        const host = pluginHost?.host;
+        if (registry === undefined || host === undefined) return undefined;
+        return {
+          relays: () => registry.entries("relays").filter((e) => e.state === "active")
+            .flatMap((e) => { const handler = (e.value as { handler?: unknown } | undefined)?.handler; return typeof handler === "string" ? [{ pluginId: e.pluginId, handler }] : []; }),
+          invoke: (relay, method, args) => host.invoke({ pluginId: relay.pluginId, handler: relay.handler, method, args, caller: { kind: "core" } }),
+        };
+      },
+      self: () => daemonLinks?.links?.key.id,
+      log: (line) => console.error(line),
+      onMany: (text) => {
+        try { notifyService?.send(BUNDLED_ROOT_PLUGIN, { title: "Relays", body: text }); } catch (err) { console.error(`[memory] the two-relays notice wasn't shown: ${(err as Error).message}`); }
+      },
+    });
     const started = await startDaemonLinks({
       home: dirs.home, store: contractSecrets, clock: partsClock, handlers: mossLaneHandlers,
+      memoryMailbox,
       // One of the person's apps or phones connected now (lane XC): a terminal's pairing or removal then needs its card.
       personAt: () => mossServer?.connections().some((c) => c.caller.kind === "user" && c.caller.client !== "cli") === true,
       dispatch: (method, params, caller, role) => mossServer!.dispatch(method, params, { caller, role }),
