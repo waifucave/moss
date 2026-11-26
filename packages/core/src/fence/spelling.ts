@@ -23,6 +23,10 @@ export interface SpellingOptions {
  *  found nothing on the way up, or an 8.3 name left in the part that doesn't exist yet. */
 export const UNJUDGEABLE = "\u0000unjudgeable";
 
+// An 8.3 name is at most 8 characters before the dot (the base, `~`, digits) and at most 3 after it. `run~2024.log` has that shape too
+// (and is refused: fail closed); `release~2024.log` and `notes~1.md.bak` do not.
+const SHORT_NAME = /^(?=[^.\\]{2,8}(?:\.|$))[^.\\]{1,6}~\d+(?:\.[^.\\]{0,3})?$/;
+
 /** The long form of the nearest existing ancestor of `path`, with the names below it as they were spelled; undefined when none
  *  of them could be looked up, or a `~N` short name is left in the part that is not there (a name the lookup could not expand). */
 function expandShort(path: string, long: (p: string) => string | null): string | undefined {
@@ -30,7 +34,12 @@ function expandShort(path: string, long: (p: string) => string | null): string |
   let tail = "";
   for (let i = 0; i < 128; i++) {
     const found = long(head);
-    if (found !== null) return /~\d/.test(tail) ? undefined : found + tail;
+    if (found !== null) {
+      const names = tail.split("\\").filter((n) => n !== "");
+      // Only a name in the 8.3 shape (`PROGRA~1`, `NOTES~1.MD`) is a short name the lookup could not expand; `run~2024.log` is not.
+      if (names.some((n) => SHORT_NAME.test(n))) return undefined;
+      return names.length === 0 ? found : win32.join(found, ...names);
+    }
     const parent = win32.dirname(head);
     if (parent === head) return undefined;
     tail = `\\${win32.basename(head)}${tail}`;
@@ -65,6 +74,8 @@ export function foldedSpelling(path: string, o: SpellingOptions = {}): string {
 export function insideFolded(path: string, root: string, o: SpellingOptions = {}): boolean {
   const p = foldedSpelling(path, o).replace(/\/+$/, "");
   const r = foldedSpelling(root, o).replace(/\/+$/, "");
-  if (p === UNJUDGEABLE || r === UNJUDGEABLE) return true;
+  // An unjudgeable PATH is inside every root; an unjudgeable ROOT (a drive or share that can't be looked up) holds only an unjudgeable path.
+  if (p === UNJUDGEABLE) return true;
+  if (r === UNJUDGEABLE) return false;
   return p === r || p.startsWith(`${r}/`);
 }

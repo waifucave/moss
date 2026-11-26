@@ -179,7 +179,7 @@ function pathSpellings(path: string, cwd: string): string[] {
   try { out.push(canonicalizeForWrite(resolveLeafSymlinks(raw))); } catch { /* literal still binds */ }
   return [...new Set(out.map((p) => foldedSpelling(p)))];
 }
-function within(candidate: string, root: string): boolean { return candidate === UNJUDGEABLE || root === UNJUDGEABLE || candidate === root || candidate.startsWith(`${root}/`); }
+function within(candidate: string, root: string): boolean { return candidate === root || candidate.startsWith(`${root}/`); }
 
 /** Hard links have no different realpath. Compare file identity against known control files, without
  * reading their content or walking guest disks/shared artifacts. This runs only for a multiply-linked target. */
@@ -206,6 +206,8 @@ function controlFileAlias(path: string, fence: HomeFence, readOnly = false): boo
 export function hostStorageReadTarget(path: string, cwd: string, fence: HomeFence, includeAncestors = true): { path: string; canonical: string; home: true } | null {
   const candidates = pathSpellings(path, cwd);
   for (const candidate of candidates) {
+    // An unjudgeable target is refused; an unjudgeable ROOT (a drive or share that can't be looked up) matches only such a target.
+    if (candidate === UNJUDGEABLE) return { path, canonical: candidate, home: true };
     if ((fence.readDirs ?? []).flatMap((root) => pathSpellings(root, "/")).some((r) => within(candidate, r) || (includeAncestors && within(r, candidate)))) return { path, canonical: candidate, home: true };
     for (const root of fence.coworkRoots ?? []) {
       for (const r of pathSpellings(root, "/")) {

@@ -57,6 +57,19 @@ describe("foldedSpelling and insideFolded with Windows spellings", () => {
     expect(foldedSpelling("C:\\Users\\runneradmin\\NEWDIR~1\\f", { ...win, long })).toBe(UNJUDGEABLE);
     expect(insideFolded("Z:\\x", root, { ...win, long })).toBe(true);
   });
+  test("only an 8.3-shaped missing name fails closed: notes~1.md and release~2024.log are ordinary new files", () => {
+    const dir = "C:\\Users\\runneradmin\\proj";
+    expect(foldedSpelling(`${dir}\\PROGRA~1\\x`, { ...win, long })).toBe(UNJUDGEABLE);
+    expect(foldedSpelling(`${dir}\\NOTES~1.MD`, { ...win, long })).toBe(UNJUDGEABLE);
+    expect(foldedSpelling(`${dir}\\release~2024.log`, { ...win, long })).toBe("c:/users/runneradmin/proj/release~2024.log");
+    expect(foldedSpelling(`${dir}\\run~2024.log`, { ...win, long })).toBe(UNJUDGEABLE); // 8.3-shaped: refused, never guessed
+    expect(foldedSpelling(`${dir}\\notes~1.md.bak`, { ...win, long })).toBe("c:/users/runneradmin/proj/notes~1.md.bak");
+  });
+  test("an unjudgeable root holds only an unjudgeable path; a drive root keeps one slash", () => {
+    expect(insideFolded("C:\\Users\\runneradmin\\x", "\\\\srv\\share\\r", { ...win, long })).toBe(false);
+    expect(insideFolded("\\\\srv\\share\\x", "\\\\srv\\share\\r", { ...win, long })).toBe(true);
+    expect(foldedSpelling("D:\\a\\b", { ...win, long })).toBe("d:/a/b");
+  });
   test("off Windows nothing but the lowercase the checks always used", () => {
     expect(foldedSpelling("/A/B\\C.", { win32: false })).toBe("/a/b\\c.");
   });
