@@ -202,6 +202,8 @@ export function botSandboxSettings(policy: SandboxPolicy, o: {
   pathFolders?: readonly string[];
   /** A folder's entries, as `readdirSync` with types gives them (tests pass a fake; `ordinaryTopFolders`). */
   list?: (dir: string) => readonly { name: string; isDirectory(): boolean; isSymbolicLink(): boolean }[];
+  /** Test seam for the Linux look (`linuxHoldProblem`): its own disk and limits. */
+  linuxWalk?: Parameters<typeof linuxHoldProblem>[1];
 }): SandboxSettingsConfig {
   const wide = o.level === "accept-edits" || o.level === "automatic";
   const os: Os = o.windows ? "windows" : process.platform === "darwin" ? "macos" : "linux";
@@ -227,8 +229,19 @@ export function botSandboxSettings(policy: SandboxPolicy, o: {
   const runLater = [...shellRunLaterDenies(roots.filter((r) => !realNonFolder(r)), { userHome: o.userHome, mossHome: o.mossHome, os, pathFolders: o.pathFolders ?? [] }), ...secrets];
   // Fail closed: a root a deny would cover is left out (a deny wins inside the runtime, so it would write nothing
   // there anyway; leaving it out says so). None is, for the folders MOSS draws (sandbox-settings.test's invariant).
-  const keptWrite = (out.filesystem?.allowWrite ?? []).filter((r) => !rootCovered(r, runLater, os) && !holdsFolded(r, o.mossHome, os));
-  return {
+  const covered = (out.filesystem?.allowWrite ?? []).filter((r) => !rootCovered(r, runLater, os) && !holdsFolded(r, o.mossHome, os));
+  // Linux (lane XC 3c): the runtime holds a pattern's matches only as far as its walk reaches (`linuxHoldProblem`); a
+  // root of the user's whose walk can't finish there, or that holds a repository inside `node_modules`, isn't handed to
+  // it at all, so the command runs with the narrower roots, and a write it can't make says why (`leftOutRoots`).
+  const leftOut: LeftOutRoot[] = [];
+  const keptWrite = os !== "linux" ? covered : covered.filter((r) => {
+    if (!pathWithin(r, o.userHome, os) || pathWithin(r, o.mossHome, os) || own.some((f) => pathWithin(r, f, os))) return true;
+    const why = linuxHoldProblem(r, o.linuxWalk);
+    if (why === undefined) return true;
+    leftOut.push({ root: r, why });
+    return false;
+  });
+  const settings: SandboxSettingsConfig = {
     ...out,
     filesystem: {
       ...out.filesystem,
@@ -237,6 +250,83 @@ export function botSandboxSettings(policy: SandboxPolicy, o: {
       denyRead: [...new Set([...(out.filesystem?.denyRead ?? []), ...secrets])],
     },
   };
+  if (leftOut.length > 0) LEFT_OUT.set(settings, leftOut);
+  return settings;
+}
+
+/** A write root MOSS didn't hand the runtime on Linux, and why (`linuxHoldProblem`). */
+export interface LeftOutRoot { root: string; why: string }
+const LEFT_OUT = new WeakMap<SandboxSettingsConfig, LeftOutRoot[]>();
+
+/** The write roots `botSandboxSettings` left out of these settings (Linux, lane XC 3c), for the note a refused write
+ *  gets. */
+export function leftOutRoots(settings: SandboxSettingsConfig | undefined): readonly LeftOutRoot[] {
+  return settings === undefined ? [] : LEFT_OUT.get(settings) ?? [];
+}
+
+/** The runtime's own walk for a pattern-shaped deny on Linux (clover-agent-runtime's `expandPatterns`): at most
+ *  50,000 entries and 16 levels down, `node_modules` skipped. What lies past it isn't held at all. */
+export const LINUX_WALK = { maxVisited: 50_000, maxDepth: 16 } as const;
+/** How many entries the look for repositories inside `node_modules` reads under one root. */
+const NODE_MODULES_BUDGET = 50_000;
+const HOLD_TTL_MS = 10_000;
+const holdCache = new Map<string, { at: number; why: string | undefined }>();
+
+/** Why the runtime's Linux sandbox wouldn't hold every run-later place under `root`, or undefined: its walk
+ *  (`LINUX_WALK`) can't finish there, so a `.git` past it would be writable; or a `.git` or `*.git` sits inside
+ *  `node_modules`, which that walk skips. A look that can't finish either fails closed. Kept for a few seconds (the
+ *  sandbox is drawn at each turn's start and read again by the file tools). */
+export function linuxHoldProblem(root: string, o: { list?: (dir: string) => readonly { name: string; isDirectory(): boolean; isSymbolicLink(): boolean }[]; now?: number; limits?: { maxVisited: number; maxDepth: number; nodeModules: number } } = {}): string | undefined {
+  const now = o.now ?? Date.now();
+  const hit = o.list === undefined ? holdCache.get(root) : undefined;
+  if (hit !== undefined && now - hit.at < HOLD_TTL_MS) return hit.why;
+  const list = o.list ?? ((d: string) => readdirSync(d, { withFileTypes: true }));
+  const lim = o.limits ?? { ...LINUX_WALK, nodeModules: NODE_MODULES_BUDGET };
+  const held = new Set([...heldNames(), ".moss"].filter((n) => !n.includes("/")));
+  // Exactly as the runtime's regexes match on Linux (case as written: `anyCase` leaves names alone there), so this walk
+  // never stops where the runtime's goes on.
+  const isHeld = (name: string) => [...held].some((h) => (h.startsWith("*") ? name.endsWith(h.slice(1)) : name === h));
+  const isRepo = (name: string) => name.endsWith(".git");
+  let why: string | undefined;
+  // The runtime's walk, as it runs: entries counted as listed, a matched name not walked into, node_modules skipped.
+  let visited = 0;
+  const modules: string[] = [];
+  const walk = (dir: string, depth: number): boolean => {
+    let entries: readonly { name: string; isDirectory(): boolean; isSymbolicLink(): boolean }[];
+    try { entries = list(dir); } catch { return true; }
+    for (const e of entries) {
+      if (++visited > lim.maxVisited) return false;
+      if (isHeld(e.name)) continue;
+      if (!e.isDirectory() || e.isSymbolicLink()) continue;
+      const at = posix.join(dir, e.name);
+      if (e.name === "node_modules") { modules.push(at); continue; }
+      if (depth + 1 > lim.maxDepth) return false;
+      if (!walk(at, depth + 1)) return false;
+    }
+    return true;
+  };
+  if (!walk(root, 0)) why = `${root} holds more than the sandbox can check for repositories (over ${lim.maxVisited.toLocaleString("en")} entries or ${lim.maxDepth} folders deep), so a .git past that wouldn't be held`;
+  // Inside node_modules: any repository at all (a package installed from git keeps its .git), looked for to its end.
+  if (why === undefined) {
+    let left = lim.nodeModules;
+    const stack = [...modules];
+    find: while (stack.length > 0) {
+      const dir = stack.pop()!;
+      let entries: readonly { name: string; isDirectory(): boolean; isSymbolicLink(): boolean }[];
+      try { entries = list(dir); } catch { continue; }
+      for (const e of entries) {
+        if (--left < 0) { why = `${root} holds more inside node_modules than the sandbox can check for repositories`; break find; }
+        const at = posix.join(dir, e.name);
+        if (isRepo(e.name)) { why = `${root} holds a repository inside node_modules (${at}), where the sandbox doesn't hold a .git`; break find; }
+        if (e.isDirectory() && !e.isSymbolicLink()) stack.push(at);
+      }
+    }
+  }
+  if (o.list === undefined) {
+    if (holdCache.size > 256) holdCache.clear();
+    holdCache.set(root, { at: now, why });
+  }
+  return why;
 }
 
 /** Control characters: never in a drawn root or a granted folder. */
