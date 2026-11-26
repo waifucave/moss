@@ -407,7 +407,7 @@ describe("what MOSS Code writes to its log file", () => {
       const n = [...readFileSync(join(dir, f), "utf8").matchAll(/(?<![A-Za-z0-9_])(?:[#\w.]*\.)?log\(\s*[`"]/g)].length;
       if (n > 0) counts[f] = n;
     }
-    expect(counts).toEqual({ "engine-launch.ts": 5, "release.ts": 8, "updater.ts": 14 });
+    expect(counts).toEqual({ "engine-launch.ts": 5, "gpu-guard.ts": 1, "release.ts": 8, "updater.ts": 14 });
   });
 
   test("the file's writer in index.ts is fed through fileLine, never the raw line, while the output keeps the raw line", () => {
