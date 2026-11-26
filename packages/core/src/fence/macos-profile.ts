@@ -48,15 +48,34 @@ const rx = (p: string) => p.replace(/[\\^$.|?*+()[\]{}]/g, "\\$&").replace(/"/g,
 const inside = (p: string, root: string) => p === root || p.startsWith(root.endsWith("/") ? root : `${root}/`);
 
 /** An SBPL path filter for a deny entry: a subpath, or for a glob (`*` any one name, `*.x` any name ending `.x`, as the
- *  policy's patterns are) a regex. */
-const filterOf = (d: string): string => (d.includes("*")
+ *  policy's patterns are) a regex. A glob with a `**` segment (any folders or none) is the bot sandbox's dialect
+ *  (`shellRunLaterDenies`, drawn for another computer's command in its folder: fence/peer-floor.ts), whose closed `[…]`
+ *  is a class too. */
+export const filterOf = (d: string): string => (d.split("/").includes("**")
+  ? `(regex #"^${deepGlob(d)}(/|$)")`
+  : d.includes("*")
   ? `(regex #"^${d.split("/").map((seg) => rx(seg).replace(/\\\*/g, "[^/]*")).join("/")}(/|$)")`
   : `(subpath ${q(d)})`);
+
+/** A `**` glob as a regex body: `**` any folders or none, `*` within one name, a closed `[…]` of letters a class, the
+ *  rest literal. */
+function deepGlob(d: string): string {
+  const segs = d.split("/");
+  let out = "";
+  segs.forEach((seg, i) => {
+    if (i > 0 && segs[i - 1] !== "**") out += "/";
+    if (seg === "**") { out += "(.*/)?"; return; }
+    out += seg.replace(/\[[A-Za-z]+\]|\*|[^*[]+|\[/g, (t) => (t === "*" ? "[^/]*" : /^\[[A-Za-z]+\]$/.test(t) ? t : rx(t)));
+  });
+  return out;
+}
 
 /** The folders a rename would move a fenced item with: each one between a writable root and the item. */
 function holders(denied: readonly string[], writable: readonly string[]): string[] {
   const out = new Set<string>();
   for (const d of denied) {
+    // A `**` glob's regex holds its names wherever they are moved to: no folder holds it.
+    if (d.split("/").includes("**")) continue;
     for (let p = dirname(d); p !== dirname(p); p = dirname(p)) {
       if (writable.some((w) => inside(p, w))) out.add(p);
       else break;
@@ -78,6 +97,8 @@ export function macFenceProfile(input: MacProfileInput): string {
   // make the whole folder writable).
   const naming = new Set<string>();
   for (const d of policy.denyWrite) {
+    // A `**` glob names no one folder: it holds by its regex wherever its names land.
+    if (d.split("/").includes("**")) continue;
     if (!inside(d, input.mossHome) && d !== input.mossHome) {
       const parent = dirname(d);
       if (!inside(parent, input.mossHome) && !inside(input.mossHome, parent) && !writable.some((w) => w === parent)

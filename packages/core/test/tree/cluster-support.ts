@@ -120,6 +120,8 @@ export interface ClusterOptions {
   /** The calling computer's side of R1: shows the user another computer's card and signs their answer. */
   askUser?: (name: string) => AnswerAsker | undefined;
   reviewer?: (name: string) => PeerReviewer | undefined;
+  /** A computer's own executor in place of the plain shell (step 3b's tests: the folder a peer's command gets). */
+  executor?: (name: string, home: string) => ToolExecutor | undefined;
   terminals?: (name: string) => { launch?: ShellLauncher; confirmPaste?: (text: string, terminalId: string) => Promise<boolean> } | undefined;
   mcp?: (name: string) => ComputerNodeOptions["mcp"] | undefined;
   lease?: (name: string) => ComputerNodeOptions["lease"] | undefined;
@@ -176,7 +178,7 @@ export class Cluster {
       home,
       mossHome,
       fence,
-      executor: shellExecutor,
+      executor: opts.executor?.(name, home) ?? shellExecutor,
       bots: () => bots,
       devices,
       ...(answers ? { answers } : {}),

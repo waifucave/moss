@@ -33,6 +33,7 @@ import type { FencedSpawner } from "../fence/spawn";
 import type { PeerReviewer } from "../tree/judge";
 import { hostOs } from "../tree/names";
 import { fencedExecutor } from "./fenced-executor";
+import type { PeerFloorOptions, PeerWriteFolder } from "../fence/peer-floor";
 import type { ComputerNodeOptions } from "./node";
 
 /** MOSS's own words for the paste card. */
@@ -132,7 +133,9 @@ export function nodeParts(o: {
   /** Lane C's fenced process on this computer (`fencedSpawner({ fence })`) and the user's home: the node's Bash. */
   bash?: { spawner: FencedSpawner; home: string; temp?: string; mossHome?: string; os?: Os;
     /** Another computer's command: the fenced process for its own write root (`peerFence`); none, refused. */
-    peerSpawner?: (root: string) => FencedSpawner };
+    peerSpawner?: (root: string, folder?: PeerWriteFolder) => FencedSpawner;
+    /** What a peer's folder is judged against (step 3b); without it a peer's command writes only its temp folder. */
+    peerFloor?: PeerFloorOptions & { pathFolders: () => readonly string[] } };
   /** This computer's paired devices and its MOSS home: the node takes another computer's signed answers. */
   answers?: { devices: AnswerDevices; mossHome: string; clock: Pick<Clock, "now"> };
   /** Whether any of the person's devices can sign an answer to another computer's card (`brokerAsker`'s `canSign`). */
@@ -144,7 +147,7 @@ export function nodeParts(o: {
   return {
     ...(approvals && typeof approvals.get === "function" ? { askUser: brokerAsker({ broker: approvals, ...(o.canSign ? { canSign: o.canSign } : {}), ...(o.log ? { log: o.log } : {}) }) } : {}),
     ...(o.answers ? { answers: { devices: o.answers.devices, ledger: new FileAnswerLedger(usedAnswersPath(o.answers.mossHome), o.answers.clock), render: callCardRenderer(sha256) } } : {}),
-    ...(o.bash ? { executor: fencedExecutor({ spawner: o.bash.spawner, home: o.bash.home, ...(o.bash.temp === undefined ? {} : { temp: o.bash.temp }), ...(o.bash.mossHome === undefined ? {} : { mossHome: o.bash.mossHome }), ...(o.bash.peerSpawner === undefined ? {} : { peerSpawner: o.bash.peerSpawner }), os: o.bash.os ?? hostOs() }) } : {}),
+    ...(o.bash ? { executor: fencedExecutor({ spawner: o.bash.spawner, home: o.bash.home, ...(o.bash.temp === undefined ? {} : { temp: o.bash.temp }), ...(o.bash.mossHome === undefined ? {} : { mossHome: o.bash.mossHome }), ...(o.bash.peerSpawner === undefined ? {} : { peerSpawner: o.bash.peerSpawner }), ...(o.bash.peerFloor === undefined ? {} : { peerFloor: o.bash.peerFloor }), os: o.bash.os ?? hostOs() }) } : {}),
     terminals: approvals ? { confirmPaste: confirmPasteVia(approvals, o.computer) } : {},
     reviewer: peerReviewer(o.reviewer, o.log),
     // A broker (or a late-bound proxy for one) without `get` finds no card: a clean "no such card", not a TypeError.

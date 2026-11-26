@@ -128,8 +128,9 @@ function realOrSelf(p: string): string {
   try { return realpathSync(p); } catch { return p; }
 }
 
-/** Why a folder is never given to shell commands, before its class is asked: undefined when nothing here says so. */
-function neverGiven(real: string, deps: RequestAccessDeps): string | undefined {
+/** Why a folder is never given to shell commands, before its class is asked: undefined when nothing here says so.
+ *  Another computer's command gets a folder by the same checks (fence/peer-floor.ts `peerFolderRefusal`). */
+export function neverGiven(real: string, deps: Pick<RequestAccessDeps, "home" | "pathFolders" | "mossHome" | "os">): string | undefined {
   const os = deps.os ?? (process.platform === "darwin" ? "macos" : process.platform === "win32" ? "windows" : "linux");
   if (os === "linux") return "On Linux the shell's sandbox holds only the places that exist when a command starts, so a .git or a hook made by a command wouldn't be held: shell commands get no folder beyond their level's here. Use Write or Edit, which ask when they need to.";
   if (CONTROL.test(real) || shownCode(real) !== real || plainOf(real) !== real) return `That folder's name has hidden or control characters, so it can't be shown on a card as it is: shell commands never get it.`;

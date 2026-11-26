@@ -29,7 +29,8 @@ import type { HookSource } from "./runtime-sdk/turn-loop/hooks";
 import type { CanUseTool, Options, SandboxSettingsConfig, SpawnClaudeCodeProcess } from "@waifucave/clover-agent-sdk";
 import type { AgentDefView, Caller } from "@waifucave/moss-protocol";
 import { fencedSpawner } from "./fence/fenced-process";
-import { peerFence } from "./fence/peer-floor";
+import { peerFence, type PeerWriteFolder } from "./fence/peer-floor";
+import { hostPathFolders } from "./agents/bot-child";
 import { sweepPeerFolders } from "./computers/fenced-executor";
 import { agentShellTools } from "./fence/win-shell-tools";
 import { browserAppHandlers } from "./browser/app-port";
@@ -191,7 +192,7 @@ export interface DaemonPartsInput {
   spawner?: FencedSpawner | false;
   /** Test seam: the fenced process for another computer's command, given its own write root. Default:
    *  `fencedSpawner` over `peerFence(fence, root)`. */
-  peerSpawner?: (root: string) => FencedSpawner;
+  peerSpawner?: (root: string, folder?: PeerWriteFolder) => FencedSpawner;
   /** The daemon's update gate: the bot side's running turns keep an update waiting. */
   updateGate?: BotSideOptions["updateGate"];
   /** Lane K's agents over the bot side's host; false for none. They need the node (the folder tree) and the bot side. */
@@ -402,7 +403,9 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
         // (fence/peer-floor.ts): never more than a bot here gets.
         ...(input.spawner === false ? {} : { bash: {
           spawner: input.spawner ?? fencedSpawner({ fence }), home: input.userHome, mossHome: input.mossHome, temp: fence.temp,
-          peerSpawner: input.peerSpawner ?? ((root: string) => fencedSpawner({ fence: peerFence(fence, root, { userHome: input.userHome, mossHome: input.mossHome, os: hostOs() }) })),
+          peerSpawner: input.peerSpawner ?? ((root: string, folder?: PeerWriteFolder) => fencedSpawner({ fence: peerFence(fence, root, { userHome: input.userHome, mossHome: input.mossHome, os: hostOs() }, folder) })),
+          // Step 3b: the folder a peer's command runs in, judged as a bot's grant here (its PATH read at each call).
+          peerFloor: { userHome: input.userHome, mossHome: input.mossHome, os: hostOs(), pathFolders: () => hostPathFolders(hostOs()) },
         } }),
         answers: { devices: nodeLinks.devices, mossHome: input.mossHome, clock: input.clock },
         ...(input.canSign ? { canSign: input.canSign } : {}),

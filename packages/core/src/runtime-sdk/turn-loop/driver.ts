@@ -185,12 +185,14 @@ export function treeResultText(tool: string, output: unknown): string {
   if (typeof output === "string") return output;
   if (output === null || typeof output !== "object") return String(output ?? "");
   const o = output as Record<string, unknown>;
+  // The holder's own word on what the command's folder got (lane XC step 3b: why it ran without access to it).
+  const note = typeof o.note === "string" && o.note !== "" ? `(${o.note})` : "";
   if (typeof o.error === "string" && (typeof o.message === "string" || Object.keys(o).length <= 2)) {
-    return `Error: ${o.error}${typeof o.message === "string" ? `: ${o.message}` : ""}`;
+    return `Error: ${o.error}${typeof o.message === "string" ? `: ${o.message}` : ""}${note === "" ? "" : `\n${note}`}`;
   }
   if (tool === "Bash") {
     const out = [o.stdout, o.stderr].map((s) => (typeof s === "string" ? s.replace(/\n+$/, "") : "")).filter((s) => s !== "").join("\n");
-    const notes = [o.timedOut === true ? "(timed out)" : "", o.aborted === true ? "(stopped)" : "", typeof o.code === "number" && o.code !== 0 ? `Exit code ${o.code}` : ""].filter((s) => s !== "");
+    const notes = [o.timedOut === true ? "(timed out)" : "", o.aborted === true ? "(stopped)" : "", typeof o.code === "number" && o.code !== 0 ? `Exit code ${o.code}` : "", note].filter((s) => s !== "");
     return [out, ...notes].filter((s) => s !== "").join("\n");
   }
   if (tool === "Glob" && Array.isArray(o.paths)) {

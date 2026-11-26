@@ -65,3 +65,14 @@ reach, because it needs something that isn't in a test run.
   proves "a process running as you that registered first", not the signed app. This is the open before-release item.
   On macOS the app role takes only a peer signed with the team's Developer ID for one named program, and the hello's
   surface must be that program.
+- **A peer's command writing its folder on Linux and Windows** (step 3b). On a macOS holder, another computer's command
+  writes the folder it runs in where a bot there would: on the holder reviewer's "safe" where the level's own shell
+  roots cover it, or after the person's yes to the holder's card (a one-call RequestAccess grant). On Linux it gets
+  only what the wider levels' roots give a bot there with no card (accept edits, fully automatic); a yes gives no
+  folder, because a bot's grants are refused there (its sandbox holds only what exists when a command starts, and a
+  `.git` a command makes is only taken away after it). On Windows a peer's command writes only its own temp folder.
+  Both wait on the same items as the local grants: the Linux sandbox holding a name made during a run, and the
+  Windows fence's deny depth checked for a peer's folder.
+- **A bot committing on another computer.** Every `.git` is denied whole to a peer's command, as to a local bot's
+  sandboxed one; a commit is the outside-the-sandbox card on the bot's own computer only. A peer's form of that card
+  (on the holder, run as the person there) is not built. One backlog item for both.

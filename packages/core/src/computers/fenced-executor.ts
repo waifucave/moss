@@ -10,14 +10,20 @@
 // closed doors and network rule as for anyone. The child's environment is built here, whole: a fixed PATH, the user's
 // home and a temp folder (TMPDIR: a bot's own scratch folder for its own runs, the peer's own folder for a peer's,
 // the fence's temp folder for the rest), nothing inherited from the daemon (no keys, no tokens).
+//
+// Step 3b: a peer's command may also write the folder it runs in, where the tree service says so (`ctx.write`, by
+// `peerFolderFor`), under exactly the local bot sandbox's denies there (`peerFolderDenies`). Such runs go one at a
+// time on this computer, and the folder's real path is read again right before each: no other peer command can then
+// swap it for a link between the service's check and the spawn (a temp-only one can't write its parent).
 import { createHash } from "node:crypto";
-import { lstatSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { lstatSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Caller, Os } from "@waifucave/moss-protocol";
 import { fenceContextFor, ownFoldersOf } from "../contracts/fence";
 import { mkdirNoLinks } from "../fence/fenced-process";
+import { peerFolderDenies, peerFolderFor, runLaterUnder, sweepRunLater, type PeerFloorOptions, type PeerWriteFolder } from "../fence/peer-floor";
 import type { FencedRunResult, FencedSpawner } from "../fence/spawn";
-import type { ToolExecutor } from "../tree/service";
+import type { ToolExecutor, ToolRunContext } from "../tree/service";
 
 /** How long a Bash call runs when it doesn't say (Claude Code's default). */
 export const BASH_DEFAULT_TIMEOUT_MS = 120_000;
@@ -40,7 +46,10 @@ export interface FencedExecutorOptions {
   /** Another computer's call (a `peer`): the fenced process it runs on, built for its own fresh temp folder `root`, its
    *  one write root (`peerFence`, fence/peer-floor.ts). The folder is made under `temp` for the call and removed
    *  after it. Without it, a peer's command is refused here. */
-  peerSpawner?: (root: string) => FencedSpawner;
+  peerSpawner?: (root: string, folder?: PeerWriteFolder) => FencedSpawner;
+  /** What a peer's folder is judged against here (step 3b, `peerFolderFor`): the homes, the OS and the PATH's folders
+   *  now. Without it, a peer's command writes only its own temp folder, as before. */
+  peerFloor?: PeerFloorOptions & { pathFolders: () => readonly string[] };
 }
 
 /** Where another computer's calls get their own folders: one parent per MOSS home (`moss-peer-<hash>` in the fence's
@@ -78,8 +87,41 @@ export function fencedExecutor(o: FencedExecutorOptions): ToolExecutor {
     }
     return o.temp;
   };
+  // Peer runs that write a folder go one at a time (the head comment).
+  let folderRuns: Promise<unknown> = Promise.resolve();
+  const oneAtATime = <T>(fn: () => Promise<T>): Promise<T> => {
+    const next = folderRuns.then(fn, fn);
+    folderRuns = next.catch(() => {});
+    return next;
+  };
+  const floor = o.peerFloor;
+  /** The folder a peer's run may write, with its denies and (Linux) what was held at the start; or why not now. */
+  const prepare = (folder: string): { folder: PeerWriteFolder; held: string[] } | { why: string } => {
+    if (floor === undefined) return { why: `this computer gives another computer's commands no folder, so it ran without access to ${folder}` };
+    let real: string;
+    try { real = realpathSync.native(folder); } catch { real = ""; }
+    if (real !== folder || !lstatSync(folder, { throwIfNoEntry: false })?.isDirectory()) return { why: `${folder} changed before the command started, so it ran without access to it` };
+    const f = { ...floor, pathFolders: floor.pathFolders() };
+    let held: string[] = [];
+    if (floor.os === "linux") {
+      const look = runLaterUnder(folder, f);
+      if (!look.complete) return { why: `${folder} holds too many folders to check for places that run later, so it ran without access to it` };
+      held = look.found;
+    }
+    return { folder: { path: folder, denyWrite: peerFolderDenies(folder, f, held) }, held };
+  };
   return {
+    ...(floor === undefined ? {} : {
+      peerFolder: (x: Parameters<NonNullable<ToolExecutor["peerFolder"]>>[0]) => peerFolderFor(x, { ...floor, pathFolders: floor.pathFolders() }),
+    }),
     async run(tool, input, ctx) {
+      const wants = ctx.as.kind === "peer" && ctx.write !== undefined && "folder" in ctx.write ? ctx.write.folder : undefined;
+      if (wants !== undefined) return oneAtATime(() => runOnce(tool, input, ctx, wants));
+      return runOnce(tool, input, ctx, undefined);
+    },
+  };
+
+  async function runOnce(tool: string, input: unknown, ctx: ToolRunContext, wants: string | undefined): Promise<{ output: unknown; isError: boolean }> {
       if (tool !== "Bash") return { output: { error: `${tool} doesn't run through this computer's executor; only Bash does` }, isError: true };
       const i = (typeof input === "object" && input !== null ? input : {}) as { command?: unknown; timeoutMs?: unknown };
       if (typeof i.command !== "string" || i.command.length === 0) return { output: { error: "Bash: no command" }, isError: true };
@@ -87,8 +129,11 @@ export function fencedExecutor(o: FencedExecutorOptions): ToolExecutor {
       const timeoutMs = Math.min(asked, BASH_MAX_TIMEOUT_MS);
       if (ctx.signal.aborted) return { output: { stdout: "", stderr: "", code: null, aborted: true }, isError: true };
       let r: FencedRunResult;
-      // Another computer's call: its own fresh temp folder, its only write root (fence/peer-floor.ts), gone after it.
+      // Another computer's call: its own fresh temp folder, its only write root (fence/peer-floor.ts), gone after it;
+      // and the folder it runs in, when the service gave it (step 3b) and it is still that folder now.
       let peerRoot: string | undefined;
+      let note: string | undefined = ctx.write !== undefined && "why" in ctx.write ? ctx.write.why : undefined;
+      let swept: { folder: string; held: string[] } | undefined;
       try {
         let spawner = o.spawner;
         let tmp: string | undefined;
@@ -97,7 +142,11 @@ export function fencedExecutor(o: FencedExecutorOptions): ToolExecutor {
           const parent = peerFolderParent(o.temp, o.mossHome);
           mkdirNoLinks(parent);
           peerRoot = mkdtempSync(join(parent, "peer-"));
-          spawner = o.peerSpawner(peerRoot);
+          const ready = wants === undefined ? undefined : prepare(wants);
+          if (ready !== undefined && "why" in ready) note = ready.why;
+          const folder = ready !== undefined && "folder" in ready ? ready.folder : undefined;
+          if (ready !== undefined && "folder" in ready && o.os === "linux") swept = { folder: ready.folder.path, held: ready.held };
+          spawner = folder === undefined ? o.peerSpawner(peerRoot) : o.peerSpawner(peerRoot, folder);
           tmp = peerRoot;
         } else tmp = tempFor(ctx.as);
         const env = { ...base, ...(tmp === undefined ? {} : { TMPDIR: tmp }) };
@@ -107,13 +156,21 @@ export function fencedExecutor(o: FencedExecutorOptions): ToolExecutor {
         return { output: { error: `this computer's fenced process failed to start: ${e instanceof Error ? e.message : String(e)}` }, isError: true };
       } finally {
         if (peerRoot !== undefined) rmSync(peerRoot, { recursive: true, force: true });
+        // Linux (the local sandbox's own residual): what the command made at a held name in the folder, taken away.
+        if (swept !== undefined && floor !== undefined) {
+          const s = sweepRunLater(swept.folder, swept.held, floor);
+          const said: string[] = [];
+          if (s.removed.length > 0) said.push(`removed what it made where commands from another computer never write: ${s.removed.join(", ")}`);
+          if (!s.complete) said.push(`${swept.folder} grew past what can be checked for such places`);
+          if (said.length > 0) note = [note, ...said].filter((x) => x !== undefined).join("; ");
+        }
       }
-      if (r.kind === "refused") return { output: { error: `refused: ${r.reason}` }, isError: true };
+      const noted = note === undefined ? {} : { note };
+      if (r.kind === "refused") return { output: { error: `refused: ${r.reason}`, ...noted }, isError: true };
       // The fenced process gives its output at the end; it goes to the caller's stream once, in order.
       if (r.stdout) ctx.output(r.stdout, "stdout");
       if (r.stderr) ctx.output(r.stderr, "stderr");
-      if (r.kind === "timeout") return { output: { stdout: r.stdout, stderr: r.stderr, code: null, timedOut: true, aborted: ctx.signal.aborted }, isError: true };
-      return { output: { stdout: r.stdout, stderr: r.stderr, code: r.code, aborted: ctx.signal.aborted }, isError: r.code !== 0 || ctx.signal.aborted };
-    },
-  };
+      if (r.kind === "timeout") return { output: { stdout: r.stdout, stderr: r.stderr, code: null, timedOut: true, aborted: ctx.signal.aborted, ...noted }, isError: true };
+      return { output: { stdout: r.stdout, stderr: r.stderr, code: r.code, aborted: ctx.signal.aborted, ...noted }, isError: r.code !== 0 || ctx.signal.aborted };
+  }
 }

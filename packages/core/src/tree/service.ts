@@ -24,7 +24,9 @@ import type { LinkTransport } from "../contracts/link-transport";
 import { checkNoFollow } from "../contracts/tree";
 import { TREE_IO_MAX, type HolderCall, type LocalHolder } from "./holder";
 import type { TreeChangedNotice } from "./remote";
-import { judgePeer, type PeerReviewer } from "./judge";
+import { judgePeer, needsAnswer, type PeerPass, type PeerReviewer } from "./judge";
+import { fencedReadOnlyCommand } from "../approvals/bot-check";
+import type { PeerFolderDecision, PeerPassBy } from "../fence/peer-floor";
 import { checkActFence, type ActFence } from "./fencing";
 
 const M = COMPUTERS_METHODS;
@@ -69,12 +71,17 @@ export interface ToolRunContext {
   signal: AbortSignal;
   /** Output as it comes; it streams to the calling computer as `tool_output`. */
   output(chunk: string, stream: "stdout" | "stderr"): void;
+  /** What the folder it runs in gets (step 3b, `peerFolder`): write access, or none with why (the tool result says
+   *  it). Absent: none, as before. */
+  write?: { folder: string } | { why?: string };
 }
 
 /** What runs a tool call on this computer. In the daemon it is the runtime's own Bash under this computer's sandbox
  *  (lanes A and C); tests give a plain one. There is no default: nothing here runs a command unsandboxed. */
 export interface ToolExecutor {
   run(tool: string, input: unknown, ctx: ToolRunContext): Promise<{ output: unknown; isError: boolean }>;
+  /** What the folder a peer's command runs in gets here (fence/peer-floor.ts `peerFolderFor`); absent, none. */
+  peerFolder?(o: { holder: string; folder: string; by: PeerPassBy; level: PeerPass["level"]; readOnly: boolean; verdict?: "safe" | "risky" | "unavailable" }): PeerFolderDecision;
 }
 
 /** What a Bash call's input says, for the holder: its command, and the folder it runs in. */
@@ -273,7 +280,11 @@ export class TreeService {
     if (!input.success) throw new ContractError("invalid", `Bash: ${input.error.issues[0]?.message ?? "bad input"}`);
     // Where it runs: a folder of this computer's tree, fenced as the peer.
     const cwd = await this.#o.holder.realFolder(input.data.cwd, call);
-    await this.#judge(p, call);
+    // The bot check's own read-only rule (a local bot's `ls` asks nothing at ask for risky actions): on the command
+    // alone, never on anything else the caller sent.
+    const readOnly = fencedReadOnlyCommand("Bash", { command: input.data.command });
+    const pass = await this.#judge(p, call, readOnly);
+    const write = await this.#folder(p, call, pass, cwd, readOnly, tools);
     const key = runKey(from, p.session, p.callId);
     if (this.#running.has(key)) throw new ContractError("conflict", `the call ${p.callId} is already running`);
     const abort = new AbortController();
@@ -284,6 +295,7 @@ export class TreeService {
     try {
       return await tools.run(p.tool, input.data, {
         as: call.as, session: p.session, callId: p.callId, cwd, treeCwd: input.data.cwd, signal: abort.signal,
+        ...(write === undefined ? {} : { write }),
         output: (chunk, stream) => {
           const send = (l: NonNullable<typeof link>) => l.notify("tool_output", { session: p.session, callId: p.callId, chunk, stream }, { priority: "tokens" });
           if (link) send(link);
@@ -314,13 +326,32 @@ export class TreeService {
   /** A peer's tool call, at the stricter of this computer's level and the call's (`judge.ts`, R1): the reviewer
    *  passes what isn't risky at `ask-risky`; the rest needs the user's answer bound to `tool.run` with its tool and
    *  input. */
-  async #judge(p: z.infer<(typeof TREE_PEER_PARAMS)["tool.run"]>, call: HolderCall): Promise<void> {
-    await judgePeer({
+  async #judge(p: z.infer<(typeof TREE_PEER_PARAMS)["tool.run"]>, call: HolderCall, readOnly = false): Promise<PeerPass> {
+    return judgePeer({
       computer: this.#o.holder.name, ownLevel: this.#o.level?.(), callLevel: p.level, effect: "execute",
       method: "tool.run", params: toolCallBinding(p.tool, p.input), as: call.as, now: this.#o.clock.now(),
       ...(call.answer ? { answer: call.answer } : {}), ...(this.#o.reviewer ? { reviewer: this.#o.reviewer } : {}),
-      ...(this.#o.answers ? { answers: this.#o.answers } : {}),
+      ...(this.#o.answers ? { answers: this.#o.answers } : {}), readOnly,
     });
+  }
+
+  /** What the folder a peer's command runs in gets (step 3b): the executor's rule (`peerFolderFor`) on how the call
+   *  was let through. At fully automatic, where no card is ever raised, the reviewer is asked here for it (a command
+   *  that isn't read-only); one that throws is taken as unable to judge. The card for the folder is the call's own
+   *  card, so the person's answer to it lets the call through as `answer`. */
+  async #folder(p: z.infer<(typeof TREE_PEER_PARAMS)["tool.run"]>, call: HolderCall, pass: PeerPass, cwd: string, readOnly: boolean, tools: ToolExecutor): Promise<ToolRunContext["write"]> {
+    if (tools.peerFolder === undefined || call.as.kind !== "peer") return undefined;
+    const holder = this.#o.holder.name;
+    const params = toolCallBinding(p.tool, p.input);
+    let verdict: "safe" | "risky" | "unavailable" | undefined;
+    if (pass.by === "level" && !readOnly) {
+      try {
+        verdict = this.#o.reviewer ? await this.#o.reviewer({ computer: holder, method: "tool.run", params, as: call.as, effect: "execute" }) : "unavailable";
+      } catch { verdict = "unavailable"; }
+    }
+    const d = tools.peerFolder({ holder, folder: cwd, by: pass.by, level: pass.level, readOnly, ...(verdict === undefined ? {} : { verdict }) });
+    if ("ask" in d) throw needsAnswer(holder, "tool.run", params, this.#o.answers?.render, d.ask);
+    return d;
   }
 }
 

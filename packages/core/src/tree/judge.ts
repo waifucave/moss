@@ -18,6 +18,7 @@ import {
 } from "../contracts/approval-broker";
 import { ContractError, isContractError } from "../contracts/common";
 import { CARD_PROOF_MAX_AGE_MS } from "../contracts/computer-registry";
+import type { PeerPassBy } from "../fence/peer-floor";
 
 /** How old a signed answer may be when it arrives: the card proof's own bound (the unattended card timeout). A device
  *  signs the moment the user answers and the call goes again at once; an older answer is a replay, or the user's
@@ -80,18 +81,22 @@ export async function judgePeer(o: {
   reviewer?: PeerReviewer;
   answers?: Answers;
   now: number;
-}): Promise<void> {
+  /** A command the bot check judges read-only (`fencedReadOnlyCommand`): at a level that would ask the reviewer, it
+   *  runs with no reviewer and no card, as a bot's read-only command does here (step 3b). */
+  readOnly?: boolean;
+}): Promise<PeerPass> {
   // The computer the card names: this one, or for a move or copy between two (R15) the destination its params name,
   // whichever end asks; the answer is checked as this computer either way (`bindsComputer`).
   const cardComputer = o.method === TREE_TRANSFER ? (o.params as TreeTransferParams).destination : o.computer;
   const level = strictestLevel([o.ownLevel ?? DEFAULT_LEVEL, o.callLevel])!;
   const d = levelDecision(level, o.effect);
-  if (d === "allow") return;
+  if (d === "allow") return { by: "level", level };
   if (d === "deny") throw new ContractError("refused", `${o.computer} doesn't let another computer do this at its level`);
+  if (d === "review" && o.readOnly === true) return { by: "read-only", level };
   if (!o.answer) {
     if (d === "review" && o.reviewer) {
       const verdict = await o.reviewer({ computer: o.computer, method: o.method, params: o.params, as: o.as, effect: o.effect });
-      if (verdict === "safe") return;
+      if (verdict === "safe") return { by: "reviewer", level };
     }
     throw needsAnswer(cardComputer, o.method, o.params, o.answers?.render, `${o.computer} needs the user's answer for this, signed and bound to it`);
   }
@@ -112,6 +117,13 @@ export async function judgePeer(o: {
     throw new ContractError("refused", `${o.computer} holds an earlier key for the app this was answered in: accept its new key on ${o.computer}'s card, or answer this on another of your devices`, { verdict });
   }
   if (verdict !== "ok") throw new ContractError("refused", `the answer doesn't hold for this call (${verdict})`, { verdict });
+  return { by: "answer", level };
+}
+
+/** How a peer's call was let through, and at which level (the strictest of the holder's and the call's). */
+export interface PeerPass {
+  by: PeerPassBy;
+  level: Level;
 }
 
 /** The calling computer's side (R1, "the card on the caller"): shows the user the holder's own card, on any of their

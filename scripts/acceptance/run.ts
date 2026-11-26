@@ -4191,7 +4191,14 @@ async function computersRun(): Promise<void> {
       if (r === undefined) return fail("the bot was given no result");
       if (r.isError || !r.text.includes(real) || !r.text.includes(BETA_NOTE)) fail(`the output doesn't show Beta's folder and file (${r.text.slice(0, 200)})`);
       if (!r.text.startsWith("now on Beta: home/Beta/project")) fail(`the result's first line doesn't say where the shell now is (${r.text.split("\n")[0]})`);
-      return `ran in ${real} on Beta (its pwd and its file in the output)`;
+      // Step 3b at fully automatic: no card ever; a command that writes gets Beta's folder only on its reviewer's
+      // "safe", and this engine has no model to judge it, so it runs with only its own temp folder, and says why.
+      const write = await callOn("Bash", { command: "cd home/Beta/project && echo from-alpha > bash-write.txt", description: "write a file" });
+      const landed = join(betaUser, "project", "bash-write.txt");
+      if (write === undefined) return fail("the writing command was given no result");
+      if (existsSync(landed)) fail("a command Beta's reviewer couldn't judge wrote Beta's folder at fully automatic");
+      if (!write.text.includes("Beta's reviewer couldn't judge this command, so it ran without access to")) fail(`the result doesn't say why the write didn't land (${write.text.slice(0, 240)})`);
+      return `ran in ${real} on Beta (its pwd and its file in the output); a write Beta's reviewer couldn't judge stayed out of the folder, the reason in its result`;
     });
     await step(COMPUTERS_REFUSED_STEP, async () => {
       // Dummies only: the other bot's memory and a secrets file made here when the engine has none yet; the token is Beta's own
