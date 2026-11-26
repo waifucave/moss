@@ -12,6 +12,7 @@
   },
   "linuxSkips": {
     "test/fence/fold-paths.test.ts": "one case needs a real 8.3 short name on the way (the runner's TEMP, `diskSpelling`): Windows only (the windows-fence unit jobs run it there)",
+    "test/fence/long-path.test.ts": "one case makes a real directory junction (mklink /J) and a short 8.3 temp name: Windows only (the windows-fence unit jobs run it there)",
     "src/plugin-host/tests/windows-link.test.ts": "the plugin host's named-pipe link and its DACL: Windows only (runs in windows-fence.yml | Core · the plugin host's link, the plugin guard, the secrets store and the ACL read-back on Windows)",
     "src/registry/tests/plugin-guard-windows.test.ts": "the plugin guard's junction, 8.3 name, run-folder ACL and bin\\bun.exe cases: Windows only (runs in windows-fence.yml | Core · the plugin host's link, the plugin guard, the secrets store and the ACL read-back on Windows)",
     "src/secrets/tests/windows-store.test.ts": "the secrets store against Windows Credential Manager, timed: Windows only (runs in windows-fence.yml | Core · the plugin host's link, the plugin guard, the secrets store and the ACL read-back on Windows)",
