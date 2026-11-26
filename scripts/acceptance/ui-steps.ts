@@ -1191,7 +1191,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       });
       // A file the user picked for it in its own page (main's register call, the app's role): a real file in a temp folder.
       // Packaged, the run's connection is the CLI's, which may not register a grant: that clause is then not driven.
-      grantedPath = join(realpathSync(mkdtempSync(join(tmpdir(), "e7a-grant-"))), "notes.txt");
+      grantedPath = join(realpathSync.native(mkdtempSync(join(tmpdir(), "e7a-grant-"))), "notes.txt");
       writeFileSync(grantedPath, "a file the plugin may open\n");
       const grantToken = `grant:${crypto.randomUUID()}`;
       const granted = await rpc.request("plugin.grant.add", { pluginId: pick!.id, token: grantToken, path: grantedPath, kind: "file", access: "read" }).then(() => true, (err: unknown) => { grantSkipped = String((err as Error).message ?? err); return false; });
