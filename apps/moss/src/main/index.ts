@@ -77,6 +77,9 @@ const gpuGuard = installGpuGuard(app, nodeGpuFiles, (l) => console.log(`moss: ${
 if (headless) {
   // Nothing on the screen and no sound: no Dock icon, no window shown, every page muted.
   app.commandLine.appendSwitch("mute-audio");
+  // A Windows runner has no GPU: Chromium's GPU process dies on each frame there and, after a few deaths, takes the whole app down
+  // ("GPU process isn't usable. Goodbye." in the setup unit's second window). A test-marked headless build draws in software.
+  if (process.platform === "win32" && typeof __MOSS_TEST_BUILD__ === "string") app.commandLine.appendSwitch("disable-gpu");
   if (process.platform === "darwin") app.dock?.hide();
 }
 

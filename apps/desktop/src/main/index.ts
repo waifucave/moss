@@ -219,6 +219,9 @@ const gpuGuard = installGpuGuard(app, nodeGpuFiles, (l) => console.log(`[desktop
 // the player (its clock and counters run), muted at Chromium's output.
 const silent = headless || preview || typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string";
 if (silent) app.commandLine.appendSwitch("mute-audio");
+// A Windows runner has no GPU: Chromium's GPU process dies there and, after a few deaths, the app with it. A headless test or
+// acceptance build draws in software (compiled out of a release, which carries neither marker).
+if (process.platform === "win32" && headless && (typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string")) app.commandLine.appendSwitch("disable-gpu");
 // Every plugin origin in a process of its own (S9).
 app.commandLine.appendSwitch("site-per-process");
 // No proxy at all, from the first request: every session's own direct proxy comes too late for what Chromium does as it
