@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, openSync, readFileSync, writeFileSync } from "n
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 import type { Cdp } from "./cdp";
 
 export const HOST_STEP = "the background host (lane HS): the engine starts it with no app window, one island in it and none in MOSS Code's window; with the window's process quit the island draws a pending card and takes its press, a background part keeps making its muted tone, and a bot's Browser tool opens a page; a restarted engine adopts the running host and starts no second; three crashes in two minutes start it in safe mode with no third-party part mounted, the engine's plugins still running";
@@ -98,7 +99,8 @@ export function readyCount(log: string): number {
  *  which it starts the host detached, with its output in `<home>/logs/host.out.log` as Launch Services' `--stdout` has on macOS. */
 export function startHostLauncher(): { sock: string; stop: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "clv-hl-"));
-  const sock = join(dir, "l.sock");
+  // Windows: a named pipe (a Unix path is no listener there).
+  const sock = process.platform === "win32" ? `\\\\.\\pipe\\clv-hl-${randomBytes(8).toString("hex")}` : join(dir, "l.sock");
   let running: ReturnType<typeof spawn> | undefined;
   const server = createServer((c) => {
     const chunks: Buffer[] = [];
@@ -129,8 +131,10 @@ export function startHostLauncher(): { sock: string; stop: () => void } {
   return { sock, stop: () => { try { server.close(); } catch { /* closed */ } } };
 }
 
-/** The `MOSS_HOST_COMMAND` JSON for Linux: a shell that sends its argv and environment to `startHostLauncher`'s socket. */
+/** The `MOSS_HOST_COMMAND` JSON for Linux (and Windows: a Bun client): a shell that sends its argv and environment to `startHostLauncher`'s socket. */
 export function hostCommandViaLauncher(sock: string, argv: string[]): string {
+  // Windows: the engine's own child is a Bun client that hands the launcher the host's argv and environment, and ends.
+  if (process.platform === "win32") return JSON.stringify([process.execPath, join(import.meta.dir, "host-launch-client.ts"), sock, ...argv]);
   const script = '{ for a in "$@"; do printf \'%s\\0\' "$a"; done; printf \'\\0\'; env -0; } | socat - "UNIX-CONNECT:$0"';
   return JSON.stringify(["/bin/sh", "-c", script, sock, ...argv]);
 }

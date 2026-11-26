@@ -554,11 +554,11 @@ function hostAppCopy(app: { exe: string; args: string[] }): { exe: string; args:
   }
   return { exe: join(dst, app.exe.slice(i + 5)), args: app.args };
 }
-/** The engine's source seam for the host (`MOSS_HOST_COMMAND`) as JSON. On Linux the host must start outside the engine's process tree
+/** The engine's source seam for the host (`MOSS_HOST_COMMAND`) as JSON. On Linux and Windows the host must start outside the engine's process tree
  *  (host-step.ts `startHostLauncher`: the harness plays the service manager), so the command hands argv to the launcher's socket. */
 let hostLauncher: { sock: string; stop: () => void } | undefined;
 function hostCommandOf(argv: string[]): string {
-  if (process.platform !== "linux") return JSON.stringify(argv);
+  if (process.platform !== "linux" && process.platform !== "win32") return JSON.stringify(argv);
   hostLauncher ??= startHostLauncher();
   return hostCommandViaLauncher(hostLauncher.sock, argv);
 }
