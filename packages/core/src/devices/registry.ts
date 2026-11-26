@@ -16,7 +16,7 @@
 // * the guided rotation a revocation starts: the synced keys the revoked device held, to be rotated (§8.1).
 import { join } from "node:path";
 import type { DeviceKind, DeviceOs, PhoneApp, Program } from "@waifucave/moss-protocol";
-import { AnswerKeyHolder, COMPUTER_NAME_RE, MOSS_PROGRAMS, programAnswerKeyStatement } from "@waifucave/moss-protocol";
+import { AnswerKeyHolder, COMPUTER_NAME_RE, MOSS_PROGRAMS, programAnswerKeyRotateStatement, programAnswerKeyStatement } from "@waifucave/moss-protocol";
 import { cleanName, nameProblem, safeDeviceName } from "./names";
 import type { Clock } from "../contracts/clock";
 import { ContractError, Listeners, type Unsubscribe } from "../contracts/common";
@@ -107,17 +107,82 @@ interface FileShape {
   groupsLeft: Record<string, { at: number; how: GroupLeaving }>;
   /** The `at` of the last program-keys message each peer sent (`applyPeerProgramKeys`), so an old one can't be replayed. */
   programUpdates?: Record<string, number>;
-  /** A peer's program key that differed from the one held, when it came: not taken (rotation is owed), so an answer
-   *  signed with it is refused with words that tell the person to pair the computer again. */
-  programKeysRefused?: Record<string, Partial<Record<Program, number>>>;
+  /** When this holder took each peer program key it holds (its own clock): a hand-over chain's first step must come
+   *  after it, so an old hand-over signed before the held key was taken can't be spliced in (lane XC, xc-6). */
+  programTakenAt?: Record<string, Partial<Record<Program, number>>>;
+  /** A peer program key that came with no hand-over from the held one (an app reinstalled there): waiting on the
+   *  person's card on THIS computer. At most one per device and program; a newer key replaces it. */
+  programPending?: Record<string, Partial<Record<Program, PendingProgramKey>>>;
+  /** The keys the person said no to on that card, never asked about again (at most `MAX_DECLINED_PROGRAM_KEYS`). */
+  programDeclined?: Record<string, Partial<Record<Program, string[]>>>;
+  /** The keys this holder replaced, never taken again, even with their own valid registration (at most
+   *  `MAX_RETIRED_PROGRAM_KEYS`). */
+  programRetired?: Record<string, Partial<Record<Program, string[]>>>;
+}
+
+/** The held key's hand-over to the next one: its signature over `programAnswerKeyRotateStatement` (base64). */
+export interface ProgramKeyHandOverStep {
+  from: string;
+  to: string;
+  at: number;
+  signature: string;
 }
 
 /** A computer's program answer keys, as it sends them to its peers (lane XC): MOSS's, MOSS Code's and the host's, each
- *  with the key's own registration signature over `programAnswerKeyStatement` (base64). */
+ *  with the key's own registration signature over `programAnswerKeyStatement` (base64), and the chain of hand-overs
+ *  that led to it (`handOvers`, each signed by the key it replaces; outside the link signature, which they don't need). */
 export interface PeerProgramKeys {
-  keys: { program: Program; publicKey: string; held: AnswerKeyHolder; alg?: AnswerKeyAlg; registration: string }[];
+  keys: { program: Program; publicKey: string; held: AnswerKeyHolder; alg?: AnswerKeyAlg; registration: string; handOvers?: ProgramKeyHandOverStep[] }[];
   at: number;
 }
+
+/** A peer's program key waiting on the person's card here. */
+export interface PendingProgramKey {
+  publicKey: string;
+  held: AnswerKeyHolder;
+  alg?: AnswerKeyAlg;
+  registration: string;
+  /** When it came (this computer's clock). */
+  at: number;
+}
+
+/** What a peer's program keys did here: a key waiting on the person's card (`pending`), or no longer waiting
+ *  (`settled`: taken by a hand-over or the card's yes, declined, or the device revoked). */
+export type ProgramKeyChange = { type: "pending"; device: string; program: Program; key: PendingProgramKey } | { type: "settled"; device: string; program: Program };
+
+export const MAX_PROGRAM_HAND_OVERS = 16;
+export const MAX_DECLINED_PROGRAM_KEYS = 16;
+export const MAX_RETIRED_PROGRAM_KEYS = 64;
+/** How far the two computers' clocks may differ when a hand-over's first step is held to the time this holder took
+ *  the key (the local hand-over's own skew, `PROGRAM_KEY_HAND_OVER_SKEW_MS`). */
+export const PROGRAM_HAND_OVER_CLOCK_SLACK_MS = 5 * 60 * 1000;
+
+/** Whether `handOvers` walks from `from` (the key held here) to `to`, each step signed by the key it replaces over
+ *  `programAnswerKeyRotateStatement` naming this device and this program, its first step no earlier than `notBefore`
+ *  and each later step no earlier than the one before. Steps from before the held key are skipped. */
+function provesProgramHandOver(id: string, program: Program, from: { publicKey: string; alg?: AnswerKeyAlg }, to: string, handOvers: unknown, notBefore: number): boolean {
+  if (!Array.isArray(handOvers)) return false;
+  let current = from.publicKey;
+  let alg = algOf(from);
+  let last = notBefore;
+  for (const h of handOvers.slice(-MAX_PROGRAM_HAND_OVERS) as Partial<ProgramKeyHandOverStep>[]) {
+    if (typeof h !== "object" || h === null || typeof h.from !== "string" || typeof h.to !== "string" || !Number.isSafeInteger(h.at) || typeof h.signature !== "string") return false;
+    if (h.from !== current) continue;
+    if (h.at! < last) return false;
+    const k = answerKeyBytes(alg, h.from);
+    const sig = fromBase64(h.signature);
+    const statement = programAnswerKeyRotateStatement({ device: id, program, from: h.from, to: h.to, at: h.at! });
+    if (k === null || sig === null || !verifyKeySignature(alg, k, utf8(statement), sig)) return false;
+    current = h.to;
+    // A program key between two hand-overs is the app's own Ed25519 key (MOSS, MOSS Code and the host make no other).
+    alg = "ed25519";
+    last = h.at!;
+    if (current === to) return true;
+  }
+  return false;
+}
+
+const capped = (list: readonly string[], add: string, max: number): string[] => [...list.filter((x) => x !== add), add].slice(-max);
 
 /** What a computer's link key signs over its program keys: the device, the time and every key with its registration. */
 export function programKeysStatement(id: string, msg: PeerProgramKeys): Uint8Array {
@@ -219,6 +284,7 @@ export class FileDeviceRegistry implements DeviceRegistry {
   readonly #path: string;
   readonly #clock: Pick<Clock, "now">;
   readonly #listeners = new Listeners<DeviceChange>();
+  readonly #programListeners = new Listeners<ProgramKeyChange>();
   readonly #syncedSecrets: FileDeviceRegistryOptions["syncedSecrets"];
   #state: FileShape;
 
@@ -314,8 +380,14 @@ export class FileDeviceRegistry implements DeviceRegistry {
     if (!d) throw new ContractError("not_found", `no device ${id}`);
     if (d.revokedAt !== undefined) return;
     d.revokedAt = this.#clock.now();
-    // Its program keys go at once (lane XC): nothing it signed counts here again.
+    // Its program keys go at once (lane XC): nothing it signed counts here again. And everything this holder kept about
+    // them (xc-6): the last message's time, when each key was taken, a key waiting on a card, the declined and the
+    // retired keys, so none of it outlives the record.
     delete d.answerKeys;
+    const hadPending = Object.keys(this.#state.programPending?.[id] ?? {}) as Program[];
+    for (const m of [this.#state.programUpdates, this.#state.programTakenAt, this.#state.programPending, this.#state.programDeclined, this.#state.programRetired]) {
+      if (m !== undefined) delete m[id];
+    }
     for (const p of this.#state.pairs) if (p.peer === id && p.endedAt === undefined) p.endedAt = d.revokedAt;
     if (this.#state.group) delete this.#state.group.members[id];
     const synced = this.#syncedSecrets ? await this.#syncedSecrets().catch(() => []) : [];
@@ -326,6 +398,8 @@ export class FileDeviceRegistry implements DeviceRegistry {
       });
     }
     this.#save();
+    // A card waiting on one of its keys is withdrawn.
+    for (const program of hadPending) this.#programListeners.emit({ type: "settled", device: id, program });
     this.#listeners.emit({ type: "revoked", id, ...(reason === undefined ? {} : { reason }) });
   }
 
@@ -495,21 +569,89 @@ export class FileDeviceRegistry implements DeviceRegistry {
       if (raw === null || sig === null || !verifyKeySignature(algOf(k), raw, utf8(statement), sig)) return false;
     }
     let changed = false;
+    const events: ProgramKeyChange[] = [];
+    const now = this.#clock.now();
     for (const k of msg.keys) {
-      const held = d.answerKeys?.[k.program];
+      const program = k.program;
+      const held = d.answerKeys?.[program];
       const key = { publicKey: k.publicKey, held: k.held, ...(k.alg === undefined || k.alg === "ed25519" ? {} : { alg: k.alg }) };
+      // A key this holder replaced is never taken again, with its own valid registration or not (a rollback).
+      if (this.#state.programRetired?.[id]?.[program]?.includes(k.publicKey) === true) continue;
       if (held === undefined) {
-        d.answerKeys = { ...d.answerKeys, [k.program]: key };
+        this.#takeProgramKey(d, program, key, now);
         changed = true;
-      } else if (held.publicKey !== k.publicKey || held.held !== k.held || algOf(held) !== algOf(k)) {
-        const refused = ((this.#state.programKeysRefused ??= {})[id] ??= {});
-        refused[k.program] = this.#clock.now();
+        continue;
       }
+      if (held.publicKey === k.publicKey && algOf(held) === algOf(k)) continue;
+      // A hand-over chain from the held key (xc-6): each step signed by the key it replaces, its first step after this
+      // holder took the held key (within the clocks' slack), so an old hand-over can't be spliced in.
+      const takenAt = this.#state.programTakenAt?.[id]?.[program] ?? d.addedAt;
+      if (provesProgramHandOver(id, program, held, k.publicKey, k.handOvers, takenAt - PROGRAM_HAND_OVER_CLOCK_SLACK_MS)) {
+        this.#takeProgramKey(d, program, key, now);
+        changed = true;
+        if (this.#state.programPending?.[id]?.[program] !== undefined) {
+          delete this.#state.programPending[id]![program];
+          events.push({ type: "settled", device: id, program });
+        }
+        continue;
+      }
+      // No chain from the held key: the person decides on this computer's card. A key they said no to isn't asked
+      // about again; a newer key replaces the one waiting (one card per device and program).
+      if (this.#state.programDeclined?.[id]?.[program]?.includes(k.publicKey) === true) continue;
+      const waiting = this.#state.programPending?.[id]?.[program];
+      const pending: PendingProgramKey = waiting?.publicKey === k.publicKey ? waiting : { ...key, registration: k.registration, at: now };
+      ((this.#state.programPending ??= {})[id] ??= {})[program] = pending;
+      events.push({ type: "pending", device: id, program, key: { ...pending } });
     }
     seen[id] = msg.at;
     this.#save();
     if (changed) this.#listeners.emit({ type: "changed", device: { ...d } });
+    for (const e of events) this.#programListeners.emit(e);
     return true;
+  }
+
+  /** Holds `key` as `program`'s on `d`, retiring the key it replaces (never taken again) and noting when it was taken. */
+  #takeProgramKey(d: DeviceRecord, program: Program, key: { publicKey: string; held: AnswerKeyHolder; alg?: AnswerKeyAlg }, now: number): void {
+    const old = d.answerKeys?.[program];
+    if (old !== undefined && old.publicKey !== key.publicKey) {
+      const retired = ((this.#state.programRetired ??= {})[d.id] ??= {});
+      retired[program] = capped(retired[program] ?? [], old.publicKey, MAX_RETIRED_PROGRAM_KEYS);
+    }
+    d.answerKeys = { ...d.answerKeys, [program]: key };
+    ((this.#state.programTakenAt ??= {})[d.id] ??= {})[program] = now;
+  }
+
+  /** The peer program keys waiting on the person's card here. */
+  pendingProgramKeys(): { device: string; program: Program; key: PendingProgramKey }[] {
+    const out: { device: string; program: Program; key: PendingProgramKey }[] = [];
+    for (const [device, byProgram] of Object.entries(this.#state.programPending ?? {})) {
+      for (const [program, key] of Object.entries(byProgram ?? {})) if (key !== undefined) out.push({ device, program: program as Program, key: { ...key } });
+    }
+    return out;
+  }
+
+  /** The person's answer on this computer's card for a waiting key (`publicKey`, so a card about an older key that a
+   *  newer one replaced settles nothing). Yes: it becomes the held key and the one it replaces is retired. No: it is
+   *  declined, never asked about again. False when that key is no longer the one waiting. */
+  settlePendingProgramKey(id: string, program: Program, publicKey: string, yes: boolean): boolean {
+    const d = this.#find(id);
+    const waiting = this.#state.programPending?.[id]?.[program];
+    if (!d || d.revokedAt !== undefined || waiting === undefined || waiting.publicKey !== publicKey) return false;
+    delete this.#state.programPending![id]![program];
+    if (yes) this.#takeProgramKey(d, program, { publicKey: waiting.publicKey, held: waiting.held, ...(waiting.alg === undefined || waiting.alg === "ed25519" ? {} : { alg: waiting.alg }) }, this.#clock.now());
+    else {
+      const declined = ((this.#state.programDeclined ??= {})[id] ??= {});
+      declined[program] = capped(declined[program] ?? [], publicKey, MAX_DECLINED_PROGRAM_KEYS);
+    }
+    this.#save();
+    if (yes) this.#listeners.emit({ type: "changed", device: { ...d } });
+    this.#programListeners.emit({ type: "settled", device: id, program });
+    return true;
+  }
+
+  /** What a peer's program keys did here (a key waiting on a card, or no longer waiting). */
+  watchProgramKeys(fn: (change: ProgramKeyChange) => void): Unsubscribe {
+    return this.#programListeners.add(fn);
   }
 
   /** Whether a paired computer's `program` key verifies `signature` over `data`: a desktop, not revoked, and that
@@ -524,10 +666,10 @@ export class FileDeviceRegistry implements DeviceRegistry {
     return raw !== null && verifyKeySignature(algOf(k), raw, data, signature);
   }
 
-  /** Whether `id` sent a different `program` key than the one held here (an app reinstalled there): its answers are
-   *  refused until the computer is paired again. */
+  /** Whether `id` sent a different `program` key than the one held here that wasn't taken (an app reinstalled there):
+   *  one waiting on the person's card here, or one they declined. Its answers are refused in words that say so. */
   programKeyReplaced(id: string, program: Program): boolean {
-    return this.#state.programKeysRefused?.[id]?.[program] !== undefined;
+    return this.#state.programPending?.[id]?.[program] !== undefined || (this.#state.programDeclined?.[id]?.[program]?.length ?? 0) > 0;
   }
 
   #checkAnswerKeyLabel(k: { publicKey: string; held: string; alg?: unknown }): void {

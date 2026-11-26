@@ -48,6 +48,9 @@ export type HandOverRefusal = "no-current-key" | "same-key" | "not-current" | "s
 
 interface Stored extends ProgramKey {
   registration: string;
+  /** The hand-overs that led to this key, each signed by the key it replaced (at most 16): sent to the paired computers
+   *  with the key, so each takes the rotation without a card (lane XC, xc-6). */
+  handOvers?: { from: string; to: string; at: number; signature: string }[];
 }
 
 interface FileShape {
@@ -104,8 +107,11 @@ export class ProgramKeyTable implements ProgramAnswerKeys {
     }
   }
 
-  #set(input: ProgramKeyInput): void {
-    const record: Stored = { program: input.program, publicKey: input.publicKey, held: input.held, ...(input.alg !== undefined ? { alg: input.alg } : {}), registration: input.signature };
+  #set(input: ProgramKeyInput, handOvers?: Stored["handOvers"]): void {
+    const record: Stored = {
+      program: input.program, publicKey: input.publicKey, held: input.held, ...(input.alg !== undefined ? { alg: input.alg } : {}), registration: input.signature,
+      ...(handOvers !== undefined && handOvers.length > 0 ? { handOvers } : {}),
+    };
     const keys = (this.#state.keys[input.device] ??= {});
     keys[input.program] = record;
     this.#save();
@@ -118,7 +124,7 @@ export class ProgramKeyTable implements ProgramAnswerKeys {
     if (held !== undefined && held.publicKey !== input.publicKey) return { applied: false, card: true };
     // The same key again, or the device's single key named again as `code`'s: nothing to keep twice.
     if (held !== undefined && input.program === "code" && this.#legacy?.(input.device) !== undefined) return { applied: true };
-    if (held === undefined || held.held !== input.held || (held.alg ?? "ed25519") !== (input.alg ?? "ed25519")) this.#set(input);
+    if (held === undefined || held.held !== input.held || (held.alg ?? "ed25519") !== (input.alg ?? "ed25519")) this.#set(input, this.#state.keys[input.device]?.[input.program]?.handOvers);
     return { applied: true };
   }
 
@@ -145,7 +151,9 @@ export class ProgramKeyTable implements ProgramAnswerKeys {
     const why = await this.checkHandOver(input, handOver);
     if (why !== "ok") throw new ContractError("refused", `the hand-over doesn't hold (${why})`);
     if (input.program === "code" && this.#legacy?.(input.device) !== undefined) throw new ContractError("refused", "MOSS Code's key is this device's single answer key: device.answerKey.set replaces it");
-    this.#set(input);
+    // The chain so far and this step (lane XC, xc-6): the paired computers take the new key by it, with no card.
+    const before = this.#state.keys[input.device]?.[input.program]?.handOvers ?? [];
+    this.#set(input, [...before, { from: handOver.from, to: input.publicKey, at: handOver.at, signature: handOver.signature }].slice(-16));
   }
 
   /** Whether MOSS Code's key on `device` is the device's single answer key (which `device.answerKey.set` replaces). */
@@ -169,14 +177,15 @@ export class ProgramKeyTable implements ProgramAnswerKeys {
   }
 
   /** The keys registered here for `device`, each with its own registration signature, as this computer sends them to its
-   *  peers (lane XC, `device.programKeys`). MOSS Code's single key travels as the device's `answerKey` already. */
-  registrations(device: string): { program: Program; publicKey: string; held: AnswerKeyHolder; alg?: AnswerKeyAlg; registration: string }[] {
+   *  peers (lane XC, `device.programKeys`), with the hand-overs that led to it (xc-6). MOSS Code's single key travels as
+   *  the device's `answerKey` already. */
+  registrations(device: string): { program: Program; publicKey: string; held: AnswerKeyHolder; alg?: AnswerKeyAlg; registration: string; handOvers?: Stored["handOvers"] }[] {
     if (this.#gone(device)) return [];
-    const out: { program: Program; publicKey: string; held: AnswerKeyHolder; alg?: AnswerKeyAlg; registration: string }[] = [];
+    const out: { program: Program; publicKey: string; held: AnswerKeyHolder; alg?: AnswerKeyAlg; registration: string; handOvers?: Stored["handOvers"] }[] = [];
     for (const p of MOSS_PROGRAMS) {
       if (p === "code" && this.#legacy?.(device) !== undefined) continue;
       const k = this.#state.keys[device]?.[p];
-      if (k !== undefined) out.push({ ...strip(k), registration: k.registration });
+      if (k !== undefined) out.push({ ...strip(k), registration: k.registration, ...(k.handOvers !== undefined ? { handOvers: k.handOvers.map((h) => ({ ...h })) } : {}) });
     }
     return out;
   }
