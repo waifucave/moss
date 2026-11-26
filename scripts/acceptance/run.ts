@@ -5719,12 +5719,12 @@ async function hostOnlyRun(app: { exe: string; args: string[] }): Promise<void> 
     const second = await startDaemonProc(daemonEnv);
     c.close();
     c = (await appDriver()).client;
-    // Linux has no host lock for the engine to find a running host by (host-program.ts takeHostLock: macOS only): the restarted engine asks
+    // Linux and Windows have no host lock for the engine to find a running host by (host-program.ts takeHostLock: macOS only): the restarted engine asks
     // the service manager to start it (a no-op on an active unit, as the launcher's is) and hears the same host ready again.
-    await until("the restarted engine adopting the host", 60_000, () => { const t = readLog(second.log); return (onLinux() || /\[host\] a host holds the lock \(pid \d+\): adopted/.test(t)) && readyCount(t) > 0 ? true : undefined; }, 500);
-    if (!onLinux() && /\[host\] starting the host/.test(readLog(second.log))) fail("the restarted engine started a second host");
+    await until("the restarted engine adopting the host", 60_000, () => { const t = readLog(second.log); return (onUnfencedOs() || /\[host\] a host holds the lock \(pid \d+\): adopted/.test(t)) && readyCount(t) > 0 ? true : undefined; }, 500);
+    if (!onUnfencedOs() && /\[host\] starting the host/.test(readLog(second.log))) fail("the restarted engine started a second host");
     if (hostLockPid(home) !== hostPid || !processAlive(hostPid)) fail(`the host after the restart is not the same one (lock pid ${hostLockPid(home)}, first ${hostPid})`);
-    lines.push(onLinux() ? `the restarted engine heard the same host (pid ${hostPid}) ready again` : `adopted: the restarted engine found the host (pid ${hostPid}) by its lock, heard it ready again, and started none`);
+    lines.push(onUnfencedOs() ? `the restarted engine heard the same host (pid ${hostPid}) ready again` : `adopted: the restarted engine found the host (pid ${hostPid}) by its lock, heard it ready again, and started none`);
     // 6. Three crashes in two minutes: the next start is in safe mode, which covers the host's UI parts only.
     hostCdp.close();
     hostCdp = undefined;
