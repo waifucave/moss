@@ -4100,7 +4100,8 @@ async function computersRun(): Promise<void> {
     await step(COMPUTERS_BASH_STEP, async () => {
       const r = await callOn("Bash", { command: "cd home/Beta/project && pwd && cat notes.md", description: "where am I" });
       const real = realpathSync.native(join(betaUser, "project"));
-      if (r === undefined || r.isError || !r.text.includes(real) || !r.text.includes(BETA_NOTE)) fail(`the output doesn't show Beta's folder and file (${r?.text.slice(0, 200) ?? "no result"})`);
+      if (r === undefined) return fail("the bot was given no result");
+      if (r.isError || !r.text.includes(real) || !r.text.includes(BETA_NOTE)) fail(`the output doesn't show Beta's folder and file (${r.text.slice(0, 200)})`);
       if (!r.text.startsWith("now on Beta: home/Beta/project")) fail(`the result's first line doesn't say where the shell now is (${r.text.split("\n")[0]})`);
       return `ran in ${real} on Beta (its pwd and its file in the output)`;
     });

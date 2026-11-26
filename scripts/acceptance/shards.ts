@@ -216,7 +216,7 @@ export function chainOwnRuns(asked: readonly UnitId[] | undefined, all: readonly
 /** The units whose rows need the engine's source seam (the host units start their host through MOSS_HOST_COMMAND, which a
  *  packaged core ignores, and a test-marked core never starts a host through the OS; the canvas unit's "Open in MOSS" asks the
  *  acceptance daemon's own `launchProgram`, which only the source daemon has): they stay source-only. */
-export const SOURCE_ONLY_UNITS: readonly UnitId[] = ["host", "browser-host", "surface-copy-host", "canvas-app"];
+export const SOURCE_ONLY_UNITS: readonly UnitId[] = ["host", "browser-host", "surface-copy-host", "canvas-app", "computers"];
 
 /** What a packaged run (a try's test twin, scripts/try/run.sh) names with `--units`: every unit there is but the
  *  source-only ones, with `main` for the chain and the window's three. A run with no `--units` is the table from before

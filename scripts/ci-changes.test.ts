@@ -594,15 +594,15 @@ describe("the scope a run states", () => {
 
   test("a scoped run says SCOPED RUN, how many areas ran and were skipped, and the acceptance units; a full one says FULL RUN", () => {
     const s = all(["apps/ios/project.yml"]);
-    expect(s.scope).toBe("SCOPED RUN: 1 of 25 areas ran, 24 skipped as untouched; 0 of 25 acceptance units (1 file(s) changed since 8ce5aef0b; a manual scoped run)");
+    expect(s.scope).toBe("SCOPED RUN: 1 of 25 areas ran, 24 skipped as untouched; 0 of 26 acceptance units (1 file(s) changed since 8ce5aef0b; a manual scoped run)");
     expect(s.ran).toEqual(["scripts"]);
     expect(s.skipped).toContain("acceptance");
-    expect(all(undefined).scope).toStartWith("FULL RUN: every area, 25 of 25 acceptance units");
+    expect(all(undefined).scope).toStartWith("FULL RUN: every area, 26 of 26 acceptance units");
     // ... and it says the parked areas stayed out, and how to run them.
     expect(all(undefined).scope).toContain("parked, not run (none of their own sources changed): swift cowork; lane start --parked runs them");
     // CI's own definition runs every area but the installers and the parked ones: still a scoped run, which says so.
-    expect(all([".github/workflows/ci.yml"]).scope).toStartWith("SCOPED RUN: 22 of 25 areas ran, 3 skipped as untouched; 25 of 25 acceptance units");
-    expect(all([".github/workflows/ci.yml", "packaging/linux/after-install.sh"]).scope).toStartWith("FULL RUN: every area, 25 of 25 acceptance units, as the 2 file(s) changed since 8ce5aef0b touched them all");
+    expect(all([".github/workflows/ci.yml"]).scope).toStartWith("SCOPED RUN: 22 of 25 areas ran, 3 skipped as untouched; 26 of 26 acceptance units");
+    expect(all([".github/workflows/ci.yml", "packaging/linux/after-install.sh"]).scope).toStartWith("FULL RUN: every area, 26 of 26 acceptance units, as the 2 file(s) changed since 8ce5aef0b touched them all");
     // A change to a parked area's own sources runs it, and the full run then has nothing left out but the installers' kind of skips.
     expect(all(["apple/ComputerUse/WinterBrowserHost/Sources/Host.swift"]).ran).toContain("swift");
     expect(all(["apple/ComputerUse/WinterBrowserHost/Sources/Host.swift"]).scope).not.toContain("parked, not run");
@@ -616,7 +616,7 @@ describe("the scope a run states", () => {
 
   test("an acceptance-only run says so", () => {
     const areas = Object.fromEntries(CI_AREA_NAMES.map((a) => [a, a === "acceptance"])) as Record<CiArea, boolean>;
-    expect(scopeOf({ changed: [], areas, units: ON_GITHUB, why: "a manual run of only: acceptance", onlyAcceptance: true }).scope).toBe("ACCEPTANCE ONLY: 25 of 25 acceptance units; no other area (a manual run of only: acceptance)");
+    expect(scopeOf({ changed: [], areas, units: ON_GITHUB, why: "a manual run of only: acceptance", onlyAcceptance: true }).scope).toBe("ACCEPTANCE ONLY: 26 of 26 acceptance units; no other area (a manual run of only: acceptance)");
   });
 
   test("the CLI prints the same lines the workflow's outputs carry", () => {
@@ -624,11 +624,11 @@ describe("the scope a run states", () => {
     const out = run(["--all", "--why", "a push to an integration branch runs everything"]);
     expect(out).toContain("acceptance=true");
     expect(out).toContain(`acceptance_units=${JSON.stringify([...ON_GITHUB])}`);
-    expect(out).toContain("scope=FULL RUN: every area, 25 of 25 acceptance units (a push to an integration branch runs everything; parked, not run");
+    expect(out).toContain("scope=FULL RUN: every area, 26 of 26 acceptance units (a push to an integration branch runs everything; parked, not run");
     expect(out).toContain("swift=false\n");
     expect(out).toContain("cowork=false\n");
     // `--parked` runs them; `--parked-base` runs them for the lane's own diff (the base is read from this repository's history).
-    expect(run(["--all", "--parked", "--why", "x"])).toContain("scope=FULL RUN: every area, 25 of 25 acceptance units (x)");
+    expect(run(["--all", "--parked", "--why", "x"])).toContain("scope=FULL RUN: every area, 26 of 26 acceptance units (x)");
     expect(run(["--all", "--parked-base", "0000000000000000000000000000000000000000", "--why", "x"])).toContain("cowork=true\n");
     expect(run(["--only-acceptance", "--why", "x"])).toContain("workspaces=false\n");
     // A base that cannot be read here runs every area, and the scope says why.

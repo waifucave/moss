@@ -7,15 +7,15 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MOSS_PROTOCOL_VERSION, ConnWriter, encodeLine, LineDecoder, METHODS, type WritableSocket } from "@waifucave/moss-protocol";
-import { catalogPointDecl } from "../../plugin-sdk/src/catalogs/index";
-import { FileSecretStore } from "../src/auth/secret-store";
-import { Drivers } from "../src/bots/tests/fixtures";
-import { FakePluginRegistry } from "../src/contracts/fakes/plugin-registry";
-import { startDaemon, type RunningDaemon } from "../src/daemon";
+import { catalogPointDecl } from "../../../../plugin-sdk/src/catalogs/index";
+import { FileSecretStore } from "../../auth/secret-store";
+import { Drivers } from "../../bots/tests/fixtures";
+import { FakePluginRegistry } from "../../contracts/fakes/plugin-registry";
+import { startDaemon, type RunningDaemon } from "../../daemon";
 
 setDefaultTimeout(120_000);
 
-const BIN = process.env.MOSS_LINK_BIN ?? join(import.meta.dir, "../../../native/link/target/release/moss-link");
+const BIN = process.env.MOSS_LINK_BIN ?? join(import.meta.dir, "../../../../../native/link/target/release/moss-link");
 const built = existsSync(BIN);
 if (!built && process.env.MOSS_LINK_REQUIRE_BINARY === "1") throw new Error(`MOSS_LINK_REQUIRE_BINARY=1, but there is no moss-link at ${BIN}`);
 
@@ -80,7 +80,7 @@ async function engine(root: string, name: string): Promise<{ daemon: RunningDaem
     // Loopback only, no relay, nothing published: nothing leaves the machine.
     links: {
       binary: BIN, sidecar: { relay: "disabled", n0Lookup: false, bind: "127.0.0.1:0" }, handshake: null, publicTime: null,
-      mainComputer: { watchSleep: false, monotonic: () => performance.now() }, watch: () => () => {}, self: { name, os: process.platform === "darwin" ? "macos" : "linux" },
+      mainComputer: { watchSleep: false, monotonic: () => performance.now() }, watch: () => () => {}, self: { name, os: process.platform === "linux" ? "linux" : "macos" },
     },
     parts: {
       userHome: user,
