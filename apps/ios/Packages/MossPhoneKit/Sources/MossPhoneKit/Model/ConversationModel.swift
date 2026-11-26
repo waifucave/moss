@@ -209,6 +209,8 @@ public final class ConversationModel {
     /// switch answers nothing): an answer only ever goes to the question it was chosen for.
     public func answerQuestion(_ answers: [String: String], to asked: AskQuestion) async -> Bool {
         guard let q = question, q.callId == asked.callId else { return replaced() }
+        // Questions that read the same would share one answer: never answered here.
+        guard q.answerableHere else { errorText = "Answer this one on your computer: two of its questions read the same."; return false }
         do { try await client.answerQuestion(session: sessionID, question: q, answers: answers); if question?.callId == q.callId { question = nil }; return true }
         catch { await failedOn(q); return false }
     }

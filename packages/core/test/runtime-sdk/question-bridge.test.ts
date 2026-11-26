@@ -137,6 +137,26 @@ test("a header-less question is refused UP FRONT (the runtime requires 1-12), be
   expect(h.events).toEqual([]);
 });
 
+test("a call whose questions repeat a text is refused at ask time (one answer per text: the second would be lost)", async () => {
+  const h = bridge();
+  const { ctx } = signalOf();
+  const twice = { questions: [
+    { question: "Continue?", header: "Step 1", options: [{ label: "Yes" }, { label: "No" }] },
+    { question: "Continue?", header: "Step 2", options: [{ label: "Yes" }, { label: "No" }] },
+  ] };
+  const res = await h.ask("tu-twice", twice, ctx);
+  expect(res.behavior).toBe("deny");
+  expect((res as { message: string }).message).toContain("each question needs its own text");
+  expect(h.events).toEqual([]);
+  // Worded apart, the same call is asked (and withdrawn again here).
+  const { ac, ctx: own } = signalOf();
+  const apart = { questions: [twice.questions[0], { ...twice.questions[1], question: "Continue to step 2?" }] };
+  const pending = h.ask("tu-apart", apart, own);
+  expect(h.events.map((e) => e.type)).toEqual(["question_asked"]);
+  ac.abort();
+  expect((await pending).behavior).toBe("deny");
+});
+
 test("multiSelect defaults to false", async () => {
   const h = bridge();
   const { ctx } = signalOf();

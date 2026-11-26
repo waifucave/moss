@@ -41,7 +41,7 @@ public struct QuestionDraft: Equatable, Sendable {
 
     /// Every question's answer, keyed by its own text (exactly as the engine sent it), or nil while one has none.
     public var answers: [String: String]? {
-        guard unanswered == 0, !question.questions.isEmpty else { return nil }
+        guard unanswered == 0, question.answerableHere else { return nil }
         var out: [String: String] = [:]
         for (i, part) in question.questions.enumerated() { out[part.text] = answer(for: i) }
         return out

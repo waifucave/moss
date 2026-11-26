@@ -108,6 +108,15 @@ export function askedQuestions(input: unknown): { ok: true; questions: Question[
       ...(placeholder ? { placeholder } : {}),
     };
   });
+  // An answer is keyed by its question's text: two questions with one text would share one answer (the second lost),
+  // so such a call is refused here, at ask time, in words the model can act on.
+  const seen = new Set<string>();
+  for (const q of questions) {
+    if (seen.has(q.question)) {
+      return { ok: false, message: `${ASK_USER_QUESTION_TOOL}: each question needs its own text ("${q.question.slice(0, 80)}" is asked twice). Ask it once, or word the questions differently.` };
+    }
+    seen.add(q.question);
+  }
   return { ok: true, questions };
 }
 

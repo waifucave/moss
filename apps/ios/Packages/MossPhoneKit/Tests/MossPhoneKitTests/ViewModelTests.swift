@@ -404,6 +404,16 @@ final class ViewModelTests: XCTestCase {
         XCTAssertTrue(ok)
         let sent = await c.questionsAnswered.last?.answers
         XCTAssertEqual(sent?.count, 2, "both answers go in one answer")
+
+        // Two questions that read the same would share one answer: never answered here (an older engine may send one).
+        let twice = AskQuestion(callId: "ask_twice", questions: [
+            .init(text: "Continue?", options: [.init(label: "Yes"), .init(label: "No")]),
+            .init(text: "Continue?", options: [.init(label: "Yes"), .init(label: "No")]),
+        ])
+        XCTAssertFalse(twice.answerableHere)
+        var t = QuestionDraft(twice)
+        t.toggle(0, in: 0); t.toggle(1, in: 1)
+        XCTAssertNil(t.answers, "no answer is made for it")
     }
 
     /// A picture from the camera or the library is staged as the desktop stages one: unchanged when it fits a staging

@@ -407,7 +407,11 @@ struct QuestionComposerView: View {
                 }
             }
             .frame(maxHeight: question.questions.count > 1 ? 420 : 520).scrollBounceBehavior(.basedOnSize)
-            if question.questions.count > 1, draft.unanswered > 0 {
+            if !question.answerableHere {
+                // Two of its questions read the same: one answer would stand for both, so it is answered on the computer.
+                Label("Answer this one on your computer: two of its questions read the same.", systemImage: "desktopcomputer")
+                    .font(.footnote).foregroundStyle(Theme.subtle).fixedSize(horizontal: false, vertical: true)
+            } else if question.questions.count > 1, draft.unanswered > 0 {
                 Text(draft.unanswered == 1 ? "1 question still needs an answer." : "\(draft.unanswered) questions still need an answer.")
                     .font(.footnote).foregroundStyle(Theme.subtle)
             }
