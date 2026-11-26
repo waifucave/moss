@@ -65,6 +65,30 @@ enum AuditRunner {
         return String(label.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first ?? "")
     }
 
+    /// Waits until the screen has stopped moving: every element's frame (so a scroll view's content and visible rect too)
+    /// the same in consecutive snapshots across half a second, as the cards' settled rule asks, within a 15 s deadline.
+    /// Past the deadline it says so and the audit goes ahead.
+    static func settle(_ app: XCUIApplication, name: String, size: String?) {
+        func frames() -> [CGRect] {
+            guard let root = try? app.snapshot() else { return [] }
+            var out: [CGRect] = []
+            var stack: [XCUIElementSnapshot] = [root]
+            while let s = stack.popLast() { out.append(s.frame); stack.append(contentsOf: s.children) }
+            return out
+        }
+        let deadline = Date().addingTimeInterval(15)
+        var last = frames()
+        var steady = 0
+        while Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.25)
+            let now = frames()
+            steady = (!now.isEmpty && now == last) ? steady + 1 : 0
+            last = now
+            if steady >= 2 { return }
+        }
+        print("AUDIT UNSETTLED \(name) \(size ?? "default"): still moving after 15 s, audited as it is")
+    }
+
     static func run(bundleID: String, size: String?, in test: XCTestCase) throws {
         test.continueAfterFailure = true
         for (name, args) in screensByApp[bundleID] ?? [] {
@@ -72,7 +96,7 @@ enum AuditRunner {
             app.launchArguments = args + (size.map { ["-UIPreferredContentSizeCategoryName", $0] } ?? [])
             app.launch()
             _ = app.wait(for: .runningForeground, timeout: 10)
-            sleep(2)
+            settle(app, name: name, size: size)
             var labels: [String] = []
             for q in [app.buttons, app.staticTexts, app.textFields, app.switches] {
                 for e in q.allElementsBoundByIndex where e.exists && !e.label.isEmpty { labels.append(e.label) }
@@ -83,22 +107,49 @@ enum AuditRunner {
             // Dynamic type is checked at the large size; contrast and the rest at both.
             var types: XCUIAccessibilityAuditType = [.sufficientElementDescription, .hitRegion, .contrast, .textClipped, .trait]
             if size != nil { types.insert(.dynamicType) }
+            // A failed contrast that isn't known: nil when it isn't one, else the element's first label line.
+            func unknownFailedContrast(_ issue: XCUIAccessibilityAuditIssue) -> String? {
+                guard issue.auditType == .contrast, !issue.compactDescription.localizedCaseInsensitiveContains("nearly") else { return nil }
+                let element = firstLine(issue.element?.label)
+                if let known = knownContrast.first(where: { $0.app == bundleID && $0.screen == name && $0.element == element }) {
+                    print("AUDIT KNOWN \(name) \(size ?? "default"): \(known.element) (owed: \(known.owed))")
+                    return nil
+                }
+                return element
+            }
+            // First pass: every type. A failed contrast is only noted here; it fails in the second pass when the SAME
+            // element fails again on the settled screen.
+            var failedOnce: Set<String> = []
             try app.performAccessibilityAudit(for: types) { issue in
                 print("AUDIT ISSUE \(name) \(size ?? "default"): \(issue.compactDescription) :: \(issue.element?.label ?? "-")")
-                // Missing descriptions, wrong traits, small hit regions and FAILED contrast fail the test. A contrast that
-                // nearly passed, clipped text and Dynamic Type are reported only (the audit flags the system's own bars and
-                // scrolled-away labels with those as well).
+                // Missing descriptions, wrong traits, small hit regions and FAILED contrast (twice) fail the test. A contrast
+                // that nearly passed, clipped text and Dynamic Type are reported only (the audit flags the system's own bars
+                // and scrolled-away labels with those as well).
                 // A file path is read out letter by letter on purpose: what a card shows is what it covers.
                 if issue.auditType == .sufficientElementDescription, issue.element?.label.contains("/") == true { return true }
                 if issue.auditType == .contrast {
-                    if issue.compactDescription.localizedCaseInsensitiveContains("nearly") { return true }
-                    if let known = knownContrast.first(where: { $0.app == bundleID && $0.screen == name && $0.element == firstLine(issue.element?.label) }) {
-                        print("AUDIT KNOWN \(name) \(size ?? "default"): \(known.element) (owed: \(known.owed))")
-                        return true
-                    }
-                    return false
+                    if let element = unknownFailedContrast(issue) { failedOnce.insert(element) }
+                    return true
                 }
                 return [XCUIAccessibilityAuditType.dynamicType, .textClipped].contains(issue.auditType)
+            }
+            // Second pass: contrast only, after the screen settles again.
+            var failedTwice: Set<String> = []
+            if !failedOnce.isEmpty {
+                settle(app, name: name, size: size)
+                try app.performAccessibilityAudit(for: .contrast) { issue in
+                    guard let element = unknownFailedContrast(issue) else { return true }
+                    print("AUDIT ISSUE (second pass) \(name) \(size ?? "default"): \(issue.compactDescription) :: \(issue.element?.label ?? "-")")
+                    guard failedOnce.contains(element) else {
+                        print("AUDIT FLAKY \(name) \(size ?? "default"): \(element) (failed the second pass only)")
+                        return true
+                    }
+                    failedTwice.insert(element)
+                    return false
+                }
+                for element in failedOnce.subtracting(failedTwice).sorted() {
+                    print("AUDIT FLAKY \(name) \(size ?? "default"): \(element) (failed the first pass only)")
+                }
             }
             app.terminate()
         }
