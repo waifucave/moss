@@ -11,7 +11,7 @@
  * where a parsable page sees only its own). */
 
 import type { TokenValue } from "@waifucave/moss-plugin-sdk";
-import { sealedEscape } from "@waifucave/moss-protocol";
+import { CHILDREN_HEAD_TEXT, CHILDREN_NOT_DRAWN_TEXT, CHILDREN_UNREAD_TEXT, drawChildren, sealedEscape, type DrawnChildren } from "@waifucave/moss-protocol";
 import type { SealedValue } from "./sealed";
 import type { CardSummary, PreviewBlock } from "./card-summary";
 
@@ -435,6 +435,10 @@ export function ownCardPage(input: {
   /** The one sentence for what an "always" would store (card-summary.ts `ruleSentence`), from the card's `rule` rows. */
   always?: string;
   computer?: string | null;
+  /** The card's checkboxes (a plugin OK's, a group card's), as the core sent them: drawn here and nowhere else, one line each, the ticks the
+   *  engine set, the person free to change them. The answer carries exactly the ticked ids. A card whose boxes can't be drawn whole
+   *  (two that read the same, a repeated id, a box with no name) offers no Approve. */
+  children?: readonly { id: string; label: unknown; checked: boolean }[];
   /** A plugin's OK card or update card: the page offers a Review (the owner's ruling, 2026-11-13), advice the app
    *  fetches for this page alone and shows as text; it never answers the card. */
   reviewable?: boolean;
@@ -457,10 +461,13 @@ export function ownCardPage(input: {
     return `<section class="field" data-name="${esc(name)}"><h3 class="fname">${esc(FIELD_TITLES[name] ?? name)}</h3>${body}</section>`;
   }).join("\n");
   // Deny first, then an "always" approve, then the plain approve last, where the eye ends.
+  const kids = drawChildren(input.children);
+  // A card whose boxes can't be drawn whole is never approved from here: its Deny stays (a no grants nothing).
+  const offered = kids.drawn ? input.options : input.options.filter((o) => o.kind === "deny");
   const ordered = [
-    ...input.options.filter((o) => o.kind === "deny"),
-    ...input.options.filter((o) => o.kind === "approve" && o.remember === "always"),
-    ...input.options.filter((o) => o.kind === "approve" && o.remember !== "always"),
+    ...offered.filter((o) => o.kind === "deny"),
+    ...offered.filter((o) => o.kind === "approve" && o.remember === "always"),
+    ...offered.filter((o) => o.kind === "approve" && o.remember !== "always"),
   ];
   const buttons = ordered.map((o) => `<button type="button" class="seal-button" data-option="${esc(o.id)}" data-kind="${esc(o.kind)}"${o.remember === "always" ? ` data-remember="always"${input.always !== undefined ? ` title="${esc(sealedEscape(input.always))}"` : ""}` : ""}><span class="label">${esc(sealedEscape(labelOf(o.label)))}</span></button>`).join("\n");
   // The card's own who: a plugin's own asking with its name, a bot's with its name, else the core's (the words are
@@ -513,11 +520,47 @@ export function ownCardPage(input: {
   // Hidden and shown again: the pointer must come in again and a second pass, as on a fresh page.
   document.addEventListener("visibilitychange", () => { openedAt = Date.now(); pointerEntered = false; mark(); });
   mark();
+  // The card's boxes. A cut list (more than a few) stays closed until it is opened, and Approve counts only once its end has been seen
+  // on screen (an observer on its last box, root the window: a box clipped by the list's own scroll box is not seen). The ticks sent are
+  // the ones on screen at the press. Until the boxes are wired, nothing is read.
+  let kids = null;
+  let read = false;
+  const lockKids = (on) => { if (kids !== null) for (const i of kids.querySelectorAll("input")) i.disabled = on; };
+  const ticks = () => kids === null ? undefined : [...kids.querySelectorAll("input[data-id]")].filter((i) => i.checked).map((i) => i.dataset.id);
+  const wireKids = () => {
+    kids = document.querySelector(".kids:not(.kids-bad)");
+    const bad = document.querySelector(".kids-bad");
+    if (kids === null) { read = bad === null; return; }
+    const list = kids.querySelector(".kids-list");
+    const open = kids.querySelector(".kids-open");
+    if (kids.dataset.cut !== "yes" || list === null || open === null) { read = kids.dataset.cut !== "yes"; return; }
+    const markRead = () => { read = true; kids.dataset.read = "yes"; };
+    open.addEventListener("click", (e) => {
+      if (!e.isTrusted) return;
+      list.hidden = false; open.hidden = true; moved();
+      const last = list.lastElementChild;
+      if (last === null) return;
+      if (typeof IntersectionObserver === "function") {
+        const io = new IntersectionObserver((es) => { for (const en of es) if (en.isIntersecting && en.intersectionRatio >= 0.99) { markRead(); io.disconnect(); } }, { threshold: [0.99, 1] });
+        io.observe(last);
+      } else {
+        list.addEventListener("scroll", () => { if (list.scrollTop + list.clientHeight >= list.scrollHeight - 1) markRead(); });
+      }
+    });
+  };
+  if (document.readyState === "loading") addEventListener("DOMContentLoaded", wireKids); else wireKids();
   const say = (w) => { try { b.pressed?.(w); } catch (e) { /* going */ } };${FRESH_SCRIPT}
   document.addEventListener("click", (e) => {
     if (!e.isTrusted) { say("untrusted"); return; }
     const b2 = e.target !== null && e.target instanceof Element ? e.target.closest(".seal-button") : null;
     if (b2 === null) return;
+    if (b2.dataset.kind === "approve" && !read) {
+      // A list that was cut is opened and read to its end first: what is approved is what was on screen.
+      say("opening");
+      const hint = document.querySelector(".state");
+      if (hint !== null) { hint.textContent = ${JSON.stringify(CHILDREN_UNREAD_TEXT)}; setTimeout(() => { if (hint.textContent === ${JSON.stringify(CHILDREN_UNREAD_TEXT)}) hint.textContent = ""; }, 4000); }
+      return;
+    }
     if (!isReady()) {
       say(!pointerEntered ? "no-pointer" : "opening");
       // Said without moving anything: the button pulses (a ring, no layout), its title says it, and the status line (which
@@ -530,20 +573,24 @@ export function ownCardPage(input: {
     }
     e.preventDefault();
     say("received");
+    // Exactly the boxes ticked on screen at the press go with an approve; a deny carries none.
+    const picked = b2.dataset.kind === "approve" ? ticks() : undefined;
+    lockKids(true);
     const state = document.querySelector(".state");
     if (state !== null) state.textContent = "…";
     // A refused answer says so on the card, and its buttons answer again.
-    const refused = (r) => { document.body.dataset.answered = "no"; if (state !== null) state.textContent = r !== null && typeof r === "object" && typeof r.covered === "string" ? (${JSON.stringify(WINDOW_OVER_TEXTS)}[r.covered] ?? ${JSON.stringify(WINDOW_OVER_TEXTS.ours)}) : r !== null && typeof r === "object" && r.again === true ? ${JSON.stringify(PRESS_AGAIN_TEXT)} : r !== null && typeof r === "object" && r.key === "changed" ? ${JSON.stringify(KEY_CHANGED_TEXT)} : r !== null && typeof r === "object" && r.key === "fault" ? ${JSON.stringify(KEY_FAULT_TEXT)} : ${JSON.stringify(REFUSED_TEXT)}; };
+    const refused = (r) => { lockKids(false); document.body.dataset.answered = "no"; if (state !== null) state.textContent = r !== null && typeof r === "object" && typeof r.covered === "string" ? (${JSON.stringify(WINDOW_OVER_TEXTS)}[r.covered] ?? ${JSON.stringify(WINDOW_OVER_TEXTS.ours)}) : r !== null && typeof r === "object" && r.again === true ? ${JSON.stringify(PRESS_AGAIN_TEXT)} : r !== null && typeof r === "object" && r.key === "changed" ? ${JSON.stringify(KEY_CHANGED_TEXT)} : r !== null && typeof r === "object" && r.key === "fault" ? ${JSON.stringify(KEY_FAULT_TEXT)} : ${JSON.stringify(REFUSED_TEXT)}; };
     // The same rule as a part's button: the press counts only if the report that follows it says the button shows uncovered.
     void askFresh(b2).then((ok) => {
       if (!ok) {
+        lockKids(false);
         say(ok === null ? "late" : "covered");
         b2.dataset.again = "yes"; b2.title = ${JSON.stringify(PRESS_AGAIN_TEXT)};
         if (state !== null) state.textContent = ${JSON.stringify(PRESS_AGAIN_TEXT)};
         setTimeout(() => { delete b2.dataset.again; b2.removeAttribute("title"); if (state !== null && state.textContent === ${JSON.stringify(PRESS_AGAIN_TEXT)}) state.textContent = ""; }, 1800);
         return null;
       }
-      return b.answer(b2.dataset.option).then((r) => {
+      return (picked === undefined ? b.answer(b2.dataset.option) : b.answer(b2.dataset.option, picked)).then((r) => {
         if (r !== null && typeof r === "object" && r.accepted === true) { document.body.dataset.answered = "yes"; if (state !== null) state.textContent = ""; }
         else refused(r);
       });
@@ -589,10 +636,21 @@ export function ownCardPage(input: {
 <header class="own-head">${SHIELD}<div class="own-words">${head}</div></header>
 ${preview}
 ${all}
+${kidsHtml(kids)}
 ${review}
 <div class="own-foot">${input.options.some((o) => o.remember === "always") ? alwaysHtml(input.always) : ""}<div class="buttons">${buttons}</div>
 <p class="state" data-state="waiting" role="status"></p>${footnote}</div>
 </main>`, "seal-own", true, script);
+}
+
+/** The card's boxes: one checkbox per child, one line each, with the engine's own ticks. More than a few are a cut list, shut until it is
+ *  opened (the page's script holds Approve until its end has been seen). Boxes that can't be drawn whole say so in the core's words. */
+export function kidsHtml(d: DrawnChildren): string {
+  if (!d.drawn) return `<section class="kids kids-bad" data-drawn="no"><p class="kids-why">${esc(CHILDREN_NOT_DRAWN_TEXT)}</p></section>`;
+  if (d.children.length === 0) return "";
+  const items = d.children.map((c) => `<li class="kid"><label><input type="checkbox" data-id="${esc(c.id)}"${c.checked ? " checked" : ""}><span class="kid-line">${esc(c.line)}</span></label></li>`).join("");
+  const cut = d.cut ? `<button type="button" class="kids-open">${esc(`Show all ${d.children.length}`)}</button><p class="kids-note">${esc(CHILDREN_UNREAD_TEXT)}</p>` : "";
+  return `<section class="kids" data-cut="${d.cut ? "yes" : "no"}"><h3 class="fname">${esc(CHILDREN_HEAD_TEXT)}</h3>${cut}<ul class="kids-list"${d.cut ? ' hidden tabindex="0"' : ""}>${items}</ul></section>`;
 }
 
 /** The words that head each sealed field on the card's own page. */
@@ -801,6 +859,19 @@ body:has(.seal-button.glyph) .state { display: none }
 .own .review-report { margin: 8px 0 0; white-space: pre-wrap; font: inherit; font-size: 0.92em; color: var(--seal-text) }
 .own .review-report:empty { display: none }
 .own .review-head { margin: 10px 0 0; font-size: 0.78em; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--seal-muted) }
+.own .kids { margin: 0 0 10px }
+.own .kids-list { list-style: none; margin: 4px 0 0; padding: 0 }
+.own .kids-list[hidden] { display: none }
+.own .kids-list[tabindex] { max-height: 15em; overflow-y: auto; overflow-x: hidden; border: 1px solid var(--seal-hairline); border-radius: 6px; padding: 2px 8px }
+.own .kid label { display: flex; gap: 8px; align-items: flex-start; padding: 4px 0; cursor: pointer }
+.own .kid input { margin: 3px 0 0; flex: none }
+.own .kid-line { min-width: 0; overflow-wrap: anywhere }
+.own .kids-open { font: inherit; padding: 4px 12px; border-radius: 6px; border: 1px solid var(--seal-hairline); background: var(--seal-control); color: var(--seal-text); cursor: pointer }
+.own .kids-note { margin: 6px 0 0; font-size: 0.85em; color: var(--seal-muted) }
+.own .kids[data-read="yes"] .kids-note { display: none }
+.own .kids-why { margin: 0; color: var(--seal-text) }
+/* A cut list not yet read to its end: Approve looks as it is (not yet), in colour, never opacity. */
+.own:has(.kids[data-cut="yes"]:not([data-read="yes"])) .seal-button[data-kind="approve"] { background: var(--seal-control); color: var(--seal-muted); cursor: not-allowed }
 `;
 
 /** A button's own words: the core's own table holds the language they shipped in (§5.5). The card's fields' and

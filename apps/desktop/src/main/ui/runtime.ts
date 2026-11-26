@@ -1535,7 +1535,7 @@ export class UiRuntime {
     if (element === "own") {
       const summary = this.summaryOf(card);
       const always = this.alwaysOf(card);
-      return ownCardPage({ cardId: card.id, token, origin: card.origin, issuedAt: card.issuedAt, expiresAt: card.expiresAt, fields: card.fields, tokens, options: card.options, computer: card.computer, ...(summary !== undefined ? { summary } : {}), ...(always !== undefined ? { always } : {}), ...(card.pluginId !== undefined ? { who: { pluginId: card.pluginId } } : {}), ...(card.kind === "plugin-ok" || (card.kind === "change" && card.change === "plugin-update") ? { reviewable: true } : {}) });
+      return ownCardPage({ cardId: card.id, token, origin: card.origin, issuedAt: card.issuedAt, expiresAt: card.expiresAt, fields: card.fields, tokens, options: card.options, computer: card.computer, ...(card.children !== undefined ? { children: card.children } : {}), ...(summary !== undefined ? { summary } : {}), ...(always !== undefined ? { always } : {}), ...(card.pluginId !== undefined ? { who: { pluginId: card.pluginId } } : {}), ...(card.kind === "plugin-ok" || (card.kind === "change" && card.change === "plugin-update") ? { reviewable: true } : {}) });
     }
     return undefined;
   }

@@ -393,6 +393,7 @@ async function hardenSession(ses: Session): Promise<void> {
     const always = alwaysSentence(card, botName, app.getPath("home"));
     const html = ownCardPage({
       cardId: card.id, token, origin: card.origin, issuedAt: card.issuedAt, expiresAt: card.expiresAt, fields: card.fields, options: card.options, computer: card.computer,
+      ...(card.children !== undefined ? { children: card.children } : {}),
       ...(summary !== undefined ? { summary } : {}), ...(always !== undefined ? { always } : {}),
       ...(card.pluginId !== undefined ? { who: { pluginId: card.pluginId } } : botName !== undefined ? { who: { bot: botName } } : {}),
       ...(card.kind === "plugin-ok" || (card.kind === "change" && card.change === "plugin-update") ? { reviewable: true } : {}),

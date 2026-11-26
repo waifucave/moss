@@ -19,7 +19,7 @@
 // self-expires with a mint's own band (a reader takes their time), and the core's own `card.answer` decides the
 // card's fate, not a local guess (S5, S6).
 import { randomBytes } from "node:crypto";
-import { programCardAnswerSigningInput, type Program } from "@waifucave/moss-protocol";
+import { CHILDREN_OWN_CARD_ONLY, checkTicks, programCardAnswerSigningInput, type Program } from "@waifucave/moss-protocol";
 import type { TokenValue } from "@waifucave/moss-plugin-sdk";
 
 /** What the app hears of a card: the whole sealed one (`card_requested`, or `card.get`'s re-read for a resolved one a
@@ -39,6 +39,9 @@ export interface SealedCard {
   hash: string;
   fields: Readonly<Record<string, unknown>>;
   options: readonly { id: string; kind: "approve" | "deny"; label: unknown; remember?: "always" }[];
+  /** A plugin OK's (or a group card's) checkboxes, as the core sent them: drawn only on the app's own card page, where the person may change
+   *  the ticks, and answered with exactly the ticked ids (`checkTicks`). */
+  children?: readonly { id: string; label: unknown; checked: boolean }[];
 }
 
 /** The answer's signature comes from the answer key: the app is the signer of its own frames' answers. */
@@ -139,6 +142,7 @@ export class SealedFrames {
       id: c.id, kind: String(c.kind ?? "tool"), ...(typeof c.change === "string" ? { change: c.change } : {}), computer: c.computer ?? null, session: c.session, bot: c.bot,
       pluginId: c.pluginId, origin: String(c.origin ?? "user"), issuedAt: Number(c.issuedAt ?? this.now()),
       expiresAt: c.expiresAt == null ? null : Number(c.expiresAt), hash: c.hash, fields: c.fields ?? {}, options: c.options,
+      ...(Array.isArray(c.children) ? { children: c.children } : {}),
     });
   }
 
@@ -269,6 +273,8 @@ export class SealedFrames {
   buttonsVisible(cardId: string, windowId?: number): boolean {
     const card = this.cards.get(cardId);
     if (card === undefined) return false;
+    // A card with boxes is drawn only on the app's own card (a part's buttons carry no ticks): never "in place" in a part, so the own card stands.
+    if ((card.children?.length ?? 0) > 0) return false;
     const approveIds = new Set(card.options.filter((o) => o.kind === "approve").map((o) => o.id));
     const denyIds = new Set(card.options.filter((o) => o.kind === "deny").map((o) => o.id));
     if (approveIds.size === 0 || denyIds.size === 0) return false;
@@ -325,9 +331,14 @@ export class SealedFrames {
     if (opt === undefined || (!whole && pick !== want)) return { error: "a button answers its own option" };
     if (this.answered.has(card.id)) return { error: "that card is answered already" };
     if (this.pending.has(card.id)) return { error: "that card is answering already" };
+    // The boxes: an approve is signed with exactly the ticked ids of boxes this card carries (each once), a deny with none, and a card whose
+    // boxes can't be drawn whole is never approved. A part's own button carries no ticks, so it never approves a card that has boxes.
+    if (!whole && opt.kind === "approve" && (card.children?.length ?? 0) > 0) return { error: CHILDREN_OWN_CARD_ONLY };
+    const ticks = checkTicks(card.children, opt.kind, children);
+    if (!ticks.ok) return { error: ticks.why };
     this.channels.delete(token);
     this.spent.set(card.id, [token, ch]);
-    const kids = children === undefined ? undefined : [...children];
+    const kids = ticks.ticks === undefined ? undefined : [...ticks.ticks];
     const sig = signer.sign(new TextEncoder().encode(programCardAnswerSigningInput({ program: this.program, id: card.id, hash: card.hash, option: pick, at, children: kids })));
     this.pending.set(card.id, pick);
     return { proof: { via: "device", device, at, signature: Buffer.from(sig).toString("base64"), program: this.program }, card, ...(kids !== undefined ? { kids } : {}) };
