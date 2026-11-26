@@ -388,53 +388,27 @@ struct QuestionComposerView: View {
     let onSubmit: (AskQuestion, [String: String]) async -> Bool
     /// Skips it (a bot's question stays open across turns until answered or skipped; nil where skipping isn't offered).
     var onSkip: ((AskQuestion) async -> Bool)? = nil
-    @State private var selected = Set<Int>()
-    @State private var other = ""
+    /// The person's choices for this call only (the view is keyed on the call, so a new one starts clean).
+    @State private var draft: QuestionDraft
     @State private var submitting = false
 
-    private var answer: String {
-        // Only this question's options: a choice is never carried over to another question (its view is keyed on the call).
-        var parts = selected.sorted().filter { question.options.indices.contains($0) }.map { question.options[$0].label }
-        let o = other.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !o.isEmpty { parts.append(o) }
-        return parts.joined(separator: ", ")
+    init(question: AskQuestion, onSubmit: @escaping (AskQuestion, [String: String]) async -> Bool, onSkip: ((AskQuestion) async -> Bool)? = nil) {
+        self.question = question; self.onSubmit = onSubmit; self.onSkip = onSkip
+        _draft = State(initialValue: QuestionDraft(question))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let h = question.header { Text(h).font(.footnote.weight(.semibold)).foregroundStyle(.secondary) }
-            // The computer's text, each part in its own box and none of it read as markup: a tall question scrolls in
-            // its box, so it can never push the options or Submit off the screen or pass itself off as an option.
-            ScrollView { Text(verbatim: question.text).font(.body).frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true) }
-                .frame(maxHeight: 140).scrollBounceBehavior(.basedOnSize)
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(question.options.indices, id: \.self) { i in
-                    if i > 0 { Divider() }
-                    Button {
-                        if question.multiSelect { if selected.contains(i) { selected.remove(i) } else { selected.insert(i) } }
-                        else { selected = [i] }
-                    } label: {
-                        HStack(spacing: 12) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(verbatim: question.options[i].label).font(.body).lineLimit(3)
-                                if let d = question.options[i].detail { Text(verbatim: d).font(.footnote).foregroundStyle(.secondary).lineLimit(4) }
-                                if let p = question.options[i].preview {
-                                    ScrollView([.vertical, .horizontal]) { Text(verbatim: p).font(.caption.monospaced()).fixedSize().padding(8) }
-                                        .frame(maxHeight: 96).background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
-                                        .accessibilityLabel("Preview: \(p)")
-                                }
-                            }
-                            Spacer(minLength: 8)
-                            Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(Theme.accent)
-                                .opacity(selected.contains(i) ? 1 : 0).frame(width: 32).accessibilityHidden(true)
-                        }
-                        .padding(.vertical, 10).frame(minHeight: 44).contentShape(.rect)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityAddTraits(selected.contains(i) ? .isSelected : [])
+            // Every question of the call, one after another; a call of several scrolls in its box, so Submit stays on screen.
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    ForEach(question.questions.indices, id: \.self) { p in part(p) }
                 }
-                Divider()
-                TextField("Something else", text: $other).padding(.vertical, 12).accessibilityLabel("Something else")
+            }
+            .frame(maxHeight: question.questions.count > 1 ? 420 : 520).scrollBounceBehavior(.basedOnSize)
+            if question.questions.count > 1, draft.unanswered > 0 {
+                Text(draft.unanswered == 1 ? "1 question still needs an answer." : "\(draft.unanswered) questions still need an answer.")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
             HStack {
                 if let onSkip {
@@ -448,19 +422,61 @@ struct QuestionComposerView: View {
                 }
                 Spacer()
                 Button {
+                    // The engine keys each answer by its question's own text (never its header); all go together.
+                    guard let answers = draft.answers else { return }
                     submitting = true
-                    // The engine keys an answer by the question's own text (never its header).
-                    let drawn = question, chosen = answer
-                    Task { _ = await onSubmit(drawn, [drawn.text: chosen]); submitting = false }
+                    let drawn = question
+                    Task { _ = await onSubmit(drawn, answers); submitting = false }
                 } label: {
                     Text("Submit").font(.body.weight(.semibold)).foregroundStyle(Color(uiColor: .systemBackground))
                         .padding(.horizontal, 20).frame(height: 44).background(Color.primary, in: Capsule())
                 }
-                .buttonStyle(.plain).disabled(answer.isEmpty || submitting).opacity(answer.isEmpty ? 0.4 : 1)
+                .buttonStyle(.plain).disabled(draft.answers == nil || submitting).opacity(draft.answers == nil ? 0.4 : 1)
             }
         }
         .padding(16)
         .modifier(ComposerChrome(horizontal: 12, bottom: 12, radius: 28))
+    }
+
+    /// One question of the call: its header, its text in its own box (never read as markup), its options, and its own
+    /// "Something else" box.
+    @ViewBuilder private func part(_ p: Int) -> some View {
+        let q = question.questions[p]
+        VStack(alignment: .leading, spacing: 10) {
+            if let h = q.header { Text(verbatim: h).font(.footnote.weight(.semibold)).foregroundStyle(.secondary) }
+            // A tall question scrolls in its box, so it can never push its options away or pass itself off as one.
+            ScrollView { Text(verbatim: q.text).font(.body).frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true) }
+                .frame(maxHeight: 140).scrollBounceBehavior(.basedOnSize)
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(q.options.indices, id: \.self) { i in
+                    if i > 0 { Divider() }
+                    let on = draft.isPicked(i, in: p)
+                    Button { draft.toggle(i, in: p) } label: {
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(verbatim: q.options[i].label).font(.body).lineLimit(3)
+                                if let d = q.options[i].detail { Text(verbatim: d).font(.footnote).foregroundStyle(.secondary).lineLimit(4) }
+                                if let pv = q.options[i].preview {
+                                    ScrollView([.vertical, .horizontal]) { Text(verbatim: pv).font(.caption.monospaced()).fixedSize().padding(8) }
+                                        .frame(maxHeight: 96).background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
+                                        .accessibilityLabel("Preview: \(pv)")
+                                }
+                            }
+                            Spacer(minLength: 8)
+                            Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(Theme.accent)
+                                .opacity(on ? 1 : 0).frame(width: 32).accessibilityHidden(true)
+                        }
+                        .padding(.vertical, 10).frame(minHeight: 44).contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(on ? .isSelected : [])
+                }
+                Divider()
+                TextField("Something else", text: Binding(get: { draft.other[p] ?? "" }, set: { draft.other[p] = $0 }))
+                    .padding(.vertical, 12).accessibilityLabel(question.questions.count > 1 ? "Something else, question \(p + 1)" : "Something else")
+            }
+        }
+        .accessibilityElement(children: .contain)
     }
 }
 

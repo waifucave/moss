@@ -377,6 +377,34 @@ final class ViewModelTests: XCTestCase {
         XCTAssertNil(AskedQuestion.State.open.status)
     }
 
+    /// A call of several questions is answered together: nothing goes until each has an answer, one question's pick never
+    /// touches another's, a single-choice question keeps one pick, and each answer is keyed by its own question's text.
+    func testACallOfSeveralQuestionsIsAnsweredTogether() async {
+        let q = SampleData.twoQuestions
+        var d = QuestionDraft(q)
+        XCTAssertNil(d.answers); XCTAssertEqual(d.unanswered, 2)
+        d.toggle(0, in: 0)
+        XCTAssertNil(d.answers, "the second question has no answer yet")
+        XCTAssertEqual(d.unanswered, 1)
+        d.toggle(1, in: 0)
+        XCTAssertEqual(d.answer(for: 0), "Saturday", "a single-choice question keeps one pick")
+        XCTAssertFalse(d.isPicked(1, in: 1), "a pick in one question never shows in another")
+        d.toggle(0, in: 1); d.toggle(2, in: 1)
+        d.other[1] = "  near the door "
+        XCTAssertEqual(d.answers, [q.questions[0].text: "Saturday", q.questions[1].text: "Window, Table, near the door"])
+        d.toggle(9, in: 1); d.toggle(0, in: 7)
+        XCTAssertEqual(d.answer(for: 1), "Window, Table, near the door", "an option or a question that isn't there changes nothing")
+
+        let c = fake()
+        let m = ConversationModel(source: .bot(SampleData.bots[2]), client: c)
+        await m.loadComposer()
+        XCTAssertEqual(m.question?.questions.count, 2, "every question of the call reaches the phone")
+        let ok = await m.answerQuestion(try! XCTUnwrap(d.answers), to: q)
+        XCTAssertTrue(ok)
+        let sent = await c.questionsAnswered.last?.answers
+        XCTAssertEqual(sent?.count, 2, "both answers go in one answer")
+    }
+
     func testFileOverTheLimitIsRefusedWithAPlainLine() async {
         let c = fake()
         let m = ConversationModel(source: .bot(SampleData.bots[0]), client: c)

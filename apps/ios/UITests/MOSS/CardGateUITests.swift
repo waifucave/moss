@@ -159,4 +159,24 @@ final class CardGateUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Submit"].firstMatch.isEnabled, "nothing chosen: nothing to submit")
         app.terminate()
     }
+
+    /// A call of two questions: both are drawn, Submit waits until each has an answer, and then answers both together.
+    func testACallOfTwoQuestionsIsAnsweredTogether() throws {
+        let app = launch(["-screen", "conversation", "-open", "juniper"])
+        XCTAssertTrue(app.staticTexts["Which day should I book the train for?"].waitForExistence(timeout: 10), "the first question")
+        XCTAssertTrue(app.staticTexts["Which seats do you want?"].exists, "and the second, in the same box")
+        let submit = app.buttons["Submit"].firstMatch
+        XCTAssertFalse(submit.isEnabled, "nothing chosen")
+        app.buttons["Saturday"].firstMatch.tap()
+        XCTAssertFalse(submit.isEnabled, "the second question still has no answer")
+        XCTAssertTrue(app.staticTexts["1 question still needs an answer."].exists, "it says why")
+        let window = app.buttons["Window"].firstMatch
+        scroll(app, up: true, until: { window.isHittable })
+        window.tap()
+        XCTAssertTrue(app.buttons["Saturday"].firstMatch.isSelected, "the first question's pick stays")
+        XCTAssertTrue(submit.isEnabled, "each question has an answer")
+        submit.tap()
+        XCTAssertTrue(app.staticTexts["Which day should I book the train for?"].waitForNonExistence(timeout: 10), "answered: the box goes")
+        app.terminate()
+    }
 }

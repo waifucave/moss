@@ -128,11 +128,12 @@ enum Records {
         case .fromBot(_, let text), .fromSession(let text), .fromPlugin(let text), .agent(let text), .routine(_, let text), .note(_, let text), .turnError(let text): return m(.note, text)
         case .turnEnded: return .turnEnded
         case .questionAsked(let q):
-            // Where it was asked, as asked (the phone draws one question of a call: the first).
+            // Where it was asked, as asked: every question of the call.
             guard let first = q.questions.first else { return .other }
             return .message(ChatMessage(id: i.id, role: .question, text: first.question, at: i.at,
-                                        question: AskedQuestion(callId: q.callId, header: first.header, text: first.question,
-                                                                options: first.options.map(\.label))))
+                                        question: AskedQuestion(callId: q.callId, parts: q.questions.map {
+                                            AskedQuestion.Part(header: $0.header, text: $0.question, options: $0.options.map(\.label))
+                                        })))
         case .questionResolved(let callId, _, _, _, _, let end):
             // How it closed is the core's decision (`QuestionEnd`), the same for every app.
             let state: AskedQuestion.State
@@ -156,10 +157,12 @@ enum Records {
                                     files: o.files != nil, fileLimit: o.files?.maxBytes, maxFiles: o.files.map { Int($0.perMessage) })
     }
     static func question(_ q: MossPhoneCore.AskQuestion) -> MossPhoneKit.AskQuestion? {
-        // The phone's sheet asks one question at a time: the first.
-        guard let first = q.questions.first else { return nil }
-        return MossPhoneKit.AskQuestion(callId: q.callId, header: first.header, text: first.question,
-                                        options: first.options.map { .init(label: $0.label, detail: $0.description, preview: $0.preview) }, multiSelect: first.multiSelect)
+        // Every question of the call, as the desktop's card draws them: they are answered together.
+        guard !q.questions.isEmpty else { return nil }
+        return MossPhoneKit.AskQuestion(callId: q.callId, questions: q.questions.map { part in
+            .init(header: part.header, text: part.question,
+                  options: part.options.map { .init(label: $0.label, detail: $0.description, preview: $0.preview) }, multiSelect: part.multiSelect)
+        })
     }
 }
 

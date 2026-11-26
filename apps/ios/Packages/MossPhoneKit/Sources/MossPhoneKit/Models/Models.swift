@@ -82,13 +82,23 @@ public struct AskedQuestion: Hashable, Sendable {
             }
         }
     }
+    /// One question of the call, as asked.
+    public struct Part: Hashable, Sendable {
+        public var header: String?
+        public var text: String
+        public var options: [String]
+        public init(header: String? = nil, text: String, options: [String]) { self.header = header; self.text = text; self.options = options }
+    }
     public var callId: String
-    public var header: String?
-    public var text: String
-    public var options: [String]
+    /// Every question of the call (up to four).
+    public var parts: [Part]
     public var state: State
+    /// The first question's text: what an answer's caption names the call by.
+    public var text: String { parts.first?.text ?? "" }
+    public init(callId: String, parts: [Part], state: State = .open) { self.callId = callId; self.parts = parts; self.state = state }
+    /// A call asking one question.
     public init(callId: String, header: String? = nil, text: String, options: [String], state: State = .open) {
-        self.callId = callId; self.header = header; self.text = text; self.options = options; self.state = state
+        self.init(callId: callId, parts: [Part(header: header, text: text, options: options)], state: state)
     }
 }
 
@@ -532,7 +542,8 @@ public struct StagedImage: Identifiable, Hashable, Sendable {
     public init(path: String, thumbnail: Data) { self.path = path; self.thumbnail = thumbnail }
 }
 
-/// An `AskUserQuestion` waiting in a conversation (`session.answer` answers it).
+/// An `AskUserQuestion` waiting in a conversation (`session.answer` answers it): one call, with every question it asks
+/// (up to four, as the desktop's card draws them). They are answered, or skipped, together.
 public struct AskQuestion: Identifiable, Hashable, Sendable {
     public struct Option: Hashable, Sendable {
         public var label: String
@@ -541,14 +552,25 @@ public struct AskQuestion: Identifiable, Hashable, Sendable {
         public var preview: String?
         public init(label: String, detail: String? = nil, preview: String? = nil) { self.label = label; self.detail = detail; self.preview = preview }
     }
+    /// One question of the call. Its `text` keys its answer, exactly as the engine sent it.
+    public struct Part: Hashable, Sendable {
+        public var header: String?
+        public var text: String
+        public var options: [Option]
+        public var multiSelect: Bool
+        public init(header: String? = nil, text: String, options: [Option], multiSelect: Bool = false) {
+            self.header = header; self.text = text; self.options = options; self.multiSelect = multiSelect
+        }
+    }
     public var callId: String
-    public var header: String?
-    public var text: String
-    public var options: [Option]
-    public var multiSelect: Bool
+    public var questions: [Part]
     public var id: String { callId }
+    /// The first question's text: what a caption or a log line names the call by.
+    public var text: String { questions.first?.text ?? "" }
+    public init(callId: String, questions: [Part]) { self.callId = callId; self.questions = questions }
+    /// A call asking one question.
     public init(callId: String, header: String? = nil, text: String, options: [Option], multiSelect: Bool = false) {
-        self.callId = callId; self.header = header; self.text = text; self.options = options; self.multiSelect = multiSelect
+        self.init(callId: callId, questions: [Part(header: header, text: text, options: options, multiSelect: multiSelect)])
     }
 }
 

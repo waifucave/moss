@@ -96,7 +96,13 @@ public enum SampleData {
                           options: [.init(label: "Green", detail: "Matches the success states"), .init(label: "Amber", detail: "Stands out on the white page"), .init(label: "Grey", detail: "Quiet, like the other tags")]),
         "s_luna": AskQuestion(callId: "ask_2", header: "Receipts", text: "Which folder should I keep this week's receipts in?",
                               options: [.init(label: "Receipts 2026"), .init(label: "Taxes"), .init(label: "A new folder")]),
+        // A call of two questions, answered together: Submit waits until both have an answer.
+        "s_juniper": SampleData.twoQuestions,
     ]
+    public static let twoQuestions = AskQuestion(callId: "ask_pair", questions: [
+        .init(header: "Trip", text: "Which day should I book the train for?", options: [.init(label: "Friday"), .init(label: "Saturday")]),
+        .init(header: "Seat", text: "Which seats do you want?", options: [.init(label: "Window"), .init(label: "Aisle"), .init(label: "Table")], multiSelect: true),
+    ])
 
     public static func sessionMessages(for id: String) -> [ChatMessage] {
         switch id {

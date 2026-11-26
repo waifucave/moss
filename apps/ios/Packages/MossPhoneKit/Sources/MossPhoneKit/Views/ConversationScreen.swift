@@ -243,11 +243,17 @@ struct AskedQuestionRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // The bot's words, in their own box: nothing in them can pass for the status below.
-            VStack(alignment: .leading, spacing: 6) {
-                if let h = question.header { Text(verbatim: h).font(.caption.weight(.semibold)).foregroundStyle(.secondary) }
-                Text(verbatim: question.text).font(.subheadline).lineLimit(6)
-                if !question.options.isEmpty {
-                    Text(verbatim: question.options.joined(separator: " · ")).font(.footnote).foregroundStyle(.secondary).lineLimit(3)
+            VStack(alignment: .leading, spacing: 10) {
+                // Every question of the call, as asked.
+                ForEach(question.parts.indices, id: \.self) { i in
+                    let part = question.parts[i]
+                    VStack(alignment: .leading, spacing: 4) {
+                        if let h = part.header { Text(verbatim: h).font(.caption.weight(.semibold)).foregroundStyle(.secondary) }
+                        Text(verbatim: part.text).font(.subheadline).lineLimit(6)
+                        if !part.options.isEmpty {
+                            Text(verbatim: part.options.joined(separator: " · ")).font(.footnote).foregroundStyle(.secondary).lineLimit(3)
+                        }
+                    }
                 }
             }
             .padding(12)
@@ -274,6 +280,6 @@ struct AskedQuestionRow: View {
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.primary.opacity(0.12), lineWidth: 0.5))
         .padding(.trailing, 32)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(asker) asked: \(question.text). \(question.state.status.map { s in s.detail.map { "\(s.title): \($0)" } ?? s.title } ?? "Waiting for your answer")")
+        .accessibilityLabel("\(asker) asked: \(question.parts.map(\.text).joined(separator: " ")). \(question.state.status.map { s in s.detail.map { "\(s.title): \($0)" } ?? s.title } ?? "Waiting for your answer")")
     }
 }
