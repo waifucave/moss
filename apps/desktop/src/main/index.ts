@@ -48,6 +48,7 @@ import { AnswerKey, KeyRegistration, fileVault, memoryVault, safeStorageVault } 
 import { AppLog, appLogPath, LineLimiter } from "./app-log";
 import { fileLine } from "./file-log";
 import { appOwnLoad, StallWatch } from "@waifucave/moss-app-release/stall-watch";
+import { installGpuGuard } from "@waifucave/moss-app-release/gpu-guard";
 import { LAYER_CALL_MAX, LayerLinks } from "./layer-links";
 import { placeWindow, TitleDrag } from "./ui/window-drag";
 import { KeyLog, PasteModes, keyBytes, preparePaste } from "./terminal-input";
@@ -208,6 +209,10 @@ if (headless || preview || typeof __MOSS_TEST_BUILD__ === "string") {
   app.setPath("userData", headlessUserData(home, program, identity.profile));
   app.setPath("sessionData", join(headlessUserData(home, program, identity.profile), "session"));
 }
+// A GPU that keeps dying (a VM, Remote Desktop, a broken driver) must not end in Chromium's "GPU process isn't usable. Goodbye.": after two
+// unexpected GPU exits in a run the next start draws in software (`disableHardwareAcceleration`, which must run before `ready`); the flag clears
+// itself (packages/app-release/src/gpu-guard.ts). Nothing is shown.
+installGpuGuard(app, { read: (p) => { try { return readFileSync(p, "utf8"); } catch { return undefined; } }, write: (p, t) => { if (t === null) rmSync(p, { force: true }); else writeFileSync(p, t); }, join }, (l) => console.log(`[desktop] ${l}`));
 // A headless run, a test-marked build and the acceptance run's build play no sound: the bots' voices still play through
 // the player (its clock and counters run), muted at Chromium's output.
 const silent = headless || preview || typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string";

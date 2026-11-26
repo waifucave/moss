@@ -5,7 +5,7 @@
 // MOSS's own key (answer-key.ts). Quitting MOSS stops nothing: the engine, the host and every bot keep working.
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, Notification, protocol, safeStorage, session, shell, webContents, webFrameMain, type IpcMainEvent, type IpcMainInvokeEvent, type Session, type WebFrameMain } from "electron";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, watchFile } from "node:fs";
+import { existsSync, readFileSync, rmSync, watchFile, writeFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BotFace as ProtocolBotFace, compareReleases, CORE_EVENT_NOTIFICATION, ReleaseChangedEvent, TOOL_AVAILABILITIES, type MossHelloResult, type ToolAvailability } from "@waifucave/moss-protocol";
@@ -14,6 +14,7 @@ import { createRelease, type ReleaseNotice } from "@waifucave/moss-app-release/r
 import { InstallGate, MOSS_APP_FEED_PREFIX, startUpdater, type Updater } from "@waifucave/moss-app-release/updater";
 import { AppLog, appLogPath, LineLimiter, MOSS_APP_LOG_FILE } from "@waifucave/moss-app-release/app-log";
 import { appOwnLoad, StallWatch } from "@waifucave/moss-app-release/stall-watch";
+import { installGpuGuard } from "@waifucave/moss-app-release/gpu-guard";
 import { fileLine } from "./file-log";
 import { takeEraseResult } from "./erase-outcome";
 import { daemonEndpoint, dial, type DaemonClient } from "./client";
@@ -69,6 +70,9 @@ if ((typeof __MOSS_TEST_BUILD__ === "string")) {
     app.exit(2);
   }
 }
+// A GPU that keeps dying must not end in Chromium's "GPU process isn't usable. Goodbye.": after two unexpected GPU exits in a run the next start
+// draws in software (before `ready`); the flag clears itself (packages/app-release/src/gpu-guard.ts). Nothing is shown.
+installGpuGuard(app, { read: (p) => { try { return readFileSync(p, "utf8"); } catch { return undefined; } }, write: (p, t) => { if (t === null) rmSync(p, { force: true }); else writeFileSync(p, t); }, join }, (l) => console.log(`moss: ${l}`));
 if (headless) {
   // Nothing on the screen and no sound: no Dock icon, no window shown, every page muted.
   app.commandLine.appendSwitch("mute-audio");

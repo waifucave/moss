@@ -10,7 +10,8 @@
     "./engine-launch": "./src/engine-launch.ts",
     "./updater": "./src/updater.ts",
     "./app-log": "./src/app-log.ts",
-    "./stall-watch": "./src/stall-watch.ts"
+    "./stall-watch": "./src/stall-watch.ts",
+    "./gpu-guard": "./src/gpu-guard.ts"
   },
   "scripts": {
     "test": "bun test",
