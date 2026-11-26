@@ -6375,8 +6375,8 @@ async function reopenSteps(app: { exe: string; args: string[] }): Promise<void> 
         await windowFills(appA, 60_000);
         if ("stale" in step) {
           // A crash of both: the app and the daemon killed outright, which leaves core.sock and core.lock behind.
-          try { process.kill(-appA.proc.pid!, "SIGKILL"); } catch { /* gone */ }
-          try { process.kill(-old.proc.pid!, "SIGKILL"); } catch { /* gone */ }
+          // Windows has no process groups: `process.kill(-pid)` there ends nothing, so the app and the daemon are ended as trees.
+          for (const p of [appA.proc, old.proc]) { if (process.platform === "win32") killTree(p.pid!); else { try { process.kill(-p.pid!, "SIGKILL"); } catch { /* gone */ } } }
           await waitGone(old, 10_000);
           await until("the killed app to go", 10_000, () => (alive(appA!.proc) ? undefined : true), 200);
           const left = ["core.sock", "core.lock"].filter((f) => existsSync(join(home, "run", f)));
