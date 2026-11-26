@@ -10,11 +10,16 @@
 //
 // Pure: the file's text goes in and comes out (the apps do the reading and writing), so this runs under a test with no Electron.
 
+import { closeSync, openSync, readSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
 export const GPU_FLAG_FILE = "gpu-guard.json";
 /** Unexpected GPU exits in one run before the next start draws in software. */
 export const GPU_CRASHES_TO_FLAG = 2;
 /** Starts with the flag set before acceleration is tried again. */
 export const GPU_CLEAN_STARTS_TO_CLEAR = 5;
+/** The flag file is a few dozen bytes: text longer than this is no flag (and is removed), never parsed. */
+export const GPU_FLAG_MAX_CHARS = 2048;
 
 interface Flag { version: string; starts: number }
 
@@ -28,7 +33,7 @@ export interface StartDecision {
 }
 
 function parse(raw: string | undefined): Flag | undefined {
-  if (raw === undefined) return undefined;
+  if (raw === undefined || raw.length > GPU_FLAG_MAX_CHARS) return undefined;
   try {
     const v = JSON.parse(raw) as unknown;
     if (typeof v !== "object" || v === null) return undefined;
@@ -93,13 +98,17 @@ export interface GpuGuardFiles {
 
 /** Called once, before `ready`: reads the flag and turns acceleration off for this run when it says so, and watches this run's GPU exits. Never throws: a guard that
  *  can't read or write its file changes nothing. */
-export function installGpuGuard(app: GpuGuardApp, files: GpuGuardFiles, log: (line: string) => void): void {
+export function installGpuGuard(app: GpuGuardApp, files: GpuGuardFiles, log: (line: string) => void): GpuGuard {
+  let own: () => void = () => {};
   try {
     const file = files.join(app.getPath("userData"), GPU_FLAG_FILE);
     const version = app.getVersion();
     const decision = startDecision(files.read(file), version);
-    if (decision.write !== undefined) { try { files.write(file, decision.write); } catch { /* the flag stays as it was */ } }
-    if (decision.log !== undefined) log(decision.log);
+    // What the start changes in the file (a start counted, the flag cleared) waits for `ownStart`: a second instance that is about to quit on the single-instance lock is not a start.
+    own = () => {
+      if (decision.write !== undefined) { try { files.write(file, decision.write); } catch { /* the flag stays as it was */ } }
+      if (decision.log !== undefined) log(decision.log);
+    };
     if (decision.disable) app.disableHardwareAcceleration();
     const count = new GpuCrashCount();
     app.on("child-process-gone", (_e, details) => {
@@ -110,4 +119,24 @@ export function installGpuGuard(app: GpuGuardApp, files: GpuGuardFiles, log: (li
       } catch { /* nothing to do about it here */ }
     });
   } catch { /* an app that can't say where its data is runs as it always did */ }
+  let done = false;
+  return { ownStart: () => { if (done) return; done = true; try { own(); } catch { /* nothing to do about it here */ } } };
 }
+
+/** What the guard hands back: the app calls `ownStart` once it holds the single-instance lock (a start that is going on). */
+export interface GpuGuard { ownStart(): void }
+
+/** The real file system for the guard: a read takes at most GPU_FLAG_MAX_CHARS + 1 bytes (a larger file is returned too long to parse, never read whole). */
+export const nodeGpuFiles: GpuGuardFiles = {
+  read(path) {
+    let fd: number;
+    try { fd = openSync(path, "r"); } catch { return undefined; }
+    try {
+      const buf = Buffer.alloc(GPU_FLAG_MAX_CHARS + 1);
+      const n = readSync(fd, buf, 0, buf.length, 0);
+      return buf.subarray(0, n).toString("utf8");
+    } catch { return undefined; } finally { try { closeSync(fd); } catch { /* closed */ } }
+  },
+  write(path, text) { if (text === null) rmSync(path, { force: true }); else writeFileSync(path, text); },
+  join,
+};

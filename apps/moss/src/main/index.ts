@@ -14,7 +14,7 @@ import { createRelease, type ReleaseNotice } from "@waifucave/moss-app-release/r
 import { InstallGate, MOSS_APP_FEED_PREFIX, startUpdater, type Updater } from "@waifucave/moss-app-release/updater";
 import { AppLog, appLogPath, LineLimiter, MOSS_APP_LOG_FILE } from "@waifucave/moss-app-release/app-log";
 import { appOwnLoad, StallWatch } from "@waifucave/moss-app-release/stall-watch";
-import { installGpuGuard } from "@waifucave/moss-app-release/gpu-guard";
+import { installGpuGuard, nodeGpuFiles } from "@waifucave/moss-app-release/gpu-guard";
 import { fileLine } from "./file-log";
 import { takeEraseResult } from "./erase-outcome";
 import { daemonEndpoint, dial, type DaemonClient } from "./client";
@@ -72,7 +72,7 @@ if ((typeof __MOSS_TEST_BUILD__ === "string")) {
 }
 // A GPU that keeps dying must not end in Chromium's "GPU process isn't usable. Goodbye.": after two unexpected GPU exits in a run the next start
 // draws in software (before `ready`); the flag clears itself (packages/app-release/src/gpu-guard.ts). Nothing is shown.
-installGpuGuard(app, { read: (p) => { try { return readFileSync(p, "utf8"); } catch { return undefined; } }, write: (p, t) => { if (t === null) rmSync(p, { force: true }); else writeFileSync(p, t); }, join }, (l) => console.log(`moss: ${l}`));
+const gpuGuard = installGpuGuard(app, nodeGpuFiles, (l) => console.log(`moss: ${l}`));
 if (headless) {
   // Nothing on the screen and no sound: no Dock icon, no window shown, every page muted.
   app.commandLine.appendSwitch("mute-audio");
@@ -1139,6 +1139,7 @@ function wireSealed(): void {
 if (!app.requestSingleInstanceLock()) {
   app.exit(0);
 } else {
+  gpuGuard.ownStart();
   app.on("second-instance", () => { if (!headless) void openWindow(); });
   // Closing the window only closes it; on macOS the app stays until quit, elsewhere it leaves. Neither stops any work.
   app.on("window-all-closed", () => {

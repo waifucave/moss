@@ -1,6 +1,9 @@
 // The GPU guard's flag logic: pure, no Electron, no window.
 import { describe, expect, test } from "bun:test";
-import { GPU_CLEAN_STARTS_TO_CLEAR, GPU_CRASHES_TO_FLAG, GpuCrashCount, flagText, installGpuGuard, isGpuCrash, startDecision } from "../src/gpu-guard";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { GPU_CLEAN_STARTS_TO_CLEAR, GPU_FLAG_MAX_CHARS, nodeGpuFiles, GPU_CRASHES_TO_FLAG, GpuCrashCount, flagText, installGpuGuard, isGpuCrash, startDecision } from "../src/gpu-guard";
 
 describe("startDecision", () => {
   test("no file: acceleration stays on and nothing is written", () => {
@@ -73,7 +76,7 @@ describe("installGpuGuard", () => {
     a.crash({ type: "GPU", reason: "crashed" });
     expect(a.files.get("/data/gpu-guard.json")).toBe(flagText("1.0.0"));
     const b = make(a.files.get("/data/gpu-guard.json"));
-    installGpuGuard(b.app, b.io, b.log);
+    installGpuGuard(b.app, b.io, b.log).ownStart();
     expect(b.disabled()).toBe(1);
     expect(b.lines.length).toBe(1);
   });
@@ -82,5 +85,37 @@ describe("installGpuGuard", () => {
     (a.app as { getPath: () => string }).getPath = () => { throw new Error("no path"); };
     installGpuGuard(a.app, a.io, a.log);
     expect(a.disabled()).toBe(0);
+  });
+});
+
+describe("size and the second instance", () => {
+  test("a flag file longer than the bound is no flag, and is removed", () => {
+    expect(startDecision("x".repeat(GPU_FLAG_MAX_CHARS + 1), "1")).toEqual({ disable: false, write: null, log: undefined });
+  });
+  test("nodeGpuFiles reads at most one byte past the bound", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gpu-guard-"));
+    try {
+      const f = join(dir, "big");
+      writeFileSync(f, "y".repeat(1_000_000));
+      expect(nodeGpuFiles.read(f)!.length).toBe(GPU_FLAG_MAX_CHARS + 1);
+      expect(nodeGpuFiles.read(join(dir, "none"))).toBeUndefined();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  test("nothing is written or counted until ownStart: a second instance that quits on the lock is no software start", () => {
+    const files = new Map<string, string>([["/data/gpu-guard.json", flagText("1.0.0")]]);
+    const lines: string[] = [];
+    let disabled = 0;
+    const app = { getPath: () => "/data", getVersion: () => "1.0.0", disableHardwareAcceleration: () => { disabled++; }, on: () => {} };
+    const io = { read: (p: string) => files.get(p), write: (p: string, t: string | null) => { if (t === null) files.delete(p); else files.set(p, t); }, join: (d: string, n: string) => `${d}/${n}` };
+    const quitting = installGpuGuard(app as never, io, (l) => lines.push(l));
+    expect(files.get("/data/gpu-guard.json")).toBe(flagText("1.0.0"));
+    expect(lines).toEqual([]);
+    void quitting;
+    const real = installGpuGuard(app as never, io, (l) => lines.push(l));
+    real.ownStart();
+    real.ownStart();
+    expect(JSON.parse(files.get("/data/gpu-guard.json")!).starts).toBe(1);
+    expect(lines.length).toBe(1);
+    expect(disabled).toBe(2);
   });
 });
