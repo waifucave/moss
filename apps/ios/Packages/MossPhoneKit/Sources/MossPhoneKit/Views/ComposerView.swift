@@ -408,7 +408,7 @@ struct QuestionComposerView: View {
             .frame(maxHeight: question.questions.count > 1 ? 420 : 520).scrollBounceBehavior(.basedOnSize)
             if question.questions.count > 1, draft.unanswered > 0 {
                 Text(draft.unanswered == 1 ? "1 question still needs an answer." : "\(draft.unanswered) questions still need an answer.")
-                    .font(.footnote).foregroundStyle(.secondary)
+                    .font(.footnote).foregroundStyle(Theme.subtle)
             }
             HStack {
                 if let onSkip {
@@ -428,13 +428,19 @@ struct QuestionComposerView: View {
                     let drawn = question
                     Task { _ = await onSubmit(drawn, answers); submitting = false }
                 } label: {
-                    Text("Submit").font(.body.weight(.semibold)).foregroundStyle(Color(uiColor: .systemBackground))
-                        .padding(.horizontal, 20).frame(height: 44).background(Color.primary, in: Capsule())
+                    // Not faded when it waits (a faded label fails the contrast audit): a quiet fill and the readable grey.
+                    let ready = draft.answers != nil
+                    Text("Submit").font(.body.weight(.semibold))
+                        .foregroundStyle(ready ? Color(uiColor: .systemBackground) : Theme.subtle)
+                        .padding(.horizontal, 20).frame(height: 44)
+                        .background(ready ? Color.primary : Color.primary.opacity(0.08), in: Capsule())
                 }
-                .buttonStyle(.plain).disabled(draft.answers == nil || submitting).opacity(draft.answers == nil ? 0.4 : 1)
+                .buttonStyle(.plain).disabled(draft.answers == nil || submitting)
             }
         }
         .padding(16)
+        // The computer's words read on a solid ground, whatever the conversation behind the glass shows.
+        .background(Color(uiColor: .systemBackground).opacity(0.92), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
         .modifier(ComposerChrome(horizontal: 12, bottom: 12, radius: 28))
     }
 
@@ -443,7 +449,7 @@ struct QuestionComposerView: View {
     @ViewBuilder private func part(_ p: Int) -> some View {
         let q = question.questions[p]
         VStack(alignment: .leading, spacing: 10) {
-            if let h = q.header { Text(verbatim: h).font(.footnote.weight(.semibold)).foregroundStyle(.secondary) }
+            if let h = q.header { Text(verbatim: h).font(.footnote.weight(.semibold)).foregroundStyle(Theme.subtle) }
             // A tall question scrolls in its box, so it can never push its options away or pass itself off as one.
             ScrollView { Text(verbatim: q.text).font(.body).frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true) }
                 .frame(maxHeight: 140).scrollBounceBehavior(.basedOnSize)
@@ -455,7 +461,7 @@ struct QuestionComposerView: View {
                         HStack(spacing: 12) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(verbatim: q.options[i].label).font(.body).lineLimit(3)
-                                if let d = q.options[i].detail { Text(verbatim: d).font(.footnote).foregroundStyle(.secondary).lineLimit(4) }
+                                if let d = q.options[i].detail { Text(verbatim: d).font(.footnote).foregroundStyle(Theme.subtle).lineLimit(4) }
                                 if let pv = q.options[i].preview {
                                     ScrollView([.vertical, .horizontal]) { Text(verbatim: pv).font(.caption.monospaced()).fixedSize().padding(8) }
                                         .frame(maxHeight: 96).background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))

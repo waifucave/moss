@@ -83,13 +83,13 @@ jobs:
           path: ${{ runner.temp }}/cardgate.xcresult
           if-no-files-found: ignore
           retention-days: 7
+      # A gate: missing descriptions, wrong traits, small hit regions and failed contrast fail it (AuditRunner.swift says
+      # which issues are only reported).
       - name: Accessibility audits at the default and the largest text size (MOSS)
-        continue-on-error: true
         run: |
           DEST="platform=iOS Simulator,name=$(xcrun simctl list devices available | grep -o 'iPhone [0-9A-Za-z ]*' | head -1 | sed 's/ *$//')"
-          xcodebuild test -project MOSSPhone.xcodeproj -scheme MOSS -destination "$DEST" -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO -skip-testing:MOSSUITests/CardGateUITests 2>&1 | tee "$RUNNER_TEMP/ui-moss.log" | grep -E "AUDIT|error:|Executed|TEST (SUCC|FAIL)" | cut -c1-400
+          xcodebuild test -project MOSSPhone.xcodeproj -scheme MOSS -destination "$DEST" -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO -skip-testing:MOSSUITests/CardGateUITests 2>&1 | tee "$RUNNER_TEMP/ui-moss.log" | grep -E "AUDIT|error:|Executed|TEST (SUCC|FAIL)" | cut -c1-400 ; exit ${PIPESTATUS[0]}
       - name: Accessibility audits at the default and the largest text size (MOSS Code)
-        continue-on-error: true
         run: |
           DEST="platform=iOS Simulator,name=$(xcrun simctl list devices available | grep -o 'iPhone [0-9A-Za-z ]*' | head -1 | sed 's/ *$//')"
-          xcodebuild test -project MOSSPhone.xcodeproj -scheme MOSSCode -destination "$DEST" -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$RUNNER_TEMP/ui-code.log" | grep -E "AUDIT|error:|Executed|TEST (SUCC|FAIL)" | cut -c1-400
+          xcodebuild test -project MOSSPhone.xcodeproj -scheme MOSSCode -destination "$DEST" -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$RUNNER_TEMP/ui-code.log" | grep -E "AUDIT|error:|Executed|TEST (SUCC|FAIL)" | cut -c1-400 ; exit ${PIPESTATUS[0]}

@@ -17,7 +17,7 @@ struct RoundButton: View {
                     if badge > 0 {
                         Text("\(badge)").font(.caption2.weight(.bold)).foregroundStyle(.white)
                             .padding(.horizontal, 5).frame(minWidth: 18, minHeight: 18)
-                            .background(Theme.waiting, in: Capsule())
+                            .background(Theme.waitingFill, in: Capsule())
                             .offset(x: 6, y: -4)
                             .accessibilityHidden(true)
                     }
@@ -89,7 +89,7 @@ struct NeedsYouTag: View {
     var body: some View {
         HStack(spacing: 4) {
             Circle().fill(Theme.waiting).frame(width: 7, height: 7)
-            Text("Needs you").fontWeight(.medium).foregroundStyle(Theme.waiting)
+            Text("Needs you").fontWeight(.medium).foregroundStyle(Theme.waitingText)
         }
         .accessibilityHidden(true)
     }

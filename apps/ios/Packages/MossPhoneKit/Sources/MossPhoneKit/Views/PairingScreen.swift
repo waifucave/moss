@@ -85,7 +85,7 @@ public struct PairingScreen: View {
                 Button { Task { await model.confirm() } } label: { Text("They match").frame(maxWidth: .infinity).foregroundStyle(Color(uiColor: .systemBackground)) }
                     .buttonStyle(.borderedProminent).tint(Theme.accent).controlSize(.large)
                 Button { Task { await model.cancel() } } label: { Text("They don't match").frame(maxWidth: .infinity) }
-                    .buttonStyle(.bordered).tint(.secondary).controlSize(.large)
+                    .buttonStyle(.bordered).tint(.primary).controlSize(.large)
             }
             .padding(.horizontal, 24).padding(.vertical, 12).background(.bar)
         }

@@ -49,7 +49,7 @@ public struct ConversationScreen: View {
                         let prev = i > 0 ? model.messages[i - 1] : nil
                         if prev == nil || m.at - (prev?.at ?? 0) > 30 * 60_000 {
                             Text(TimeText.divider(at: m.at, now: nowOverride ?? Int64(Date().timeIntervalSince1970 * 1000)))
-                                .font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.vertical, 6)
+                                .font(.footnote).foregroundStyle(Theme.subtle).frame(maxWidth: .infinity).padding(.vertical, 6)
                                 .accessibilityAddTraits(.isHeader)
                         }
                         MessageRow(message: m, botName: speaker, answered: answeredText).id(m.id)
@@ -86,15 +86,16 @@ public struct ConversationScreen: View {
             VStack(spacing: 6) {
                 if let e = model.errorText {
                     HStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.circle").accessibilityHidden(true)
-                        Text(e).font(.footnote)
+                        Image(systemName: "exclamationmark.circle").accessibilityHidden(true).foregroundStyle(Theme.subtle)
+                        Text(e).font(.footnote).foregroundStyle(Theme.subtle)
                         Spacer(minLength: 0)
                         if model.failedSend != nil {
+                            // The button's own ink, not the line's grey: it is the thing to press.
                             Button("Retry") { Task { await model.retry() } }
-                                .font(.footnote.weight(.semibold)).buttonStyle(.bordered).controlSize(.small).tint(Theme.accent)
+                                .font(.footnote.weight(.semibold)).buttonStyle(.bordered).controlSize(.small).tint(Theme.accent).foregroundStyle(.primary)
+                                .frame(minHeight: 44)
                         }
                     }
-                    .foregroundStyle(.secondary)
                     .padding(.horizontal, 20)
                 }
                 if model.gone {
@@ -248,10 +249,10 @@ struct AskedQuestionRow: View {
                 ForEach(question.parts.indices, id: \.self) { i in
                     let part = question.parts[i]
                     VStack(alignment: .leading, spacing: 4) {
-                        if let h = part.header { Text(verbatim: h).font(.caption.weight(.semibold)).foregroundStyle(.secondary) }
+                        if let h = part.header { Text(verbatim: h).font(.caption.weight(.semibold)).foregroundStyle(Theme.subtle) }
                         Text(verbatim: part.text).font(.subheadline).lineLimit(6)
                         if !part.options.isEmpty {
-                            Text(verbatim: part.options.joined(separator: " · ")).font(.footnote).foregroundStyle(.secondary).lineLimit(3)
+                            Text(verbatim: part.options.joined(separator: " · ")).font(.footnote).foregroundStyle(Theme.subtle).lineLimit(3)
                         }
                     }
                 }
@@ -270,7 +271,7 @@ struct AskedQuestionRow: View {
                     }
                 } else { Label("Waiting for your answer below", systemImage: "questionmark.bubble").font(.footnote) }
             }
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Theme.subtle)
             .padding(.horizontal, 12).padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color(uiColor: .secondarySystemGroupedBackground))

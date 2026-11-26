@@ -49,7 +49,7 @@ public struct SessionsScreen: View {
                             .listRowBackground(Color.clear)
                     }
                 } header: {
-                    Text(group.project).font(.footnote).foregroundStyle(.secondary).textCase(nil)
+                    Text(group.project).font(.footnote).foregroundStyle(Theme.subtle).textCase(nil)
                         .padding(.leading, 4).accessibilityAddTraits(.isHeader)
                 }
                 .listSectionSeparator(.hidden)

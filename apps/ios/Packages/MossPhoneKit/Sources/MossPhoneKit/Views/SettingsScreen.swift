@@ -15,22 +15,22 @@ public struct SettingsScreen: View {
     public var body: some View {
         NavigationStack {
             Form {
-                Section("Paired computer") {
+                Section {
                     if let c = model.computer {
                         LabeledContent("Name", value: c.name)
                         LabeledContent("This phone", value: c.deviceName)
                         LabeledContent("Status", value: model.lastSeenText(now: nowOverride ?? Int64(Date().timeIntervalSince1970 * 1000)))
                     } else {
-                        Text("Not paired").foregroundStyle(.secondary)
+                        Text("Not paired").foregroundStyle(Theme.subtle)
                     }
-                }
+                } header: { FormHeader("Paired computer") }
                 Section {
                     Button("Unpair \(model.computer?.name ?? "computer")", role: .destructive) { model.confirmingUnpair = true }
                         .disabled(model.computer == nil)
-                } footer: { Text("This phone forgets the computer. To use \(appName) again, pair it once more. To cut off a lost phone, remove it in the computer's Settings; unpairing here only affects this phone.") }
-                Section("About") {
+                } footer: { Text("This phone forgets the computer. To use \(appName) again, pair it once more. To cut off a lost phone, remove it in the computer's Settings; unpairing here only affects this phone.").foregroundStyle(Theme.subtle) }
+                Section {
                     LabeledContent("Version", value: model.version)
-                }
+                } header: { FormHeader("About") }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)

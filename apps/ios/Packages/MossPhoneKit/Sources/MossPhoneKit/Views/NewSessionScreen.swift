@@ -18,7 +18,7 @@ public struct NewSessionScreen: View {
                 } else if model.loading {
                     Section { HStack { ProgressView(); Text("Loading").foregroundStyle(.secondary) } }
                 } else {
-                    Section("Agent") {
+                    Section {
                         Picker("Agent", selection: $model.backend) {
                             ForEach(model.backends) { b in
                                 Label { Text(b.name) } icon: { AgentMarkView(backend: b.id, size: 22) }.tag(b.id)
@@ -39,7 +39,7 @@ public struct NewSessionScreen: View {
                                 .pickerStyle(.segmented)
                             }
                         }
-                    }
+                    } header: { FormHeader("Agent") }
                     Section {
                         ForEach(model.folders, id: \.self) { f in
                             Button {
@@ -56,7 +56,7 @@ public struct NewSessionScreen: View {
                         TextField("Another folder: type or paste a path", text: $model.typedFolder, axis: .vertical)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
                             .font(.system(.body, design: .monospaced))
-                    } header: { Text("Folder") } footer: { Text("Folders of your existing sessions come first. A path is the folder's place on your computer.") }
+                    } header: { FormHeader("Folder") } footer: { Text("Folders of your existing sessions come first. A path is the folder's place on your computer.").foregroundStyle(Theme.subtle) }
                     if let e = model.errorText { Section { Label(e, systemImage: "exclamationmark.circle").foregroundStyle(.secondary) } }
                 }
             }
