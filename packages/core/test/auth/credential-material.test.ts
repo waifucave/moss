@@ -239,7 +239,9 @@ describe("child-parser contract (clover-sdk coerceMaterial)", () => {
     // v0.0.86 -- packages/runtime/src/provider/keychain-store.ts` EMPTY; the mirror stands.
     // 0.0.86 → 0.0.87 (a host's PreToolUse hook may answer a call itself): `git diff v0.0.86 v0.0.87 --
     // packages/runtime/src/provider/keychain-store.ts` EMPTY; the mirror stands.
-    expect(pkg.version).toBe("0.0.87");
+    // 0.0.87 → 0.0.88 (Windows file rules: a path outside a rule's folder, network and device paths): `git diff v0.0.87 v0.0.88 --
+    // packages/runtime/src/provider/keychain-store.ts` EMPTY; the mirror stands.
+    expect(pkg.version).toBe("0.0.88");
   });
 
 
