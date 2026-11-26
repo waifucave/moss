@@ -136,6 +136,26 @@ describe("a packaged MOSS's key across restarts", () => {
     expect((await new ProgramAnswerKey(fileVault(join(dir, "held", "key2"))).register(closing, "studio0000000000000", () => true, [1])).kind).toBe("registered");
     expect(other).toBe(2);
   });
+
+  test("its earlier key lost: the engine's card waits, MOSS says so in plain words and asks again, and is registered once the yes lands (lane XC, xc-6b)", async () => {
+    const { KEY_LOST_WORDS } = await import("../src/main/answer-key");
+    let calls = 0;
+    const seen: string[] = [];
+    const key = new ProgramAnswerKey(fileVault(join(dir, "lost", "key")));
+    const client = {
+      request: async <T,>(): Promise<T> => {
+        calls++;
+        if (calls === 1) return { applied: false, card: "card_lost" } as T;
+        const now = key.state;
+        if (now.kind === "waiting") seen.push(now.why);
+        return { applied: true } as T;
+      },
+    };
+    expect((await key.register(client, "studio0000000000000", () => true, [1])).kind).toBe("registered");
+    expect(calls).toBe(2);
+    expect(seen).toEqual([KEY_LOST_WORDS]);
+    expect(KEY_LOST_WORDS).toContain("moss device key reset moss");
+  });
 });
 
 describe("the render's size", () => {

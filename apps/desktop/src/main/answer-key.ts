@@ -367,8 +367,14 @@ export class AnswerKey {
       const program = this.program;
       const statement = program === undefined ? answerKeyStatement(deviceId, publicKey, this.held) : new TextEncoder().encode(programAnswerKeyStatement({ device: deviceId, program, publicKey, held: this.held }));
       const signature = Buffer.from(this.sign(statement)).toString("base64");
-      await client.request(program === undefined ? "device.answerKey.set" : "device.programKey.set", { publicKey, held: this.held, signature }, 10_000);
+      const r = await client.request(program === undefined ? "device.answerKey.set" : "device.programKey.set", { publicKey, held: this.held, signature }, 10_000) as { applied?: boolean; card?: string } | undefined;
       // lane HS: end
+      // A key the engine didn't take yet (lane XC, xc-6b: an earlier key of this program was lost, and its new key waits on
+      // the engine's card for the person): not registered; asked again, so the yes is picked up once it lands.
+      if (program !== undefined && r?.applied === false) {
+        if (!o.quiet) this.log("answer key: the new key waits on the engine's card (an earlier key of this program was lost)");
+        return { again: "the new key waits on the engine's card" };
+      }
       this.log(`answer key: registered (${this.held})`);
     } catch (err) {
       const why = err instanceof Error ? err.message.slice(0, 200) : "refused";

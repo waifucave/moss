@@ -356,6 +356,55 @@
           }
         ]
       }
+    },
+    "device.programKey.reset": {
+      "doc": "From the person's terminal: lets a program whose answer key was lost here register a new one (once, 10 minutes).",
+      "owner": "RT",
+      "direction": "to-daemon",
+      "roles": [
+        "cli"
+      ],
+      "userOnly": true,
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "program": {
+            "type": "string",
+            "enum": [
+              "moss",
+              "code",
+              "host"
+            ]
+          }
+        },
+        "required": [
+          "program"
+        ]
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "opened": {
+            "type": "boolean",
+            "const": true
+          },
+          "accepted": {
+            "type": "boolean",
+            "const": true
+          },
+          "card": {
+            "type": "string",
+            "pattern": "^card_[A-Za-z0-9_-]{6,64}$"
+          },
+          "none": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "additionalProperties": false
+      }
     }
   },
   "events": {

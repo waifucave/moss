@@ -86,6 +86,16 @@ describe("the answer key", () => {
     expect(lines.join("\n")).not.toContain(key.publicKey().slice(0, 12));
   });
 
+  test("the host's new key that waits on the engine's lost-key card isn't taken as registered: it is asked again (lane XC, xc-6b)", async () => {
+    const lines: string[] = [];
+    const key = new AnswerKey(memoryVault(), (l) => lines.push(l), { program: "host" });
+    const waits = { request: async <T>(): Promise<T> => ({ applied: false, card: "card_lost" }) as T };
+    expect(await key.registerOnce(waits, "dev_x")).toEqual({ again: "the new key waits on the engine's card" });
+    expect(lines).toEqual(["answer key: the new key waits on the engine's card (an earlier key of this program was lost)"]);
+    const taken = { request: async <T>(): Promise<T> => ({ applied: true }) as T };
+    expect(await key.registerOnce(taken, "dev_x")).toEqual({ registered: true });
+  });
+
   test("the log says waiting for a try that may take later, and not registered only for the core's no (even on a quiet retry)", async () => {
     const lines: string[] = [];
     const key = new AnswerKey(memoryVault(), (l) => lines.push(l));

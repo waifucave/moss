@@ -26,6 +26,8 @@ import { readJsonFile, writeJsonFile } from "../devices/json-file";
 
 /** How far a hand-over's `at` may be from now (as for the single key's, `ANSWER_KEY_ROTATE_MAX_SKEW_MS`). */
 export const PROGRAM_KEY_HAND_OVER_SKEW_MS = 5 * 60 * 1000;
+/** How long the person's terminal reset for a lost key stays open (lane XC, xc-6b). */
+export const PROGRAM_KEY_RESET_MS = 10 * 60 * 1000;
 
 export interface ProgramKeyInput {
   device: string;
@@ -78,6 +80,8 @@ export class ProgramKeyTable implements ProgramAnswerKeys {
   readonly #now: () => number;
   readonly #listeners = new Listeners<{ device: string; key: ProgramKey }>();
   #state: FileShape;
+  /** Each program's open terminal reset (xc-6b): until when its next registration may replace a lost key. */
+  readonly #resets = new Map<string, number>();
 
   constructor(opts: ProgramKeyTableOptions = {}) {
     this.#file = opts.file;
@@ -118,10 +122,36 @@ export class ProgramKeyTable implements ProgramAnswerKeys {
     this.#listeners.emit({ device: input.device, key: strip(record) });
   }
 
+  /** The person's terminal reset for a key lost here (lane XC, xc-6b): the next registration of `program` within
+   *  `PROGRAM_KEY_RESET_MS` replaces the held key with no hand-over, once. In memory only: a restart closes it. */
+  openReset(device: string, program: Program): void {
+    this.#resets.set(`${device}\n${program}`, this.#now() + PROGRAM_KEY_RESET_MS);
+  }
+
+  /** Takes `input` in place of the held key with no hand-over (lane XC, xc-6b): after the person's yes on the lost-key
+   *  card, or by the terminal's reset. Every check of the key itself again; the hand-over chain starts anew (the paired
+   *  computers each ask on their own card). MOSS Code's single key has its own door. */
+  async adoptLost(input: ProgramKeyInput): Promise<void> {
+    await this.#provesItself(input);
+    if (input.program === "code" && this.#legacy?.(input.device) !== undefined) throw new ContractError("refused", "MOSS Code's key is this device's single answer key: device.answerKey.set replaces it");
+    this.#resets.delete(`${input.device}\n${input.program}`);
+    this.#set(input);
+  }
+
   async register(input: ProgramKeyInput): Promise<ProgramKeyResult> {
     await this.#provesItself(input);
     const held = this.keyOf(input.device, input.program);
-    if (held !== undefined && held.publicKey !== input.publicKey) return { applied: false, card: true };
+    if (held !== undefined && held.publicKey !== input.publicKey) {
+      // The person's terminal opened a reset for this program: this registration takes the place of the lost key, once.
+      const slot = `${input.device}\n${input.program}`;
+      const until = this.#resets.get(slot);
+      if (until !== undefined && this.#now() <= until && !(input.program === "code" && this.#legacy?.(input.device) !== undefined)) {
+        this.#resets.delete(slot);
+        this.#set(input);
+        return { applied: true, reset: true };
+      }
+      return { applied: false, card: true };
+    }
     // The same key again, or the device's single key named again as `code`'s: nothing to keep twice.
     if (held !== undefined && input.program === "code" && this.#legacy?.(input.device) !== undefined) return { applied: true };
     if (held === undefined || held.held !== input.held || (held.alg ?? "ed25519") !== (input.alg ?? "ed25519")) this.#set(input, this.#state.keys[input.device]?.[input.program]?.handOvers);

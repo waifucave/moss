@@ -14,6 +14,9 @@
 //   moss device main set <name>      makes a computer the main one (`main.set`), after a y/N question: this computer at once
 //                                     (the person's own terminal), another computer on its own sealed card there. The way
 //                                     back after a main computer restarts with its peer off (lane XC 5c)
+//   moss device key reset <program>  a program here whose answer key was lost may register a new one
+//                                     (`device.programKey.reset`): its card, or a 10-minute window where nothing else
+//                                     of the person's could answer that card
 //
 // Never a yes/no for the words, never confirmed on its own, no flag that skips them: the words are the check that the
 // two devices are each other and not someone in between, and only typing them proves the person compared them. With no
@@ -37,7 +40,7 @@ export interface DeviceIo {
 
 export interface CliRun { code: number; output: string }
 
-export const DEVICE_USAGE = "usage: moss device pair [--join] | list | revoke <name> | main [set <name>]";
+export const DEVICE_USAGE = "usage: moss device pair [--join] | list | revoke <name> | main [set <name>] | key reset <moss|code|host>";
 
 type PairingEvent = { pairingId?: string; step?: string; words?: string[]; peerName?: string; reason?: string };
 type PairingView = { pairingId: string; code?: string; qr?: string; words?: string[] };
@@ -80,6 +83,18 @@ export async function runDevice(args: readonly string[], conn: DeviceConn, io: D
     }
     if (sub === "main") return await main(rest, conn, io);
     if (sub === "pair") return await pair(rest, conn, io);
+    if (sub === "key") {
+      // `moss device key reset <program>` (lane XC, xc-6b): a program here whose answer key was lost (reinstalled, its
+      // data cleared) may register a new one. Only the person's own terminal is taken (the CLI caller check).
+      const [verb, program] = rest;
+      const name = program === "moss" ? "MOSS" : program === "code" ? "MOSS Code" : program === "host" ? "MOSS's background helper" : undefined;
+      if (verb !== "reset" || name === undefined || rest.length !== 2) return { code: 2, output: DEVICE_USAGE };
+      const r = await conn.request<{ opened?: true; accepted?: true; card?: string; none?: true }>("device.programKey.reset", { program });
+      if (r.none === true) return { code: 0, output: `${name} holds no key on this computer yet: open ${name} and it registers one` };
+      if (r.accepted === true) return { code: 0, output: `${name}'s new key is accepted on this computer` };
+      if (r.opened === true) return { code: 0, output: `${name} can register a new key in the next 10 minutes: open ${name} now` };
+      return { code: 0, output: `${name}'s new key waits for your OK on its card: answer it in ${name}, or on another of your devices` };
+    }
     return { code: 2, output: DEVICE_USAGE };
   } catch (e) {
     return { code: 1, output: plain(e instanceof Error ? e.message : String(e), 500) };

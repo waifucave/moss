@@ -176,3 +176,44 @@ describe("moss device list and revoke", () => {
     expect(typedWords("  Amber,river - STONE  cloud ")).toEqual(WORDS);
   });
 });
+
+describe("moss device key reset (lane XC, xc-6b)", () => {
+  const answering = (answer: Record<string, unknown>) => {
+    const calls: { method: string; params: unknown }[] = [];
+    const conn: DeviceConn = {
+      onEvent: () => {},
+      close: () => {},
+      async request<T>(method: string, params?: unknown): Promise<T> {
+        calls.push({ method, params });
+        return answer as T;
+      },
+    };
+    return { conn, calls };
+  };
+  const quiet = { print: () => {} };
+
+  test("asks the engine for that program, and says what it did: opened, accepted, a card to answer, or no key yet", async () => {
+    const cases: [Record<string, unknown>, RegExp][] = [
+      [{ opened: true }, /MOSS can register a new key in the next 10 minutes: open MOSS now/],
+      [{ accepted: true }, /MOSS's new key is accepted on this computer/],
+      [{ card: "card_1" }, /MOSS's new key waits for your OK on its card: answer it in MOSS, or on another of your devices/],
+      [{}, /waits for your OK on its card/],
+      [{ none: true }, /MOSS holds no key on this computer yet/],
+    ];
+    for (const [answer, says] of cases) {
+      const d = answering(answer);
+      const r = await runDevice(["key", "reset", "moss"], d.conn, quiet);
+      expect(r.code).toBe(0);
+      expect(r.output).toMatch(says);
+      expect(d.calls).toEqual([{ method: "device.programKey.reset", params: { program: "moss" } }]);
+    }
+  });
+
+  test("an unknown program or verb is the usage, and nothing is asked", async () => {
+    for (const args of [["key", "reset", "plugin"], ["key", "wipe", "moss"], ["key", "reset"], ["key", "reset", "moss", "extra"]]) {
+      const d = answering({ opened: true });
+      expect((await runDevice(args, d.conn, quiet)).code).toBe(2);
+      expect(d.calls).toEqual([]);
+    }
+  });
+});

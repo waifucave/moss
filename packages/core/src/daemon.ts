@@ -4153,6 +4153,19 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
   Object.assign(mossLaneHandlers, programKeyMethods({
     table: () => programKeys,
     device: () => liveDeviceId,
+    // Lane XC, xc-6b: an unsigned press in a sealed frame stands for the person only where the `app` role is checked by its
+    // signature (macOS, unless a test's own policy says "none"); on Linux and Windows it never does.
+    sealedPressProvesPerson: (opts.appPeer ?? (process.platform === "darwin" ? "checked" : "none")) !== "none",
+    // Any of the person's devices that could answer a lost key's card for `program`: this computer's other programs' keys
+    // (MOSS Code's single key, MOSS's, the host's), or a paired phone's or computer's.
+    otherSigners: (program) => {
+      const reg = ownDevices;
+      if (reg === undefined) return false;
+      const self = reg.self();
+      if (program !== "code" && self.answerKey !== undefined) return true;
+      if (programKeys.list(self.id).some((k) => k.program !== program)) return true;
+      return reg.list().some((d) => d.id !== self.id && (d.kind === "phone" || d.kind === "desktop") && (d.answerKey !== undefined || Object.keys(d.answerKeys ?? {}).length > 0));
+    },
     rotation: () => {
       const broker = daemonParts?.broker;
       const self = ownDevices?.self();

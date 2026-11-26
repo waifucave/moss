@@ -160,8 +160,18 @@ Three refusals have their own words:
 - a computer where no device of the person's signs answers, refused at once instead of a card that could never be
   answered.
 
-A different key for a program the holder already holds (the app reinstalled there) isn't taken. Its answers are refused
-with words that say so; a key hand-over between computers is owed.
+A new key for a program the holder already holds is handled one of two ways:
+- With a hand-over chain from the held key (each step signed by the key it replaces), the holder takes it with no card
+  and retires every key the chain passed through.
+- Without one (the app reinstalled there, its data wiped), it waits on ONE card on the holder, about the presenting
+  computer, which never sees or answers it. The card shows the new key's four words, which that computer's Settings
+  show too. A yes takes the key; the person's no declines it for good.
+
+On the computer itself, a program whose key was lost (lane XC, xc-6b) asks on its own card. That card is answered by
+another of the person's devices' own keys (a phone, MOSS Code's key there, another computer's app), or on macOS also by
+the signed app's own press; never by the new key itself. `moss device key reset <program>` sends the person to that
+card. On Linux and Windows with nothing else to answer it, the terminal takes the key itself, and the card becomes an
+OK-only notice (docs/across-computers-owed.md).
 
 On Linux and Windows the app role is not yet verified (the open before-release item), so a program key there proves "a
 process running as you that registered first", not the signed app.

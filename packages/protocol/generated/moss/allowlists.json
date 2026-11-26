@@ -429,6 +429,7 @@
       "device.pair.cancel",
       "device.pair.confirm",
       "device.pair.join",
+      "device.programKey.reset",
       "device.relay.get",
       "device.relay.set",
       "device.rename",

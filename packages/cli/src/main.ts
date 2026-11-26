@@ -3543,7 +3543,7 @@ if (import.meta.main) {
       process.exit(run.code);
     };
     const args = process.argv.slice(3);
-    if (args.length === 0 || !["pair", "list", "revoke", "main"].includes(args[0]!)) emit({ code: 2, output: dcli.DEVICE_USAGE });
+    if (args.length === 0 || !["pair", "list", "revoke", "main", "key"].includes(args[0]!)) emit({ code: 2, output: dcli.DEVICE_USAGE });
     if (!(await endpointAnswers(socketPath()))) emit({ code: 1, output: "MOSS isn't running on this computer: start it, then try again" });
     const token = await new KeychainSecretStore().get(TOKEN_NAMES.harness).catch(() => undefined);
     if (!token) emit({ code: 1, output: "this terminal can't reach MOSS: its token isn't readable" });
@@ -4680,6 +4680,7 @@ if (import.meta.main) {
   mcp                                              list configured MCP servers and their tools
   device pair [--join] | list | revoke <name>   pair this computer from its terminal (you type the four words), list or remove devices
   device main [set <name>]                     which computer is the main one; make one the main (this one at once, another on its card)
+  device key reset <moss|code|host>   let an app here whose answer key was lost register a new one
   plugin validate [<folder>] [--json] [--upgrade]   a plugin folder's class, contributions, hosts and OK text; non-zero on an error
   plugin list | install <git-url> [name] | enable <name> | disable <name> | remove <name> | restart <name>
   bg list <session> | bg peek <session> <taskId> | bg kill <session> <taskId>

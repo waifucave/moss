@@ -63,6 +63,11 @@ export const ChangeSubject = z.enum([
    *  reinstalled there, its data cleared): "<computer>'s MOSS has a new key: accept it?", answered on THIS computer by the
    *  person, never by the computer presenting the key (lane XC, xc-6). */
   "peer-answer-key",
+  /** A program on THIS computer whose answer key was lost (an app reinstalled, its data cleared) registers a new one: "MOSS
+   *  has a new key on this computer: accept it?", answered by another of the person's devices' own keys (on macOS also by
+   *  the signed app's own press), never by the new key (lane XC, xc-6b). Also its OK-only notice when the person's
+   *  terminal took the key. */
+  "answer-key-lost",
   /** Downloading an agent's adapter (spec §9.3 "An adapter MOSS provides"): the package and version, where it comes from, that
    *  it is code MOSS will run to talk to that agent, and its size where known. Nothing is fetched without the yes. */
   "agent-adapter",

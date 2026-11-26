@@ -234,6 +234,16 @@ export const SURFACES_METHODS = {
     result: ChangeResult,
     doc: "Registers this program's answer key on this desktop, proved by the key's own signature; one per program.",
   }),
+  deviceProgramKeyReset: defineMethod({
+    /** The person's own terminal, for a program whose key was lost here (lane XC, xc-6b): it lets that program's next
+     *  registration replace the held key with no hand-over, once, within 10 minutes (`opened`), or takes a key already
+     *  waiting on its card (`accepted`) where nothing else of the person's could answer that card. Where the card can be
+     *  answered (any other device's own key; on macOS the signed app's own press), it answers the card's id instead. */
+    name: "device.programKey.reset", owner: "RT", roles: ["cli"], userOnly: true,
+    params: z.object({ program: Program }),
+    result: z.object({ opened: z.literal(true).optional(), accepted: z.literal(true).optional(), card: CardId.optional(), none: z.literal(true).optional() }),
+    doc: "From the person's terminal: lets a program whose answer key was lost here register a new one (once, 10 minutes).",
+  }),
 } as const;
 
 export const SURFACES_EVENTS = {

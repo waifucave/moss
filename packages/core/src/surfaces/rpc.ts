@@ -10,6 +10,7 @@ import { ERR, MOSS_ERR, SURFACES_METHODS, type ChangeResult, type Program } from
 import { answerKeyFingerprint } from "../approvals/answer-key-rotation";
 import { boundCardRecord, callBindingOf, type ApprovalBroker, type CallRequestBinding } from "../contracts/approval-broker";
 import { isContractError } from "../contracts/common";
+import { answerKeyWords } from "../identity/sas";
 import { MossRpcError, type MossHandler } from "../ipc/moss";
 import type { ProgramKeyHandOver, ProgramKeyInput, ProgramKeyTable } from "./program-keys";
 
@@ -24,7 +25,22 @@ export interface ProgramKeyMethodsDeps {
   device: () => string;
   /** The broker and this computer's name, for a replacement's card; undefined until the approvals run. */
   rotation: () => { broker: Pick<ApprovalBroker, "request" | "get" | "watch">; computer: string } | undefined;
+  /** Lane XC, xc-6b: whether an UNSIGNED press in a sealed frame proves the person, for a lost key's card. True only
+   *  where the `app` role is checked by its signature (macOS, the program from the signed identity); on Linux and
+   *  Windows any process running as the person can claim the role and press, so there only a device's own key counts. */
+  sealedPressProvesPerson?: boolean;
+  /** Lane XC, xc-6b: whether any of the person's devices other than `program` on this one can sign an answer (a paired
+   *  phone's key, MOSS Code's key here, another computer's app): the lost-key card can then be answered. */
+  otherSigners?: (program: Program) => boolean;
   log?: (line: string) => void;
+}
+
+/** The binding of a lost key's card: a binding only, never a method on the wire (xc-6b). */
+export const PROGRAM_KEY_LOST = "device.programKey.lost";
+
+/** What MOSS shows while its key waits on the lost-key card (apps/moss answer-key.ts says it). */
+export function lostKeyWaitingWords(program: Program): string {
+  return `${NAMES[program]} can't confirm your answers on this computer: its key was lost or changed. Approve the card on another of your devices, or run \`moss device key reset ${program}\` in a terminal.`;
 }
 
 const REFUSED: Record<string, string> = {
@@ -37,7 +53,116 @@ const REFUSED: Record<string, string> = {
 
 export function programKeyMethods(deps: ProgramKeyMethodsDeps): Record<string, MossHandler> {
   let rotating: AbortController | undefined;
+  /** Each program's new key waiting on its lost-key card here (one per program; a newer key withdraws it). */
+  const lost = new Map<Program, { input: ProgramKeyInput; ctl: AbortController; card?: string }>();
+
+  /** The OK-only notice after the person's terminal took a new key (kept until seen, as the terminal-change cards are). */
+  const notice = (program: Program, input: ProgramKeyInput) => {
+    const asked = deps.rotation();
+    if (asked === undefined) return;
+    void asked.broker.request({
+      kind: "change", change: "answer-key-lost", origin: "user", computers: [asked.computer], effect: "other", waitsForUser: true,
+      fields: {
+        title: { type: "text", text: `${NAMES[program]}'s new key was accepted from your terminal` },
+        what: { type: "text", text: `Your terminal let ${NAMES[program]} register a new answer key on this computer. If you didn't run moss device key reset here, remove this computer from your devices on another one.` },
+        detail: { type: "rows", rows: [{ label: "Computer", value: asked.computer, name: true }, { label: "New key", value: answerKeyWords(input.publicKey).join(" ") }] },
+      },
+      options: [{ id: "ok", kind: "approve", label: "OK" }],
+    } as Parameters<typeof asked.broker.request>[0]).catch(() => undefined);
+  };
+
+  /** A new key for a program whose held key can't hand it over (lost): one card on this computer, answered by another
+   *  of the person's devices' own keys (a phone, MOSS Code's key here, another computer's app), or, where the `app` role
+   *  is signature-checked (macOS), by a press in the signed app's sealed frame. Never by the new key itself, which isn't
+   *  held, so no signature of it verifies. The key changes only on that yes (`adoptLost`). */
+  const askLost = (program: Program, input: ProgramKeyInput): Promise<ChangeResult> => {
+    const waiting = lost.get(program);
+    if (waiting !== undefined && waiting.input.publicKey === input.publicKey && waiting.card !== undefined) return Promise.resolve({ applied: false, card: waiting.card });
+    const asked = deps.rotation();
+    if (asked === undefined) throw new MossRpcError(ERR.RETRY, "a new answer key takes the approvals, which aren't running on this computer yet: try again in a moment");
+    waiting?.ctl.abort();
+    const ctl = new AbortController();
+    const entry: { input: ProgramKeyInput; ctl: AbortController; card?: string } = { input, ctl };
+    lost.set(program, entry);
+    const binds: CallRequestBinding = {
+      computer: asked.computer, method: PROGRAM_KEY_LOST,
+      params: { device: input.device, program, to: input.publicKey, toAlg: input.alg ?? "ed25519", held: input.held },
+    };
+    const sealed = callBindingOf(binds, (text) => createHash("sha256").update(text).digest("hex"));
+    return new Promise<ChangeResult>((resolve, reject) => {
+      const off = asked.broker.watch((e) => {
+        if (e.type !== "requested" || e.card.binds?.method !== sealed.method || e.card.binds.params !== sealed.params) return;
+        off();
+        entry.card = e.card.id;
+        resolve({ applied: false, card: e.card.id });
+      });
+      const decision = asked.broker.request({
+        kind: "change", change: "answer-key-lost", origin: "user", computers: [asked.computer], effect: "other", binds, waitsForUser: true,
+        fields: {
+          title: { type: "text", text: `Accept ${NAMES[program]}'s new key on this computer?` },
+          what: { type: "text", text: `${NAMES[program]} on this computer has a new answer key. Approve only if you reinstalled ${NAMES[program]} or cleared its data here.` },
+          detail: { type: "rows", rows: [{ label: "Computer", value: asked.computer, name: true }, { label: "New key", value: answerKeyWords(input.publicKey).join(" ") }] },
+        },
+        options: [{ id: "approve", kind: "approve", label: "Accept the new key" }, { id: "deny", kind: "deny", label: "Keep the old key" }],
+      } as Parameters<typeof asked.broker.request>[0], { signal: ctl.signal });
+      decision.then(async (d) => {
+        off();
+        reject(new MossRpcError(ERR.RETRY, "the new key's card couldn't be shown: try again"));
+        if (lost.get(program) === entry) lost.delete(program);
+        if (!d.allowed || d.by !== "card") return;
+        // Who said yes: another device's own key, or another program's key here (never the asking program's own); an
+        // unsigned press only where the app role is checked by its signature.
+        const s = d.signed;
+        const ok = s !== undefined ? !(s.device === input.device && (s.program ?? "code") === program) : deps.sealedPressProvesPerson === true;
+        if (!ok) {
+          deps.log?.(`[surfaces] ${program}'s new key wasn't taken: the yes on its card can't stand for the person here`);
+          return;
+        }
+        await table().adoptLost(input).catch((err: unknown) => deps.log?.(`[surfaces] ${program}'s new key wasn't taken after its card (${err instanceof Error ? err.message.slice(0, 120) : "refused"})`));
+      }, (err: unknown) => {
+        off();
+        if (lost.get(program) === entry) lost.delete(program);
+        reject(err);
+      });
+    });
+  };
+  const table = () => {
+    const t = deps.table();
+    if (t === undefined) throw new MossRpcError(ERR.RETRY, "this computer's answer keys aren't open yet: try again in a moment");
+    return t;
+  };
+
   return {
+    [SURFACES_METHODS.deviceProgramKeyReset.name]: async (conn, params) => {
+      if (conn.role !== "cli") throw new MossRpcError(MOSS_ERR.NOT_THE_USER, "only the person's own terminal resets a program's answer key");
+      const program = (params as { program: Program }).program;
+      const t = table();
+      const device = deps.device();
+      if (program === "code" && t.codeIsSingleKey(device)) throw new MossRpcError(ERR.INVALID_REQUEST, "MOSS Code's key is this desktop's single answer key: device.answerKey.set replaces it", { code: "single-key" });
+      if (t.keyOf(device, program) === undefined) return { none: true };
+      const waiting = lost.get(program);
+      // Where the card can be answered (macOS: the signed app's own press; anywhere: another device's own key), the
+      // terminal sends the person to it.
+      const answerable = deps.sealedPressProvesPerson === true || deps.otherSigners?.(program) === true;
+      if (waiting !== undefined && answerable) return waiting.card === undefined ? {} : { card: waiting.card };
+      if (waiting !== undefined) {
+        // Linux and Windows, and nothing else of the person's can answer the card: the terminal takes the waiting key
+        // itself, and the card becomes a notice. This rests on the CLI caller check alone (the person's own terminal:
+        // outside the sandbox, not under a process the daemon started). That is no weaker than the open before-release
+        // item there: the `app` role has no signature check on Linux and Windows, so any first key already proves only
+        // "a process running as you". It tightens with that item.
+        waiting.ctl.abort();
+        lost.delete(program);
+        await t.adoptLost(waiting.input);
+        notice(program, waiting.input);
+        return { accepted: true };
+      }
+      // Nothing waiting yet: on Linux and Windows with another device that could answer, the program's next try raises
+      // the card; otherwise the reset opens (10 minutes, once).
+      if (!deps.sealedPressProvesPerson && deps.otherSigners?.(program) === true) return {};
+      t.openReset(device, program);
+      return { opened: true };
+    },
     [SURFACES_METHODS.deviceProgramKeySet.name]: async (conn, params): Promise<ChangeResult> => {
       const program = conn.program;
       if (conn.role !== "app" || program === undefined) throw new MossRpcError(MOSS_ERR.NOT_THE_USER, "only a program of this desktop holds its answer key");
@@ -52,10 +177,20 @@ export function programKeyMethods(deps: ProgramKeyMethodsDeps): Record<string, M
         if (isContractError(err)) throw new MossRpcError(ERR.INVALID_PARAMS, err.message);
         throw err;
       }
-      if (r.applied) return { applied: true };
+      if (r.applied) {
+        // Taken in place of a lost key by the person's terminal reset: an OK-only notice says so (xc-6b).
+        if (r.reset === true) {
+          const waiting = lost.get(program);
+          if (waiting !== undefined) { waiting.ctl.abort(); lost.delete(program); }
+          notice(program, input);
+        }
+        return { applied: true };
+      }
       // MOSS Code's key is the device's single key: its own door replaces it (a card here could only be approved for nothing).
       if (program === "code" && table.codeIsSingleKey(input.device)) throw new MossRpcError(ERR.INVALID_REQUEST, "MOSS Code's key is this desktop's single answer key: device.answerKey.set replaces it", { code: "single-key" });
-      if (!p.rotation) throw new MossRpcError(ERR.INVALID_REQUEST, "this program already has an answer key: replacing it takes the current key's hand-over");
+      // No hand-over: the held key was lost (xc-6b). The person decides on this computer's card; the new key never
+      // vouches for itself.
+      if (!p.rotation) return askLost(program, input);
       const why = await table.checkHandOver(input, p.rotation);
       if (why !== "ok") throw new MossRpcError(ERR.INVALID_REQUEST, REFUSED[why] ?? "refused", { code: why });
       const asked = deps.rotation();

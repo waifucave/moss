@@ -1855,6 +1855,7 @@
                       "core-setting",
                       "answer-key-rotate",
                       "peer-answer-key",
+                      "answer-key-lost",
                       "agent-adapter",
                       "bot-provider",
                       "plugin-remove",

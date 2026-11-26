@@ -151,8 +151,11 @@ describe("device.programKey.set", () => {
     expect(table.keyOf(device, "moss")?.publicKey).toBe(a.publicKey);
     // The program is the connection's: MOSS Code's connection registering the same key makes it MOSS Code's, not MOSS's.
     await expect(Promise.resolve(set(conn(1, "code"), await reg(a)))).rejects.toThrow(/signature/);
-    // Another key, no hand-over: refused; with one: a card, and the key holds until the yes.
-    await expect(set(moss, await reg(b)) as Promise<unknown>).rejects.toThrow(/hand-over/);
+    // Another key, no hand-over (the held one lost, lane XC xc-6b): the lost-key card, and the key holds; with a hand-over: the
+    // rotation's card, and the key holds until the yes.
+    const lostAsk = (await set(moss, await reg(b))) as { applied: false; card: string };
+    expect(broker.get(lostAsk.card)!.card.change).toBe("answer-key-lost");
+    expect(table.keyOf(device, "moss")?.publicKey).toBe(a.publicKey);
     const at = clock.now();
     const rotation = { from: a.publicKey, at, signature: toBase64(await a.sign(enc(programAnswerKeyRotateStatement({ device, program: "moss", from: a.publicKey, to: b.publicKey, at })))) };
     const r = (await set(moss, { ...(await reg(b)), rotation })) as { applied: false; card: string };

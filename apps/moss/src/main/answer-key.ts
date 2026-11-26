@@ -119,6 +119,9 @@ export function heldElsewhere(err: unknown): boolean {
 
 export type KeyState = { kind: "unregistered" } | { kind: "registered" } | { kind: "waiting"; why: string } | { kind: "refused"; why: string };
 
+/** What MOSS says while its new key waits on the engine's card, its earlier key lost (lane XC, xc-6b). */
+export const KEY_LOST_WORDS = "MOSS can't confirm your answers on this computer: its key was lost or changed. Approve the card on another of your devices, or run `moss device key reset moss` in a terminal.";
+
 export interface KeyClient {
   request<T = unknown>(method: string, params?: unknown, timeoutMs?: number): Promise<T>;
 }
@@ -189,10 +192,19 @@ export class ProgramAnswerKey {
         if (r.applied === true) {
           this.log("answer key: MOSS's key is registered for this device");
           this.setState({ kind: "registered" });
-        } else {
-          this.log("answer key: the engine holds another key for MOSS on this device");
-          this.setState({ kind: "refused", why: "The engine holds another answer key for MOSS on this computer." });
+          return this.stateValue;
         }
+        if (typeof r.card === "string") {
+          // The engine holds an earlier key for MOSS here, which this one can't hand over from (it was lost): its card
+          // waits for the person, on another of their devices or (macOS) in this window; the terminal can reset it
+          // (lane XC, xc-6b). Asked again on a long wait, so the yes is picked up once it lands.
+          this.log("answer key: MOSS's new key waits on the engine's card (its earlier key was lost)");
+          this.stateValue = { kind: "waiting", why: KEY_LOST_WORDS };
+          await new Promise((res) => setTimeout(res, waits[waits.length - 1] ?? 30_000));
+          continue;
+        }
+        this.log("answer key: the engine holds another key for MOSS on this device");
+        this.setState({ kind: "refused", why: "The engine holds another answer key for MOSS on this computer." });
         return this.stateValue;
       } catch (err) {
         const why = err instanceof RpcCallError ? `${err.code}: ${err.message}` : String(err);

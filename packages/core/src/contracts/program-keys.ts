@@ -23,7 +23,8 @@ export interface ProgramKey {
   alg?: AnswerKeyAlg;
 }
 
-export type ProgramKeyResult = { applied: true } | { applied: false; card: true };
+/** `reset`: taken in place of a lost key by the person's terminal reset (lane XC, xc-6b). */
+export type ProgramKeyResult = { applied: true; reset?: true } | { applied: false; card: true };
 
 export interface ProgramAnswerKeys {
   /** A program's registration from its connection (`program` from the connection, never the call). */
