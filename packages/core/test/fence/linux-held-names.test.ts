@@ -23,6 +23,37 @@ function temp(prefix: string): string {
 const posixTest = process.platform === "win32" ? test.skip : test;
 const small = { maxVisited: 40, maxDepth: 4, nodeModules: 40 };
 
+/** The deny globs whose fixed part (before the first `*`) is the user's home or holds a drawn root: on Linux the runtime
+ *  walks a glob's fixed part at each command, and from 0.0.89 a walk it can't finish leaves every root that overlaps it
+ *  unwritable, so a fixed part wider than the roots can drop the bot's own folders (lane XC, the 0.0.89 e2e). */
+function widerThanTheRoots(globs: readonly string[], roots: readonly string[], home: string): string[] {
+  const under = (a: string, b: string) => a.startsWith(`${b}/`);
+  return globs.filter((g) => g.includes("*")).filter((g) => {
+    const fixed = g.slice(0, g.indexOf("*")).replace(/\/+$/, "");
+    return fixed === home || under(home, fixed) || roots.some((r) => under(r, fixed));
+  });
+}
+
+describe("no deny glob MOSS hands the runtime is wider than the roots drawn", () => {
+  posixTest("the hooks deny goes under the home's entries, never the home, when the home is drawn as its entries", () => {
+    const home = temp("xc-wide-");
+    const moss = join(home, ".moss");
+    mkdirSync(join(moss, "scratch", "luna"), { recursive: true });
+    for (const f of ["Documents", "Projects", "app"]) mkdirSync(join(home, f), { recursive: true });
+    const fence = new MossFence({ os: process.platform === "darwin" ? "macos" : "linux", home, mossHome: moss, temp: temp("xc-wide-tmp-") });
+    for (const level of ["automatic", "accept-edits"] as const) {
+      const s = botSandboxSettings(fence.policy(), { mossHome: moss, userHome: home, level, ownFolders: [join(moss, "scratch", "luna")], pathFolders: [] });
+      const roots = s.filesystem?.allowWrite ?? [];
+      // The home is drawn as its entries here (the MOSS home is inside it).
+      expect([level, roots.includes(home)]).toEqual([level, false]);
+      const denies = [...(s.filesystem?.denyWrite ?? []), ...(s.filesystem?.denyRead ?? [])];
+      // macOS's run-later names go from `/` on purpose (Seatbelt matches as each path opens, nothing is walked).
+      const walked = process.platform === "darwin" ? denies.filter((d) => !d.startsWith("/**")) : denies;
+      expect([level, widerThanTheRoots(walked, roots, home)]).toEqual([level, []]);
+    }
+  });
+});
+
 describe("linuxHoldProblem: the runtime's walk, as it runs", () => {
   posixTest("a tree the walk finishes, with its repos held by name: nothing to say", () => {
     const root = temp("xc3c-ok-");

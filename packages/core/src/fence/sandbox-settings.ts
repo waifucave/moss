@@ -163,7 +163,11 @@ export function sandboxSettingsOf(policy: SandboxPolicy, home: string, o: Sandbo
     } else if (!inside(a, home) || writeKeep.some((k) => inside(a, k))) allowWrite.push(a);
   }
   allowWrite.push(...writeKeep);
-  const hookRoots = [...policy.allowWrite, ...writeKeep.filter((k) => !policy.allowWrite.some((a) => inside(k, a)))];
+  // Under the roots as drawn, never a root the home was written out of: a pattern under the whole home would have
+  // Linux's runtime walk all of it at every command (past its budget, so every root inside the home, the bot's own
+  // scratch too, would be left unwritable: lane XC, the 0.0.89 e2e). The home's entries are roots of their own here.
+  const drawn = [...allowWrite.filter((a) => !listedRoots.some((l) => same(l, a))), ...listedRoots];
+  const hookRoots = [...drawn, ...writeKeep.filter((k) => !drawn.some((a) => inside(k, a)))];
   // The runtime renders a glob deny recursively (the folder and all under it). Under folders only: a root that is a file
   // (one the home's entries listed) holds nothing, and a name under it would never resolve.
   const hooks = [...new Set(hookRoots)].filter((r) => !file(r)).map((r) => `${r}${p.sep}**${p.sep}*.git${p.sep}hooks`);
