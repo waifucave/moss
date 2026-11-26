@@ -36,7 +36,9 @@ async function world(files: Record<string, unknown>) {
   const approve = async (id: string) => {
     const { card } = await opened.registry.installed(id, "app");
     const shown = broker.cards().find((c) => c.id === card)!;
-    await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+    // As a window answers: the boxes ticked on the card go with the approve (an answer with no list ticks none).
+    const ticked = (shown.children ?? []).filter((c) => c.checked).map((c) => c.id);
+    await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...(ticked.length > 0 ? { children: ticked } : {}) }, { role: "app" });
     for (let i = 0; i < 250 && opened.registry.get(id)?.state === "found"; i++) await Bun.sleep(20);
   };
   return { home, opened, approve };
