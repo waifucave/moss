@@ -28,7 +28,7 @@ export interface ProgramKeyMethodsDeps {
   /** Lane XC, xc-6b: whether an UNSIGNED press in a sealed frame proves the person, for a lost key's card. True only
    *  where the `app` role is checked by its signature (macOS, the program from the signed identity); on Linux and
    *  Windows any process running as the person can claim the role and press, so there only a device's own key counts. */
-  sealedPressProvesPerson?: boolean;
+  sealedPressProvesPerson?: () => boolean;
   /** Lane XC, xc-6b: whether any of the person's devices other than `program` on this one can sign an answer (a paired
    *  phone's key, MOSS Code's key here, another computer's app): the lost-key card can then be answered. */
   otherSigners?: (program: Program) => boolean;
@@ -113,7 +113,7 @@ export function programKeyMethods(deps: ProgramKeyMethodsDeps): Record<string, M
         // Who said yes: another device's own key, or another program's key here (never the asking program's own); an
         // unsigned press only where the app role is checked by its signature.
         const s = d.signed;
-        const ok = s !== undefined ? !(s.device === input.device && (s.program ?? "code") === program) : deps.sealedPressProvesPerson === true;
+        const ok = s !== undefined ? !(s.device === input.device && (s.program ?? "code") === program) : deps.sealedPressProvesPerson?.() === true;
         if (!ok) {
           deps.log?.(`[surfaces] ${program}'s new key wasn't taken: the yes on its card can't stand for the person here`);
           return;
@@ -143,7 +143,7 @@ export function programKeyMethods(deps: ProgramKeyMethodsDeps): Record<string, M
       const waiting = lost.get(program);
       // Where the card can be answered (macOS: the signed app's own press; anywhere: another device's own key), the
       // terminal sends the person to it.
-      const answerable = deps.sealedPressProvesPerson === true || deps.otherSigners?.(program) === true;
+      const answerable = deps.sealedPressProvesPerson?.() === true || deps.otherSigners?.(program) === true;
       if (waiting !== undefined && answerable) return waiting.card === undefined ? {} : { card: waiting.card };
       if (waiting !== undefined) {
         // Linux and Windows, and nothing else of the person's can answer the card: the terminal takes the waiting key
@@ -157,9 +157,10 @@ export function programKeyMethods(deps: ProgramKeyMethodsDeps): Record<string, M
         notice(program, waiting.input);
         return { accepted: true };
       }
-      // Nothing waiting yet: on Linux and Windows with another device that could answer, the program's next try raises
-      // the card; otherwise the reset opens (10 minutes, once).
-      if (!deps.sealedPressProvesPerson && deps.otherSigners?.(program) === true) return {};
+      // Nothing waiting yet: where the card can be answered (macOS, or another device's key), the program's next try
+      // raises it, and the terminal opens nothing. Only where nothing else could answer does the reset open (10 minutes,
+      // once), resting on the CLI caller check alone (as above).
+      if (answerable) return {};
       t.openReset(device, program);
       return { opened: true };
     },

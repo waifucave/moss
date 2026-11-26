@@ -278,6 +278,9 @@ export interface MossServer {
   /** `app.quit{reason}` to these app connections (the pair's `tellAppQuit`). */
   tellAppQuit(reason: PairStopReason, connIds: readonly string[]): void;
   connections(): readonly MossConn[];
+  /** Whether this server checks an `app` connection by its signature (its app-peer policy isn't "none": macOS), so the
+   *  program it names is the signed app's (lane XC, xc-6b: an unsigned press in a sealed frame then stands for the person). */
+  appPeerChecked(): boolean;
   /** Closes every connection `match` picks that the server can close itself (a link's, through its `end`); how many. */
   endConnections(match: (conn: MossConn) => boolean): number;
   /** Sends a daemon-wide event as `core.event` to the connections that may have it (`ipc/core-events.ts`): its role,
@@ -892,6 +895,8 @@ export function createMossServer(deps: MossServerDeps): MossServer {
     },
 
     connections() { return [...conns.values()]; },
+
+    appPeerChecked() { return appPeer !== "none"; },
 
     endConnections(match) {
       let n = 0;

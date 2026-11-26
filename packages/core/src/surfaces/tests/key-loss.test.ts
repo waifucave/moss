@@ -29,7 +29,7 @@ async function world(o: { macos?: boolean; otherSigners?: boolean } = {}) {
   const broker = new MossApprovalBroker({ clock, localComputer: "Studio", verify: deviceProofVerifier(registry, table) });
   const methods = programKeyMethods({
     table: () => table, device: () => device, rotation: () => ({ broker, computer: "Studio" }),
-    sealedPressProvesPerson: o.macos === true, otherSigners: () => o.otherSigners === true,
+    sealedPressProvesPerson: () => o.macos === true, otherSigners: () => o.otherSigners === true,
   });
   const set = methods["device.programKey.set"]!;
   const reset = methods["device.programKey.reset"]!;
@@ -165,6 +165,15 @@ describe("the person's terminal: moss device key reset (lane XC, xc-6b)", () => 
     fresh.clock.advance(PROGRAM_KEY_RESET_MS + 1);
     expect(((await fresh.set(fresh.moss, await fresh.reg(k4))) as { applied: boolean }).applied).toBe(false);
     expect(fresh.held()).toBe(k1.publicKey);
+  });
+
+  test("on macOS with nothing waiting, no window opens: the signed app's next new key asks on the card", async () => {
+    const w = await world({ macos: true, otherSigners: false });
+    const k1 = await makeFakeDevice();
+    await w.set(w.moss, await w.reg(k1));
+    expect(await w.reset(w.terminal, { program: "moss" })).toEqual({});
+    expect(((await w.set(w.moss, await w.reg(await makeFakeDevice()))) as { applied: boolean }).applied).toBe(false);
+    expect(w.held()).toBe(k1.publicKey);
   });
 
   test("on Linux or Windows with another device that could answer, and nothing waiting, no window opens", async () => {

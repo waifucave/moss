@@ -4154,8 +4154,9 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     table: () => programKeys,
     device: () => liveDeviceId,
     // Lane XC, xc-6b: an unsigned press in a sealed frame stands for the person only where the `app` role is checked by its
-    // signature (macOS, unless a test's own policy says "none"); on Linux and Windows it never does.
-    sealedPressProvesPerson: (opts.appPeer ?? (process.platform === "darwin" ? "checked" : "none")) !== "none",
+    // signature: the MOSS server's own app-peer policy (macOS, unless a test's own policy says "none"), read at each call;
+    // on Linux and Windows it never does. No server yet: no.
+    sealedPressProvesPerson: () => mossServer?.appPeerChecked() ?? false,
     // Any of the person's devices that could answer a lost key's card for `program`: this computer's other programs' keys
     // (MOSS Code's single key, MOSS's, the host's), or a paired phone's or computer's.
     otherSigners: (program) => {
