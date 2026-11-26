@@ -1,8 +1,18 @@
 pluginManagement {
     repositories {
         google()
+        // Kotlin's plugins come from Maven Central only (its Google mirror first, against Central's 429s on CI, then Central
+        // itself), never the Gradle Plugin Portal: the Portal serves its own plugin marker poms, whose bytes differ from
+        // Central's (org.jetbrains.kotlin.android and .plugin.compose 2.1.20), so a run that fell through to it failed
+        // dependency verification. One repository per plugin: what verification-metadata.xml recorded.
+        maven("https://maven-central.storage-download.googleapis.com/maven2") {
+            name = "MavenCentralMirror"
+            content { includeGroupByRegex("org\\.jetbrains\\.kotlin(\\..*)?") }
+        }
         mavenCentral()
-        gradlePluginPortal()
+        gradlePluginPortal {
+            content { excludeGroupByRegex("org\\.jetbrains\\.kotlin(\\..*)?") }
+        }
     }
 }
 dependencyResolutionManagement {
