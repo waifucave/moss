@@ -38,10 +38,16 @@ export const ComputerHello = z.object({
   tree: TreeRoots,
   /** The local MCP servers ticked on this computer (`mcp-ticks.ts`): the `computer` field's list (J-M2). */
   mcpServers: z.array(utf16(256, 1)).max(1024).optional(),
+  /** The sender holds nothing yet from the receiver (it restarted), so it asks for the receiver's hello back: one
+   *  hello, sent without this. An older computer drops the field and answers nothing, as before. */
+  reply: z.literal(true).optional(),
 });
 export type ComputerHello = z.infer<typeof ComputerHello>;
 
-const SetLevelParams = z.object({ level: Level, answer: SignedCardAnswer.optional(), fence: FencingToken.optional() });
+/** How often a peer's `reply: true` hello is answered again on one link (the first after a link-up always is). */
+export const REPLY_EVERY_MS = 5_000;
+
+const SetLevelParams =z.object({ level: Level, answer: SignedCardAnswer.optional(), fence: FencingToken.optional() });
 
 export interface ComputerPeersOptions {
   registry: CoreComputerRegistry;
@@ -71,6 +77,8 @@ export class ComputerPeers {
   readonly #mcp = new Map<string, readonly string[]>();
   readonly #off: Unsubscribe[] = [];
   readonly #helloed = new Listeners<string>();
+  /** When this computer last answered a peer's `reply: true` hello; cleared when that peer's link comes up. */
+  readonly #replied = new Map<string, number>();
   #lastSelf = "";
 
   constructor(opts: ComputerPeersOptions) {
@@ -121,7 +129,10 @@ export class ComputerPeers {
         registry.setOnline(c.name, view.up);
         if (view.path) registry.update(c.name, { link: view.path === "lan" ? "lan" : view.path === "relay" ? "relay" : "direct" });
       }
-      if (view.up) this.#sendHello(view.peer);
+      if (view.up) {
+        this.#replied.delete(view.peer);
+        this.#sendHello(view.peer);
+      }
     }));
     // A change to this computer's own entry (its level, a rename, an agent) goes to every computer online.
     this.#off.push(registry.watch((change) => {
@@ -206,8 +217,12 @@ export class ComputerPeers {
     return { name: self.name, os: self.os, hasDisplay: self.hasDisplay, agents: self.agents, level: self.level, tree: this.#o.roots(), ...(mcp === undefined ? {} : { mcpServers: [...mcp].slice(0, 1024) }) };
   }
 
-  #sendHello(device: string): void {
-    const hello = this.#hello_();
+  /** This computer's hello to `device`. Asks for that computer's own back while nothing of its hello is held here:
+   *  its hello on its link coming up can arrive before this listens (a notify with no listener is dropped), and it
+   *  sends none again on its own, so a restarted computer would never learn where the other's tree is. A reply never
+   *  asks, so two computers never loop. */
+  #sendHello(device: string, o: { answering?: boolean } = {}): void {
+    const hello: ComputerHello = { ...this.#hello_(), ...(o.answering !== true && !this.#roots.has(device) ? { reply: true as const } : {}) };
     void this.#o.transport.connect(device).then((link) => link.notify("computer.hello", hello, { priority: "control" }), () => {});
   }
 
@@ -230,6 +245,17 @@ export class ComputerPeers {
     const up = this.#o.transport.links().find((v) => v.peer === from)?.up ?? true;
     registry.update(c.name, { os: h.os, hasDisplay: h.hasDisplay, agents: h.agents, level: h.level });
     registry.setOnline(registry.byDevice(from)!.name, up);
+    // Asked for this computer's hello back (the sender restarted): one, which asks nothing in turn. A paired computer
+    // only gets what every online computer is sent anyway.
+    // At most one reply per link-up, and then one per REPLY_EVERY_MS: a peer can't make this computer answer in a loop.
+    if (h.reply === true && up) {
+      const now = Date.now();
+      const last = this.#replied.get(from);
+      if (last === undefined || now - last >= REPLY_EVERY_MS) {
+        this.#replied.set(from, now);
+        this.#sendHello(from, { answering: true });
+      }
+    }
     this.#helloed.emit(from);
   }
 

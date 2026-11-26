@@ -128,6 +128,8 @@ export class TreeRouter {
         const computer = typeof named === "string" ? named : spelt.split("/")[1]!;
         // This computer's own home not known yet is no offline computer: say so.
         if (computer === this.#d.directory.self()) return { refused: `${path}: this computer's home folder isn't known to MOSS yet; try again in a moment` };
+        // Its link up but its hello not in yet (it says where its home is there): not offline, and said so.
+        if (this.#d.directory.get(computer)?.online === true) return { refused: `${computer} hasn't said where its home is yet; try again in a moment` };
         return { other: computer, online: false };
       }
       return { refused: `${path}: ${e instanceof Error ? e.message : String(e)}` };
