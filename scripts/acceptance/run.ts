@@ -5628,7 +5628,7 @@ async function hostGaveUpRun(app: { exe: string; args: string[] }): Promise<void
       stoppingDaemon = false;
     }
     await endStartedHosts();
-    const d = await startDaemonProc({ MOSS_HOST_COMMAND: JSON.stringify(["/usr/bin/false"]), MOSS_TEST_SEALED_PRESS: "1", MOSS_DEV_DEBUG: "1" });
+    const d = await startDaemonProc({ MOSS_HOST_COMMAND: JSON.stringify(process.platform === "win32" ? [process.env.ComSpec ?? "cmd.exe", "/c", "exit", "1"] : ["/usr/bin/false"]), MOSS_TEST_SEALED_PRESS: "1", MOSS_DEV_DEBUG: "1" });
     await until("the engine giving up on the host", 120_000, () => (/\[host\] the host did not start \d+ times in a row/.test(readLog(d.log)) ? true : undefined), 500);
     const appPort = freePort();
     const frontFile = join(root, "gave-up-front");
