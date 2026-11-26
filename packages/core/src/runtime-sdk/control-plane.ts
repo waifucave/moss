@@ -1,5 +1,5 @@
 import { basename, dirname, isAbsolute, resolve } from "node:path";
-import { foldedSpelling } from "../fence/spelling";
+import { UNJUDGEABLE, foldedSpelling } from "../fence/spelling";
 import { readdirSync, statSync } from "node:fs";
 import { canonicalizeForWrite, resolveLeafSymlinks } from "../agent/paths";
 import { PROJECT_DIR_NAMES } from "../old-names";
@@ -179,7 +179,7 @@ function pathSpellings(path: string, cwd: string): string[] {
   try { out.push(canonicalizeForWrite(resolveLeafSymlinks(raw))); } catch { /* literal still binds */ }
   return [...new Set(out.map((p) => foldedSpelling(p)))];
 }
-function within(candidate: string, root: string): boolean { return candidate === root || candidate.startsWith(`${root}/`); }
+function within(candidate: string, root: string): boolean { return candidate === UNJUDGEABLE || root === UNJUDGEABLE || candidate === root || candidate.startsWith(`${root}/`); }
 
 /** Hard links have no different realpath. Compare file identity against known control files, without
  * reading their content or walking guest disks/shared artifacts. This runs only for a multiply-linked target. */
@@ -237,6 +237,7 @@ export function homeFenceTarget(path: string, cwd: string, fence: HomeFence): { 
   const files = fence.files.flatMap(canonDir);
   const storageRoots = [...(fence.coworkRoots ?? []), ...(fence.coordinationDir ? [fence.coordinationDir] : [])].flatMap(canonDir);
   for (const candidate of new Set([foldedSpelling(raw), foldedSpelling(canonical)])) {
+    if (candidate === UNJUDGEABLE) return { path, canonical, home: true };
     if (storageRoots.some((r) => within(r, candidate))) return { path, canonical, home: true };
     if (dirs.some((d) => candidate === d || candidate.startsWith(`${d}/`))) return { path, canonical, home: true };
     if (files.includes(candidate)) return { path, canonical, home: true };

@@ -475,6 +475,7 @@ export function holdersWithin(denied: readonly string[], projects: readonly stri
   const roots = paths(projects);
   for (const d of paths(denied)) {
     for (const root of roots) {
+      // Folded on every OS (lowercase off Windows): on a case-sensitive disk that is an over-deny, never a pass.
       if (!insideFolded(d, root)) continue;
       const rootFolded = foldedSpelling(root);
       if (foldedSpelling(d) === rootFolded) continue; // the project itself: no folder between it and itself

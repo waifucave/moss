@@ -19,7 +19,7 @@
 // The sdk tier is anchored at `sdkHomeFor(home)` — `<home>/sdk`, literally the router's `sdkHome` — not
 // at `storeHomeFor(home)`: the set is the router's, and on a build whose router applies no run home
 // the store still lives at `<home>` and nothing loads `<home>/sdk/skills` (DECISION 11).
-import { foldedSpelling } from "../fence/spelling";
+import { UNJUDGEABLE, foldedSpelling } from "../fence/spelling";
 import { realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
@@ -158,6 +158,9 @@ export function storeWriteDenial(toolName: string, input: unknown, ctx: { home: 
   for (const p of writeTargetPathsIn(input)) {
     for (const t of targetSpellings(p, ctx.cwd ?? "")) {
       // A claude resume staging root (spec §7.1's last write row): another generation's staged payload.
+      if (t === UNJUDGEABLE) {
+        return `${toolName} was not run — ${p} is a spelling that can't be judged against the runtimes' stores, so it is refused.`;
+      }
       if (staging.some((re) => re.test(t))) {
         return `${toolName} was not run — ${p} is inside a claude resume staging root, which only the runtime writes.`;
       }
@@ -208,7 +211,8 @@ export function protectedReadDenial(toolName: string, input: unknown, ctx: { hom
   const isGrep = tool === "grep";
   for (const p of targets) {
     for (const t of targetSpellings(p, ctx.cwd ?? "")) {
-      const denied = sdkHomes.some((s) => t === `${s}/.moss.json`)
+      const denied = t === UNJUDGEABLE
+        || sdkHomes.some((s) => t === `${s}/.moss.json`)
         || containers.some((c) => new RegExp(`${c.source}/((${files})$|backups(/|$))`).test(t))
         || (isGrep && (sdkHomes.includes(t) || containers.some((c) => new RegExp(`${c.source}/?$`).test(t))));
       if (denied) {

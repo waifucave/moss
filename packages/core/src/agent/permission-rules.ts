@@ -459,6 +459,8 @@ export class PermissionRules {
   private isControlPlanePath(projectRoot: string): boolean {
     const root = canon(projectRoot);
     const home = canon(this.deps.mossHome);
+    // Compared in the folded spelling on every OS: on Linux and a case-sensitive APFS that also lowercases, an over-deny (a
+    // project whose name differs from the home only in case is refused too), never a pass.
     return insideFolded(root, home);
   }
 

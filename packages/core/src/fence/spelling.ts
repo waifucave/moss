@@ -17,31 +17,54 @@ export interface SpellingOptions {
   long?: (path: string) => string | null;
 }
 
-/** The long form of the nearest existing ancestor of `path`, with the names below it as they were spelled. */
-function expandShort(path: string, long: (p: string) => string | null): string {
+/** What a spelling that can't be judged folds to: inside every root (as `TOO_MANY_LINKS` is in agents/memory.ts), so a deny
+ *  check refuses it on its own. A path that starts with two separators after the prefix is gone (`\\?\UNC\x`, `\\localhost\C$\x`,
+ *  `\\.\GLOBALROOT\x`, `\\?\Volume{..}\x`), a stream or an alternate name the fold doesn't know, a long-name lookup that
+ *  found nothing on the way up, or an 8.3 name left in the part that doesn't exist yet. */
+export const UNJUDGEABLE = "\u0000unjudgeable";
+
+/** The long form of the nearest existing ancestor of `path`, with the names below it as they were spelled; undefined when none
+ *  of them could be looked up, or a `~N` short name is left in the part that is not there (a name the lookup could not expand). */
+function expandShort(path: string, long: (p: string) => string | null): string | undefined {
   let head = path;
   let tail = "";
   for (let i = 0; i < 128; i++) {
     const found = long(head);
-    if (found !== null) return found + tail;
+    if (found !== null) return /~\d/.test(tail) ? undefined : found + tail;
     const parent = win32.dirname(head);
-    if (parent === head) return path;
+    if (parent === head) return undefined;
     tail = `\\${win32.basename(head)}${tail}`;
     head = parent;
   }
-  return path;
+  return undefined;
+}
+
+/** NTFS stream and alternate-name spellings, per name after the drive: `name::$DATA` is the file, `name:$I30:$INDEX_ALLOCATION`
+ *  (or `name::$INDEX_ALLOCATION`) is the folder `name`; any other `:` is a stream or a spelling not known here (undefined). */
+function withoutStreams(path: string): string | undefined {
+  const m = /^([A-Za-z]:)(.*)$/s.exec(path);
+  if (m === null) return path.includes(":") ? undefined : path;
+  const names = m[2]!.split(/[\\/]/).filter((n) => n !== "").map((n) => n.replace(/::\$DATA$/i, "").replace(/:(?:\$I30)?:\$INDEX_ALLOCATION$/i, ""));
+  if (names.some((n) => n.includes(":"))) return undefined;
+  return m[1] + m[2]!.replace(/[^\\/]+/g, () => names.shift()!);
 }
 
 export function foldedSpelling(path: string, o: SpellingOptions = {}): string {
   if (!(o.win32 ?? process.platform === "win32")) return path.toLowerCase();
   // `\\?\C:\x`, `\\.\C:\x` and `\??\C:\x` name the same place as `C:\x`.
   const bare = path.replace(/^(?:\\\\[?.]\\|\\\?\?\\|\/\/[?.]\/)(?=[A-Za-z]:)/, "");
-  return foldPath(expandShort(bare, o.long ?? getLongPathName), "windows");
+  if (/^[\\/]{2}/.test(bare)) return UNJUDGEABLE;
+  const plain = withoutStreams(bare);
+  if (plain === undefined) return UNJUDGEABLE;
+  const long = expandShort(plain, o.long ?? getLongPathName);
+  if (long === undefined) return UNJUDGEABLE;
+  return foldPath(long, "windows");
 }
 
-/** `inside` for two paths of the same machine, both sides through `foldedSpelling`. */
+/** `inside` for two paths of the same machine, both sides through `foldedSpelling`; an unjudgeable side is inside everything. */
 export function insideFolded(path: string, root: string, o: SpellingOptions = {}): boolean {
   const p = foldedSpelling(path, o).replace(/\/+$/, "");
   const r = foldedSpelling(root, o).replace(/\/+$/, "");
+  if (p === UNJUDGEABLE || r === UNJUDGEABLE) return true;
   return p === r || p.startsWith(`${r}/`);
 }

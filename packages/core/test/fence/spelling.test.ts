@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { foldedSpelling, insideFolded } from "../../src/fence/spelling";
+import { UNJUDGEABLE, foldedSpelling, insideFolded } from "../../src/fence/spelling";
 import { holdersWithin } from "../../src/registry/plugin-fence";
 import { homeFenceTarget } from "../../src/runtime-sdk/control-plane";
 import { storeWriteDenial } from "../../src/runtime-sdk/protected-paths";
@@ -14,7 +14,7 @@ const win = { win32: true } as const;
 // A lookup that knows one short name, the way the OS does for an existing folder.
 const long = (p: string): string | null => {
   const m = /^(c:\\users\\)runner~1((?:\\.*)?)$/i.exec(p);
-  return m ? `C:\\Users\\runneradmin${m[2]}` : /^c:\\users$/i.test(p) || /^c:\\$/i.test(p) ? p : null;
+  return m ? `C:\\Users\\runneradmin${m[2]}` : /^c:\\users$/i.test(p) || /^[cd]:\\$/i.test(p) ? p : null;
 };
 
 describe("foldedSpelling and insideFolded with Windows spellings", () => {
@@ -38,6 +38,24 @@ describe("foldedSpelling and insideFolded with Windows spellings", () => {
     expect(inside("C:\\Users\\runneradmin\\.moss-evil\\x")).toBe(false);
     expect(inside("D:\\Users\\runneradmin\\.moss\\x")).toBe(false);
     expect(inside("C:\\Users\\runneradmin")).toBe(false);
+  });
+  test("NTFS streams: ::$DATA is the file, :$I30:$INDEX_ALLOCATION is the folder, any other colon is unjudgeable", () => {
+    expect(inside("C:\\Users\\runneradmin\\.moss\\a.txt::$DATA")).toBe(true);
+    expect(foldedSpelling("C:\\Users\\runneradmin\\.moss\\a.txt::$DATA", { ...win, long })).toBe("c:/users/runneradmin/.moss/a.txt");
+    expect(foldedSpelling("C:\\Users\\runneradmin\\.moss:$I30:$INDEX_ALLOCATION\\k\\a", { ...win, long })).toBe("c:/users/runneradmin/.moss/k/a");
+    expect(foldedSpelling("C:\\Users\\runneradmin\\.moss\\a.txt:hidden", { ...win, long })).toBe(UNJUDGEABLE);
+    expect(insideFolded("C:\\Users\\other\\a.txt:hidden", root, { ...win, long })).toBe(true);
+  });
+  test("two separators after the prefix is gone (UNC, localhost, GLOBALROOT, Volume) are inside every root", () => {
+    for (const p of ["\\\\?\\UNC\\srv\\share\\x", "\\\\localhost\\C$\\Users\\x", "\\\\.\\GLOBALROOT\\Device\\x", "\\\\?\\Volume{1234}\\x", "//srv/share/x"]) {
+      expect([p, foldedSpelling(p, { ...win, long })]).toEqual([p, UNJUDGEABLE]);
+      expect([p, insideFolded(p, root, { ...win, long })]).toEqual([p, true]);
+    }
+  });
+  test("a lookup that finds nothing, or a ~N name left below the last existing folder, fails closed", () => {
+    expect(foldedSpelling("Z:\\x\\y", { ...win, long })).toBe(UNJUDGEABLE);
+    expect(foldedSpelling("C:\\Users\\runneradmin\\NEWDIR~1\\f", { ...win, long })).toBe(UNJUDGEABLE);
+    expect(insideFolded("Z:\\x", root, { ...win, long })).toBe(true);
   });
   test("off Windows nothing but the lowercase the checks always used", () => {
     expect(foldedSpelling("/A/B\\C.", { win32: false })).toBe("/a/b\\c.");
