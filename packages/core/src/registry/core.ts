@@ -382,7 +382,8 @@ export class RegistryCore implements PluginRegistry {
     const raised = this.#cards.raise({ id, treeHash, children }, (a) => {
       if (this.#okCards.get(id)?.card !== card) return;
       if (!a.approved) return void this.refuse(id);
-      const picked = new Set(a.children ?? children.filter((c) => c.checked).map((c) => c.id));
+      // An answer that carries no list ticked none: never the engine's own defaults, which the person may not have seen drawn.
+      const picked = new Set(a.children ?? []);
       void this.approve(id, treeHash, Object.fromEntries(children.map((c) => [c.id, picked.has(c.id)])));
     }, { signal: withdraw.signal });
     card = await raised;
