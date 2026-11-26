@@ -184,7 +184,7 @@ Rulings R1–R14, from the controller's cross-lane relays (final unless the owne
 * **R3, settings sections** (from G-M2):
   * **Usage:** the usage plugin owns the content. Settings → Usage is a spot it fills, and F doesn't build its own.
   * **Devices:** Settings → Devices is F's management page (pair, revoke, choose the main computer). The island's Devices tab is G's at-a-glance status, and its rows link to Settings → Devices.
-* **R4, the PTY** (`terminal.*`'s backend) is J-M2: a shell on any of the user's computers, behind the holder's fence, through the `terminal` capability (the `moss` tree only).
+* **R4, the PTY** (`terminal.*`'s backend) is J-M2: a shell on any of the user's computers, behind the holder's fence, through the `terminal` capability (the `moss` tree only). On Windows the terminal panel opens PowerShell like Windows Terminal and VS Code do: PowerShell 7 (`pwsh.exe` on the PATH), else the system's Windows PowerShell, each with `-NoLogo`; cmd.exe only when neither exists (`windowsShell` in `tree/terminals.ts`).
 * **R5, the Mochi2D size cap** (from G-M2). No MOSS lane changes Mochi2D's code.
   * MOSS extracts the model archive itself, with a per-file and a total byte cap that counts real inflated bytes, never the declared sizes, and hands Mochi2D the extracted folder.
   * An issue on `waifucave/Mochi2D` (our own org) describes the cap option, so its owner can add it.

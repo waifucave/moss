@@ -17,6 +17,7 @@ import { checkActFence, fenceParam, type ActFence } from "./fencing";
 import { ContractError, type Unsubscribe } from "../contracts/common";
 import type { LinkTransport } from "../contracts/link-transport";
 import type { LocalHolder } from "./holder";
+import { existsSync } from "node:fs";
 import { hostOs } from "./names";
 import { offlineAs } from "./remote";
 import { judgePeer, withAnswer, type AnswerAsker, type Answers } from "./judge";
@@ -35,12 +36,22 @@ const BRACKET_OFF = "\u001b[?2004l";
 /** How a shell starts in a folder: the user's own login shell by default. */
 export type ShellLauncher = (cwd: string) => { cmd: string[]; env: Record<string, string> };
 
+/** What starts a terminal's shell on Windows, like Windows Terminal and VS Code: PowerShell 7 (`pwsh.exe` on the PATH) when there is one, else the
+ *  Windows PowerShell that ships with the system, each with `-NoLogo`, and cmd.exe only when neither exists. The lookups are seams for the tests. */
+export function windowsShell(env: Record<string, string>, look: { which(name: string): string | null; exists(path: string): boolean } = { which: (n) => Bun.which(n), exists: (p) => existsSync(p) }): string[] {
+  const seven = look.which("pwsh.exe");
+  if (seven) return [seven, "-NoLogo"];
+  const system = `${env.SystemRoot ?? env.SYSTEMROOT ?? "C:\\Windows"}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+  if (look.exists(system)) return [system, "-NoLogo"];
+  return [env.ComSpec ?? "cmd.exe"];
+}
+
 export function userShell(cwd: string): { cmd: string[]; env: Record<string, string> } {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined) env[k] = v;
   env.PWD = cwd;
   env.TERM = "xterm-256color";
-  if (hostOs() === "windows") return { cmd: [env.ComSpec ?? "cmd.exe"], env };
+  if (hostOs() === "windows") return { cmd: windowsShell(env), env };
   return { cmd: [env.SHELL ?? "/bin/sh", "-l"], env };
 }
 
