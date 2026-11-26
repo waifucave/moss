@@ -20,7 +20,7 @@ export const CHILDREN_UNREAD_TEXT = "Open the list and read it to its end first:
 
 /** What a card says when it carries boxes this window can't draw whole (a repeated label or id, a box with no label): fail
  *  closed, never a guess at what the person ticked. */
-export const CHILDREN_NOT_DRAWN_TEXT = "This card carries boxes MOSS can't show whole here (two that read the same, or one with no name), so it can't be allowed from here. You can still say no.";
+export const CHILDREN_NOT_DRAWN_TEXT = "This card has boxes MOSS can't show properly (two read the same, or one has no name), so it can't be allowed. You can still say no.";
 
 /** What the main process says when an Approve from a part's own button (a plugin's page, the island) reaches a card that has boxes:
  *  the boxes are drawn only on the app's own card. */
