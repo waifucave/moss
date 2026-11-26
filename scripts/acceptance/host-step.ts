@@ -42,11 +42,16 @@ export async function backgroundPart(cdp: Cdp, id: string): Promise<Record<strin
 /** The on-screen windows: owner pid, opacity and size; never titles. macOS reads the window server (`onscreen-windows.swift`);
  *  Windows reads each visible top-level window (`onscreen-windows.ps1`: its pid, layered alpha and size); Linux reads the X server the run draws on (xvfb, with no window manager): each top-level window that is mapped (viewable),
  *  its pid from `_NET_WM_PID`, its opacity from `_NET_WM_WINDOW_OPACITY` (none means opaque). Needs `xwininfo` and `xprop` (x11-utils). */
+/** What the last failed Windows read said (the step names it). */
+export let lastOnscreenError = "";
+
 export function onscreenWindows(swiftScript: string): { pid: number; alpha: number; w: number; h: number }[] | undefined {
   if (process.platform === "linux") return onscreenWindowsX11();
   if (process.platform === "win32") {
-    const r = spawnSync("pwsh", ["-NoProfile", "-NonInteractive", "-File", join(import.meta.dir, "onscreen-windows.ps1")], { encoding: "utf8", timeout: 60_000, windowsHide: true });
-    if (r.status !== 0) return undefined;
+    // pwsh when it is there, Windows PowerShell otherwise; what the failed read said is kept for the step's detail.
+    let r = spawnSync("pwsh", ["-NoProfile", "-NonInteractive", "-File", join(import.meta.dir, "onscreen-windows.ps1")], { encoding: "utf8", timeout: 60_000, windowsHide: true });
+    if (r.status !== 0) r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", join(import.meta.dir, "onscreen-windows.ps1")], { encoding: "utf8", timeout: 60_000, windowsHide: true });
+    if (r.status !== 0) { lastOnscreenError = `status ${String(r.status)} ${String(r.error?.message ?? "")} ${(r.stderr ?? "").slice(0, 300)}`; return undefined; }
     return (r.stdout ?? "").split("\n").map((l) => l.trim()).filter((l) => l.startsWith("{")).map((l) => JSON.parse(l) as { pid: number; alpha: number; w: number; h: number });
   }
   if (process.platform !== "darwin") return undefined;

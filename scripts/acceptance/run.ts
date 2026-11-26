@@ -91,7 +91,7 @@ import { diagnosing, runnerState, stallReportsDone, startRunnerLog, watchAppStal
 import { parseIpcLine } from "../../apps/desktop/src/main/ui/ipc-stats";
 import { fileLine } from "../../apps/desktop/src/main/file-log";
 import { unkeptEvidence, type EvidenceStats } from "./evidence-lines";
-import { BROWSER_HOST_STEP, HOST_GAVE_UP_STEP, HOST_IDLE_CPU_PERCENT, HOST_IDLE_MESSAGES_PER_S, HOST_IDLE_STEP, HOST_STEP, SURFACE_COPY_HOST_STEP, backgroundPart, hostCommandViaLauncher, hostLockPid, islandTarget, onscreenWindows, startHostLauncher, processAlive, readyCount } from "./host-step";
+import { lastOnscreenError, BROWSER_HOST_STEP, HOST_GAVE_UP_STEP, HOST_IDLE_CPU_PERCENT, HOST_IDLE_MESSAGES_PER_S, HOST_IDLE_STEP, HOST_STEP, SURFACE_COPY_HOST_STEP, backgroundPart, hostCommandViaLauncher, hostLockPid, islandTarget, onscreenWindows, startHostLauncher, processAlive, readyCount } from "./host-step";
 import { BACKGROUND_IDS, writeBackground } from "./manifest-fields-step";
 import { checkPageReport } from "./layer-page-step";
 import { shellDoc, dumpFrames, failureShot, renderNewUser, treeDocs, treeText, UI_STEPS, uiSteps } from "./ui-steps";
@@ -5712,7 +5712,7 @@ async function hostOnlyRun(app: { exe: string; args: string[] }): Promise<void> 
     let screenChecks = 0;
     const offScreen = (stage: string): void => {
       const wins = onscreenWindows(join(import.meta.dir, "onscreen-windows.swift"));
-      if (wins === undefined) fail(`the window server's list couldn't be read (${stage})`);
+      if (wins === undefined) fail(`the window server's list couldn't be read (${stage}) ${lastOnscreenError}`);
       const pids = new Set([...startedHosts, ...(hostLockPid(home) !== undefined ? [hostLockPid(home)!] : [])]);
       const seen = wins!.filter((w) => pids.has(w.pid) && w.alpha > 0);
       if (seen.length > 0) fail(`a host window was on the screen ${stage}: ${JSON.stringify(seen).slice(0, 200)}`);
