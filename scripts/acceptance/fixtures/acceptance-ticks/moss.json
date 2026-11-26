@@ -1,0 +1,8 @@
+{
+  "manifest": 1,
+  "id": "acceptance-ticks",
+  "name": "Acceptance ticks",
+  "description": "The acceptance run's fixture for a plugin OK card with boxes: a parent with no parts of its own and three children (alpha, beta, gamma) that bring nothing either, so its OK card has one box each and the answer's ticks are all that tells them apart.",
+  "version": "0.0.1",
+  "engines": { "moss": "^1.0.0" }
+}

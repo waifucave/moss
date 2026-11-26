@@ -1,0 +1,6 @@
+{
+  "manifest": 1,
+  "name": "Ticks beta",
+  "description": "A child of the acceptance ticks fixture: it brings nothing, so whether it runs is the person's tick alone.",
+  "engines": { "moss": "^1.0.0" }
+}
