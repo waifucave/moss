@@ -10,8 +10,9 @@
 // methods (`peer.*`, `sync.*`) ride the link and aren't here.
 import {
   MOSS_ERR, DEVICES_METHODS, ERR, PhoneApp,
-  type AccountView, type Caller, type ChangeResult, type DeviceView, type LinkView, type MethodSpec,
+  type AccountView, type Caller, type ChangeResult, type DeviceView, type LinkView, type MethodSpec, type Program,
 } from "@waifucave/moss-protocol";
+import { answerKeyWords } from "../identity/sas";
 import type { z } from "zod";
 import type { ApprovalBroker, ApprovalRequest } from "../contracts/approval-broker";
 import type { Clock } from "../contracts/clock";
@@ -125,6 +126,8 @@ export function brokerCardOpener(broker: Pick<ApprovalBroker, "request" | "watch
 
 export interface DevicesMethodsDeps {
   registry: FileDeviceRegistry;
+  /** This computer's program answer keys (lane RT's table), shown as four words each on its own row (lane XC, xc-6). */
+  programKeys?: { registrations(device: string): readonly { program: Program; publicKey: string }[] };
   pairing: PairingService;
   transport: Pick<LinkTransport, "links" | "watch" | "connect">;
   /** The main computer (the links' `main`); without it `main.*` answer that there's no lease here. */
@@ -323,7 +326,8 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
   return {
     [M.deviceList.name]: handler(M.deviceList, () => {
       const main = deps.main?.lease.state().main ?? null;
-      return { devices: registry.list().map((d) => deviceView(d, registry.self().id, linkOf(deps.transport, d.id), d.id === main)) };
+      const self = registry.self().id;
+      return { devices: registry.list().map((d) => deviceView(d, self, linkOf(deps.transport, d.id), d.id === main, deps.programKeys?.registrations(self))) };
     }),
 
     [M.deviceRename.name]: handler(M.deviceRename, async (p, ctx): Promise<ChangeResult> => {
@@ -622,16 +626,28 @@ function linkOf(t: Pick<LinkTransport, "links">, id: string): LinkView | undefin
   return t.links().find((l) => l.peer === id);
 }
 
-export function deviceView(d: DeviceRecord, self: string, link: LinkView | undefined, isMain = false): DeviceView {
+export function deviceView(d: DeviceRecord, self: string, link: LinkView | undefined, isMain = false, ownKeys?: readonly { program: Program; publicKey: string }[]): DeviceView {
   // A phone that names no answer key answers with its own device key; how its OS holds that isn't recorded yet.
   // A phone answers with its own answer key only, never its link key (item 91).
   const answers = answerKeyOf(d) === undefined || (d.kind === "phone" && d.answerKey === undefined) ? undefined : { held: d.answerKey?.held ?? ("none" as const) };
+  const keys = d.kind === "desktop" ? keyWordsOf(d, d.id === self ? ownKeys : undefined) : [];
   return {
     id: d.id, name: d.name, kind: d.kind, runsCore: d.runsCore, online: d.id === self || link?.up === true, isThis: d.id === self, isMain, addedAt: d.addedAt,
     ...(d.os ? { os: d.os } : {}), ...(d.computer ? { computer: d.computer } : {}), ...(d.hasDisplay !== undefined ? { hasDisplay: d.hasDisplay } : {}),
     ...(d.kind === "phone" && PhoneApp.safeParse(d.app).success ? { app: d.app } : {}),
     ...(link ? { link } : {}), ...(d.lastSeenAt !== undefined ? { lastSeenAt: d.lastSeenAt } : {}), ...(answers ? { answers } : {}),
+    ...(keys.length > 0 ? { keys } : {}),
   };
+}
+
+/** A computer's answer keys as four words each (lane XC, xc-6): MOSS Code's single key and each program key, this
+ *  computer's own from its own table (`own`), a paired computer's as this computer holds them. */
+function keyWordsOf(d: DeviceRecord, own: readonly { program: Program; publicKey: string }[] | undefined): { program: Program; words: string[] }[] {
+  const byProgram = new Map<Program, string>();
+  for (const [program, k] of Object.entries(d.answerKeys ?? {}) as [Program, { publicKey: string } | undefined][]) if (k !== undefined) byProgram.set(program, k.publicKey);
+  for (const k of own ?? []) byProgram.set(k.program, k.publicKey);
+  if (d.answerKey !== undefined) byProgram.set("code", d.answerKey.publicKey);
+  return (["moss", "code", "host"] as const).flatMap((p) => (byProgram.has(p) ? [{ program: p, words: answerKeyWords(byProgram.get(p)!) }] : []));
 }
 
 /** The devices area's events, from the registry, the links, the pairings and the account. */

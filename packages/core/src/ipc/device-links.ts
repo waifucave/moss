@@ -206,6 +206,7 @@ export async function startDaemonLinks(input: DaemonLinksInput): Promise<DaemonL
       ...(input.answerKeyServed ? { answerKey: false as const } : {}),
       ...(input.personAt ? { personAt: input.personAt } : {}),
       terminalChanges: new TerminalChanges(input.home), log,
+      ...(input.programKeys ? { programKeys: input.programKeys } : {}),
     })));
     // The account's deletion (the deletion lane): the person's `account.delete`; an account deleted on another device ends
     // here at this device's next contact with the account service (its 410), once; and a deletion the last run began is

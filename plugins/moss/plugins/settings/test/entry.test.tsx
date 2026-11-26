@@ -62,7 +62,7 @@ async function mount(params: { section?: string; item?: string } = {}, extra: { 
   const api = fakeApi({
     ...(extra.seed ? { settings: extra.seed } : {}),
     computers: { list: async () => [computerView("Studio", { device: "d1", level: "ask-risky", link: "self", isMain: true }), computerView("Laptop", { device: "d2", level: "ask", link: "lan" })] },
-    devices: { list: async () => [deviceView("d1", "Studio", { kind: "desktop", runsCore: true, isThis: true, isMain: true }), deviceView("d2", "Laptop", { kind: "desktop", runsCore: true }), deviceView("d3", "iPhone", { kind: "phone", runsCore: false })], watch: () => () => undefined },
+    devices: { list: async () => [deviceView("d1", "Studio", { kind: "desktop", runsCore: true, isThis: true, isMain: true, keys: [{ program: "moss", words: ["cedar", "quill", "basin", "otter"] }] }), deviceView("d2", "Laptop", { kind: "desktop", runsCore: true }), deviceView("d3", "iPhone", { kind: "phone", runsCore: false })], watch: () => () => undefined },
     bots: { list: async () => [{ id: "alpha", name: "Alpha", model: "m", userLayer: [], state: "idle", mainSession: "s" }], get: async () => { throw new Error("x"); }, watch: () => () => undefined },
   });
   // A read the page asked for before a press and that is answered after it (a slow runner's first read): the value as it was asked.
@@ -317,6 +317,9 @@ describe("settings on the runtime", () => {
     expect(row("Studio").textContent).toContain("Computer");
     expect(row("Studio").textContent).toContain("Online now");
     expect(row("iPhone").textContent).toContain("Phone");
+    // A computer's answer keys as four words, read-only (lane XC, xc-6): what a "new key" card on another computer shows.
+    expect(row("Studio").textContent).toContain("MOSS key: cedar quill basin otter");
+    expect(row("Laptop").textContent).not.toContain("key:");
     await act(() => settle());
     // The engine's choice, read when the page opens.
     expect(core.calls.some((c) => c.method === "device.relay.get")).toBe(true);

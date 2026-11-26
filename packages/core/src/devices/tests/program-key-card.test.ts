@@ -16,7 +16,7 @@ import { DeviceKey } from "../../identity/device-key";
 import { generateEd25519, type Ed25519Key } from "../../identity/keys";
 import { answerKeyWords } from "../../identity/sas";
 import { askAboutNewProgramKeys } from "../../links/relay";
-import { brokerCardOpener } from "../rpc";
+import { brokerCardOpener, deviceView } from "../rpc";
 import { FileDeviceRegistry, type PeerProgramKeys, programKeysStatement } from "../registry";
 
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -171,6 +171,19 @@ describe("part 3: the holder's card for a new key with no hand-over (lane XC, xc
     }
     await settle();
     expect(registry.pendingProgramKeys()).toHaveLength(1);
+  });
+
+  test("the device list shows each computer's keys as four words: this computer's own from its table, a peer's as held here, the card's words for the same key", async () => {
+    const w = await world();
+    const k1 = generateEd25519();
+    await w.send(k1);
+    const own = generateEd25519();
+    const self = w.registry.self();
+    const views = w.registry.list().map((d) => deviceView(d, self.id, undefined, false, [{ program: "host", publicKey: b64(own) }]));
+    expect(views.find((v) => v.id === w.a.id)!.keys).toEqual([{ program: "moss", words: answerKeyWords(b64(k1)) }]);
+    expect(views.find((v) => v.id === self.id)!.keys).toEqual([{ program: "host", words: answerKeyWords(b64(own)) }]);
+    // Four words, and never the key itself.
+    expect(JSON.stringify(views)).not.toContain(b64(k1));
   });
 
   test("the declined list is capped", async () => {

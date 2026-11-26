@@ -40,6 +40,8 @@ export const S = {
   devicesDetail: "Every device sees every bot. The main computer runs them. Removing a device, adding one or choosing another main computer asks you on a card first.",
   thisDevice: "This device",
   mainDevice: "Main",
+  /** One of a computer's answer keys, as four words: what a "new key" card on another computer shows for it. */
+  keyWords: (program: "moss" | "code" | "host", words: string) => `${{ moss: "MOSS", code: "MOSS Code", host: "MOSS's island" }[program]} key: ${words}`,
   remove: (name: string) => `Remove ${name}`,
   makeMain: (name: string) => `Make ${name} the main computer`,
   makeMainLabel: "Make main",

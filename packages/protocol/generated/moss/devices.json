@@ -124,6 +124,38 @@
                   ],
                   "additionalProperties": false
                 },
+                "keys": {
+                  "maxItems": 3,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "program": {
+                        "type": "string",
+                        "enum": [
+                          "moss",
+                          "code",
+                          "host"
+                        ]
+                      },
+                      "words": {
+                        "minItems": 4,
+                        "maxItems": 4,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 16
+                        }
+                      }
+                    },
+                    "required": [
+                      "program",
+                      "words"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
                 "isThis": {
                   "type": "boolean"
                 },
@@ -2867,6 +2899,37 @@
                   "peer",
                   "up"
                 ]
+              },
+              "keys": {
+                "maxItems": 3,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "program": {
+                      "type": "string",
+                      "enum": [
+                        "moss",
+                        "code",
+                        "host"
+                      ]
+                    },
+                    "words": {
+                      "minItems": 4,
+                      "maxItems": 4,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 16
+                      }
+                    }
+                  },
+                  "required": [
+                    "program",
+                    "words"
+                  ]
+                }
               },
               "isThis": {
                 "type": "boolean"

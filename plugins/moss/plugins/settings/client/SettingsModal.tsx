@@ -553,7 +553,7 @@ function Page({ props }: { props: SettingsModalProps }) {
           <h3 className="cl-settings__subhead">{S.devices}</h3>
           <p className="cl-settings__note">{S.devicesDetail}</p>
           {values.devices.map((d) => (
-            <Row key={d.id} label={d.name} mark={marks(props.item, d.id)} detail={[S.kind[d.kind], d.here ? S.thisDevice : "", d.main ? S.mainDevice : "", last(d)].filter(Boolean).join(" · ")}>
+            <Row key={d.id} label={d.name} mark={marks(props.item, d.id)} detail={[S.kind[d.kind], d.here ? S.thisDevice : "", d.main ? S.mainDevice : "", last(d), ...(d.keys ?? []).map((k) => S.keyWords(k.program, k.words))].filter(Boolean).join(" · ")}>
               {d.kind === "computer" && !d.main && props.onMakeMain && (
                 <button type="button" className="cl-settings__button" aria-label={S.makeMain(d.name)} onClick={() => props.onMakeMain?.(d.id)}>
                   {S.makeMainLabel}

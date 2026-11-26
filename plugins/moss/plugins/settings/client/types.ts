@@ -51,6 +51,9 @@ export interface SettingsDevice {
   online?: boolean;
   /** When it was last seen over its link, in ms (shown when it is not online now). */
   lastSeen?: number;
+  /** A computer's answer keys, each program's as four words (read-only), to compare with a "new key" card on another
+   *  computer. */
+  keys?: { program: "moss" | "code" | "host"; words: string }[];
 }
 
 /** One computer's level (spec §9.1: levels are per computer). */

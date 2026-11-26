@@ -99,6 +99,8 @@ export interface DeviceLinks {
   groups?: GroupKeeper;
   /** The bots' memories across computers (absent with `memory: false`). */
   memory?: MemorySync;
+  /** This computer's program answer keys, as the links were given them (`DeviceLinksOptions.programKeys`). */
+  programKeys?: NonNullable<DeviceLinksOptions["programKeys"]>;
   /** What a revocation needs (devices.revoke, `revokeDevice`), with the group's quorum removal. */
   revokeOptions(): RevokeOptions;
   /** The shared clock (§6.4): the lease's holder is the reference. What every stamp a message carries reads. */
@@ -388,6 +390,7 @@ export async function startDeviceLinks(o: DeviceLinksOptions): Promise<DeviceLin
     key, boxKey, registry, wire, transport, pairing, ...(directory ? { directory } : {}),
     ...(accountDirectory ? { accountDirectory } : {}), ...(driver ? { driver } : {}), ...(main ? { main } : {}), clock: sharedClock,
     ...(groups ? { groups } : {}), ...(memory ? { memory } : {}), revokeOptions,
+    ...(o.programKeys ? { programKeys: o.programKeys } : {}),
     async refresh() {
       if (driver) await driver.refresh();
       else {

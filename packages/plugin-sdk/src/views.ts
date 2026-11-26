@@ -129,6 +129,10 @@ export type DeviceView = {
     since?: number;
     features?: string[];
   };
+  keys?: {
+    program: "moss" | "code" | "host";
+    words: string[];
+  }[];
   isThis: boolean;
   isMain: boolean;
   addedAt: number;

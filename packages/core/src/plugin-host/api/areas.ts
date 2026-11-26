@@ -416,7 +416,8 @@ export function areasParts(s: AreaServices): { handlers: ApiHandlers; forget(plu
       const l = links();
       const main = l.main?.lease.state().main ?? null;
       const self = l.registry.self().id;
-      return l.registry.list().map((d) => deviceView(d, self, l.transport.links().find((k) => k.peer === d.id), d.id === main));
+      const own = l.programKeys?.registrations(self);
+      return l.registry.list().map((d) => deviceView(d, self, l.transport.links().find((k) => k.peer === d.id), d.id === main, own));
     },
     "devices.revoked": () => links().registry.all().flatMap((d) => (d.revokedAt === undefined ? [] : [{ id: d.id, revokedAt: d.revokedAt }])),
     "devices.watch": (ctx, args) => {
@@ -427,7 +428,7 @@ export function areasParts(s: AreaServices): { handlers: ApiHandlers; forget(plu
       const view = (id: string) => {
         const d = l.registry.get(id);
         if (d === undefined || d.revokedAt !== undefined) return;
-        listener(deviceView(d, self, l.transport.links().find((k) => k.peer === id), id === (l.main?.lease.state().main ?? null)));
+        listener(deviceView(d, self, l.transport.links().find((k) => k.peer === id), id === (l.main?.lease.state().main ?? null), l.programKeys?.registrations(self)));
       };
       const offRegistry = l.registry.watch((c) => {
         if (c.type !== "revoked") view(c.device.id);

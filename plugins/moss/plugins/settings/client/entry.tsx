@@ -324,7 +324,7 @@ export function SettingsEntry({ props }: { props: SettingsEntryProps }) {
       { id: "accept-edits", label: "Accept edits" },
       { id: "automatic", label: "Fully automatic" },
     ],
-    devices: devices.map((d) => ({ id: d.id, name: d.name, kind: deviceKind(d), ...(d.isThis ? { here: true } : {}), ...(d.isMain ? { main: true } : {}), ...(d.online ? { online: true } : {}), ...(d.lastSeenAt !== undefined ? { lastSeen: d.lastSeenAt } : {}) })),
+    devices: devices.map((d) => ({ id: d.id, name: d.name, kind: deviceKind(d), ...(d.isThis ? { here: true } : {}), ...(d.isMain ? { main: true } : {}), ...(d.online ? { online: true } : {}), ...(d.lastSeenAt !== undefined ? { lastSeen: d.lastSeenAt } : {}), ...(d.keys !== undefined && d.keys.length > 0 ? { keys: d.keys.map((k) => ({ program: k.program, words: k.words.join(" ") })) } : {}) })),
   };
 
   const onChange = (path: string, value: unknown) => {

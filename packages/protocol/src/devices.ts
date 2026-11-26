@@ -112,6 +112,10 @@ export const DeviceView = z.object({
   app: PhoneApp.optional(),
   online: z.boolean(),
   link: LinkView.optional(),
+  /** A computer's answer keys, each program's as four words in the pairing card's short form (lane XC, xc-6): this
+   *  computer's own, and for a paired computer the ones this computer holds for it, so the person can compare them with
+   *  the words a "new key" card shows. Read-only; never the key itself. */
+  keys: z.array(z.object({ program: z.enum(["moss", "code", "host"]), words: z.array(utf16(16, 1)).length(4) })).max(3).optional(),
   isThis: z.boolean(),
   isMain: z.boolean(),
   addedAt: Timestamp,
