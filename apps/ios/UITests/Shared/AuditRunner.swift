@@ -102,11 +102,32 @@ enum AuditRunner {
         print("AUDIT UNSETTLED \(name) \(size ?? "default"): still moving after 15 s, audited as it is")
     }
 
+    /// A failed contrast's evidence, kept in the result bundle: the whole screen (the bars and whatever is behind the
+    /// element) and the element's own crop, with what the audit says it is, so the cause can be read, not guessed.
+    static func keepPicture(of issue: XCUIAccessibilityAuditIssue, app: XCUIApplication, screen: String, size: String?, in test: XCTestCase) {
+        let tag = "\(screen) \(size ?? "default") \(firstLine(issue.element?.label))"
+        if let e = issue.element {
+            print("AUDIT ELEMENT \(tag): type \(e.elementType.rawValue) id '\(e.identifier)' frame \(e.frame) :: \(issue.detailedDescription)")
+        } else {
+            print("AUDIT ELEMENT \(tag): no element :: \(issue.detailedDescription)")
+        }
+        let whole = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        whole.name = "contrast \(tag) (screen)"; whole.lifetime = .keepAlways
+        test.add(whole)
+        if let e = issue.element, e.exists, !e.frame.isEmpty {
+            let crop = XCTAttachment(screenshot: e.screenshot())
+            crop.name = "contrast \(tag) (element)"; crop.lifetime = .keepAlways
+            test.add(crop)
+        }
+    }
+
     static func run(bundleID: String, size: String?, in test: XCTestCase) throws {
         test.continueAfterFailure = true
         for (name, args) in screensByApp[bundleID] ?? [] {
             let app = XCUIApplication(bundleIdentifier: bundleID)
-            app.launchArguments = args + (size.map { ["-UIPreferredContentSizeCategoryName", $0] } ?? [])
+            // Still motion (as Reduce Motion asks, Debug builds only): the shimmering status line and a bot's face hold
+            // still, so the screen settles and the audit reads one picture of it.
+            app.launchArguments = args + ["-stillMotion"] + (size.map { ["-UIPreferredContentSizeCategoryName", $0] } ?? [])
             app.launch()
             _ = app.wait(for: .runningForeground, timeout: 10)
             settle(app, name: name, size: size)
@@ -141,6 +162,7 @@ enum AuditRunner {
                 // A file path is read out letter by letter on purpose: what a card shows is what it covers.
                 if issue.auditType == .sufficientElementDescription, issue.element?.label.contains("/") == true { return true }
                 if issue.auditType == .contrast {
+                    if !issue.compactDescription.localizedCaseInsensitiveContains("nearly") { keepPicture(of: issue, app: app, screen: name, size: size, in: test) }
                     if let element = unknownFailedContrast(issue) { failedOnce.insert(element) }
                     return true
                 }

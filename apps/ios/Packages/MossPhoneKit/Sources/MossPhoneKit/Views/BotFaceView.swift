@@ -12,7 +12,8 @@ public struct BotFaceView: View {
     @State private var key = UUID().uuidString
     @State private var clock = TickBox()
     @Environment(\.colorScheme) private var scheme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    private var reduceMotion: Bool { systemReduceMotion || Motion.stillForTests }
 
     static let canvasScale: CGFloat = 1.12
     public init(name: String, face: BotFaceSpec?, mood: Mood = .idle, size: CGFloat) {

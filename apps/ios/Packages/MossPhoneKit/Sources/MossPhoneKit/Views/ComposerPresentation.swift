@@ -169,7 +169,7 @@ struct ComposerAttachmentPresentation<Content: View>: UIViewRepresentable {
             let center = CGPoint(x: left + width / 2, y: top + height / 2)
             host.view.bounds = CGRect(origin: .zero, size: CGSize(width: width, height: height))
 
-            if animateFromSource && !UIAccessibility.isReduceMotionEnabled {
+            if animateFromSource && !(UIAccessibility.isReduceMotionEnabled || Motion.stillForTests) {
                 host.view.center = CGPoint(x: source.midX, y: source.midY)
                 host.view.transform = CGAffineTransform(scaleX: source.width / width,
                                                        y: source.height / height)
@@ -196,7 +196,7 @@ struct ComposerAttachmentPresentation<Content: View>: UIViewRepresentable {
             guard let host, !isClosing else { return }
             isClosing = true
             let source = sourceRect
-            UIView.animate(withDuration: UIAccessibility.isReduceMotionEnabled ? 0 : 0.2,
+            UIView.animate(withDuration: (UIAccessibility.isReduceMotionEnabled || Motion.stillForTests) ? 0 : 0.2,
                            delay: 0, options: [.beginFromCurrentState]) {
                 if !host.view.bounds.isEmpty {
                     host.view.center = CGPoint(x: source.midX, y: source.midY)

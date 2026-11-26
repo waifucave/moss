@@ -3,7 +3,8 @@ import SwiftUI
 /// The turn's one plain status line ("Alpha is working"): a line of text with a shimmer, still when Reduce Motion is on.
 public struct StatusLineView: View {
     let text: String
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    private var reduceMotion: Bool { systemReduceMotion || Motion.stillForTests }
     public init(_ text: String) { self.text = text }
     public var body: some View {
         TimelineView(.animation(paused: reduceMotion)) { tl in
