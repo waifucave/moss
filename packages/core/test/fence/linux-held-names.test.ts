@@ -81,22 +81,16 @@ describe("leftOutNote: a refused write says which roots were left out and why", 
 });
 
 (process.platform === "linux" ? describe : describe.skip)("on Linux: the drawn sandbox and real bubblewrap", () => {
-  test("at fully automatic the home is its top folders, each its own root: only one holding a repo in node_modules is left out", () => {
+  test("at fully automatic a home holding a repo in node_modules isn't a write root; the bot's own folders stay", () => {
     const home = temp("xc3c-home-");
     const moss = join(home, ".moss");
     const scratch = join(moss, "scratch", "luna");
     mkdirSync(scratch, { recursive: true });
     mkdirSync(join(home, "app", "node_modules", "p", ".git"), { recursive: true });
-    mkdirSync(join(home, "Documents", "notes"), { recursive: true });
-    mkdirSync(join(home, ".cache"), { recursive: true });
     const fence = new MossFence({ os: "linux", home, mossHome: moss, temp: temp("xc3c-tmp-") });
     const s = botSandboxSettings(fence.policy(), { mossHome: moss, userHome: home, level: "automatic", ownFolders: [scratch], pathFolders: [] });
-    const roots = s.filesystem?.allowWrite ?? [];
-    expect(roots).not.toContain(home);
-    expect(roots).toEqual(expect.arrayContaining([join(home, "Documents"), join(home, ".cache")]));
-    expect(roots).not.toContain(join(home, "app"));
-    expect(roots.some((r) => r === moss || r.startsWith(`${moss}/`))).toBe(false);
-    expect(leftOutRoots(s).map((l) => l.root)).toEqual([join(home, "app")]);
+    expect(s.filesystem?.allowWrite ?? []).not.toContain(home);
+    expect(leftOutRoots(s).map((l) => l.root)).toEqual([home]);
     expect(leftOutRoots(s)[0]!.why).toContain("inside node_modules");
   });
 
