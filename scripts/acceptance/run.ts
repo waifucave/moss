@@ -4037,32 +4037,42 @@ async function computersRun(): Promise<void> {
   appless = true;
   try {
     // ── the two engines ──
-    // Alpha's link on a port the run picked, so the reinstall row's restart comes back where Beta knows it.
-    const alphaPort = await new Promise<number>((resolve, reject) => {
+    // Each engine's link on a port the run picked, so the reinstall row's restarts come back where the other knows it (no
+    // relay, no lookup in this unit).
+    const freePort = () => new Promise<number>((resolve, reject) => {
       const s = createSocket("udp4");
       s.once("error", reject);
       s.bind(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => resolve(p)); });
     });
-    const alphaEnv = { ...linkEnv, MOSS_ACCEPTANCE_COMPUTER_NAME: "Alpha", MOSS_ACCEPTANCE_LINK_PORT: String(alphaPort) };
+    const alphaEnv = { ...linkEnv, MOSS_ACCEPTANCE_COMPUTER_NAME: "Alpha", MOSS_ACCEPTANCE_LINK_PORT: String(await freePort()) };
+    const betaPort = String(await freePort());
     let alpha = await startDaemonProc(alphaEnv);
     // Alpha's connections: made again when the reinstall row starts Alpha's engine again on the same home.
     let c = (await appDriver()).client;
     await signInKey(c);
     const bot = await keyedSession(c);
     mkdirSync(betaUser, { recursive: true });
-    beta = startChild("daemon-beta", process.execPath, [join(REPO, "scripts", "acceptance", "daemon.ts")], {
-      ...baseEnv(), ...USAGE_INERT_ENV, ...linkEnv, HOME: betaUser, MOSS_HOME: betaHome, MOSS_ACCEPTANCE_USER_HOME: betaUser,
-      MOSS_ACCEPTANCE_RUN_PID: String(process.pid), MOSS_KEYCHAIN_SERVICE: `${service}.beta`, MOSS_ACCEPTANCE_COMPUTER_NAME: "Beta",
-    });
-    const betaProc = beta.proc;
-    await until("Beta's socket, app token and harness token", 120_000, async () => {
-      if (!alive(betaProc)) fail(`Beta's daemon exited: ${lastLines(beta!.log)}`);
-      if (!existsSync(join(betaHome, "run", "app.token")) || !existsSync(join(betaHome, "run", HARNESS_TOKEN_FILE))) return undefined;
-      try { (await MossClient.connect(coreEndpoint(betaHome), 1_000)).close(); return true; } catch { return undefined; }
-    });
+    let betaStarts = 0;
+    /** Beta's engine on its own home, ready to take connections. */
+    const startBeta = async () => {
+      betaStarts++;
+      const b = startChild(betaStarts === 1 ? "daemon-beta" : `daemon-beta-${betaStarts}`, process.execPath, [join(REPO, "scripts", "acceptance", "daemon.ts")], {
+        ...baseEnv(), ...USAGE_INERT_ENV, ...linkEnv, HOME: betaUser, MOSS_HOME: betaHome, MOSS_ACCEPTANCE_USER_HOME: betaUser,
+        MOSS_ACCEPTANCE_RUN_PID: String(process.pid), MOSS_KEYCHAIN_SERVICE: `${service}.beta`, MOSS_ACCEPTANCE_COMPUTER_NAME: "Beta",
+        MOSS_ACCEPTANCE_LINK_PORT: betaPort,
+      });
+      beta = b;
+      await until("Beta's socket, app token and harness token", 120_000, async () => {
+        if (!alive(b.proc)) fail(`Beta's daemon exited: ${lastLines(b.log)}`);
+        if (!existsSync(join(betaHome, "run", "app.token")) || !existsSync(join(betaHome, "run", HARNESS_TOKEN_FILE))) return undefined;
+        try { (await MossClient.connect(coreEndpoint(betaHome), 1_000)).close(); return true; } catch { return undefined; }
+      });
+      return b.proc;
+    };
+    let betaProc = await startBeta();
     const tokenOf = (h: string, f: string) => readFileSync(join(h, "run", f), "utf8").trim();
     await until("Alpha's harness token", 30_000, () => (existsSync(join(home, "run", HARNESS_TOKEN_FILE)) ? true : undefined));
-    const betaApp = (await hello(coreEndpoint(betaHome), "app", tokenOf(betaHome, "app.token"), "moss-acceptance", MOSS_PROTOCOL_VERSION)).client;
+    let betaApp = (await hello(coreEndpoint(betaHome), "app", tokenOf(betaHome, "app.token"), "moss-acceptance", MOSS_PROTOCOL_VERSION)).client;
     opened.push(betaApp);
     // Each user's own terminal (the CLI role): the one place the four words are said.
     const terminal = async (h: string) => {
@@ -4078,7 +4088,7 @@ async function computersRun(): Promise<void> {
       return { t, words };
     };
     let ta = await terminal(home);
-    const tb = await terminal(betaHome);
+    let tb = await terminal(betaHome);
 
     // ── MOSS on Alpha, as the app is (apps/moss): the `app` role with `surface: "moss"`, its own answer key registered with
     // `device.programKey.set` before any pairing (the app registers on every connection), so Beta learns it over the link
@@ -4278,15 +4288,24 @@ async function computersRun(): Promise<void> {
       return "MOSS's key replaced on Alpha with its hand-over (Alpha's own card); Beta took the new key with no card, and a write on Beta answered with it landed";
     });
     await step(COMPUTERS_REINSTALL_STEP, async () => {
-      // A key lost with no hand-over, as it can happen today: Alpha's engine stops, its program-key table is gone, it starts
-      // again on the same home (the same device and link), and MOSS registers a new first key there.
-      alpha.proc.kill("SIGTERM");
-      const stopped = alpha.proc;
-      await until("Alpha's engine to stop", 30_000, () => (alive(stopped) ? undefined : true));
+      // A key lost with no hand-over, as it can happen today: Alpha's program-key table is gone while its device stays (the
+      // same home, device and link port), and MOSS registers a new first key there. The row is about keys, not the lease:
+      // with no handshake service the bots' lease can't move back between two computers (docs/across-computers-owed.md),
+      // so both engines restart in order, Beta first down and last up, and Alpha holds the lease alone before Beta returns.
+      const stop = async (p: ChildProcess, who: string) => {
+        p.kill("SIGTERM");
+        await until(`${who}'s engine to stop`, 30_000, () => (alive(p) ? undefined : true));
+      };
+      await stop(betaProc, "Beta");
+      await stop(alpha.proc, "Alpha");
       rmSync(join(home, "devices", "program-keys.json"), { force: true });
       alpha = await startDaemonProc(alphaEnv);
       c = (await appDriver()).client;
       ta = await terminal(home);
+      await until("Alpha holding the bots' lease alone", 120_000, async () => {
+        const got = await c.request<{ lease: { holder: string | null } }>("main.get", {}).catch(() => undefined);
+        return got?.lease.holder === alphaDevice ? true : undefined;
+      });
       const again = await hello(coreEndpoint(home), "app", tokenOf(home, "app.token"), "MOSS acceptance", MOSS_PROTOCOL_VERSION, { surface: "moss" });
       mossApp = again.client;
       opened.push(mossApp);
@@ -4296,16 +4315,16 @@ async function computersRun(): Promise<void> {
       if (r0.applied !== true) fail("Alpha's engine, its table gone, didn't take MOSS's new first key");
       mossKey = fresh;
       mossPub = freshPub;
-      await until("Beta online on Alpha again", 60_000, async () => {
+      // Beta comes back on its own home and port, its app and terminal with it.
+      betaProc = await startBeta();
+      betaApp = (await hello(coreEndpoint(betaHome), "app", tokenOf(betaHome, "app.token"), "moss-acceptance", MOSS_PROTOCOL_VERSION)).client;
+      opened.push(betaApp);
+      tb = await terminal(betaHome);
+      await until("Beta online on Alpha again", 120_000, async () => {
         const got = await c.request<{ computer: { online?: boolean; state?: string } }>("computer.get", { name: "Beta" }).catch(() => undefined);
         return got !== undefined && (got.computer.online === true || got.computer.state === "online") ? true : undefined;
       });
-      // Alpha holds the bots' lease again. Beta took it while Alpha was down (the lease follows the computer that is up),
-      // and keeps it until it lets go: the person hands it back on Beta's own terminal, as "Hand over" does.
-      const holderOn = async (cl: MossClient) => (await cl.request<{ lease: { holder: string | null } }>("main.get", {}).catch(() => undefined))?.lease.holder ?? null;
-      const known = await until("a lease holder known on either computer", 120_000, async () => (await holderOn(c)) ?? (await holderOn(tb.t)) ?? undefined);
-      if (known !== alphaDevice) await tb.t.request("main.handOver", {});
-      await until("Alpha holding the bots' lease again", 120_000, async () => {
+      await until("Alpha still holding the bots' lease with Beta back", 60_000, async () => {
         const got = await c.request<{ lease: { holder: string | null } }>("main.get", {}).catch(() => undefined);
         return got?.lease.holder === alphaDevice ? true : undefined;
       });

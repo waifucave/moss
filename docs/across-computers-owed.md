@@ -11,7 +11,10 @@ reach, because it needs something that isn't in a test run.
 - **The lease's handshake service.** Which computer may act for a bot (the lease, `links/handshake*.ts`) is settled
   through the handshake service between computers that aren't on one network. The proofs run with `handshake: null`
   (two engines on loopback, or an in-memory network), so a lease taken and handed over through the real service, and
-  one that outlives the service going away, are unproven.
+  one that outlives the service going away, are unproven. And without it, after a main computer restarts, the lease
+  stays with the other computer that took it meanwhile. It doesn't move back (main.handOver can't move it either), so
+  the computers unit's restart row stops both engines and starts the main one first. Owed: the handshake service's
+  deploy, which needs the owner's word.
 - **The short pairing code.** The typed code (40 bits naming a rendezvous slot, 80 bits of secret,
   `links/pairing.ts`) waits in a slot the service holds. The proofs pair with the QR, which carries the host's key and
   addresses itself, so the code's round trip through a deployed rendezvous is unproven.
