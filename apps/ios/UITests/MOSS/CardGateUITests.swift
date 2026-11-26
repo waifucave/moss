@@ -152,7 +152,7 @@ final class CardGateUITests: XCTestCase {
         XCTAssertTrue(fourth.waitForExistence(timeout: 10), "the first question, with four options")
         fourth.tap()
         XCTAssertTrue(fourth.isSelected, "the fourth option is picked")
-        XCTAssertTrue(app.staticTexts["Should the notes be public?"].waitForExistence(timeout: 15), "the second question took its place")
+        XCTAssertTrue(app.staticTexts["Should the notes be public?"].waitForExistence(timeout: 40), "the second question took its place")
         XCTAssertEqual(app.state, .runningForeground, "no crash")
         XCTAssertFalse(app.buttons["Thursday"].exists, "the first question's options are gone")
         for label in ["Yes", "No"] { XCTAssertFalse(app.buttons[label].firstMatch.isSelected, "\(label) is not ticked: the person never chose it") }

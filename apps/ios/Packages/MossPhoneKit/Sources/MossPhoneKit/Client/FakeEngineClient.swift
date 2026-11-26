@@ -292,7 +292,8 @@ public actor FakeEngineClient: EngineClient {
         if scenario == .questionSwitch, session == SampleData.bots[0].mainSession {
             if !switchArmed {
                 switchArmed = true
-                Task { try? await Task.sleep(for: .seconds(6)); await self.switchQuestion(session) }
+                // Long enough for a slow runner to launch, show it and tap an option first (a test waits for the switch).
+                Task { try? await Task.sleep(for: .seconds(15)); await self.switchQuestion(session) }
             }
             let q = switched ? SampleData.switchedQuestion : SampleData.fourOptionQuestion
             return answeredQuestions.contains(q.callId) ? nil : q
