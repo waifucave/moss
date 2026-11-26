@@ -12,19 +12,17 @@
 //   - by the holder's reviewer's "safe", at a level whose own shell roots (`levelShellRoots`, what `botSandboxSettings`
 //     draws: the home's ordinary top-level folders at accept edits, the home at fully automatic) cover it, as a bot
 //     here writes them with no card;
-//   - by the person's yes to the holder's card, as a one-call RequestAccess grant (its never-given checks), on macOS
-//     only: a bot here on Linux gets no grant (its sandbox holds only what exists when a command starts), and Windows
-//     peers stay in their temp folder (owed);
+//   - by the person's yes to the holder's card, as a one-call RequestAccess grant (its never-given checks);
 //   - never at all for a folder RequestAccess never gives (the home, its Library or Applications, one holding the MOSS
-//     home or a PATH folder, a sensitive place), a run-later or secret place, or a name a glob would misread.
+//     home or a PATH folder, a sensitive place), a run-later or secret place, or a name a glob would misread;
+//   - on macOS only. On Linux bubblewrap holds a place by its path at the start, and the folder holding it can be
+//     renamed during the run, so a planted repo could take a held `.git`'s path (the review's blocker on 24516c887):
+//     Linux and Windows peers stay in their temp folder (owed, docs/across-computers-owed.md).
 //   Inside it, exactly the local bot sandbox's denies (`shellRunLaterDenies`: every `.git`/`*.git` whole, at any depth
 //   and in any case, the run-later names, `*.app`, the PATH folders, what the repos' configs name) and the user's
-//   secret places, read and write. On macOS as Seatbelt globs from `/`; on Linux as the matches found under the
-//   folder when the command starts (held read-only by bubblewrap), and what appeared at a held name during the run
-//   moved aside after it (`sweepRunLater`: recoverable, never deleted), the local sandbox's own residual.
+//   secret places, read and write, as Seatbelt globs from `/`.
 //   Nothing the asking computer sends widens it: its level, its answer and its bot are the holder's to judge.
-import { cpSync, lstatSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync } from "node:fs";
-import { dirname, join, posix, relative, win32 } from "node:path";
+import { join, posix, win32 } from "node:path";
 import type { Level, Os } from "@waifucave/moss-protocol";
 import { secretReadPlaces, type Fence, type FenceContext, type SandboxPolicy } from "../contracts/fence";
 import { pathClass } from "../approvals/ordinary-paths";
@@ -115,18 +113,20 @@ export function peerFolderFor(o: {
   // A read-only command reads where its sandbox reads, whatever its write roots: nothing to give, nothing to say.
   if (o.readOnly || o.by === "read-only") return {};
   if (f.os === "windows") return { why: `${holder} runs another computer's commands only in their own temp folder on Windows for now, ${without}` };
+  // Linux (the review's blocker on 24516c887): bubblewrap holds a place by its path at the start, and the folder holding
+  // it can be renamed during the run, so a planted repo could take a held `.git`'s path. Until the held names are held
+  // by identity (lane/xc-3c-linux-held-names), a peer's command there writes only its own temp folder.
+  if (f.os === "linux") return { why: `On Linux ${holder} gives another computer's commands no folder for now (its sandbox can't yet hold a repository's .git against a rename), ${without}` };
   const refusal = peerFolderRefusal(folder, f);
   if (refusal !== undefined) return { why: `${refusal}: another computer's command never writes there, ${without}` };
-  const linux = `On Linux ${holder}'s sandbox holds only the places there when a command starts, so it gives another computer's commands no folder at this level (as it gives its own bots none), ${without}`;
   const covered = levelShellRoots(o.level, f).some((r) => within(folder, r, f.os));
   switch (o.by) {
     case "answer":
-      // The person's yes: a one-call RequestAccess grant, which a bot here on Linux never gets; a folder the level's
-      // roots cover a bot here writes after its card's yes anyway, on Linux too.
-      return covered || f.os === "macos" ? { folder } : { why: linux };
+      // The person's yes: a one-call RequestAccess grant.
+      return { folder };
     case "reviewer":
       if (covered) return { folder };
-      return f.os === "macos" ? { ask: `${holder} needs the user's answer before a command from another computer writes ${folder}` } : { why: linux };
+      return { ask: `${holder} needs the user's answer before a command from another computer writes ${folder}` };
     case "level": {
       // Fully automatic: never a card. The folder only on the reviewer's "safe", where the level's roots cover it.
       if (o.verdict === "unavailable") return { why: `${holder}'s reviewer couldn't judge this command, ${without}; at an asking level ${holder} would ask the person` };
@@ -137,65 +137,13 @@ export function peerFolderFor(o: {
   }
 }
 
-/** How many folders the Linux look for held names walks under a peer's folder, at the command's start and after it. */
-export const PEER_WALK_BUDGET = 20_000;
-
-/** The run-later places under `folder` (each held name that is there, never looked inside), walked without following
- *  a link, at most `budget` folders: `complete` false past it. */
-export function runLaterUnder(folder: string, f: PeerFloorOptions, budget = PEER_WALK_BUDGET): { found: string[]; complete: boolean } {
-  const found: string[] = [];
-  let left = budget;
-  const stack = [folder];
-  while (stack.length > 0) {
-    const dir = stack.pop()!;
-    if (left-- <= 0) return { found, complete: false };
-    let names: string[];
-    try { names = readdirSync(dir); } catch { continue; }
-    for (const name of names) {
-      const at = join(dir, name);
-      if (runLaterByName(at, f) || peerReadRefusal(at, f) !== undefined) { found.push(at); continue; }
-      try { if (lstatSync(at).isDirectory()) stack.push(at); } catch { /* gone meanwhile */ }
-    }
-  }
-  return { found: found.sort(), complete: true };
-}
-
-/** What a peer's command under `folder` may not write, as `denyWrite` entries: on macOS the local bot sandbox's own
- *  (`shellRunLaterDenies` for the folder, globs from `/`); on Linux the held places there now (`held`, from
- *  `runLaterUnder`) and the concrete ones of the same list (the PATH folders, what the repos' configs name). The
- *  user's secret places too, on both. */
-export function peerFolderDenies(folder: string, f: PeerFolderOptions, held: readonly string[] = []): string[] {
+/** What a peer's command under `folder` may not write, as `denyWrite` entries (macOS: Seatbelt holds them by pattern
+ *  as each path opens): the local bot sandbox's own (`shellRunLaterDenies` for the folder, globs from `/`) and the
+ *  user's secret places. */
+export function peerFolderDenies(folder: string, f: PeerFolderOptions): string[] {
   const local = shellRunLaterDenies([folder], { userHome: f.userHome, mossHome: f.mossHome, os: f.os, pathFolders: f.pathFolders });
   const secrets = secretReadPlaces(f.os, f.userHome).map((p) => p.path);
-  const drawn = f.os === "macos" ? local : [...local.filter((d) => !d.includes("*")), ...held];
-  return [...new Set([...drawn, ...secrets])];
-}
-
-/** After a peer's command on Linux: the held places under `folder` that weren't there at its start (not in `before`),
- *  moved aside into `putAway` at their path under the folder, never deleted: one the person made meanwhile (an
- *  editor's `.vscode`, their own `git init`) is theirs to take back. Each is moved only while its parent is still its
- *  own real path (no link swapped in since the walk). Returns what was moved, and whether the look finished (past the
- *  budget a place made deeper isn't found). */
-export function sweepRunLater(folder: string, before: readonly string[], f: PeerFloorOptions, putAway: string): { moved: string[]; complete: boolean } {
-  const was = new Set(before);
-  const now = runLaterUnder(folder, f);
-  const moved: string[] = [];
-  for (const p of now.found) {
-    if (was.has(p)) continue;
-    try {
-      if (realpathSync.native(dirname(p)) !== dirname(p)) continue;
-      const to = join(putAway, relative(folder, p));
-      mkdirSync(dirname(to), { recursive: true });
-      try { renameSync(p, to); } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== "EXDEV") throw e;
-        // Another volume: a copy (links as links), then the original away.
-        cpSync(p, to, { recursive: true, verbatimSymlinks: true, errorOnExist: true });
-        rmSync(p, { recursive: true, force: true });
-      }
-      moved.push(p);
-    } catch { /* left where it is: not in `moved` */ }
-  }
-  return { moved, complete: now.complete };
+  return [...new Set([...local, ...secrets])];
 }
 
 /** The folder a peer's command may write, with what is held inside it. */

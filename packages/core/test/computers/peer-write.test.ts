@@ -12,10 +12,9 @@ import { callCardRenderer } from "../../src/computers/call-cards";
 import { fencedExecutor } from "../../src/computers/fenced-executor";
 import { MossFence } from "../../src/fence/fence";
 import { fencedSpawner } from "../../src/fence/fenced-process";
-import { bwrapPlan } from "../../src/fence/linux-bwrap";
 import { filterOf } from "../../src/fence/macos-profile";
 import {
-  peerFence, peerFolderDenies, peerFolderFor, peerFolderRefusal, runLaterUnder, sweepRunLater,
+  peerFence, peerFolderDenies, peerFolderFor, peerFolderRefusal,
   type PeerFolderOptions, type PeerPassBy,
 } from "../../src/fence/peer-floor";
 import { treeResultText } from "../../src/runtime-sdk/turn-loop/driver";
@@ -56,26 +55,22 @@ const decide = (w: ReturnType<typeof world>, os: Os, by: PeerPassBy, level: Leve
   peerFolderFor({ holder: "Beta", folder: extra.folder ?? w.project, by, level, readOnly: extra.readOnly ?? false, ...(extra.verdict ? { verdict: extra.verdict } : {}) }, floorOf(w, os));
 
 describe("which folder a peer's command gets (peerFolderFor: the local rule, mirrored)", () => {
-  test("the person's yes: the folder on macOS; on Linux only where the level's roots cover it; never on Windows", () => {
+  test("the person's yes: the folder on macOS; never on Linux or Windows", () => {
     const w = world();
     expect(decide(w, "macos", "answer", "ask")).toEqual({ folder: w.project });
     expect(decide(w, "macos", "answer", "ask-risky")).toEqual({ folder: w.project });
     expect(decide(w, "linux", "answer", "ask-risky")).toEqual({ why: expect.stringContaining("On Linux") });
-    // Accept edits covers the home's ordinary top-level folders (~/Projects here): a bot here writes it after a yes.
-    expect(decide(w, "linux", "answer", "accept-edits")).toEqual({ folder: w.project });
     expect(decide(w, "windows", "answer", "ask")).toEqual({ why: expect.stringContaining("Windows") });
   });
 
-  test("the reviewer's safe at ask for risky actions: the card for the folder on macOS (the peer's RequestAccess), temp-only on Linux", () => {
+  test("the reviewer's safe at ask for risky actions: the card for the folder on macOS (the peer's RequestAccess)", () => {
     const w = world();
     expect(decide(w, "macos", "reviewer", "ask-risky")).toEqual({ ask: expect.stringContaining(w.project) });
-    expect(decide(w, "linux", "reviewer", "ask-risky")).toEqual({ why: expect.stringContaining("On Linux") });
   });
 
   test("the reviewer's safe at accept edits: the folder where an ordinary top-level folder covers it, else the card", () => {
     const w = world();
     expect(decide(w, "macos", "reviewer", "accept-edits")).toEqual({ folder: w.project });
-    expect(decide(w, "linux", "reviewer", "accept-edits")).toEqual({ folder: w.project });
     // A folder outside the home: no level's roots cover it.
     const outside = temp("xc-outside-");
     expect(decide(w, "macos", "reviewer", "accept-edits", { folder: outside })).toEqual({ why: expect.stringContaining("sensitive") });
@@ -84,7 +79,6 @@ describe("which folder a peer's command gets (peerFolderFor: the local rule, mir
   test("fully automatic: never a card; the folder only on the reviewer's safe; the reason in the result otherwise", () => {
     const w = world();
     expect(decide(w, "macos", "level", "automatic", { verdict: "safe" })).toEqual({ folder: w.project });
-    expect(decide(w, "linux", "level", "automatic", { verdict: "safe" })).toEqual({ folder: w.project });
     const unavailable = decide(w, "macos", "level", "automatic", { verdict: "unavailable" });
     expect(unavailable).toEqual({ why: `Beta's reviewer couldn't judge this command, so it ran without access to ${w.project}; at an asking level Beta would ask the person` });
     expect(decide(w, "macos", "level", "automatic", { verdict: "risky" })).toEqual({ why: expect.stringContaining("judged this command risky") });
@@ -202,69 +196,26 @@ describe("the denies inside the folder: the local bot sandbox's own", () => {
     for (const p of ["/x/.gitignore", "/x/agit2/y", "/x/digit"]) expect([p, re.test(p)]).toEqual([p, false]);
   });
 
-  test("Linux: the held places there now (a .git, a .vscode, secrets), never looked inside; what a command made at one swept after", () => {
+  test("Linux and Windows: no folder for a peer's command, whatever let it through; the executor refuses one there too", async () => {
     const w = world();
-    mkdirSync(join(w.project, "sub", ".vscode"), { recursive: true });
-    mkdirSync(join(w.project, "deep", "a", "b"), { recursive: true });
-    const f = floorOf(w, "linux");
-    const look = runLaterUnder(w.project, f);
-    expect(look.complete).toBe(true);
-    expect(look.found).toEqual([join(w.project, ".git"), join(w.project, "sub", ".vscode")].sort());
-    const d = peerFolderDenies(w.project, f, look.found);
-    expect(d).toEqual(expect.arrayContaining([join(w.project, ".git"), join(w.project, "sub", ".vscode")]));
-    expect(d.some((x) => x.includes("*"))).toBe(false);
-    // What a command made: a fresh .git deep down and a planted .envrc; the ordinary file it wrote stays.
-    mkdirSync(join(w.project, "deep", "a", "b", ".git", "hooks"), { recursive: true });
-    writeFileSync(join(w.project, "deep", ".envrc"), "x");
-    writeFileSync(join(w.project, "deep", "out.txt"), "kept");
-    const putAway = join(w.tmp, "put-away-1");
-    const s = sweepRunLater(w.project, look.found, f, putAway);
-    expect(s.complete).toBe(true);
-    expect(s.moved.sort()).toEqual([join(w.project, "deep", ".envrc"), join(w.project, "deep", "a", "b", ".git")].sort());
-    expect(existsSync(join(w.project, "deep", "a", "b", ".git"))).toBe(false);
-    // Moved aside, never deleted: one the person made meanwhile is theirs to take back.
-    expect(existsSync(join(putAway, "deep", "a", "b", ".git", "hooks"))).toBe(true);
-    expect(readFileSync(join(putAway, "deep", ".envrc"), "utf8")).toBe("x");
-    expect(existsSync(join(w.project, ".git", "config"))).toBe(true);
-    expect(readFileSync(join(w.project, "deep", "out.txt"), "utf8")).toBe("kept");
-  });
-
-  test("Linux: a parent swapped for a link since the walk: what's behind it isn't touched", () => {
-    const w = world();
-    const f = floorOf(w, "linux");
-    const look = runLaterUnder(w.project, f);
-    const elsewhere = join(w.home, "Documents", "repo");
-    mkdirSync(join(elsewhere, ".git"), { recursive: true });
-    symlinkSync(elsewhere, join(w.project, "linked"));
-    // The walk doesn't follow the link, so nothing behind it is found or moved.
-    const s = sweepRunLater(w.project, look.found, f, join(w.tmp, "put-away-2"));
-    expect(s.moved).toEqual([]);
-    expect(existsSync(join(elsewhere, ".git"))).toBe(true);
-  });
-
-  test("Linux: bubblewrap's mounts for a peer's folder: the folder bound, its .git read-only, the secrets hidden", () => {
-    const w = world();
-    const f = floorOf(w, "linux");
-    const fence = new MossFence({ os: "linux", home: w.home, mossHome: w.moss, temp: w.tmp });
-    const held = runLaterUnder(w.project, f).found;
-    const root = join(w.tmp, "peer-x");
-    mkdirSync(root);
-    const view = peerFence(fence, root, { userHome: w.home, mossHome: w.moss, os: "linux" }, { path: w.project, denyWrite: peerFolderDenies(w.project, f, held) });
-    const args = bwrapPlan({ policy: view.policy(), mossHome: w.moss, cwd: w.project, uid: 501 }).args;
-    const has = (...seq: string[]) => args.some((_, i) => seq.every((s, j) => args[i + j] === s));
-    expect(has("--bind", w.project, w.project)).toBe(true);
-    expect(has("--bind", root, root)).toBe(true);
-    expect(has("--ro-bind", join(w.project, ".git"), join(w.project, ".git"))).toBe(true);
-    expect(has("--tmpfs", join(w.home, ".ssh"))).toBe(true);
-    // Never the home or Documents writable.
-    expect(has("--bind", w.home, w.home)).toBe(false);
-    expect(has("--bind", join(w.home, "Documents"), join(w.home, "Documents"))).toBe(false);
-  });
-
-  test("the walk is bounded: past the budget it says so, and the executor gives no folder then", () => {
-    const w = world();
-    for (let i = 0; i < 5; i++) mkdirSync(join(w.project, `d${i}`), { recursive: true });
-    expect(runLaterUnder(w.project, floorOf(w, "linux"), 3).complete).toBe(false);
+    for (const os of ["linux", "windows"] as const) {
+      for (const [by, level, verdict] of [["answer", "ask"], ["answer", "accept-edits"], ["reviewer", "accept-edits"], ["reviewer", "ask-risky"], ["level", "automatic", "safe"]] as const) {
+        const d = decide(w, os, by, level, verdict === undefined ? {} : { verdict });
+        expect([os, by, level, "why" in d]).toEqual([os, by, level, true]);
+      }
+    }
+    expect(decide(w, "linux", "answer", "ask")).toEqual({ why: expect.stringContaining("against a rename") });
+    // A service that handed a folder anyway on a Linux holder: the executor's own gate gives none, with the reason.
+    let given: unknown = "unset";
+    const e = fencedExecutor({
+      spawner: { run: async () => ({ kind: "exit", code: 0, stdout: "", stderr: "" }) } as unknown as Parameters<typeof fencedExecutor>[0]["spawner"],
+      home: w.home, temp: w.tmp, mossHome: w.moss, os: "linux",
+      peerSpawner: (_root, folder) => { given = folder; return { run: async () => ({ kind: "exit", code: 0, stdout: "", stderr: "" }) } as unknown as Parameters<typeof fencedExecutor>[0]["spawner"]; },
+      peerFloor: { userHome: w.home, mossHome: w.moss, os: "linux", pathFolders: () => [] },
+    });
+    const r = await e.run("Bash", { command: "make" }, { as: PEER, session: "s", callId: "c", cwd: w.project, treeCwd: "x", signal: new AbortController().signal, output: () => {}, write: { folder: w.project } });
+    expect(given).toBeUndefined();
+    expect((r.output as { note?: string }).note).toContain("no folder");
   });
 
   test("peerFence with a folder: two write roots, the folder's denies after the fence's own", () => {

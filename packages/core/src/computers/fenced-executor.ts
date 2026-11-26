@@ -16,13 +16,13 @@
 // time per folder (and with any run in a folder holding it or inside it), and the folder's real path is read again
 // right before each: no other peer command can then swap it for a link between the service's check and the spawn (a
 // temp-only one can't write its parent, and one granted a folder elsewhere can't reach it).
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { lstatSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Caller, Os } from "@waifucave/moss-protocol";
 import { fenceContextFor, ownFoldersOf } from "../contracts/fence";
 import { mkdirNoLinks } from "../fence/fenced-process";
-import { peerFolderDenies, peerFolderFor, runLaterUnder, sweepRunLater, type PeerFloorOptions, type PeerWriteFolder } from "../fence/peer-floor";
+import { peerFolderDenies, peerFolderFor, type PeerFloorOptions, type PeerWriteFolder } from "../fence/peer-floor";
 import type { FencedRunResult, FencedSpawner } from "../fence/spawn";
 import type { ToolExecutor, ToolRunContext } from "../tree/service";
 
@@ -106,20 +106,15 @@ export function fencedExecutor(o: FencedExecutorOptions): ToolExecutor {
   // class does the same (`folderClass`).
   const realOr = (p: string) => { try { return realpathSync.native(p); } catch { return p; } };
   const floor = o.peerFloor === undefined ? undefined : { ...o.peerFloor, userHome: realOr(o.peerFloor.userHome), mossHome: realOr(o.peerFloor.mossHome) };
-  /** The folder a peer's run may write, with its denies and (Linux) what was held at the start; or why not now. */
-  const prepare = (folder: string): { folder: PeerWriteFolder; held: string[] } | { why: string } => {
-    if (floor === undefined) return { why: `this computer gives another computer's commands no folder, so it ran without access to ${folder}` };
+  /** The folder a peer's run may write, with its denies; or why not now. macOS only (Seatbelt holds the denies by
+   *  pattern as each path opens); elsewhere no folder, whatever the service said. */
+  const prepare = (folder: string): { folder: PeerWriteFolder } | { why: string } => {
+    if (floor === undefined || floor.os !== "macos" || o.os !== "macos") return { why: `this computer gives another computer's commands no folder, so it ran without access to ${folder}` };
     let real: string;
     try { real = realpathSync.native(folder); } catch { real = ""; }
     if (real !== folder || !lstatSync(folder, { throwIfNoEntry: false })?.isDirectory()) return { why: `${folder} changed before the command started, so it ran without access to it` };
     const f = { ...floor, pathFolders: floor.pathFolders() };
-    let held: string[] = [];
-    if (floor.os === "linux") {
-      const look = runLaterUnder(folder, f);
-      if (!look.complete) return { why: `${folder} holds too many folders to check for places that run later, so it ran without access to it` };
-      held = look.found;
-    }
-    return { folder: { path: folder, denyWrite: peerFolderDenies(folder, f, held) }, held };
+    return { folder: { path: folder, denyWrite: peerFolderDenies(folder, f) } };
   };
   return {
     ...(floor === undefined ? {} : {
@@ -144,7 +139,6 @@ export function fencedExecutor(o: FencedExecutorOptions): ToolExecutor {
       // and the folder it runs in, when the service gave it (step 3b) and it is still that folder now.
       let peerRoot: string | undefined;
       let note: string | undefined = ctx.write !== undefined && "why" in ctx.write ? ctx.write.why : undefined;
-      let swept: { folder: string; held: string[] } | undefined;
       try {
         let spawner = o.spawner;
         let tmp: string | undefined;
@@ -156,7 +150,6 @@ export function fencedExecutor(o: FencedExecutorOptions): ToolExecutor {
           const ready = wants === undefined ? undefined : prepare(wants);
           if (ready !== undefined && "why" in ready) note = ready.why;
           const folder = ready !== undefined && "folder" in ready ? ready.folder : undefined;
-          if (ready !== undefined && "folder" in ready && o.os === "linux") swept = { folder: ready.folder.path, held: ready.held };
           spawner = folder === undefined ? o.peerSpawner(peerRoot) : o.peerSpawner(peerRoot, folder);
           tmp = peerRoot;
         } else tmp = tempFor(ctx.as);
@@ -167,17 +160,6 @@ export function fencedExecutor(o: FencedExecutorOptions): ToolExecutor {
         return { output: { error: `this computer's fenced process failed to start: ${e instanceof Error ? e.message : String(e)}` }, isError: true };
       } finally {
         if (peerRoot !== undefined) rmSync(peerRoot, { recursive: true, force: true });
-        // Linux (the local sandbox's own residual): what the command made at a held name in the folder, taken away.
-        if (swept !== undefined && floor !== undefined && o.temp !== undefined) {
-          // Moved aside, never deleted (the person may have made one meanwhile): next to the peer folders, kept by
-          // `sweepPeerFolders`, which clears only `peer-…`.
-          const putAway = join(peerFolderParent(o.temp, o.mossHome), `put-away-${Date.now()}-${randomBytes(4).toString("hex")}`);
-          const s = sweepRunLater(swept.folder, swept.held, floor, putAway);
-          const said: string[] = [];
-          if (s.moved.length > 0) said.push(`moved aside to ${putAway} what appeared during the run where commands from another computer never write: ${s.moved.join(", ")}`);
-          if (!s.complete) said.push(`${swept.folder} grew past what can be checked for such places`);
-          if (said.length > 0) note = [note, ...said].filter((x) => x !== undefined).join("; ");
-        }
       }
       const noted = note === undefined ? {} : { note };
       if (r.kind === "refused") return { output: { error: `refused: ${r.reason}`, ...noted }, isError: true };
