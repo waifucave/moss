@@ -521,7 +521,7 @@ export function ownCardPage(input: {
   document.addEventListener("visibilitychange", () => { openedAt = Date.now(); pointerEntered = false; mark(); });
   mark();
   // The card's boxes. A cut list (more than a few) stays closed until it is opened, and Approve counts only once its end has been seen
-  // on screen (an observer on its last box, root the window: a box clipped by the list's own scroll box is not seen). The ticks sent are
+  // on screen (an observer on every box, root the window: a box clipped by the list's own scroll box is not seen). The ticks sent are
   // the ones on screen at the press. Until the boxes are wired, nothing is read.
   let kids = null;
   let read = false;
@@ -538,13 +538,17 @@ export function ownCardPage(input: {
     open.addEventListener("click", (e) => {
       if (!e.isTrusted) return;
       list.hidden = false; open.hidden = true; moved();
-      const last = list.lastElementChild;
-      if (last === null) return;
+      const items = [...list.children];
+      if (items.length === 0) return;
+      // Read means EVERY box has been on screen, whole: one entry per box into a set of the ones seen; the list is read when the set is complete.
+      const seen = new Set();
+      const note = (el) => { seen.add(el); if (seen.size >= items.length) markRead(); };
       if (typeof IntersectionObserver === "function") {
-        const io = new IntersectionObserver((es) => { for (const en of es) if (en.isIntersecting && en.intersectionRatio >= 0.99) { markRead(); io.disconnect(); } }, { threshold: [0.99, 1] });
-        io.observe(last);
+        const io = new IntersectionObserver((es) => { for (const en of es) if (en.isIntersecting && en.intersectionRatio >= 0.99) { note(en.target); io.unobserve(en.target); } }, { threshold: [0.99, 1] });
+        for (const it of items) io.observe(it);
       } else {
-        list.addEventListener("scroll", () => { if (list.scrollTop + list.clientHeight >= list.scrollHeight - 1) markRead(); });
+        const scan = () => { const lr = list.getBoundingClientRect(); for (const it of items) { const r = it.getBoundingClientRect(); if (r.top >= lr.top - 1 && r.bottom <= lr.bottom + 1) note(it); } };
+        list.addEventListener("scroll", scan); scan();
       }
     });
   };
