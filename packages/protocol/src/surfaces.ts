@@ -160,8 +160,6 @@ export const RoutedCard = z.object({
   session: SessionId.optional(),
   bot: BotId.optional(),
   askedFrom: z.object({ program: WindowProgram, window: WindowId }).optional(),
-  /** The card carries checkboxes (`children`): only the app's own card draws them, so such a card is never placed on the island (or any part's surface). */
-  boxes: z.boolean().optional(),
 });
 export type RoutedCard = z.infer<typeof RoutedCard>;
 

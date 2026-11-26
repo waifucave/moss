@@ -71,9 +71,7 @@ export class FakeCardRouter implements CardRouter {
       const shows = s !== null && ((s.kind === "session" && card.session !== undefined && s.id === card.session) || (s.kind === "bot" && card.bot !== undefined && s.id === card.bot));
       return { kind: shows ? "conversation" : "strip", program: f.program, window: f.w.window };
     }
-    // A card with boxes is never the island's (its Approve there only brings the app's own card forward): with no window in front it waits elsewhere,
-    // where the app's own card is drawn for it (and every paired device shows it).
-    return this.#host && card.boxes !== true ? { kind: "island" } : { kind: "elsewhere" };
+    return this.#host ? { kind: "island" } : { kind: "elsewhere" };
   }
 
   #replace(): void {
