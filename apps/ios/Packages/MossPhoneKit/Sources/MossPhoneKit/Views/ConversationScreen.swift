@@ -111,6 +111,10 @@ public struct ConversationScreen: View {
                     ComposerView(model: model, placeholder: model.placeholder)
                 }
             }
+            // The composer's bar, named for the contrast audit: conversation text scrolled under it is half-covered by
+            // design (its own elements are audited like any other).
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("chrome-composer")
         }
         .navigationBarTitleDisplayMode(.inline)
         .task { model.start() }

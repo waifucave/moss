@@ -33,9 +33,6 @@ enum AuditRunner {
         .init(app: "com.waifucave.moss.ios", screen: "settings", element: "Paired computer",
               reason: "the first form header in the readable grey (about 6:1 computed) still read as failed; cause not found yet (the see-through top bar is a guess)",
               owed: "lane/iw-4"),
-        .init(app: "com.waifucave.moss.ios", screen: "sendFails", element: "Ran the checks on Studio",
-              reason: "a tool line read as failed on this screen only (it passes in the conversation screen); cause not found yet (a see-through bar over it is a guess)",
-              owed: "lane/iw-4"),
         .init(app: "com.waifucave.moss.code.ios", screen: "sessions", element: "1",
               reason: "the bell's count, as on MOSS's home; cause not found yet",
               owed: "lane/iw-4"),
@@ -56,15 +53,6 @@ enum AuditRunner {
               owed: "lane/iw-4"),
         .init(app: "com.waifucave.moss.code.ios", screen: "settings", element: "Paired computer",
               reason: "as on MOSS's settings",
-              owed: "lane/iw-4"),
-        .init(app: "com.waifucave.moss.code.ios", screen: "session", element: "4:26 AM",
-              reason: "a time divider in the readable grey failed both passes of the settled screen; cause not found yet",
-              owed: "lane/iw-4"),
-        .init(app: "com.waifucave.moss.code.ios", screen: "session", element: "src/settings/old-form/",
-              reason: "a card's path failed both passes of the settled screen; cause not found yet",
-              owed: "lane/iw-4"),
-        .init(app: "com.waifucave.moss.code.ios", screen: "session", element: "on Studio",
-              reason: "a card's 'on Studio' line failed both passes of the settled screen; cause not found yet",
               owed: "lane/iw-4"),
         .init(app: "com.waifucave.moss.code.ios", screen: "newSession", element: "Agent",
               reason: "the 'Agent' row's label failed both passes; cause not found yet (likely the same element as the unlabelled one above)",
@@ -123,6 +111,29 @@ enum AuditRunner {
         }
     }
 
+    /// Conversation text scrolled under a bar is half-covered by design. On a conversation screen (it has the composer's
+    /// bar, `chrome-composer`), a failed contrast is report-only when the element is the conversation's CONTENT and its
+    /// frame overlaps the header's (the system navigation bar, which SwiftUI can't name) or the composer bar's frame by a
+    /// non-zero area. A bar's own elements are never exempt, nor is an element that only touches a bar's edge. Returns
+    /// the bar it is under, or nil.
+    static func underChrome(_ element: XCUIElement?, in app: XCUIApplication) -> String? {
+        guard let e = element, e.exists else { return nil }
+        let composer = app.descendants(matching: .any).matching(identifier: "chrome-composer").firstMatch
+        guard composer.exists else { return nil }
+        let header = app.navigationBars.firstMatch
+        let frame = e.frame
+        func isOwn(_ bar: XCUIElement) -> Bool {
+            bar.descendants(matching: e.elementType).allElementsBoundByIndex.contains { $0.frame == frame && $0.label == e.label }
+        }
+        for (name, bar) in [("header", header), ("composer", composer)] where bar.exists {
+            let overlap = frame.intersection(bar.frame)
+            guard !overlap.isNull, overlap.width > 0, overlap.height > 0 else { continue }
+            if isOwn(bar) { return nil }
+            return name
+        }
+        return nil
+    }
+
     static func run(bundleID: String, size: String?, in test: XCTestCase) throws {
         test.continueAfterFailure = true
         // Known entries this run matched; one that matched nothing is printed as AUDIT STALE (its fix may have worked:
@@ -155,6 +166,10 @@ enum AuditRunner {
             func unknownFailedContrast(_ issue: XCUIAccessibilityAuditIssue) -> String? {
                 guard issue.auditType == .contrast, !issue.compactDescription.localizedCaseInsensitiveContains("nearly") else { return nil }
                 let element = firstLine(issue.element?.label)
+                if let bar = underChrome(issue.element, in: app) {
+                    print("AUDIT UNDER CHROME \(bar) \(name) \(size ?? "default"): \(element) (frame \(issue.element?.frame ?? .zero))")
+                    return nil
+                }
                 if let known = knownContrast.first(where: { $0.app == bundleID && $0.screen == name && $0.element == element }) {
                     matchedKnown.insert("\(known.screen)\t\(known.element)")
                     print("AUDIT KNOWN \(name) \(size ?? "default"): \(known.element) (owed: \(known.owed))")
