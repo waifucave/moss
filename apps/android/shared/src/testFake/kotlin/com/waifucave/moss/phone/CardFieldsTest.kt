@@ -172,6 +172,9 @@ class CardFieldsTest {
         assertFalse(plain.copy(children = listOf(CardChild("a", "  ", true))).drawable())
         // Labels are trimmed before the repeat check: " Calendar" and "Calendar " read the same.
         assertFalse(plain.copy(children = listOf(CardChild("a", " Calendar", true), CardChild("b", "Calendar ", false))).drawable())
+        // Runs of spaces inside a label fold too: "Send  email" and "Send email" read the same.
+        assertFalse(plain.copy(children = listOf(CardChild("a", "Send  email", true), CardChild("b", "Send\temail", false))).drawable())
+        assertTrue(plain.copy(children = listOf(CardChild("a", "Send email", true), CardChild("b", "Send mail", false))).drawable())
         // A label too long to ever be wholly on screen sends the card to the computer.
         assertFalse(plain.copy(children = listOf(CardChild("a", "x".repeat(MAX_CHILD_LABEL + 1), true))).drawable())
         assertTrue(plain.copy(children = listOf(CardChild("a", "x".repeat(MAX_CHILD_LABEL), true))).drawable())

@@ -109,7 +109,10 @@ fun Card.drawable(): Boolean =
     options.isNotEmpty() && fields.all { (name, v) -> name in CARD_FIELDS && v !is SealedValue.Unsupported } && size() <= MAX_DRAWN_CHARS &&
         children.all { it.id.isNotEmpty() && it.label.isNotBlank() && it.label.length <= MAX_CHILD_LABEL } &&
         children.map { it.id }.toSet().size == children.size &&
-        children.map { CardChild.oneLine(it.label).trim() }.toSet().size == children.size
+        children.map { sameReading(it.label) }.toSet().size == children.size
+
+/** How a checkbox label reads, for the repeat check: on one line, trimmed, and every run of spaces folded to one. */
+fun sameReading(label: String): String = CardChild.oneLine(label).trim().replace(Regex("\\s+"), " ")
 
 /** The name the checkboxes go by where a field's name would (opening them when they are cut). */
 const val CHILDREN_FIELD = "children"
@@ -293,6 +296,8 @@ fun CardView(
                             .testTag("child-${kid.id}")
                             .then(if (reporting) Modifier.onGloballyPositioned { at ->
                                 // Clipped to every parent (the values area, the list, the window): whole when nothing is cut off.
+                                // Not checked: being covered by a dialog or the keyboard. Accepted, because a box counts only
+                                // after the person's own scroll has come to rest with it there.
                                 whollyShown[kid.id] = at.isAttached && at.boundsInWindow().height >= at.size.height - 0.5f
                             } else Modifier),
                         verticalAlignment = Alignment.CenterVertically,
@@ -329,7 +334,13 @@ fun CardView(
             modifier = Modifier.semantics(mergeDescendants = true) { contentDescription = "More below: scroll the card to read it all" }) {
             Icon(Icons.Filled.KeyboardArrowDown, null, tint = c.secondary, modifier = Modifier.size(16.dp))
             Spacer(Modifier.width(4.dp))
-            Text(if (reachedEnd) "More below" else "More below. Scroll to the end to allow.", style = MossType.footnote, color = c.secondary)
+            // A cue, not a control: nothing scrolls for the person (so no fast scroll skips the middle checkboxes); it says
+            // what Allow waits for.
+            Text(when {
+                !boxesOk -> "More below. Scroll through every checkbox above to allow."
+                reachedEnd -> "More below"
+                else -> "More below. Scroll to the end to allow."
+            }, style = MossType.footnote, color = c.secondary)
         }
         refusal?.let { Text(it, style = MossType.footnote, color = c.secondary, modifier = Modifier.semantics { contentDescription = it }) }
         if (changed) Text("This card changed while it was shown. Read it again before you answer.", style = MossType.footnote, color = c.secondary)
