@@ -99,3 +99,16 @@ describe("a part's own button never approves a card that has boxes", () => {
     expect(store.buttonsVisible(plain.id)).toBe(true);
   });
 });
+
+describe("a part's own approve on a card with boxes is a review", () => {
+  test("needsReview: a part's approve button on a card with boxes, never its deny, the own card's, or a card with none", () => {
+    const store = new SealedFrames();
+    store.fromCore(CARD);
+    const approve = store.mint(CARD.id, "button:approve", main0)!.token;
+    const deny = store.mint(CARD.id, "button:deny", main0)!.token;
+    const whole = store.mint(CARD.id, OWN_ELEMENT, main0)!.token;
+    expect([store.needsReview(approve), store.needsReview(deny), store.needsReview(whole)]).toEqual([true, false, false]);
+    store.fromCore({ ...CARD, id: "card_plain", children: undefined });
+    expect(store.needsReview(store.mint("card_plain", "button:approve", main0)!.token)).toBe(false);
+  });
+});

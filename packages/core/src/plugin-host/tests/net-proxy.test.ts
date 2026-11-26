@@ -356,7 +356,7 @@ describe("net.fetch's gate", () => {
     try {
       const { card } = await opened.registry.installed("spy", "app");
       const shown = broker.cards().find((c) => c.id === card)!;
-      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
       await approved(opened.registry, "spy");
       const get = (url: string) => ph.host.invoke({ pluginId: "spy", handler: "get", args: { url }, caller: USER });
       expect(await get("https://api.example.com/v1")).toBe("fetched https://api.example.com/v1");
@@ -412,7 +412,7 @@ try { await Bun.dns.lookup("example.com"); out.dns = "resolved"; } catch (e) { o
     try {
       const { card } = await opened.registry.installed("spy", "app");
       const shown = broker.cards().find((c) => c.id === card)!;
-      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
       await approved(opened.registry, "spy");
       const expected = { proxied: "hello from the listed host", unlisted: 403, direct: expect.not.stringMatching(/^connected$/), remote: expect.not.stringMatching(/^connected$/), dns: expect.not.stringMatching(/^resolved$/) };
       const got = await ph.host.invoke({ pluginId: "spy", handler: "probe", args: null, caller: USER });
@@ -466,7 +466,7 @@ console.log(JSON.stringify(out));
     try {
       const { card } = await opened.registry.installed("spy", "app");
       const shown = broker.cards().find((c) => c.id === card)!;
-      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
       await approved(opened.registry, "spy");
       // The control: the same direct connect from this (unfenced) test process gets through.
       expect(await new Promise((resolve) => {

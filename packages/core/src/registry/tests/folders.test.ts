@@ -487,7 +487,7 @@ describe("openPluginRegistry", () => {
       expect(shown.fields.source).toEqual({ type: "text", text: "It was found on disk." });
       expect((shown.fields.what as { items: string[] }).items[0]).toBe("tarot is data only: files, no code.");
       const frame = broker.frameChannel(card!)!;
-      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame, input: "click", at: Date.now() } }, { role: "app" });
+      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
       await Bun.sleep(5);
       expect(opened.registry.get("tarot")?.state).toBe("running");
       const kept = JSON.parse(readFileSync(join(home, "plugins-state", "oks", "tarot.json"), "utf8"));

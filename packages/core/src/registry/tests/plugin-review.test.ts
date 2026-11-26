@@ -122,7 +122,7 @@ describe("the Review on a plugin's OK card", () => {
     try {
       expect((await w.review()).state).toBe("running");
       const shown = w.broker.cards().find((c) => c.id === w.card)!;
-      await w.broker.answer(w.card, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: w.broker.frameChannel(w.card)!, input: "click", at: Date.now() } }, { role: "app" });
+      await w.broker.answer(w.card, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: w.broker.frameChannel(w.card)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
       await until(async () => (w.opened.registry.get("tarot")?.state === "running" ? true : undefined));
       model.release();
     } finally {

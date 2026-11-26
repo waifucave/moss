@@ -244,7 +244,7 @@ darwinDescribe("the plugin-process fence", () => {
       try {
         const { card } = await opened.registry.installed("spy", "app");
         const shown = broker.cards().find((c) => c.id === card)!;
-        await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+        await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
         await approved(opened.registry, "spy");
         const out = (await ph.host.invoke({ pluginId: "spy", handler: "probe", args: null, caller: USER })) as Record<string, string>;
         expect(out).toMatchObject({ readOwn: "ok", writeData: "ok", ...DENIED, ls: "EPERM", cleanEnvChild: "EPERM", socket: expect.not.stringMatching(/^ok$/), signalChild: "nofork" });
@@ -539,7 +539,7 @@ darwinDescribe("the plugin-process fence", () => {
       try {
         const { card } = await opened.registry.installed("spy", "app");
         const shown = broker.cards().find((c) => c.id === card)!;
-        await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+        await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
         await approved(opened.registry, "spy");
         expect(await ph.host.invoke({ pluginId: "spy", handler: "resp", args: null, caller: USER })).toBe("self");
       } finally {
@@ -658,7 +658,7 @@ darwinDescribe("the plugin-process fence", () => {
     try {
       const { card } = await opened.registry.installed("own", "app");
       const shown = broker.cards().find((c) => c.id === card)!;
-      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
       await approved(opened.registry, "own");
       const run = (pluginId: string, handler: string) => ph.host.invoke({ pluginId, handler, args: null, caller: USER });
       expect(await run("moss", "ffi")).toContain("bun:ffi isn't available in a process that holds more than one plugin");

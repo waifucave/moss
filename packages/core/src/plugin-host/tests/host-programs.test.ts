@@ -110,7 +110,7 @@ darwinDescribe("a host of its own that runs programs", () => {
       const approve = async (id: string) => {
         const { card } = await opened.registry.installed(id, "app");
         const shown = broker.cards().find((c) => c.id === card)!;
-        await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+        await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
         await approved(opened.registry, id);
       };
       for (const id of ["vid", "plain"]) await approve(id);
@@ -207,7 +207,7 @@ darwinDescribe("a host of its own that runs programs", () => {
     try {
       const { card } = await opened.registry.installed("vid", "app");
       const shown = broker.cards().find((c) => c.id === card)!;
-      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
       await approved(opened.registry, "vid");
       const call = <R>(handler: string, args: unknown) => ph.host.invoke<R>({ pluginId: "vid", handler, args, caller: USER });
       grants.add({ pluginId: "vid", token: "grant:a1111111-2222-4333-8444-555555555555", path: clip, kind: "file", access: "read" });

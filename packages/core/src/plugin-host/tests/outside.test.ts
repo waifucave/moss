@@ -183,7 +183,7 @@ darwinDescribe("programs and folders outside the sandbox (P5)", () => {
     try {
       const { card } = await opened.registry.installed("usage", "app");
       const shown = broker.cards().find((c) => c.id === card)!;
-      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
       await until(() => opened.registry.get("usage")?.state !== "found", "usage OK'd");
       type Read = { ok: boolean; text?: string; err?: string };
       const read = (path: string) => ph.host.invoke<Read>({ pluginId: "usage", handler: "read", args: { path }, caller: USER });
@@ -226,7 +226,7 @@ darwinDescribe("programs and folders outside the sandbox (P5)", () => {
         const { card } = await opened.registry.installed(id, "app");
         const shown = broker.cards().find((c) => c.id === card)!;
         cards[id] = JSON.stringify(shown);
-        await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+        await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
         await until(() => opened.registry.get(id)?.state !== "found", `${id} OK'd`);
       };
       for (const id of ["reader", "plain"]) await approve(id);

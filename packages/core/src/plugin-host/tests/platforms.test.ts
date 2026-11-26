@@ -50,7 +50,7 @@ describe("a plugin's platforms", () => {
         const shown = broker.cards().find((c) => c.id === card)!;
         // The card is the ordinary one: nothing about platforms.
         expect(JSON.stringify(shown.fields)).not.toMatch(/platform|Not for this computer/i);
-        await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+        await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
         for (let i = 0; i < 250 && opened.registry.get(id)?.state === "found"; i++) await Bun.sleep(20);
       }
       const off = opened.registry.get("elsewhere")!;

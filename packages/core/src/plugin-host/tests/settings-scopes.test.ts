@@ -51,7 +51,7 @@ describe("a plugin's settings by scope", () => {
     try {
       const { card } = await opened.registry.installed("moods", "app");
       const shown = broker.cards().find((c) => c.id === card)!;
-      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
       for (let i = 0; i < 250 && opened.registry.get("moods")?.state !== "running"; i++) await Bun.sleep(20);
       const read = (bot: string) => ph.host.invoke({ pluginId: "moods", handler: "read", args: { bot }, caller: USER });
       // Defaults first: the account default, nothing for the others.

@@ -1564,7 +1564,33 @@ async function pressApprove(cdp: Cdp, card: Card, appLog = join(logs, "app.log")
   const tried: string[] = [];
   const deadline = Date.now() + scaled(45_000);
   let fallbackChecked = false;
+  // A card with boxes is never answered by a part's button (the island's, a plugin page's): that button says "Review in MOSS" and brings MOSS Code's own
+  // card forward, where the boxes are drawn and the person answers. So the island's review is pressed first (once), then the own card's Approve.
+  let reviewed = (card.children ?? []).length === 0;
   while (Date.now() < deadline) {
+    if (!reviewed) {
+      reviewed = true;
+      const review = await until(`the ${card.kind} card's "Review in MOSS" on the island`, scaled(8_000), async () => {
+        for (const d of await cdp.documents()) {
+          if (!decodeURIComponent(d.url).startsWith(`${cardUrl}button:`)) continue;
+          if ((await cdp.evaluate(d.session, "!!document.querySelector('.seal-button[data-kind=approve][data-review]')").catch(() => false)) === true) return d;
+        }
+        return undefined;
+      }, 300).catch(() => undefined);
+      if (review !== undefined) {
+        const rb = await until("the island's Review button's place", 10_000, () => cdp.centerOf(review.session, ".seal-button[data-review]"), 300).catch(() => undefined);
+        if (rb !== undefined) {
+          await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: rb.x, y: rb.y, button: "none", buttons: 0 }, review.session).catch(() => undefined);
+          await waitSealedReady(async () => String(await cdp.evaluate(review.session, "document.body.dataset.ready ?? 'none'").catch(() => "gone")), { timeoutMs: scaled(10_000), noneForMs: 3_000 });
+          await sleep(300);
+          const at = readLog(appLog).length;
+          await cdp.click(review.session, rb.x, rb.y).catch(() => undefined);
+          const opened = await until(`the island's Review for ${card.id} opening MOSS's card`, scaled(6_000), () => (readLog(appLog).slice(at).includes(`sealed: review opened for ${card.id}`) ? true : undefined), 200).catch(() => false);
+          tried.push(`island review ${opened === true ? "opened the card" : "was pressed, no 'review opened' line"}`);
+          if (opened === true) say(`${card.kind} card with ${(card.children ?? []).length} boxes: Review in MOSS pressed on the island, MOSS's own card opened`);
+        }
+      }
+    }
     const found = await until(`the ${card.kind} card's Approve (the island's button or the fallback page, drawn offscreen)`, Math.max(1_000, Math.min(20_000, deadline - Date.now())), async () => {
       const docs = await cdp.documents();
       const own = docs.find((d) => d.url.startsWith(`${cardUrl}own`));
@@ -1580,7 +1606,7 @@ async function pressApprove(cdp: Cdp, card: Card, appLog = join(logs, "app.log")
       }
       let first: (typeof docs)[number] | undefined;
       for (const d of docs.filter((x) => decodeURIComponent(x.url).startsWith(`${cardUrl}button:`) && !conv.has(decodeURIComponent(x.url)))) {
-        if ((await cdp.evaluate(d.session, "!!document.querySelector('.seal-button[data-kind=approve]:not(.quiet):not([data-remember])')").catch(() => false)) !== true) continue;
+        if ((await cdp.evaluate(d.session, "!!document.querySelector('.seal-button[data-kind=approve]:not(.quiet):not([data-remember]):not([data-review])')").catch(() => false)) !== true) continue;
         if ((await cdp.evaluate(d.session, "document.body.dataset.ready ?? 'none'").catch(() => "gone")) === "yes") return d;
         first ??= d;
       }

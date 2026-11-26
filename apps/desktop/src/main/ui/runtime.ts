@@ -24,7 +24,7 @@ import { builtClientUrl } from "./files";
 import { StringStore, stringTable } from "./strings";
 import { CORE_STRINGS } from "./core-strings";
 import { isSealedLookAllowed } from "@waifucave/moss-plugin-sdk";
-import { fieldPage, buttonPage, ownCardPage, placeholderPage, summaryFieldPage, labelOf } from "../sealed-pages";
+import { fieldPage, buttonPage, ownCardPage, placeholderPage, summaryFieldPage, labelOf, REVIEW_IN_MOSS_TEXT } from "../sealed-pages";
 import { alwaysSentence, summarize as summarizeCard } from "../card-summary";
 import { homedir } from "node:os";
 import { sealHeaders } from "./documents";
@@ -1530,7 +1530,8 @@ export class UiRuntime {
     if (element.startsWith("button:")) {
       const option = card.options.find((o) => o.id === element.slice("button:".length));
       if (option === undefined) return undefined;
-      return buttonPage({ cardId: card.id, token, option: option.id, label: labelOf(option.label), kind: option.kind, ...(look !== undefined ? { look } : {}), ...(option.remember === "always" ? { remember: "always" as const } : {}), tokens });
+      const review = option.kind === "approve" && (card.children?.length ?? 0) > 0;
+      return buttonPage({ cardId: card.id, token, option: option.id, label: review ? REVIEW_IN_MOSS_TEXT : labelOf(option.label), kind: option.kind, ...(review ? { review: true, look: "open" as const } : look !== undefined ? { look } : {}), ...(option.remember === "always" ? { remember: "always" as const } : {}), tokens });
     }
     if (element === "own") {
       const summary = this.summaryOf(card);
