@@ -16,6 +16,7 @@ import { startFakeHandshake } from "../../links/handshake-fake";
 import { MemoryNetwork } from "../../links/memory-wire";
 import { type DeviceLinks, startDeviceLinks } from "../../links/node";
 import { brokerCardOpener, devicesEvents, devicesMethods, mountMainChoiceRequests } from "../rpc";
+import { TerminalChanges } from "../terminal-changes";
 
 const clock = new SystemClock();
 /** The coordinators' notes, printed when the hand-over doesn't happen in time (a CI-only failure to explain). */
@@ -42,22 +43,27 @@ async function waitFor(cond: () => boolean, ms = 8_000): Promise<void> {
 // their reasons, at a tenth of the time.
 const STEP_TIMINGS = { nudgeWaitMs: 200, takeoverDelayMs: 300, retryMs: 200, readEveryMs: 1_000, reachTimeoutMs: 1_000 };
 
-async function daemon(net: MemoryNetwork, hs: { url: string }, name: string) {
+async function daemon(net: MemoryNetwork, hs: { url: string }, name: string, o: { personAt?: () => boolean } = {}) {
   const store = new MemorySecretStore();
+  const home = mkdtempSync(join(tmpdir(), "moss-h-main-"));
+  const terminalChanges = new TerminalChanges(home);
   const links = await startDeviceLinks({
-    home: mkdtempSync(join(tmpdir(), "moss-h-main-")), store, clock, self: { name }, wire: (k) => net.endpoint(k.publicKey),
+    home, store, clock, self: { name }, wire: (k) => net.endpoint(k.publicKey),
     handshake: new HandshakeClient({ baseUrl: hs.url, clock }),
     mainComputer: { watchSleep: false, timings: STEP_TIMINGS, monotonic: () => performance.now(), log: (l: string) => void notes.push(`${Date.now() % 100_000} ${name} ${l}`) },
   });
   stops.push(() => links.close());
   const broker = new FakeApprovalBroker({ clock: new FakeClock() });
   const openCard = brokerCardOpener(broker);
-  const methods = devicesMethods({ registry: links.registry, pairing: links.pairing, transport: links.transport, clock: links.clock, openCard, revoke: { store }, main: links.main! });
+  const methods = devicesMethods({
+    registry: links.registry, pairing: links.pairing, transport: links.transport, clock: links.clock, openCard, revoke: { store }, main: links.main!,
+    ...(o.personAt ? { personAt: o.personAt, terminalChanges } : {}),
+  });
   stops.push(mountMainChoiceRequests({ transport: links.transport, registry: links.registry, main: links.main!, openCard }));
   const events: { type: string; lease?: { holder: string | null } }[] = [];
   stops.push(devicesEvents({ registry: links.registry, transport: links.transport, pairing: links.pairing, clock: links.clock, main: links.main! }, (e) => events.push(e)));
   const call = (method: string, params: unknown, caller: Caller) => methods[method]!(params, { caller });
-  return { links, broker, call, events };
+  return { links, broker, call, events, terminalChanges };
 }
 
 async function pair(a: DeviceLinks, b: DeviceLinks) {
@@ -77,6 +83,30 @@ const approve = async (d: Awaited<ReturnType<typeof daemon>>, cardId: string) =>
   const channel = d.broker.frameChannel(card.id)!;
   expect(await d.broker.answer(card.id, { optionId: "approve", hash: card.hash, proof: { via: "sealed-frame", frame: channel, input: "click", at: Date.now() } }, { role: "app" })).toBe("accepted");
 };
+
+describe("main.set from a terminal follows the pairing and removal rule (lane XC 5c)", () => {
+  test("an app or phone connected: this computer's card; none: at once, kept as a terminal change and shown (OK only) when one connects", async () => {
+    const hs = startFakeHandshake();
+    stops.push(() => hs.stop());
+    const net = new MemoryNetwork();
+    let present = true;
+    const a = await daemon(net, hs, "Studio", { personAt: () => present });
+    const asked = (await a.call("main.set", { device: a.links.key.id }, terminal)) as { applied: boolean; card?: string };
+    expect(asked.applied).toBe(false);
+    expect(a.broker.cards().find((c) => c.id === asked.card)?.change).toBe("main-computer");
+    expect(a.terminalChanges.pending()).toEqual([]);
+    present = false;
+    expect(await a.call("main.set", { device: a.links.key.id }, terminal)).toEqual({ applied: true });
+    await waitFor(() => a.links.main!.lease.canAct());
+    expect(a.terminalChanges.pending().map((c) => [c.kind, c.device, c.name])).toEqual([["main", a.links.key.id, "Studio"]]);
+    // The person's app connects: the change is shown as the engine's card, OK only.
+    present = true;
+    await waitFor(() => a.broker.cards().some((c) => (c.fields.title as { text?: string } | undefined)?.text?.startsWith("This computer was made the main computer from a terminal") === true), 10_000);
+    const shown = a.broker.cards().find((c) => (c.fields.title as { text?: string } | undefined)?.text?.startsWith("This computer was made the main computer") === true)!;
+    expect(shown.change).toBe("main-computer");
+    expect(shown.options.map((x) => x.label)).toEqual(["OK"]);
+  });
+});
 
 describe("the main computer's methods", () => {
   test("main.set here from the terminal, from the app by its card, and of another computer by that computer's card", async () => {

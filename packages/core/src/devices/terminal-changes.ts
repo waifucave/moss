@@ -13,7 +13,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, join } from "node:path";
 
 export interface TerminalChange {
-  kind: "paired" | "removed";
+  /** `main`: this computer made the main one (lane XC 5c). */
+  kind: "paired" | "removed" | "main";
   /** The device's id and the name it had (shown as a value of its own, never inside the engine's sentence). */
   device: string;
   name: string;
@@ -23,6 +24,7 @@ export interface TerminalChange {
 /** The engine's fixed words for one change: never the device's own text (its name goes in a row of its own). */
 export function terminalChangeWords(c: Pick<TerminalChange, "kind" | "at">): string {
   const when = new Date(c.at).toISOString().slice(0, 10);
+  if (c.kind === "main") return `This computer was made the main computer from a terminal on ${when}`;
   return c.kind === "paired" ? `A device was paired from a terminal on ${when}` : `A device was removed from a terminal on ${when}`;
 }
 
@@ -43,7 +45,7 @@ export class TerminalChanges {
       const raw = JSON.parse(readFileSync(file, "utf8")) as unknown;
       if (!Array.isArray(raw)) return [];
       return raw.filter((c): c is TerminalChange => typeof c === "object" && c !== null
-        && ((c as TerminalChange).kind === "paired" || (c as TerminalChange).kind === "removed")
+        && ((c as TerminalChange).kind === "paired" || (c as TerminalChange).kind === "removed" || (c as TerminalChange).kind === "main")
         && typeof (c as TerminalChange).device === "string" && typeof (c as TerminalChange).name === "string" && typeof (c as TerminalChange).at === "number");
     } catch {
       return [];

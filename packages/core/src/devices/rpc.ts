@@ -181,7 +181,7 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
   const { registry, pairing } = deps;
   /** A device's card (§5.5): the engine's own title and sentence, and what a device calls itself only as the value of a row of its
    *  own, never inside a sentence, so no character in a name can close or continue what the engine says. */
-  const changeCard = (change: "device-add" | "device-revoke", title: string, what: string | undefined, rows: { label: string; value: string; name?: true }[], aboutDevice?: string, computersOnly?: { askedBy?: string }): ApprovalRequest => ({
+  const changeCard = (change: "device-add" | "device-revoke" | "main-computer", title: string, what: string | undefined, rows: { label: string; value: string; name?: true }[], aboutDevice?: string, computersOnly?: { askedBy?: string }): ApprovalRequest => ({
     kind: "change", origin: "user", computers: [], effect: "other", change, ...(aboutDevice === undefined ? {} : { aboutDevice }), ...(computersOnly === undefined ? {} : { computersOnly }),
     fields: { title: { type: "text", text: title }, ...(what === undefined ? {} : { what: { type: "text", text: what } }), detail: { type: "rows", rows } },
   });
@@ -310,9 +310,12 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
     const d = registry.get(c.device);
     const still = c.kind === "paired" && d !== undefined && d.revokedAt === undefined && c.device !== registry.self().id;
     const name = shownName(c.name);
-    const req = changeCard("device-revoke", terminalChangeWords(c), still ? "Remove it if it isn't yours." : undefined, [
-      { label: "The device", value: name, name: true },
-    ], c.device);
+    // A computer made the main one from a terminal (lane XC 5c): said, OK only (making another one the main is the way back).
+    const req = c.kind === "main"
+      ? changeCard("main-computer", terminalChangeWords(c), undefined, [{ label: "This computer", value: name, name: true }])
+      : changeCard("device-revoke", terminalChangeWords(c), still ? "Remove it if it isn't yours." : undefined, [
+        { label: "The device", value: name, name: true },
+      ], c.device);
     if (!still) req.options = [{ id: "approve", kind: "approve", label: "OK" }];
     else req.options = [{ id: "approve", kind: "approve", label: "Remove it" }, { id: "deny", kind: "deny", label: "Keep it" }];
     const opened = await deps.openCard(req);
@@ -466,7 +469,13 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
           throw err;
         }
       }
-      return chooseHere(main, deps.openCard, d.name, inTerminal(ctx));
+      // The terminal's choice for this computer follows the pairing and removal rule (lane XC 5c, the review's nit): while
+      // one of the person's apps or phones is connected it raises this computer's card too; with none, it applies at once
+      // and is kept as a terminal change, shown when an app or phone next connects.
+      const atOnce = inTerminal(ctx) && deps.personAt?.() !== true;
+      const r = await chooseHere(main, deps.openCard, d.name, atOnce);
+      if (atOnce && r.applied) noteTerminal({ kind: "main", device: d.id, name: d.name, at: deps.clock.now() });
+      return r;
     }),
 
     [M.mainHandOver.name]: handler(M.mainHandOver, async (_p, ctx) => {
