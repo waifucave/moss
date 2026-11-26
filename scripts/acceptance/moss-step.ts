@@ -42,12 +42,13 @@ export const MOSS_ROUTINE_EDIT_STEP = "MOSS's side panel: Edit on MOSS's routine
 export const MOSS_MEMORY_STEP = "MOSS's Settings, a bot's own page: its memory folder's files listed as the engine serves them (memory.list), and a file opened shows its text as text (memory.read), read only";
 export const MOSS_ROUTINE_FAIL_STEP = "MOSS's side panel: a routine whose run fails (Run now on MOSS's routine, its model's call refused) shows in her conversation that it failed and why, marked as a failure";
 export const MOSS_DROP_STEP = "MOSS's composer: a file dropped on it is named in the composer, Send carries it to the bot, and the bot's turn names its folder-tree path";
+export const MOSS_TICKS_STEP = "MOSS's plugin OK card with three boxes: the person unticks one in MOSS's window and presses Approve; the engine runs the plugin and the two ticked boxes and keeps the third off";
 export const MOSS_STATUS_STEP = "MOSS: while MOSS's turn runs her conversation shows ONE plain status line (no tool name, no argument, not a control) and her list row says the same short phrase; when the turn ends the line is gone, and no tool row or \"Used …\" line was ever drawn";
 export const MOSS_GLASS_STEP = "MOSS's glass: where the window has a material, a vivid colour painted under the page shows through the list column and not the conversation, in light and dark; with nothing painted the list is see-through and the conversation opaque; a message scrolled half under the conversation's bar passes beneath it, frosted; the first message and the newest keep clear of the bar; where the window has none, the list is its solid colour";
 export const MOSS_BOTH_KEYS_STEP = "MOSS beside MOSS Code on one computer: with MOSS Code's own answer key registered too, MOSS still answers its card with its own key (program moss), and MOSS Code's connection can't answer a card MOSS draws, even signed with MOSS Code's own key";
 
 /** The unit's rows, in the order it runs them. */
-export const MOSS_STEPS: readonly string[] = [MOSS_LIST_STEP, MOSS_MESSAGE_STEP, MOSS_STATUS_STEP, MOSS_QUESTION_STEP, MOSS_CARD_STEP, MOSS_AWAY_STEP, MOSS_PANEL_STEP, MOSS_TOOLS_STEP, MOSS_INSTRUCTIONS_STEP, MOSS_MAKE_STEP, MOSS_EDITOR_STEP, MOSS_TRY_AGAIN_STEP, MOSS_ARCHIVE_STEP, MOSS_LONG_STEP, MOSS_ROUTINE_RUN_STEP, MOSS_ROUTINE_PAUSE_STEP, MOSS_ROUTINE_EDIT_STEP, MOSS_MEMORY_STEP, MOSS_ROUTINE_FAIL_STEP, MOSS_DROP_STEP, MOSS_GLASS_STEP, MOSS_BOTH_KEYS_STEP];
+export const MOSS_STEPS: readonly string[] = [MOSS_LIST_STEP, MOSS_MESSAGE_STEP, MOSS_STATUS_STEP, MOSS_QUESTION_STEP, MOSS_CARD_STEP, MOSS_AWAY_STEP, MOSS_PANEL_STEP, MOSS_TICKS_STEP, MOSS_TOOLS_STEP, MOSS_INSTRUCTIONS_STEP, MOSS_MAKE_STEP, MOSS_EDITOR_STEP, MOSS_TRY_AGAIN_STEP, MOSS_ARCHIVE_STEP, MOSS_LONG_STEP, MOSS_ROUTINE_RUN_STEP, MOSS_ROUTINE_PAUSE_STEP, MOSS_ROUTINE_EDIT_STEP, MOSS_MEMORY_STEP, MOSS_ROUTINE_FAIL_STEP, MOSS_DROP_STEP, MOSS_GLASS_STEP, MOSS_BOTH_KEYS_STEP];
 
 /** The unit's daemon: the bots as engine data (lane MC1 makes it the default; until then the unit sets it). */
 export const MOSS_ENV: Readonly<Record<string, string>> = { MOSS_BOT_SOURCE: "records" };
@@ -147,6 +148,7 @@ export async function mossUnit(x: MossUnitCtx): Promise<void> {
     await row(MOSS_CARD_STEP, () => cardRow(s));
     await row(MOSS_AWAY_STEP, () => awayRow(s));
     await row(MOSS_PANEL_STEP, () => panelRow(s));
+    await row(MOSS_TICKS_STEP, () => ticksRow(s));
     await row(MOSS_TOOLS_STEP, () => toolsRow(s));
     await row(MOSS_INSTRUCTIONS_STEP, () => instructionsRow(s));
     await row(MOSS_MAKE_STEP, () => makeRow(s));
@@ -326,6 +328,30 @@ class MossWindow {
   async cardFrame(cardId: string, ms = 30_000): Promise<{ session: string; url: string; text: string }> {
     const prefix = `moss-sealed://card/${encodeURIComponent(cardId)}/own`;
     return this.x.until(`the card ${cardId}'s sealed frame in MOSS's window`, ms, async () => (await this.cdp.documents()).find((d) => d.url.startsWith(prefix)), 300);
+  }
+
+  /** A person's click on one of a card's boxes in MOSS's window (a trusted click in the card's frame, after the card is scrolled to it);
+   *  what the box says after: ticked or not. */
+  async toggleBox(cardId: string, boxId: string): Promise<boolean> {
+    const doc = await this.cardFrame(cardId);
+    const sel = `input[data-id=${JSON.stringify(boxId)}]`;
+    const at = await this.x.until(`the card ${cardId}'s box ${boxId}`, 15_000, () => this.cdp.centerOf(doc.session, sel), 250);
+    await this.eval(`((id, y) => {
+      const f = document.querySelector('iframe[data-card-frame="' + id + '"]');
+      if (!f) return false;
+      let p = f.parentElement;
+      while (p && !(p.scrollHeight > p.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(p).overflowY))) p = p.parentElement;
+      if (!p) return true;
+      const pr = p.getBoundingClientRect(), fr = f.getBoundingClientRect();
+      p.scrollTop += (fr.top + y) - (pr.top + pr.height / 2);
+      return true;
+    })(${JSON.stringify(cardId)}, ${at.y})`);
+    await sleep(400);
+    const now = await this.x.until(`the card ${cardId}'s box ${boxId}`, 15_000, () => this.cdp.centerOf(doc.session, sel), 250);
+    await this.cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: now.x, y: now.y, button: "none", buttons: 0 }, doc.session).catch(() => undefined);
+    await this.cdp.click(doc.session, now.x, now.y);
+    await sleep(200);
+    return (await this.cdp.evaluate(doc.session, `document.querySelector(${JSON.stringify(sel)})?.checked ?? null`)) === true;
   }
 
   /** Presses the card's Approve in MOSS's window for real: the pointer comes in, the page's own gate says ready (its
@@ -676,6 +702,48 @@ async function panelRow(s: UnitState): Promise<string> {
   })()`, 20_000);
   await s.w.click(`button[aria-label="Close the side panel"]`);
   return `the plugin's OK card placed ${placeWords(okPlace)} and pressed in MOSS; her picture from ${shown.from.replace(/\s+/g, " ").trim().slice(0, 80)} drawn (${shown.src}…), no control in it, a click on it: "${refused.slice(0, 80)}"; her routine "${row.name}" (${row.when.slice(0, 40)}, ${row.chip}) listed (routine ${listed.id}; Routine ${made.cards.length > 0 ? `asked on ${made.cards.join(", ")} card(s), pressed in MOSS` : "asked nothing"}, Show ${showed.cards.length > 0 ? `asked on ${showed.cards.join(", ")} card(s)` : "asked nothing"})`;
+}
+
+/** A plugin OK card with three boxes, answered as a person does in MOSS's window: one box unticked by a click, then Approve. The page sends
+ *  exactly the two that are ticked; the engine runs the plugin and those two and keeps the third off. (The card.answer path the
+ *  other rows use sends the engine's own ticks: this is the one that goes through what the person changed on the page.) */
+async function ticksRow(s: UnitState): Promise<string> {
+  const before = await cardIds(s.c);
+  const folder = join(s.x.root, "plugin-src", "acceptance-ticks");
+  cpSync(join(import.meta.dir, "fixtures", "acceptance-ticks"), folder, { recursive: true });
+  const installed = await s.c.request<{ id: string; card?: string }>("plugin.install", { source: { from: "folder", path: folder } }, 60_000);
+  const ok = await newCard(s, before, "the pack's OK card", (k) => k.id === installed.card || k.kind === "plugin-ok", 30_000);
+  const listed = (await s.c.request<{ cards: { id: string; children?: { id: string; label: string | { en: string }; checked: boolean }[] }[] }>("card.list", {})).cards.find((k) => k.id === ok.id);
+  const boxes = listed?.children ?? [];
+  const ids = ["alpha", "beta", "gamma"].map((n) => `${installed.id}/${n}`);
+  if (boxes.length !== 3 || !ids.every((id) => boxes.some((b) => b.id === id && b.checked === true))) s.x.fail(`the pack's OK card has the boxes ${JSON.stringify(boxes)}, not three ticked ones (${ids.join(", ")})`);
+  const place = await s.x.until("the OK card placed in MOSS", 20_000, async () => {
+    const p = await placementOf(s.c, ok.id);
+    return (p?.kind === "strip" || p?.kind === "conversation") && p.program === "moss" ? p : undefined;
+  }, 300).catch(async () => s.x.fail(`the pack's OK card is placed ${placeWords(await placementOf(s.c, ok.id))}, not in MOSS`));
+  // MOSS draws the three boxes on the card, ticked as the engine sent them.
+  const drawn = await s.w.cardFrame(ok.id);
+  const shown = await s.x.until("the three boxes drawn on the card", 20_000, async () => {
+    const r = (await s.w.cdp.evaluate(drawn.session, "[...document.querySelectorAll('.kid input')].map((i) => i.dataset.id + ':' + i.checked + ':' + i.closest('label').textContent.trim())").catch(() => [])) as string[];
+    return r.length === 3 ? r : undefined;
+  }, 300);
+  const want = ids.map((id) => `${id}:true:Ticks ${id.split("/")[1]}`).sort();
+  if (JSON.stringify([...shown].sort()) !== JSON.stringify(want)) s.x.fail(`MOSS drew the boxes ${JSON.stringify(shown)}, not ${JSON.stringify(want)}`);
+  // The person unticks the second one, then presses Approve.
+  const stillTicked = await s.w.toggleBox(ok.id, `${installed.id}/beta`);
+  if (stillTicked) s.x.fail("a click on the second box left it ticked");
+  await s.w.pressApprove(ok.id);
+  const states = await s.x.until("the plugin and its ticked boxes running, the unticked one off", 60_000, async () => {
+    const all = (await s.c.request<{ plugins: { id: string; state: string }[] }>("plugin.list", {})).plugins;
+    const of = (id: string) => all.find((p) => p.id === id)?.state;
+    const got = { parent: of(installed.id), alpha: of(ids[0]!), beta: of(ids[1]!), gamma: of(ids[2]!) };
+    const on = (st: string | undefined) => st === "running" || st === "enabled";
+    return on(got.parent) && on(got.alpha) && on(got.gamma) && got.beta === "off" ? got : undefined;
+  }, 500).catch(async (err) => {
+    const all = (await s.c.request<{ plugins: { id: string; state: string }[] }>("plugin.list", {}).catch(() => ({ plugins: [] }))).plugins.filter((p) => p.id.startsWith(installed.id));
+    return s.x.fail(`${s.x.why(err)}: the engine holds ${all.map((p) => `${p.id} ${p.state}`).join(", ") || "nothing"}`);
+  });
+  return `the OK card placed ${placeWords(place)} with its three boxes drawn ticked; one unticked by a click and Approve pressed in MOSS: the engine runs ${installed.id} (${states.parent}), alpha (${states.alpha}) and gamma (${states.gamma}) and keeps beta ${states.beta}`;
 }
 
 async function toolsRow(s: UnitState): Promise<string> {
