@@ -49,12 +49,13 @@ public struct SessionsScreen: View {
                             .listRowBackground(Color.clear)
                     }
                 } header: {
-                    // A pinned header of a plain list sits on the list's see-through header ground: it gets the canvas's
-                    // own opaque colour, so its grey reads against one known background (the contrast audit failed it).
-                    Text(group.project).font(.footnote).foregroundStyle(Theme.subtle).textCase(nil)
-                        .padding(.leading, 4).accessibilityAddTraits(.isHeader)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(uiColor: .systemBackground))
+                    // The text keeps its own width (a spacer fills the row): a frame as wide as the row took in the soft
+                    // shadow of the top bar's glass buttons, and the contrast audit read the grey against it.
+                    HStack(spacing: 0) {
+                        Text(group.project).font(.footnote).foregroundStyle(Theme.subtle).textCase(nil)
+                            .padding(.leading, 4).accessibilityAddTraits(.isHeader)
+                        Spacer(minLength: 0)
+                    }
                 }
                 .listSectionSeparator(.hidden)
             }

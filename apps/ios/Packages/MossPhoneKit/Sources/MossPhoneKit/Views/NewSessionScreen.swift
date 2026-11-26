@@ -53,15 +53,16 @@ public struct NewSessionScreen: View {
                             }
                             .accessibilityAddTraits(model.typedFolder.isEmpty && model.pickedFolder == f ? [.isSelected] : [])
                         }
-                        TextField("Another folder: type or paste a path", text: $model.typedFolder, axis: .vertical)
+                        // The prompt in the readable grey: the system's placeholder grey failed the contrast audit (the
+                        // element it couldn't name on this screen).
+                        TextField("Another folder: type or paste a path", text: $model.typedFolder,
+                                  prompt: Text("Another folder: type or paste a path").foregroundStyle(Theme.subtle), axis: .vertical)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
                             .font(.system(.body, design: .monospaced))
                     } header: { FormHeader("Folder") } footer: { Text("Folders of your existing sessions come first. A path is the folder's place on your computer.").foregroundStyle(Theme.subtle) }
                     if let e = model.errorText { Section { Label(e, systemImage: "exclamationmark.circle").foregroundStyle(.secondary) } }
                 }
             }
-            // A hard top edge, as in Settings: the first section's header sits right under the bar.
-            .scrollEdgeEffectStyle(.hard, for: .top)
             .navigationTitle("New session")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

@@ -15,20 +15,15 @@ struct RoundButton: View {
                 .glassEffect(.regular.interactive(), in: .circle)
                 .overlay(alignment: .topTrailing) {
                     if badge > 0 {
-                        // The count's own frame sits wholly on the orange: the capsule is drawn behind it, larger than the
-                        // text, so no corner of the canvas around the capsule falls inside the text's frame (the contrast
-                        // audit reads that whole frame). The label above says the count; this is held at one size.
-                        let digits = "\(badge)"
-                        Text(digits).font(.caption2.weight(.bold)).foregroundStyle(.white)
-                            .dynamicTypeSize(...DynamicTypeSize.large)
-                            .fixedSize()
-                            .background {
-                                Capsule().fill(Theme.waitingFill)
-                                    .frame(width: 18 + CGFloat(max(0, digits.count - 1)) * 7, height: 18)
-                            }
-                            // No frame around the text: the element's frame stays the text's own. The offset puts the
-                            // capsule where the old 18-point one was (its centre 3 points in from the corner and 5 down).
-                            .offset(x: 0.5, y: -1.5)
+                        // The count as a picture, the numbered circle symbol in white on the readable orange: a text's
+                        // frame always took in the canvas round the circle's edge (the contrast audit read the white
+                        // corners as its ground). The button's label says the count; past 50 it shows a plus.
+                        Image(systemName: badge <= 50 ? "\(badge).circle.fill" : "plus.circle.fill")
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, Theme.waitingFill)
+                            .font(.system(size: 18, weight: .bold))
+                            .frame(width: 18, height: 18)
+                            .offset(x: 6, y: -4)
                             .accessibilityHidden(true)
                     }
                 }

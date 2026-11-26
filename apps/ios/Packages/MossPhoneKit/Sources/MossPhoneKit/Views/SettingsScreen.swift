@@ -32,9 +32,6 @@ public struct SettingsScreen: View {
                     LabeledContent("Version", value: model.version)
                 } header: { FormHeader("About") }
             }
-            // A hard top edge: the first section's header sits right under the bar, and the soft edge's fade reached it
-            // (the contrast audit failed "Paired computer" there, while "About" in the same grey passed).
-            .scrollEdgeEffectStyle(.hard, for: .top)
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done", action: onDone) } }
