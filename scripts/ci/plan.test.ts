@@ -79,10 +79,10 @@ describe("planFor: the checks and macOS runners a run starts", () => {
     expect(planForFiles(["scripts/ci/weston.sh"]).macos).toBe(0);
     expect(planForFiles(["scripts/acceptance/sealed-press.test.ts"]).macos).toBe(0);
     // ...except the one file the workspaces' file-log test loads (the evidence list, which the driver loads too): the workspaces' macOS leg
-    // and every acceptance unit's (the 25 units and that one leg)
+    // and every acceptance unit's (the 26 units and that one leg)
     const evidence = planForFiles(["scripts/acceptance/evidence-lines.ts"]);
-    expect(evidence.units.length).toBe(25);
-    expect(evidence.macos).toBe(26);
+    expect(evidence.units.length).toBe(26);
+    expect(evidence.macos).toBe(27);
     const p = planForFiles(["scripts/acceptance/canvas-step.ts"]);
     expect(p.jobs.find((j) => j.id === "acceptance")!.checks).toBe(1);
     expect(p.macos).toBe(1);
