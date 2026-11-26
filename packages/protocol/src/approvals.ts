@@ -59,6 +59,10 @@ export const ChangeSubject = z.enum([
   "routine-level", "computer-level", "device-add", "device-revoke", "main-computer", "plugin-load", "dev-folder",
   "repo-trust", "saved-rule", "connector-permission", "computer-create", "computer-resize", "computer-delete",
   "agent-unsandboxed", "core-setting", "answer-key-rotate",
+  /** A paired computer's app has a new answer key that came with no hand-over from the one this computer holds (the app
+   *  reinstalled there, its data cleared): "<computer>'s MOSS has a new key: accept it?", answered on THIS computer by the
+   *  person, never by the computer presenting the key (lane XC, xc-6). */
+  "peer-answer-key",
   /** Downloading an agent's adapter (spec §9.3 "An adapter MOSS provides"): the package and version, where it comes from, that
    *  it is code MOSS will run to talk to that agent, and its size where known. Nothing is fetched without the yes. */
   "agent-adapter",

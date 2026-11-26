@@ -13,7 +13,11 @@ import { ContractError, type Unsubscribe } from "../contracts/common";
 import type { LinkTransport } from "../contracts/link-transport";
 import { fromBase64, toBase64 } from "../identity/bytes";
 import type { DeviceKey } from "../identity/device-key";
-import { type AnswerKeyProof, type AnswerKeyRecord, type FileDeviceRegistry, type PeerProgramKeys, type PeerUpdate, peerUpdateStatement, programKeysStatement } from "../devices/registry";
+import { type AnswerKeyProof, type AnswerKeyRecord, type FileDeviceRegistry, type PeerProgramKeys, type PeerUpdate, type PendingProgramKey, peerUpdateStatement, programKeysStatement } from "../devices/registry";
+import type { Program } from "@waifucave/moss-protocol";
+import type { ApprovalRequest } from "../contracts/approval-broker";
+import type { CardOpener } from "../devices/rpc";
+import { answerKeyWords } from "../identity/sas";
 
 export type RelayParams = z.input<typeof DEVICES_METHODS.peerSessionDeliver.params>;
 
@@ -146,6 +150,10 @@ export function shareProgramKeys(
     key: DeviceKey;
     programs: { registrations(device: string): PeerProgramKeys["keys"]; watch(fn: (change: { device: string }) => void): Unsubscribe };
     clock: { now(): number };
+    /** This computer's cards (lane C's broker): a peer's new key with no hand-over asks the person here (xc-6). None,
+     *  such a key just waits. */
+    openCard?: CardOpener;
+    log?: (line: string) => void;
   },
 ): Unsubscribe {
   let lastAt = 0;
@@ -177,7 +185,77 @@ export function shareProgramKeys(
     if (c.device !== o.registry.self().id) return;
     for (const l of o.transport.links()) if (l.up) send(l.peer);
   }));
+  if (o.openCard !== undefined) offs.push(askAboutNewProgramKeys({ registry: o.registry, openCard: o.openCard, ...(o.log ? { log: o.log } : {}) }));
   return () => {
     for (const off of offs.splice(0)) off();
+  };
+}
+
+/** A program's name as the person knows it. */
+const PROGRAM_NAMES: Record<Program, string> = { moss: "MOSS", code: "MOSS Code", host: "MOSS's island" };
+
+/** The card on THIS computer for a paired computer's new program key that came with no hand-over (lane XC, xc-6):
+ *  one card per device and program; a newer key withdraws the open card and raises one for itself. The card is about
+ *  the presenting device (`aboutDevice`), so that device never sees it and never answers it, by its own link or as a
+ *  signed answer another computer relays; it waits for the person (no expiry). A yes takes the key; the person's no
+ *  declines it for good; a withdrawn card (a newer key, a hand-over that landed, a revoke, a stop) settles nothing.
+ *  A key still waiting when this computer starts is asked about again. */
+export function askAboutNewProgramKeys(o: { registry: FileDeviceRegistry; openCard: CardOpener; log?: (line: string) => void }): Unsubscribe {
+  const open = new Map<string, { publicKey: string; stop: AbortController }>();
+  const slot = (device: string, program: Program) => `${device}\n${program}`;
+  const withdraw = (device: string, program: Program) => {
+    const s = slot(device, program);
+    const card = open.get(s);
+    if (card === undefined) return;
+    open.delete(s);
+    card.stop.abort();
+  };
+  const ask = (device: string, program: Program, key: PendingProgramKey) => {
+    const s = slot(device, program);
+    if (open.get(s)?.publicKey === key.publicKey) return;
+    withdraw(device, program);
+    const stop = new AbortController();
+    open.set(s, { publicKey: key.publicKey, stop });
+    const name = o.registry.get(device)?.name ?? "a computer";
+    const req: ApprovalRequest & { waitsForUser: true } = {
+      kind: "change", change: "peer-answer-key", origin: "user", computers: [], effect: "other", aboutDevice: device, waitsForUser: true,
+      // The engine's words never hold a device's name: it is a row of its own, as on the other device cards.
+      fields: {
+        title: { type: "text", text: `Accept a new key for ${PROGRAM_NAMES[program]}?` },
+        what: { type: "text", text: `${PROGRAM_NAMES[program]} on the computer below has a new answer key. Compare the four words with what its Settings show. If you didn't reinstall it there or clear its data, say no.` },
+        detail: { type: "rows", rows: [{ label: "Computer", value: name, name: true }, { label: "Key", value: answerKeyWords(key.publicKey).join(" "), name: true }] },
+      },
+    };
+    void (async () => {
+      let opened: Awaited<ReturnType<CardOpener>>;
+      try {
+        opened = await o.openCard(req, { signal: stop.signal });
+      } catch (e) {
+        o.log?.(`[devices] the card for ${name}'s new ${PROGRAM_NAMES[program]} key couldn't be shown: ${e instanceof Error ? e.message : String(e)}`);
+        if (open.get(s)?.stop === stop) open.delete(s);
+        return;
+      }
+      const allowed = await opened.allowed.catch(() => false);
+      // Withdrawn (a newer key, a hand-over that landed, a revoke): nothing to settle.
+      if (stop.signal.aborted || open.get(s)?.stop !== stop) return;
+      open.delete(s);
+      // The person's own no (on the card) declines the key; anything else that ended the card (the computer stopping, a
+      // broker swapped) leaves it waiting, to be asked about again. An opener that can't say whether the person answered
+      // declines nothing.
+      const byCard = (opened as { answered?: Promise<boolean> }).answered;
+      const theirs = byCard === undefined ? false : await byCard.catch(() => false);
+      if (allowed) o.registry.settlePendingProgramKey(device, program, key.publicKey, true);
+      else if (theirs) o.registry.settlePendingProgramKey(device, program, key.publicKey, false);
+    })();
+  };
+  const off = o.registry.watchProgramKeys((e) => {
+    if (e.type === "pending") ask(e.device, e.program, e.key);
+    else withdraw(e.device, e.program);
+  });
+  for (const p of o.registry.pendingProgramKeys()) ask(p.device, p.program, p.key);
+  return () => {
+    off();
+    for (const card of open.values()) card.stop.abort();
+    open.clear();
   };
 }

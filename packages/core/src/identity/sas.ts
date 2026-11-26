@@ -81,6 +81,22 @@ export function verifyPairProof(secret: Uint8Array, domain: string, transcript: 
   return constantTimeEqual(pairProof(secret, domain, transcript), proof);
 }
 
+/** An answer key's four words, in the same short form as the pairing card's: the first 5 bytes of a SHA-256 over the
+ *  key (base64, under its own domain) read as four base-1296 digits into the EFF short wordlist. The holder's card for
+ *  a new key shows them, and the computer whose key it is shows them in Settings, so the person can compare the two
+ *  (lane XC, xc-6). A fingerprint for the eye, not a secret. */
+export function answerKeyWords(publicKey: string): string[] {
+  const digest = createHash("sha256").update(`moss/answer-key-words/1\n${publicKey}`).digest();
+  let value = 0n;
+  for (let i = 0; i < 5; i++) value = (value << 8n) | BigInt(digest[i]!);
+  const words: string[] = [];
+  for (let i = 0; i < 4; i++) {
+    words.push(EFF_SHORT_WORDLIST[Number(value % 1296n)]!);
+    value /= 1296n;
+  }
+  return words;
+}
+
 /** The four words both devices show. */
 export function sasWords(secret: Uint8Array, transcript: Uint8Array): string[] {
   const mac = pairProof(secret, PAIR_SAS, transcript);

@@ -1822,6 +1822,7 @@
                       "agent-unsandboxed",
                       "core-setting",
                       "answer-key-rotate",
+                      "peer-answer-key",
                       "agent-adapter",
                       "bot-provider",
                       "plugin-remove",

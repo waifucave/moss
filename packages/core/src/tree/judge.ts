@@ -109,7 +109,7 @@ export async function judgePeer(o: {
   }
   // A program key that changed on the answering computer (its app reinstalled): not a silent failure (lane XC).
   if (verdict === "replaced-key") {
-    throw new ContractError("refused", `${o.computer} holds an earlier key for the app this was answered in, and doesn't take a new one yet (a key hand-over between computers isn't built): answer it on another of your devices`, { verdict });
+    throw new ContractError("refused", `${o.computer} holds an earlier key for the app this was answered in: accept its new key on ${o.computer}'s card, or answer this on another of your devices`, { verdict });
   }
   if (verdict !== "ok") throw new ContractError("refused", `the answer doesn't hold for this call (${verdict})`, { verdict });
 }

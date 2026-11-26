@@ -254,7 +254,8 @@ export async function startDeviceLinks(o: DeviceLinksOptions): Promise<DeviceLin
   // Peers learn this device's name and answer key over the link, so they can check what its app signs (lane D's relay).
   offs.push(shareDeviceUpdates({ transport, registry, key, clock: o.clock }));
   // And its program keys (lane XC): each peer checks every key's own registration before it takes one.
-  if (o.programKeys) offs.push(shareProgramKeys({ transport, registry, key, programs: o.programKeys, clock: o.clock }));
+  // A peer's new key with no hand-over asks the person on THIS computer's card (xc-6).
+  if (o.programKeys) offs.push(shareProgramKeys({ transport, registry, key, programs: o.programKeys, clock: o.clock, ...(o.openCard ? { openCard: o.openCard } : {}), ...(o.log ? { log: o.log } : {}) }));
   offs.push(mountRenameRequests(transport, registry));
 
   // One persistent link per pair (§8.2): every paired computer's link is wanted from the start and from its pairing,
