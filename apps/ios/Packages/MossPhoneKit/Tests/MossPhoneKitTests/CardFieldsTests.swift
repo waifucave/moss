@@ -108,6 +108,7 @@ final class CardFieldsTests: XCTestCase {
         let fake = FakeEngineClient(scenario: .pluginOK)
         let model = CardsModel(client: fake, app: .moss, now: { SampleData.now }, settleWait: .zero)
         await model.load()
+        try? await Task.sleep(for: .milliseconds(50))   // the (zero) wait after the cards arrive runs out
         let ok = SampleData.pluginOKCard, many = SampleData.manyChildrenCard
         XCTAssertTrue(ok.drawnWhole); XCTAssertTrue(many.drawnWhole)
         XCTAssertTrue(ok.cutFields.isEmpty, "three checkboxes are drawn whole")
