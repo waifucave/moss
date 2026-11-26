@@ -368,7 +368,7 @@ export function anyCase(name: string, os: Os): string {
  *  `PROJECT_DENIES`, the plugin fence's for a project folder): denied whole wherever they sit, so none is made,
  *  written, renamed or removed. `.git` goes as `*.git` (a working tree's `.git` folder or file, and a bare repository
  *  by its name); `.moss` per root (`shellRunLaterDenies`), since the MOSS home is one. */
-function heldNames(): string[] {
+export function heldNames(): string[] {
   const whole = PROJECT_WHOLE_DENIES.filter((n) => n !== ".git" && n !== ".moss");
   return [...new Set(["*.git", ...whole, ...PROJECT_DENIES, "*.app"])];
 }
@@ -455,9 +455,14 @@ export function runLaterByName(path: string, o: { userHome: string; mossHome: st
 export function shellRunLaterDenies(roots: readonly string[], o: { userHome: string; mossHome: string; os: Os; pathFolders: readonly string[] }): string[] {
   const p = o.os === "windows" ? win32 : posix;
   const sep = p.sep;
-  // From `/` on macOS (Seatbelt matches a regex as each path is opened). Linux's sandbox expands a glob against the disk
-  // at each command's start, so there they are written under each root, which keeps that walk to the roots.
-  const top = o.os === "macos" ? "/" : undefined;
+  // From `/`, one per name: on macOS Seatbelt matches a regex as each path is opened; on Linux the agent runtime walks a
+  // pattern whose fixed part is `/` under the command's writable roots only (profile.ts `linuxSandboxListsFor`: every
+  // deny regex is expanded under the roots, and a `/` prefix is never one of its own), so the walk stays at the roots
+  // and holds the same names there. Written under each root instead, it was the same names once per root: 55 × 107
+  // globs on a home of 100 top folders, each one expanded under every root (lane XC, the 0.0.89 e2e). Windows keeps
+  // them under each root (its fence reads them as written).
+  // With no root on Linux there is nothing to walk, so nothing to hold.
+  const top = o.os === "windows" || (o.os === "linux" && roots.length === 0) ? undefined : "/";
   const out: string[] = [];
   const names = heldNames();
   if (top !== undefined) {

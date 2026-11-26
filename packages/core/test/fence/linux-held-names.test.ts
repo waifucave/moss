@@ -10,7 +10,7 @@ import { join } from "node:path";
 import type { Fence } from "../../src/contracts/fence";
 import { MossFence } from "../../src/fence/fence";
 import { fencedSpawner } from "../../src/fence/fenced-process";
-import { botSandboxSettings, leftOutRoots, LINUX_LEAVE_OUT_UNHELD, linuxHoldProblem } from "../../src/fence/sandbox-settings";
+import { botSandboxSettings, denyRegex, heldNames, leftOutRoots, LINUX_LEAVE_OUT_UNHELD, linuxHoldProblem, shellRunLaterDenies } from "../../src/fence/sandbox-settings";
 import { leftOutNote } from "../../src/runtime-sdk/turn-loop/driver";
 
 const temps: string[] = [];
@@ -51,6 +51,26 @@ describe("no deny glob MOSS hands the runtime is wider than the roots drawn", ()
       const walked = process.platform === "darwin" ? denies.filter((d) => !d.startsWith("/**")) : denies;
       expect([level, widerThanTheRoots(walked, roots, home)]).toEqual([level, []]);
     }
+  });
+});
+
+describe("on Linux the held names go once each from `/`, held under every root as before", () => {
+  test("every held name under every root is still matched; the globs are one per name (plus each root's .moss), not one per root per name", () => {
+    const roots = Array.from({ length: 100 }, (_, i) => `/h/top${i}`).concat(["/h/.moss/scratch/luna", "/t/tmp-moss"]);
+    const denies = shellRunLaterDenies(roots, { userHome: "/h", mossHome: "/h/.moss", os: "linux", pathFolders: [] });
+    const globs = denies.filter((d) => d.includes("*"));
+    const res = globs.map((g) => denyRegex(g, "linux"));
+    for (const root of roots) {
+      for (const name of heldNames()) {
+        const at = `${root}/a/b/${name}`;
+        expect([at, res.some((r) => r.test(at))]).toEqual([at, true]);
+      }
+    }
+    // One per name from `/`, and each root's `.moss` (as before: every root that doesn't hold the MOSS home).
+    expect(globs.length).toBe(heldNames().length + roots.length);
+    expect(globs.length).toBeLessThan(heldNames().length * roots.length / 10);
+    // No root, nothing to hold (the walk has nowhere to go).
+    expect(shellRunLaterDenies([], { userHome: "/h", mossHome: "/h/.moss", os: "linux", pathFolders: [] })).toEqual([]);
   });
 });
 
