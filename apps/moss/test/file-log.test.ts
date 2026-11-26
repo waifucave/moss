@@ -28,6 +28,7 @@ const KEPT: string[] = [
   "send: the engine took nothing (failed, 9 ms after the call)",
   "answer key: the kept key couldn't be read this start; it is kept as it is, and this start's key is in memory only",
   "answer key: the engine holds another key for MOSS on this device, and this one can't replace it",
+  "answer key: MOSS's new key waits on the engine's card (its earlier key was lost)",
   "send: refused by the engine connection (MOSS isn't connected to its engine)",
   "press: send taken; the process itself was not running for 4200 ms of the press's age",
   "a write: refused by the press check (no press seen)",
@@ -133,7 +134,7 @@ describe("what MOSS writes to its log file", () => {
       const n = [...readFileSync(join(dir, f), "utf8").matchAll(/(^|[^A-Za-z0-9_.])(?:this\.|d\.|o\.|deps\.)?log\(\s*[`"]/gm)].length;
       if (n > 0) counts[f] = n;
     }
-    expect(counts).toEqual({ "answer-key.ts": 5, "connection.ts": 9, "engine.ts": 5, "index.ts": 23, "overlap.ts": 3, "presence.ts": 1, "press.ts": 2, "quit.ts": 4, "release.ts": 1, "sealed-redraw.ts": 1, "test-runs.ts": 2, "voice.ts": 2 });
+    expect(counts).toEqual({ "answer-key.ts": 6, "connection.ts": 9, "engine.ts": 5, "index.ts": 23, "overlap.ts": 3, "presence.ts": 1, "press.ts": 2, "quit.ts": 4, "release.ts": 1, "sealed-redraw.ts": 1, "test-runs.ts": 2, "voice.ts": 2 });
   });
 
   test("the file's writer in index.ts is fed through fileLine, never the raw line", () => {

@@ -14,7 +14,7 @@ const V = "[\\w.+-]{1,40}";
 
 /** Lines written as they are: fixed words, numbers, versions, kinds. */
 const KEEP: RegExp[] = [
-  /^answer key: (?:the kept key couldn't be read(?: this start; it is kept as it is, and this start's key is in memory only|; a new one is made)|MOSS's key is registered for this device|the engine holds another key for MOSS on this device(?:, and this one can't replace it)?)$/,
+  /^answer key: (?:the kept key couldn't be read(?: this start; it is kept as it is, and this start's key is in memory only|; a new one is made)|MOSS's key is registered for this device|the engine holds another key for MOSS on this device(?:, and this one can't replace it)?|MOSS's new key waits on the engine's card \(its earlier key was lost\))$/,
   new RegExp(`^connection: (?:connected as surface [\\w.-]{1,40} \\(mount: [\\d?]+ points\\)|the engine went away without saying so|MOSS is ahead of the engine \\(${V}\\); only the release door is open|[a-z-]{1,24})$`),
   /^host: (?:the engine gave up starting the host \(MOSS says so in its window\)|the host is back)$/,
   /^send: (?:refused by the engine connection \(MOSS isn't connected to its engine\)|the engine took nothing \((?:no answer in time|the connection closed|the engine refused \(code -?\d{1,6}\)|failed), \d{1,9} ms after the call\))$/,

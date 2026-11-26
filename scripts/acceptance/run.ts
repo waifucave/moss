@@ -4399,28 +4399,13 @@ async function computersRun(): Promise<void> {
       if ((await cards(c)).some((k) => k.id === card.id)) fail("Alpha was sent Beta's card about its own key");
       // Before the yes, Beta refuses an answer signed with the new key, and says where to accept it.
       await bothAt(DEFAULT_LEVEL);
-      // With no address lookup only Beta can dial a restarted Alpha back (docs/across-computers-owed.md), so a link that
-      // drops here (a loaded runner: Alpha's loop ran seconds late on xc-6b's run) leaves Beta "offline" until Beta's
-      // sidecar dials again. That is the known limit, not this row's subject: Beta back online, the write once more.
-      const betaOnline = () => until("Beta online on Alpha", 120_000, async () => {
-        const got = await c.request<{ computer: { online?: boolean; state?: string } }>("computer.get", { name: "Beta" }).catch(() => undefined);
-        return got !== undefined && (got.computer.online === true || got.computer.state === "online") ? true : undefined;
-      });
-      let before = await cardedWrite("reinstall-before.md");
-      if (!before.landed && before.r?.text.includes("Beta is offline") === true) {
-        await betaOnline();
-        before = await cardedWrite("reinstall-before.md");
-      }
+      const before = await cardedWrite("reinstall-before.md");
       if (before.landed) fail("Beta took an answer signed with a key it hadn't accepted");
       if (before.r === undefined || !before.r.text.includes("accept its new key on Beta's card")) fail(`the bot wasn't told where to accept the new key (${before.r?.text.slice(0, 200) ?? "no result"})`);
       // The person says yes on Beta, in Beta's app.
       await approve(betaApp, card);
       await until("Beta holding MOSS's new key after the yes", 60_000, async () => ((await betaHolds(freshPub)) ? true : undefined));
-      let after = await cardedWrite("reinstall-after.md");
-      if (!after.landed && after.r?.text.includes("Beta is offline") === true) {
-        await betaOnline();
-        after = await cardedWrite("reinstall-after.md");
-      }
+      const after = await cardedWrite("reinstall-after.md");
       if (!after.landed) fail(`the write answered with the accepted key didn't land (${after.r?.text.slice(0, 160) ?? "no result"})`);
       return "Alpha's MOSS key replaced with no hand-over (its table gone): Beta refused it and showed its card in Beta's app with the key's four words; after the yes there, a write answered with the new key landed";
     });
