@@ -15,8 +15,8 @@
 //   devices, which H-M2's lease uses);
 // * the guided rotation a revocation starts: the synced keys the revoked device held, to be rotated (§8.1).
 import { join } from "node:path";
-import type { DeviceKind, DeviceOs, PhoneApp } from "@waifucave/moss-protocol";
-import { AnswerKeyHolder, COMPUTER_NAME_RE } from "@waifucave/moss-protocol";
+import type { DeviceKind, DeviceOs, PhoneApp, Program } from "@waifucave/moss-protocol";
+import { AnswerKeyHolder, COMPUTER_NAME_RE, MOSS_PROGRAMS, programAnswerKeyStatement } from "@waifucave/moss-protocol";
 import { cleanName, nameProblem, safeDeviceName } from "./names";
 import type { Clock } from "../contracts/clock";
 import { ContractError, Listeners, type Unsubscribe } from "../contracts/common";
@@ -105,6 +105,23 @@ interface FileShape {
   /** Groups this device left: moved out of in a merge, or was removed from by another member. It never goes back to one
    *  on its own. */
   groupsLeft: Record<string, { at: number; how: GroupLeaving }>;
+  /** The `at` of the last program-keys message each peer sent (`applyPeerProgramKeys`), so an old one can't be replayed. */
+  programUpdates?: Record<string, number>;
+  /** A peer's program key that differed from the one held, when it came: not taken (rotation is owed), so an answer
+   *  signed with it is refused with words that tell the person to pair the computer again. */
+  programKeysRefused?: Record<string, Partial<Record<Program, number>>>;
+}
+
+/** A computer's program answer keys, as it sends them to its peers (lane XC): MOSS's, MOSS Code's and the host's, each
+ *  with the key's own registration signature over `programAnswerKeyStatement` (base64). */
+export interface PeerProgramKeys {
+  keys: { program: Program; publicKey: string; held: AnswerKeyHolder; alg?: AnswerKeyAlg; registration: string }[];
+  at: number;
+}
+
+/** What a computer's link key signs over its program keys: the device, the time and every key with its registration. */
+export function programKeysStatement(id: string, msg: PeerProgramKeys): Uint8Array {
+  return encode(["moss/device-program-keys/1", id, msg.at, msg.keys.map((k) => [k.program, k.publicKey, k.held, k.alg ?? "ed25519", k.registration])]);
 }
 
 /** What a revocation still has to tell the services, kept until each confirms (devices/account-devices.ts). */
@@ -297,6 +314,8 @@ export class FileDeviceRegistry implements DeviceRegistry {
     if (!d) throw new ContractError("not_found", `no device ${id}`);
     if (d.revokedAt !== undefined) return;
     d.revokedAt = this.#clock.now();
+    // Its program keys go at once (lane XC): nothing it signed counts here again.
+    delete d.answerKeys;
     for (const p of this.#state.pairs) if (p.peer === id && p.endedAt === undefined) p.endedAt = d.revokedAt;
     if (this.#state.group) delete this.#state.group.members[id];
     const synced = this.#syncedSecrets ? await this.#syncedSecrets().catch(() => []) : [];
@@ -444,6 +463,71 @@ export class FileDeviceRegistry implements DeviceRegistry {
     this.#save();
     this.#listeners.emit({ type: "changed", device: { ...d } });
     return true;
+  }
+
+  // ---- a peer's program keys (lane XC: a yes pressed in MOSS, MOSS Code or on the host's island, checked here) ----
+
+  /** Takes a paired computer's program answer keys from what IT sent over its own link: `id` is the device the link
+   *  authenticated (never a field of the message, so no computer passes on a third one's keys), and its link key signs
+   *  `programKeysStatement`. Each key counts only with its own registration signature over `programAnswerKeyStatement`
+   *  naming that device and that program; one bad key refuses the whole message. The first key of a program is kept; a
+   *  different one is not taken (a rotation's hand-over is owed) and is noted, so an answer signed with it is refused
+   *  with words that say to pair again (`programKeyReplaced`). Nothing here changes what a key does on its own computer. */
+  async applyPeerProgramKeys(id: string, msg: PeerProgramKeys, signature: Uint8Array): Promise<boolean> {
+    const d = this.#find(id);
+    if (!d || d.revokedAt !== undefined || id === this.#state.self || d.kind !== "desktop") return false;
+    if (typeof msg !== "object" || msg === null || !Number.isSafeInteger(msg.at) || !Array.isArray(msg.keys) || msg.keys.length > MOSS_PROGRAMS.length) return false;
+    if (!(await this.verify(id, programKeysStatement(id, msg), signature))) return false;
+    const seen = (this.#state.programUpdates ??= {});
+    if (msg.at <= (seen[id] ?? 0)) return false;
+    const programs = new Set<string>();
+    for (const k of msg.keys) {
+      if (typeof k !== "object" || k === null || !(MOSS_PROGRAMS as readonly string[]).includes(k.program) || programs.has(k.program) || typeof k.registration !== "string") return false;
+      programs.add(k.program);
+      try {
+        this.#checkAnswerKey(k);
+      } catch {
+        return false;
+      }
+      const raw = answerKeyBytes(algOf(k), k.publicKey);
+      const sig = fromBase64(k.registration);
+      const statement = programAnswerKeyStatement({ device: id, program: k.program, publicKey: k.publicKey, held: k.held, ...(k.alg === undefined ? {} : { alg: k.alg }) });
+      if (raw === null || sig === null || !verifyKeySignature(algOf(k), raw, utf8(statement), sig)) return false;
+    }
+    let changed = false;
+    for (const k of msg.keys) {
+      const held = d.answerKeys?.[k.program];
+      const key = { publicKey: k.publicKey, held: k.held, ...(k.alg === undefined || k.alg === "ed25519" ? {} : { alg: k.alg }) };
+      if (held === undefined) {
+        d.answerKeys = { ...d.answerKeys, [k.program]: key };
+        changed = true;
+      } else if (held.publicKey !== k.publicKey || held.held !== k.held || algOf(held) !== algOf(k)) {
+        const refused = ((this.#state.programKeysRefused ??= {})[id] ??= {});
+        refused[k.program] = this.#clock.now();
+      }
+    }
+    seen[id] = msg.at;
+    this.#save();
+    if (changed) this.#listeners.emit({ type: "changed", device: { ...d } });
+    return true;
+  }
+
+  /** Whether a paired computer's `program` key verifies `signature` over `data`: a desktop, not revoked, and that
+   *  program's key alone (MOSS Code's is the device's single key where it has one). One program's key never passes as
+   *  another's. */
+  async verifyProgramAnswer(id: string, program: Program, data: Uint8Array, signature: Uint8Array): Promise<boolean> {
+    const d = this.#find(id);
+    if (!d || d.revokedAt !== undefined || d.kind !== "desktop") return false;
+    const k = program === "code" ? (d.answerKey ?? d.answerKeys?.code) : d.answerKeys?.[program];
+    if (k === undefined) return false;
+    const raw = answerKeyBytes(algOf(k), k.publicKey);
+    return raw !== null && verifyKeySignature(algOf(k), raw, data, signature);
+  }
+
+  /** Whether `id` sent a different `program` key than the one held here (an app reinstalled there): its answers are
+   *  refused until the computer is paired again. */
+  programKeyReplaced(id: string, program: Program): boolean {
+    return this.#state.programKeysRefused?.[id]?.[program] !== undefined;
   }
 
   #checkAnswerKeyLabel(k: { publicKey: string; held: string; alg?: unknown }): void {

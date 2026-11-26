@@ -5177,6 +5177,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       // A sensitive device change asks on the daemon's one broker once the parts are up (C-M3); before, it's refused.
       openCard: openOnBroker(() => daemonParts?.broker),
       onRegistry: (r) => { ownDevices = r; },
+      // MOSS's and the host's answer keys, to the paired computers (lane XC): a yes pressed in either counts there.
+      programKeys,
       sidecar: { relay: sidecarRelayOf(relayChoiceFrom(settings)) },
       emit: (event) => void mossServer?.coreEvent(event as Parameters<MossServer["coreEvent"]>[0]),
       answerKeyServed: true,
@@ -5205,6 +5207,15 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       const treeRoot = opts.secrets === undefined && isDefaultMossHome(home, profile) ? (() => { try { return defaultTreeRoot(); } catch { return undefined; } })() : undefined;
       daemonParts = await startDaemonParts({
         mossHome, userHome: p.userHome ?? homedir(), clock: partsClock, links, handlers: mossLaneHandlers,
+        // A card from another computer needs an answer a device signs (lane XC): this computer's apps' keys (MOSS Code's
+        // single key, MOSS's, the host's), or a paired phone's or desktop's.
+        canSign: () => {
+          const reg = ownDevices;
+          if (reg === undefined) return false;
+          const self = reg.self();
+          if (self.answerKey !== undefined || programKeys.list(self.id).length > 0) return true;
+          return reg.list().some((d) => d.id !== self.id && (d.kind === "phone" || d.kind === "desktop") && (d.answerKey !== undefined || Object.keys(d.answerKeys ?? {}).length > 0));
+        },
         node: p.node === false ? false : {
           ...(treeRoot ? { treeRoot } : {}),
           // A-M3: the plugins' host MCP servers as this computer's MCP host, for J's router (calls here, files saved in

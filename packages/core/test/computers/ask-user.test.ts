@@ -11,7 +11,7 @@ import { deviceProofVerifier, verifySignedAnswer, type ApprovalBroker, type Appr
 import { FakeApprovalBroker, MemoryAnswerLedger } from "../../src/contracts/fakes/approval-broker";
 import { FakeClock } from "../../src/contracts/fakes/clock";
 import { FakeDeviceRegistry, makeFakePhone, toBase64, type FakePhone } from "../../src/contracts/fakes/device-registry";
-import { brokerAsker } from "../../src/computers/ask-user";
+import { brokerAsker, noSignerWords, saidNoWords, unsignedYesWords } from "../../src/computers/ask-user";
 import { callCardRenderer } from "../../src/computers/call-cards";
 import { nodeParts } from "../../src/computers/node-parts";
 import type { NeedsAnswer } from "../../src/tree/judge";
@@ -77,16 +77,26 @@ for (const kind of ["fake", "real"] as const) {
       expect(w.shown[0]).toMatchObject({ origin: "user", expiresAt: null });
     });
 
-    test("a transfer's card names both computers; a deny, a sealed frame's click or no card give no answer", async () => {
+    test("no device of the person's signs answers: refused at once, in words that say so, and no card is raised (lane XC)", async () => {
+      const w = await world(kind);
+      await expect(brokerAsker({ broker: w.broker, canSign: () => false })(needFor("Laptop1", "tree.write", WRITE), { as: BOT })).rejects.toThrow(noSignerWords("Laptop1"));
+      expect(w.shown).toHaveLength(0);
+      // With a device that signs, the same card is raised and answered.
+      expect(await brokerAsker({ broker: w.broker, canSign: () => true })(needFor("Laptop1", "tree.write", WRITE), { as: BOT })).not.toBeNull();
+      expect(w.shown).toHaveLength(1);
+    });
+
+    test("a transfer's card names both computers; a deny or a sealed frame's click give no answer, each in its own words; no card gives none", async () => {
       const w = await world(kind);
       const ask = brokerAsker({ broker: w.broker });
       const move = { operation: "move", from: "home/Studio/p", to: "home/Laptop1/p", source: "Studio", destination: "Laptop1" };
       expect(await ask(needFor("Laptop1", "tree.transfer", move), { as: BOT })).not.toBeNull();
       expect(w.shown.at(-1)!.binds).toMatchObject({ computer: "Laptop1", source: "Studio" });
+      // Lane XC: the person's no and an unsigned yes each say what happened, never the holder's "needs your answer".
       w.set("deny");
-      expect(await ask(needFor("Laptop1", "tree.write", WRITE), { as: BOT })).toBeNull();
+      await expect(ask(needFor("Laptop1", "tree.write", WRITE), { as: BOT })).rejects.toThrow(saidNoWords("Laptop1"));
       w.set("frame");
-      expect(await ask(needFor("Laptop1", "tree.write", WRITE), { as: { kind: "user", client: "app" } })).toBeNull();
+      await expect(ask(needFor("Laptop1", "tree.write", WRITE), { as: { kind: "user", client: "app" } })).rejects.toThrow(unsignedYesWords("Laptop1"));
       w.set("approve");
       const before = w.shown.length;
       expect(await ask({ needsAnswer: true, computer: "Laptop1", method: "tree.write" }, { as: BOT })).toBeNull();

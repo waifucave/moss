@@ -407,7 +407,13 @@ export type ProgramAnswerVerifier = { verify(device: string, program: "moss" | "
 
 /** What a verifier needs of the device registry. */
 /** The device registry, as the answer checks use it: the record and the answer key's signature check. */
-export type AnswerDevices = Pick<DeviceRegistry, "get" | "verifyAnswer">;
+export type AnswerDevices = Pick<DeviceRegistry, "get" | "verifyAnswer"> & {
+  /** A paired computer's program key (lane XC: MOSS's, MOSS Code's, the host's, taken from its own link): absent, a
+   *  program-signed answer from another computer verifies nowhere. */
+  verifyProgramAnswer?(device: string, program: "moss" | "code" | "host", data: Uint8Array, signature: Uint8Array): Promise<boolean>;
+  /** Whether that computer sent a different key for the program than the one held (an app reinstalled there). */
+  programKeyReplaced?(device: string, program: "moss" | "code" | "host"): boolean;
+};
 
 /** Builds the verifier for device answers. A proof naming a program: the device exists, isn't revoked, is a desktop or a
  *  phone, and that program's key (`programs`) signed `programCardAnswerSigningInput`. A proof naming none: the device may
@@ -443,7 +449,7 @@ export interface AnswerLedger {
   claim(cardId: string): boolean;
 }
 
-export type SignedAnswerVerdict = "ok" | "bad-hash" | "unbound" | "mismatch" | "not-approve" | "bad-device" | "bad-time" | "bad-signature" | "used";
+export type SignedAnswerVerdict = "ok" | "bad-hash" | "unbound" | "mismatch" | "not-approve" | "bad-device" | "bad-time" | "bad-signature" | "used" | "replaced-key";
 
 /** The receiver's own card for a call (review N1, part 2): what its built-in tables say for this method and params,
  *  binding exactly this call; undefined when it shows no card for that call, which then takes no signed answer. For
@@ -498,6 +504,19 @@ export async function verifySignedAnswer(
   if (card.options.find((o) => o.id === s.option)?.kind !== "approve") return "not-approve";
   if ((s.children ?? []).some((id) => !card.children?.some((x) => x.id === id))) return "not-approve";
   const device = c.devices.get(s.device);
+  // A program-signed answer (lane XC: a yes pressed in MOSS, MOSS Code or on the host's island) verifies with that
+  // program's key on that device alone, over the input that names the program; one with no program, with the device's
+  // single key, as before.
+  if (s.program !== undefined) {
+    if (!device || device.revokedAt !== undefined || device.kind !== "desktop" || c.devices.verifyProgramAnswer === undefined) return "bad-device";
+    if (!answerTimeOk(card, s.at, c.now)) return "bad-time";
+    const sig = fromBase64(s.signature);
+    const signed = programCardAnswerSigningInput({ program: s.program, id: card.id, hash: card.hash, option: s.option, at: s.at, children: s.children ?? [] });
+    if (!sig || !(await c.devices.verifyProgramAnswer(s.device, s.program, new TextEncoder().encode(signed), sig))) {
+      return c.devices.programKeyReplaced?.(s.device, s.program) === true ? "replaced-key" : "bad-signature";
+    }
+    return c.ledger.claim(card.id) ? "ok" : "used";
+  }
   if (!device || !mayAnswerCards(device)) return "bad-device";
   if (!answerTimeOk(card, s.at, c.now)) return "bad-time";
   const signature = fromBase64(s.signature);

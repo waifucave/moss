@@ -21,7 +21,7 @@ import { AccountLeaseScope, GroupLeaseScope, type LeaseScope } from "../lease/sc
 import { SharedClock, type TimeSource } from "../clock/shared-clock";
 import { AccountDirectory } from "./account-directory";
 import { DirectoryDriver, type DirectoryDriverOptions } from "./directory-driver";
-import { FileDeviceRegistry, type FileDeviceRegistryOptions } from "../devices/registry";
+import { FileDeviceRegistry, type FileDeviceRegistryOptions, type PeerProgramKeys } from "../devices/registry";
 import { publicKeyFromBase64 } from "../identity/keys";
 import { DialPolicy, type NatMapping } from "./dial-policy";
 import { GroupKeeper } from "./group";
@@ -30,7 +30,7 @@ import type { CardOpener } from "../devices/rpc";
 import type { HandshakeClient } from "./handshake";
 import { HandshakeDirectory } from "./handshake-directory";
 import { PairingService, type PairingRendezvous } from "./pairing";
-import { mountRenameRequests, shareDeviceUpdates } from "./relay";
+import { mountRenameRequests, shareDeviceUpdates, shareProgramKeys } from "./relay";
 import { allowListsOf, followRegistry, SidecarWire, type SidecarWireOptions } from "./sidecar-wire";
 import { MossLinkTransport, type LinkTransportOptions, type PeerDirectory } from "./transport";
 import type { DialTarget, WireEndpoint } from "./wire";
@@ -41,6 +41,9 @@ export interface DeviceLinksOptions {
   /** The device registry as soon as it is open, before the wire, the directories or the account: what is this device's
    *  own (its app's answer key) is served from then on, never waiting on a link or the network. */
   onRegistry?(registry: FileDeviceRegistry): void;
+  /** This computer's program answer keys (MOSS's, the host's), each with its registration: sent to every peer over its
+   *  link, so a yes pressed in one of them counts on another computer (lane XC, `shareProgramKeys`). None, none sent. */
+  programKeys?: { registrations(device: string): PeerProgramKeys["keys"]; watch(fn: (change: { device: string }) => void): Unsubscribe };
   store: SecretStore;
   clock: Clock;
   self: FileDeviceRegistryOptions["self"];
@@ -250,6 +253,8 @@ export async function startDeviceLinks(o: DeviceLinksOptions): Promise<DeviceLin
 
   // Peers learn this device's name and answer key over the link, so they can check what its app signs (lane D's relay).
   offs.push(shareDeviceUpdates({ transport, registry, key, clock: o.clock }));
+  // And its program keys (lane XC): each peer checks every key's own registration before it takes one.
+  if (o.programKeys) offs.push(shareProgramKeys({ transport, registry, key, programs: o.programKeys, clock: o.clock }));
   offs.push(mountRenameRequests(transport, registry));
 
   // One persistent link per pair (§8.2): every paired computer's link is wanted from the start and from its pairing,

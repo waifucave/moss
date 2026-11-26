@@ -13,7 +13,7 @@ import { ContractError, type Unsubscribe } from "../contracts/common";
 import type { LinkTransport } from "../contracts/link-transport";
 import { fromBase64, toBase64 } from "../identity/bytes";
 import type { DeviceKey } from "../identity/device-key";
-import { type AnswerKeyProof, type AnswerKeyRecord, type FileDeviceRegistry, type PeerUpdate, peerUpdateStatement } from "../devices/registry";
+import { type AnswerKeyProof, type AnswerKeyRecord, type FileDeviceRegistry, type PeerProgramKeys, type PeerUpdate, peerUpdateStatement, programKeysStatement } from "../devices/registry";
 
 export type RelayParams = z.input<typeof DEVICES_METHODS.peerSessionDeliver.params>;
 
@@ -119,6 +119,62 @@ export function shareDeviceUpdates(
   }));
   offs.push(o.registry.watch((c) => {
     if (c.type !== "changed" || c.device.id !== o.registry.self().id) return;
+    for (const l of o.transport.links()) if (l.up) send(l.peer);
+  }));
+  return () => {
+    for (const off of offs.splice(0)) off();
+  };
+}
+
+/** A computer's program answer keys, to its peers (lane XC): MOSS's, the host's (and MOSS Code's where it has no single
+ *  key), each with its own registration, so a yes pressed in any of them is a signed answer another computer checks. */
+export const DEVICE_PROGRAM_KEYS = "link.device.programKeys";
+
+interface ProgramKeysWire {
+  keys: PeerProgramKeys["keys"];
+  at: number;
+  signature: string;
+}
+
+/** Sends this computer's program keys on every link that comes up and whenever one is registered, and takes each peer's
+ *  from its own link alone (`from` is the device the link authenticated; the registry checks every key's own
+ *  registration). A peer on an older build serves no such notify and drops it. */
+export function shareProgramKeys(
+  o: {
+    transport: Pick<LinkTransport, "connect" | "links" | "watch" | "onNotify">;
+    registry: FileDeviceRegistry;
+    key: DeviceKey;
+    programs: { registrations(device: string): PeerProgramKeys["keys"]; watch(fn: (change: { device: string }) => void): Unsubscribe };
+    clock: { now(): number };
+  },
+): Unsubscribe {
+  let lastAt = 0;
+  const own = (): ProgramKeysWire => {
+    const self = o.registry.self().id;
+    const at = Math.max(Math.floor(o.clock.now()), lastAt + 1);
+    lastAt = at;
+    const msg: PeerProgramKeys = { keys: o.programs.registrations(self), at };
+    return { ...msg, signature: toBase64(o.key.sign(programKeysStatement(self, msg))) };
+  };
+  const send = (peer: string) => {
+    void o.transport.connect(peer).then((link) => link.notify(DEVICE_PROGRAM_KEYS, own())).catch(() => undefined);
+  };
+  const offs: Unsubscribe[] = [];
+  offs.push(o.transport.onNotify(DEVICE_PROGRAM_KEYS, (raw, from) => {
+    const m = raw as Partial<ProgramKeysWire> | undefined;
+    const sig = typeof m?.signature === "string" ? fromBase64(m.signature) : null;
+    if (!m || typeof m.at !== "number" || !Array.isArray(m.keys) || !sig) return;
+    void o.registry.applyPeerProgramKeys(from, { keys: m.keys, at: m.at }, sig).catch(() => false);
+  }));
+  const up = new Set<string>();
+  offs.push(o.transport.watch((v) => {
+    if (v.up && !up.has(v.peer)) {
+      up.add(v.peer);
+      send(v.peer);
+    } else if (!v.up) up.delete(v.peer);
+  }));
+  offs.push(o.programs.watch((c) => {
+    if (c.device !== o.registry.self().id) return;
     for (const l of o.transport.links()) if (l.up) send(l.peer);
   }));
   return () => {

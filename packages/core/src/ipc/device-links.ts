@@ -108,6 +108,8 @@ export interface DaemonLinksInput {
   /** The device registry as soon as it opens (`DeviceLinksOptions.onRegistry`), and that `device.answerKey.set` is
    *  served from there (the daemon's own `answerKeyMethods`), so the links don't serve a second one. */
   onRegistry?: DeviceLinksOptions["onRegistry"];
+  /** This computer's program answer keys (lane RT's table), sent to its peers (lane XC, `shareProgramKeys`). */
+  programKeys?: DeviceLinksOptions["programKeys"];
   answerKeyServed?: true;
   /** Lane XC: whether one of the person's apps or phones is connected to this engine now (`devicesMethods`' `personAt`):
    *  then a pairing or a removal made in a terminal also needs the engine's own card. */
@@ -191,6 +193,7 @@ export async function startDaemonLinks(input: DaemonLinksInput): Promise<DaemonL
     ...(input.updateGate ? { updateGate: input.updateGate } : {}),
     openCard,
     ...(input.onRegistry ? { onRegistry: input.onRegistry } : {}),
+    ...(input.programKeys ? { programKeys: input.programKeys } : {}),
     log,
   });
   const offs: Array<() => void> = [];

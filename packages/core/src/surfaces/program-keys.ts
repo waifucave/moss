@@ -168,6 +168,19 @@ export class ProgramKeyTable implements ProgramAnswerKeys {
     return MOSS_PROGRAMS.map((p) => this.keyOf(device, p)).filter((k): k is ProgramKey => k !== undefined);
   }
 
+  /** The keys registered here for `device`, each with its own registration signature, as this computer sends them to its
+   *  peers (lane XC, `device.programKeys`). MOSS Code's single key travels as the device's `answerKey` already. */
+  registrations(device: string): { program: Program; publicKey: string; held: AnswerKeyHolder; alg?: AnswerKeyAlg; registration: string }[] {
+    if (this.#gone(device)) return [];
+    const out: { program: Program; publicKey: string; held: AnswerKeyHolder; alg?: AnswerKeyAlg; registration: string }[] = [];
+    for (const p of MOSS_PROGRAMS) {
+      if (p === "code" && this.#legacy?.(device) !== undefined) continue;
+      const k = this.#state.keys[device]?.[p];
+      if (k !== undefined) out.push({ ...strip(k), registration: k.registration });
+    }
+    return out;
+  }
+
   async verify(device: string, program: Program, data: Uint8Array, signature: Uint8Array): Promise<boolean> {
     const k = this.keyOf(device, program);
     const raw = k ? fromBase64(k.publicKey) : null;

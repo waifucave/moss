@@ -173,6 +173,9 @@ export interface DaemonPartsInput {
    *  exists (`lateBroker`, INT #353); without either, such a paste is refused with a reason, never dropped silently, and
    *  no card raises a level. The broker's cards go out through `coreEvent` too. */
   approvals?: Pick<ApprovalBroker, "request" | "get">;
+  /** Whether any of the person's devices here can sign an answer to another computer's card (lane XC): this computer's
+   *  apps' answer keys, or a paired phone's or desktop's. None, such a card is refused at once with a plain reason. */
+  canSign?: () => boolean;
   /** The MOSS server's `core.event` sender: the terminal panel's output (`terminal_output`) goes to the connection
    *  that opened each terminal. Without it, the app's `terminal.*` methods aren't served. */
   coreEvent?: (event: CoreEventInput, opts?: CoreEventOptions) => number;
@@ -402,6 +405,7 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
           peerSpawner: input.peerSpawner ?? ((root: string) => fencedSpawner({ fence: peerFence(fence, root, { userHome: input.userHome, mossHome: input.mossHome, os: hostOs() }) })),
         } }),
         answers: { devices: nodeLinks.devices, mossHome: input.mossHome, clock: input.clock },
+        ...(input.canSign ? { canSign: input.canSign } : {}),
         log: (line) => log(`[computers] ${line}`),
       });
       const n = startComputerNode({
