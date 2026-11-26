@@ -88,15 +88,18 @@ describe("leftOutNote: a refused write says which roots were left out and why", 
     mkdirSync(scratch, { recursive: true });
     mkdirSync(join(home, "app", "node_modules", "p", ".git"), { recursive: true });
     const fence = new MossFence({ os: "linux", home, mossHome: moss, temp: temp("xc3c-tmp-") });
-    // The leaving out is off for now (LINUX_LEAVE_OUT_UNHELD): the home stays one root, as before 3c.
+    // The MOSS home is inside the user's home, so the home is drawn as its entries but the way to `.moss`
+    // (`sandboxSettingsOf`'s `except`): here `app`, the folder holding the repo.
+    const app = join(home, "app");
+    // The leaving out is off for now (LINUX_LEAVE_OUT_UNHELD): every root is handed, as before 3c.
     const off = botSandboxSettings(fence.policy(), { mossHome: moss, userHome: home, level: "automatic", ownFolders: [scratch], pathFolders: [] });
     expect(LINUX_LEAVE_OUT_UNHELD).toBe(false);
-    expect(off.filesystem?.allowWrite ?? []).toContain(home);
+    expect(off.filesystem?.allowWrite ?? []).toContain(app);
     expect(leftOutRoots(off)).toEqual([]);
-    // Turned on, the home is left out with its reason.
+    // Turned on, that root is left out with its reason.
     const s = botSandboxSettings(fence.policy(), { mossHome: moss, userHome: home, level: "automatic", ownFolders: [scratch], pathFolders: [], linuxLeaveOut: true });
-    expect(s.filesystem?.allowWrite ?? []).not.toContain(home);
-    expect(leftOutRoots(s).map((l) => l.root)).toEqual([home]);
+    expect(s.filesystem?.allowWrite ?? []).not.toContain(app);
+    expect(leftOutRoots(s).map((l) => l.root)).toEqual([app]);
     expect(leftOutRoots(s)[0]!.why).toContain("inside node_modules");
   });
 
