@@ -70,6 +70,7 @@ jobs:
           [ "$FOUND" = 0 ] && echo "no launch argument, fake or sample data in either Release build"
           exit $FOUND
       - name: The cards' drawn buttons (a cut card's Allow waits; the provider is drawn)
+        id: cardgate
         run: |
           DEST="platform=iOS Simulator,name=$(xcrun simctl list devices available | grep -o 'iPhone [0-9A-Za-z ]*' | head -1 | sed 's/ *$//')"
           xcodebuild test -project MOSSPhone.xcodeproj -scheme MOSS -destination "$DEST" -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO -only-testing:MOSSUITests/CardGateUITests -resultBundlePath "$RUNNER_TEMP/cardgate.xcresult" 2>&1 | grep -E "Test Case|error:|XCTAssert|Executed|TEST (SUCC|FAIL)|IW " | cut -c1-400 ; exit ${PIPESTATUS[0]}
@@ -84,12 +85,16 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
       # A gate: missing descriptions, wrong traits, small hit regions and failed contrast fail it (AuditRunner.swift says
-      # which issues are only reported).
+      # which issues are only reported, and which failed contrasts are known and owed). Both apps' audits run even when the
+      # card tests or the other app's audits failed (only those failures, never a failed build), and the job still fails.
       - name: Accessibility audits at the default and the largest text size (MOSS)
+        id: moss_audit
+        if: success() || (failure() && steps.cardgate.outcome == 'failure')
         run: |
           DEST="platform=iOS Simulator,name=$(xcrun simctl list devices available | grep -o 'iPhone [0-9A-Za-z ]*' | head -1 | sed 's/ *$//')"
           xcodebuild test -project MOSSPhone.xcodeproj -scheme MOSS -destination "$DEST" -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO -skip-testing:MOSSUITests/CardGateUITests 2>&1 | tee "$RUNNER_TEMP/ui-moss.log" | grep -E "AUDIT|error:|Executed|TEST (SUCC|FAIL)" | cut -c1-400 ; exit ${PIPESTATUS[0]}
       - name: Accessibility audits at the default and the largest text size (MOSS Code)
+        if: success() || (failure() && (steps.cardgate.outcome == 'failure' || steps.moss_audit.outcome == 'failure'))
         run: |
           DEST="platform=iOS Simulator,name=$(xcrun simctl list devices available | grep -o 'iPhone [0-9A-Za-z ]*' | head -1 | sed 's/ *$//')"
           xcodebuild test -project MOSSPhone.xcodeproj -scheme MOSSCode -destination "$DEST" -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$RUNNER_TEMP/ui-code.log" | grep -E "AUDIT|error:|Executed|TEST (SUCC|FAIL)" | cut -c1-400 ; exit ${PIPESTATUS[0]}
