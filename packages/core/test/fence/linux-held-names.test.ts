@@ -53,6 +53,15 @@ describe("linuxHoldProblem: the runtime's walk, as it runs", () => {
     const withRepo = temp("xc3c-nm-git-");
     mkdirSync(join(withRepo, "app", "node_modules", "@scope", "pkg", ".git", "hooks"), { recursive: true });
     expect(linuxHoldProblem(withRepo, { now: 5, limits: small })).toContain("inside node_modules");
+    // A name with control characters is folded out of the reason, and a long path clamped.
+    const odd = temp("xc3c-nm-odd-");
+    mkdirSync(join(odd, "node_modules", "a\u001b[31m‮b", ".git"), { recursive: true });
+    const oddWhy = linuxHoldProblem(odd, { now: 8, limits: small })!;
+    expect(oddWhy).toContain("inside node_modules");
+    expect(/[\u0000-\u001f‮]/.test(oddWhy)).toBe(false);
+    const long = temp("xc3c-nm-long-");
+    mkdirSync(join(long, "node_modules", "x".repeat(240), ".git"), { recursive: true });
+    expect(linuxHoldProblem(long, { now: 9, limits: small })!.length).toBeLessThan(200 + long.length + 120);
     const bare = temp("xc3c-nm-bare-");
     mkdirSync(join(bare, "node_modules", "x", "cache.git"), { recursive: true });
     expect(linuxHoldProblem(bare, { now: 6, limits: small })).toContain("inside node_modules");

@@ -273,8 +273,16 @@ export function leftOutRoots(settings: SandboxSettingsConfig | undefined): reado
   return settings === undefined ? [] : LEFT_OUT.get(settings) ?? [];
 }
 
-/** The runtime's own walk for a pattern-shaped deny on Linux (the agent runtime's `expandPatterns`): at most
- *  50,000 entries and 16 levels down, `node_modules` skipped. What lies past it isn't held at all. */
+/** A path from the disk as a note shows it: control and bidirectional characters as `?`, at most 200 characters. */
+function shownPath(p: string): string {
+  const t = p.replace(/[\u0000-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/g, "?");
+  return t.length > 200 ? `${t.slice(0, 199)}…` : t;
+}
+
+/** The runtime's own walk for a pattern-shaped deny on Linux (the agent runtime's `expandPatterns`, 0.0.87): at most
+ *  50,000 entries and 16 levels down, `node_modules` skipped. What lies past it isn't held at all. These must be the
+ *  runtime's numbers, never larger: a root this check passes past the runtime's limit would hold an unheld `.git`. They
+ *  rise with the runtime (its budgeted walk, 0.0.89, fails closed itself). */
 export const LINUX_WALK = { maxVisited: 50_000, maxDepth: 16 } as const;
 /** How many entries the look for repositories inside `node_modules` reads under one root. */
 const NODE_MODULES_BUDGET = 50_000;
@@ -326,7 +334,8 @@ export function linuxHoldProblem(root: string, o: { list?: (dir: string) => read
       for (const e of entries) {
         if (--left < 0) { why = `${root} holds more inside node_modules than the sandbox can check for repositories`; break find; }
         const at = posix.join(dir, e.name);
-        if (isRepo(e.name)) { why = `${root} holds a repository inside node_modules (${at}), where the sandbox doesn't hold a .git`; break find; }
+        // The path is the disk's names, not MOSS's: control characters folded out and clamped before it reaches a note.
+        if (isRepo(e.name)) { why = `${root} holds a repository inside node_modules (${shownPath(at)}), where the sandbox doesn't hold a .git`; break find; }
         if (e.isDirectory() && !e.isSymbolicLink()) stack.push(at);
       }
     }
