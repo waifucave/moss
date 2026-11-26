@@ -5544,7 +5544,8 @@ async function hostIdleRun(app: { exe: string; args: string[] }): Promise<void> 
       await sleep(1_500);
     };
     await play("display", housed(1512, 982, 33));
-    if (invisible) await until("the island on the screen (invisible)", 60_000, () => (/\[host\] surfaces: [1-9]\d* on the screen \([^)]*island/.test(readLog(d.log)) ? true : undefined), 500);
+    // An idle island is drawn only on a Mac with a notch (islandMode in the island plugin: "notch"); anywhere else it draws nothing until a card or line needs it, so its window stays hidden.
+    if (invisible && process.platform === "darwin") await until("the island on the screen (invisible)", 60_000, () => (/\[host\] surfaces: [1-9]\d* on the screen \([^)]*island/.test(readLog(d.log)) ? true : undefined), 500);
     await until("the host's counters", 30_000, () => (/ipc: counters on/.test(hostText()) ? true : undefined), 300);
     const windows = () => hostText().split("\n").filter((l) => l.includes("ipc: ")).map((l) => ({ raw: l.replace(/^.*?ipc: /, ""), p: parseIpcLine(l) })).filter((w): w is { raw: string; p: NonNullable<ReturnType<typeof parseIpcLine>> } => w.p !== undefined);
     const next = async (count: number, what: string) => {
