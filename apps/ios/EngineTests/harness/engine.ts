@@ -46,21 +46,33 @@ const home = join(userHome, ".moss");
 const project = join(userHome, "project1");
 mkdirSync(project, { recursive: true });
 
-/** A bot's brain for these tests: each turn says `Reply: <the message>` and ends. A message `ask me` makes it ask the
- *  person a question the way a bot's `AskUserQuestion` does (`question_asked` in its log, the turn not waiting): the card
- *  stays open across turns until the person answers or skips it, and that reaches the bot as their message. */
+/** A tool call's gate as the bots' runtime hands it one (the SDK's `canUseTool`). */
+type ToolGate = (tool: string, input: unknown, opts: { signal: AbortSignal; toolUseID: string; agentID?: string }) => Promise<{ behavior: string; message?: string }>;
+/** The bots' own `AskUserQuestion` handling (questions.ts, as the daemon wraps each bot session's `canUseTool`), or
+ *  undefined before the bots are up. */
+type AskTool = (sessionId: string, inner: ToolGate) => ToolGate;
+
+/** A bot's brain for these tests: each turn says `Reply: <the message>` and ends. A message `ask me` makes it call the
+ *  real `AskUserQuestion` tool through the bots' own gate, as a model's tool call goes: the engine records the question,
+ *  the call returns at once (a bot's question doesn't wait), and the card stays open across turns until the person
+ *  answers or skips it, which reaches the bot as their message. */
 let asked = 0;
 class ReplyDriver {
   readonly canFold = true;
+  constructor(private readonly sessionId: string, private readonly askTool: () => AskTool | undefined) {}
   async turn(input: { text?: string }, ctl: { record(e: { type: string; [k: string]: unknown }): void; signal: AbortSignal }) {
     await Bun.sleep(150);
     if (ctl.signal.aborted) return { reason: "interrupted" as const };
     if (String(input.text ?? "").trim() === "ask me") {
       asked += 1;
-      ctl.record({ type: "question_asked", callId: `iw_ask_${asked}`, questions: [{
+      const notThisTool: ToolGate = async () => ({ behavior: "deny", message: "only the question tool here" });
+      const gate = this.askTool()?.(this.sessionId, notThisTool);
+      if (gate === undefined) throw new Error("the bots' question tool isn't up");
+      const result = await gate("AskUserQuestion", { questions: [{
         question: "Which colour should the new tag have?", header: "Tag colour", multiSelect: false,
         options: [{ label: "Green", description: "Matches the success states" }, { label: "Amber", description: "Stands out" }],
-      }] });
+      }] }, { signal: ctl.signal, toolUseID: `iw_ask_${asked}` });
+      log(`asked through the tool: ${result.behavior} (${String(result.message ?? "").slice(0, 80)})`);
       const said = "I asked you which colour.";
       ctl.record({ type: "assistant_message", text: said });
       return { reason: "end_turn" as const, text: said };
@@ -94,7 +106,8 @@ async function boot(): Promise<void> {
     parts: {
       userHome,
       node: { terminals: { launch: () => ({ cmd: ["/bin/cat"], env: {} }) } },
-      bots: { registry: new FakePluginRegistry({ catalog: catalogPointDecl, plugins: [] }), drivers: () => () => new ReplyDriver(), defaultModel: () => ({ model: "winter-test/calls" }),
+      bots: { registry: new FakePluginRegistry({ catalog: catalogPointDecl, plugins: [] }), drivers: ({ side }: { side: () => { questions: { canUseTool: AskTool } } | undefined }) =>
+          (ctx: { sessionId: string }) => new ReplyDriver(ctx.sessionId, () => side()?.questions.canUseTool.bind(side()!.questions)), defaultModel: () => ({ model: "winter-test/calls" }),
         // The composer's model list (a test daemon's bots carry none by default, and without it the engine serves no
         // `session.composerOffers`): none listed, so the composer offers what the doors give (pictures, files).
         composerModels: async () => ({ models: [] }) },
