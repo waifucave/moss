@@ -31,7 +31,7 @@ test("the page fixture's own point, own command and report answer on a component
   try {
     const { card } = await opened.registry.installed(ID, "app");
     const shown = broker.cards().find((c) => c.id === card)!;
-    await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+    await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
     for (let i = 0; i < 750 && opened.registry.get(ID)?.state !== "running"; i++) await Bun.sleep(20);
     expect(opened.registry.get(ID)?.state).toBe("running");
     const ctx = { caller: { kind: "plugin", pluginId: ID }, stream: { send: () => {}, follows: new Map() } } as never;

@@ -100,7 +100,7 @@ describe("startPluginHost", () => {
       expect(hostedRecordOf(opened.registry, home, "tarot")).toBeUndefined();
       const { card } = await opened.registry.installed("tarot", "app");
       const shown = broker.cards().find((c) => c.id === card)!;
-      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
       await approved(opened.registry, "tarot");
       expect(opened.registry.get("tarot")?.state).toBe("running");
       expect(hostedRecordOf(opened.registry, home, "tarot")).toMatchObject({ id: "tarot", folder, root: folder, entry: "host/index.js" });
@@ -192,7 +192,7 @@ describe("startPluginHost", () => {
     try {
       const { card } = await opened.registry.installed("tarot", "app");
       const shown = broker.cards().find((c) => c.id === card)!;
-      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
       await approved(opened.registry, "tarot");
       const err = (await ph.host.invoke({ pluginId: "tarot", handler: "hi", args: null, caller: USER }).catch((x: unknown) => x)) as ContractError;
       expect(err).toBeInstanceOf(ContractError);

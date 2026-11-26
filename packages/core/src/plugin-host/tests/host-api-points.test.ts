@@ -41,7 +41,7 @@ describe("a host half's own API (the acceptance-points fixture)", () => {
     try {
       const { card } = await opened.registry.installed("acceptance-points", "app");
       const shown = broker.cards().find((c) => c.id === card)!;
-      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
       await until(async () => (opened.registry.get("acceptance-points/filler")?.state === "running" && opened.registry.get("acceptance-points")?.state === "running" ? true : undefined));
       const invoke = (handler: string, args: unknown) => ph.host.invoke<Record<string, unknown>>({ pluginId: "acceptance-points", handler, args, caller: USER });
       const probe = await invoke("probe", { session: "b_alpha" });

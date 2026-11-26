@@ -288,9 +288,13 @@ export function previewHtml(s: CardSummary): string {
  *  button shows, uncovered, at its own visible size (IOv2 in the page; S4's run of it keeps the count honest), and
  *  the answer passes the option (B1: plain JS, the button's own dataset). Nothing in production relaxes `isTrusted`
  *  or the open-delay: a trusted press from the real input path is the only way an answer leaves this page. */
-export function buttonPage(input: { cardId: string; token: string; option: string; label: string; kind: "approve" | "deny"; look?: "label" | "check" | "cross" | "open"; remember?: "always"; tokens?: Readonly<Record<string, TokenValue>> }): string {
+/** A part's own approve button on a card that has boxes (the island's, a plugin page's) says this and answers nothing: it brings the app's own
+ *  card, which draws the boxes, forward. Deny still answers from the part. */
+export const REVIEW_IN_MOSS_TEXT = "Review in MOSS";
+export const REVIEW_OPENED_TEXT = "Opened in MOSS's window: tick the boxes there.";
+export function buttonPage(input: { cardId: string; token: string; option: string; label: string; kind: "approve" | "deny"; review?: boolean; look?: "label" | "check" | "cross" | "open"; remember?: "always"; tokens?: Readonly<Record<string, TokenValue>> }): string {
   const glyph = input.look !== undefined && input.look !== "label" ? GLYPHS[input.look] : undefined;
-  const body = `<button type="button" class="seal-button${glyph !== undefined ? " glyph" : ""}${input.remember === "always" ? " quiet" : ""}" data-option="${esc(input.option)}" data-kind="${esc(input.kind)}" aria-label="${esc(sealedEscape(input.label))}">${glyph ?? ""}
+  const body = `<button type="button" class="seal-button${glyph !== undefined ? " glyph" : ""}${input.remember === "always" ? " quiet" : ""}"${input.review === true ? ' data-review="yes"' : ""} data-option="${esc(input.option)}" data-kind="${esc(input.kind)}" aria-label="${esc(sealedEscape(input.label))}">${glyph ?? ""}
   <span class="label">${esc(sealedEscape(input.label))}</span>
 </button>
 <p class="state" data-state="waiting" role="status"></p>`;
@@ -402,6 +406,11 @@ export function buttonPage(input: { cardId: string; token: string; option: strin
       document.body.dataset.answering = "yes";
       return b.answer(option).then((r) => {
         if (r !== null && typeof r === "object" && r.accepted === true) { document.body.dataset.answered = "yes"; delete document.body.dataset.answering; answering = false; if (state !== null) state.textContent = ""; }
+        else if (r !== null && typeof r === "object" && r.opened === true) {
+          // A "Review in MOSS": it answered nothing and the card is open in MOSS's window; this button stays for pressing again.
+          answering = false; delete document.body.dataset.answering;
+          if (state !== null) { state.textContent = ${JSON.stringify(REVIEW_OPENED_TEXT)}; setTimeout(() => { if (state.textContent === ${JSON.stringify(REVIEW_OPENED_TEXT)}) state.textContent = ""; }, 4000); }
+        }
         else refused(r);
       });
     }).catch(() => refused(null));

@@ -81,7 +81,7 @@ async function world(prefix: string) {
     else await opened.folders.installed(id, "user-app");
     const { card } = await opened.registry.installed(id, by);
     const shown = broker.cards().find((c) => c.id === card)!;
-    await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+    await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
     await until(`${id} running after its OK`, 30_000, () => (opened.registry.get(id)?.state === "running" ? true : undefined));
   };
   /** Starts it (unless something already is), and lets the crash rules run their backoffs until it is stopped. */

@@ -60,7 +60,7 @@ describe("secrets.get in a third party's own process (real host)", () => {
       for (const id of ["vault", "sharer"]) {
         const { card } = await opened.registry.installed(id, "app");
         const shown = broker.cards().find((c) => c.id === card)!;
-        await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+        await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
         for (let i = 0; i < 200 && opened.registry.get(id)?.state === "found"; i++) await Bun.sleep(20);
       }
       started = await startModelPlugins({ registry: opened.registry, host: ph.host, pluginSecrets: ph.pluginSecrets, home, secrets: new NoSlots(), fetch: async () => new Response("no network here", { status: 599 }), addApiHandlers: (h) => ph.addApiHandlers(h) });

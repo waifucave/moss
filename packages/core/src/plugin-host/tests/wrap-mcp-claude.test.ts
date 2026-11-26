@@ -366,7 +366,7 @@ darwinDescribe("a wrapper's grant on real processes", () => {
     const ph = await startPluginHost({ home: w.home, computer: "Studio", registry: w.opened.registry, secrets: w.secrets, userHome: temp("moss-wrapn-user-") });
     const approve = async (id: string, card: string | undefined) => {
       const shown = w.broker.cards().find((c) => c.id === card)!;
-      await w.broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: w.broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+      await w.broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: w.broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
       await approved(w.opened.registry, id);
     };
     const guard = {

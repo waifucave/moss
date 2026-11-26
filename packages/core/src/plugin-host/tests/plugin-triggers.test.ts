@@ -92,7 +92,7 @@ describe("a plugin's routine trigger", () => {
       const shown = broker.cards().find((c) => c.id === card)!;
       // Its card says it starts routines and runs in the background.
       expect(JSON.stringify(shown.fields)).toContain("It adds routine triggers (ping)");
-      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
       // Approved: its host half starts at once (triggers do), the routine is armed through it, and it fires.
       await until(() => runs.length === 1).catch((e: Error) => { throw new Error(`${e.message}\nhost: ${lines.join(" | ")}\nlog: ${logOf()}\nstatus: ${JSON.stringify(ph.host.status("pinger"))}`); });
       expect(logOf()).toContain("armed r_pinged01 ping");

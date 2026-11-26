@@ -56,7 +56,7 @@ describe("point messages between host halves", () => {
       const approve = async (id: string): Promise<string> => {
         const { card } = await opened.registry.installed(id, "app");
         const shown = broker.cards().find((c) => c.id === card)!;
-        await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+        await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
         return JSON.stringify(shown);
       };
       // The metronome first, its point active, then the dancer, as a person installs a filler of a point that is there.

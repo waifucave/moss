@@ -103,7 +103,7 @@ describe("a third-party code model plugin through a real plugin host", () => {
     try {
       const { card } = await opened.registry.installed("acme-models", "app");
       const shown = broker.cards().find((c) => c.id === card)!;
-      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
       for (let i = 0; i < 200 && opened.registry.get("acme-models")?.state === "found"; i++) await Bun.sleep(20);
       started = await startModelPlugins({ registry: opened.registry, host: ph.host, pluginSecrets: ph.pluginSecrets, home, secrets: slots, fetch: wire, addApiHandlers: (h) => ph.addApiHandlers(h) });
       const snap = started.plugins.snapshot!;
@@ -148,7 +148,7 @@ describe("a third-party code model plugin through a real plugin host", () => {
       expect(opened.folders.okText("acceptance-models", "macos").lines).toContain(`It can reach services on this computer or your local network: 127.0.0.1:${local.port}.`);
       const { card } = await opened.registry.installed("acceptance-models", "app");
       const shown = broker.cards().find((c) => c.id === card)!;
-      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
       for (let i = 0; i < 200 && opened.registry.get("acceptance-models")?.state === "found"; i++) await Bun.sleep(20);
       // No `fetch`: the production pinned fetch, which reaches this computer only for a host the OK names with its port.
       started = await startModelPlugins({ registry: opened.registry, host: ph.host, pluginSecrets: ph.pluginSecrets, home, secrets: new DaemonStore(), addApiHandlers: (h) => ph.addApiHandlers(h) });

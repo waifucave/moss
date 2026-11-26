@@ -71,7 +71,7 @@ describe("the core's own updates reach the notifier plugins", () => {
       await opened.folders.installed("pinger", "user-app");
       const { card } = await opened.registry.installed("pinger", "app");
       const shown = broker.cards().find((c) => c.id === card)!;
-      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+      await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
       await until("the notifier running", 15_000, () => (opened.registry.get("pinger")?.state === "running" ? true : undefined));
       const seen = async () => (await ph.host.invoke<Record<string, unknown>[]>({ pluginId: "pinger", handler: "seen", args: null, caller: USER }));
       const updates = async () => (await seen()).filter((u) => u.kind !== undefined) as unknown as NotifierUpdate[];

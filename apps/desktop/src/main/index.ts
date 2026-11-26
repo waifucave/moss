@@ -672,6 +672,14 @@ async function ready(): Promise<void> {
         log(`sealed: answer refused (a window lies over the button: ${cover.advice})`);
         return { accepted: false, covered: cover.name, reason: cover.advice };
       }
+      // A part's own approve on a card that has boxes (the island's button, a plugin page's) answers nothing: it brings MOSS Code's own card,
+      // which draws the boxes, forward, and the person answers it there (the fallback card, armed for it, or the window's own place).
+      if (cardOfPress !== undefined && sealed.needsReview(token, option)) {
+        log(`sealed: review opened for ${cardOfPress}`);
+        if (!headless) void openMainWindow();
+        void armFallback(cardOfPress, true);
+        return { accepted: false, opened: true, reason: "opened in MOSS's window" };
+      }
       const key = answerKeyValue;
       if (key === undefined) { log(`sealed: answer refused (no answer key)`); return { accepted: false, reason: "the answer key isn't there" }; }
       const client = pair.client;

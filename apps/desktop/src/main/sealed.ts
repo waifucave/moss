@@ -394,6 +394,16 @@ export class SealedFrames {
     // lane HS: end
   }
 
+  /** Whether a press of this token is a "Review in MOSS": a part's own approve button (the island's, a plugin page's) on a card that has
+   *  boxes. It answers nothing; it brings the app's own card, which draws the boxes, forward. */
+  needsReview(token: string, option?: string): boolean {
+    const ch = this.channels.get(token);
+    const card = ch === undefined ? undefined : this.cards.get(ch.cardId);
+    if (ch === undefined || card === undefined || !ch.element.startsWith("button:") || (card.children?.length ?? 0) === 0) return false;
+    const pick = option ?? ch.element.slice("button:".length);
+    return card.options.find((o) => o.id === pick)?.kind === "approve";
+  }
+
   /** The core's own answer marked the card's fate: its frames' business ends either way, and the store's own pending
    *  pick stands for the display that still shows it. */
   confirmedAnswer(cardId: string, accepted: boolean): void {

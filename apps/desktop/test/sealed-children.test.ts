@@ -9,7 +9,7 @@ afterAll(async () => {
   await GlobalRegistrator.unregister();
 });
 import { CHILDREN_NOT_DRAWN_TEXT, CHILDREN_UNREAD_TEXT } from "@waifucave/moss-protocol";
-import { FRESH_SETTLE_MS, ownCardPage } from "../src/main/sealed-pages";
+import { FRESH_SETTLE_MS, REVIEW_IN_MOSS_TEXT, REVIEW_OPENED_TEXT, buttonPage, ownCardPage } from "../src/main/sealed-pages";
 
 type Kid = { id: string; label: unknown; checked: boolean };
 const kids = (n: number): Kid[] => Array.from({ length: n }, (_, i) => ({ id: `plug/k${i}`, label: `Plugin ${i}`, checked: true }));
@@ -171,5 +171,27 @@ describe("a long list is a cut field that is opened and read to its end", () => 
     click(deny(doc));
     await wait(FRESH_SETTLE_MS + 60);
     expect(said).toEqual([{ option: "deny" }]);
+  });
+});
+
+describe("a part's own approve button on a card with boxes", () => {
+  test("says Review in MOSS, answers nothing itself, and says the card is open in the window; the page stays pressable", async () => {
+    const said: Said[] = [];
+    const doc = load(buttonPage({ cardId: "c1", token: "t", option: "approve", label: REVIEW_IN_MOSS_TEXT, kind: "approve", review: true, look: "open" }), said);
+    const g = globalThis as unknown as { mossSealed: { answer: (o: string) => Promise<unknown> } };
+    g.mossSealed.answer = async (o: string) => { said.push({ option: o }); return { accepted: false, opened: true }; };
+    delete doc.body.dataset.answered; // left on the body by an earlier page of this file
+    const btn = doc.querySelector(".seal-button")!;
+    expect((btn as HTMLElement).dataset.review).toBe("yes");
+    expect(btn.getAttribute("aria-label")).toBe(REVIEW_IN_MOSS_TEXT);
+    await wait(800);
+    const e = new Event("pointerdown", { bubbles: true });
+    Object.defineProperty(e, "isTrusted", { value: true });
+    btn.dispatchEvent(e);
+    await wait(FRESH_SETTLE_MS + 80);
+    expect(said).toEqual([{ option: "approve" }]);
+    expect(doc.querySelector(".state")!.textContent).toBe(REVIEW_OPENED_TEXT);
+    expect(doc.body.dataset.answered).toBeUndefined();
+    expect(doc.body.dataset.answering).toBeUndefined();
   });
 });

@@ -86,7 +86,7 @@ darwinTest("picks never count as crashes or notices; a crash-stopped plugin star
   const approve = async (id: string, by: "bot" | "app") => {
     const { card } = await opened.registry.installed(id, by);
     const shown = broker.cards().find((c) => c.id === card)!;
-    await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+    await broker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
     await until(`${id} OK'd`, 10_000, () => (opened.registry.get(id)?.state !== "found" ? true : undefined));
   };
   const install = async (id: string, programs: boolean, broken: string | undefined) => {

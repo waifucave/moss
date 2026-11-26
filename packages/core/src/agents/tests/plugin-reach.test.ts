@@ -125,7 +125,7 @@ async function plugins(broker: FakeApprovalBroker, o: { long?: boolean; toolSett
     const { card } = await opened.registry.installed(id, "app");
     if (card !== undefined) {
       const shown = okBroker.cards().find((c) => c.id === card)!;
-      await okBroker.answer(card, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: okBroker.frameChannel(card)!, input: "click", at: Date.now() } }, { role: "app" });
+      await okBroker.answer(card, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: okBroker.frameChannel(card)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
     }
     for (let i = 0; i < 250 && opened.registry.get(id)?.state === "found"; i++) await Bun.sleep(20);
   }
@@ -510,7 +510,7 @@ describe("a tool that has gone is refused at the call, whatever the agent still 
     const { card } = await p.registry.installed("toolbox", "app");
     expect(card).toBeDefined();
     const shown = p.okBroker.cards().find((c) => c.id === card)!;
-    await p.okBroker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: p.okBroker.frameChannel(card!)!, input: "click", at: Date.now() } }, { role: "app" });
+    await p.okBroker.answer(card!, { optionId: "approve", hash: shown.hash, proof: { via: "sealed-frame", frame: p.okBroker.frameChannel(card!)!, input: "click", at: Date.now() }, ...((shown.children ?? []).some((c) => c.checked) ? { children: shown.children!.filter((c) => c.checked).map((c) => c.id) } : {}) }, { role: "app" });
     await waitFor(() => p.registry.get("toolbox")?.state !== "found", "the plugin to run on the new OK", 20_000);
     await p.mcp.refresh();
     await p.mcp.settled(5_000);
