@@ -17,7 +17,7 @@ const OPTIONS = [{ id: "approve", kind: "approve" as const, label: "Approve" }, 
 const pageOf = (children: readonly Kid[] | undefined) => ownCardPage({ cardId: "c1", token: "t", origin: "user", issuedAt: 0, expiresAt: null, fields: { title: { type: "text", text: "Plugin Pack" } }, options: OPTIONS, ...(children !== undefined ? { children } : {}) });
 
 type Said = { option: string; ticks?: readonly string[] };
-let seenEnd: (() => void) | undefined;
+let seenBox: Map<Element, () => void> = new Map();
 // A page's script listens on the document, which outlives each test's page: the last page's listeners are taken off before the next loads.
 let listening: [string, EventListenerOrEventListenerObject, unknown][] = [];
 function load(html: string, said: Said[]) {
@@ -30,12 +30,12 @@ function load(html: string, said: Said[]) {
   const script = /<script>([\s\S]*?)<\/script>/.exec(html)?.[1] ?? "";
   document.body.innerHTML = body;
   delete document.body.dataset.ready;
-  seenEnd = undefined;
+  seenBox = new Map();
   g.IntersectionObserver = class {
     constructor(private cb: (e: unknown[]) => void) {}
     observe(t: Element) {
-      // The press's own observer on a button reports whole and visible at once; the list's observer on its last box waits for the test.
-      if (t.classList.contains("kid")) seenEnd = () => this.cb([{ target: t, isIntersecting: true, intersectionRatio: 1, isVisible: true, time: performance.now() }]);
+      // The press's own observer on a button reports whole and visible at once; the list's observer on each box waits for the test.
+      if (t.classList.contains("kid")) seenBox.set(t, () => this.cb([{ target: t, isIntersecting: true, intersectionRatio: 1, isVisible: true, time: performance.now() }]));
       else this.cb([{ target: t, isIntersecting: true, intersectionRatio: 1, isVisible: true, time: performance.now() }]);
     }
     unobserve() {}
@@ -139,7 +139,7 @@ describe("a long list is a cut field that is opened and read to its end", () => 
     // Opening it moves the card: the page waits again before it takes a press.
     click(doc.querySelector(".kids-open")!);
     expect(list.hidden).toBe(false);
-    expect(seenEnd).toBeDefined();
+    expect(seenBox.size).toBe(12);
     await wait(1_100);
     doc.dispatchEvent(new Event("pointerover"));
     await ready(doc);
@@ -147,8 +147,15 @@ describe("a long list is a cut field that is opened and read to its end", () => 
     await wait(FRESH_SETTLE_MS + 60);
     expect(said).toEqual([]);
     expect((doc.querySelector(".kids") as HTMLElement).dataset.read).toBeUndefined();
-    // Its last box reaches the window: read.
-    seenEnd!();
+    // Scrolled straight to the end: the last boxes were on screen and the middle ones were not: still not read.
+    const shownBoxes = [...seenBox.values()];
+    shownBoxes[0]!(); shownBoxes[11]!(); shownBoxes[10]!();
+    click(approve(doc));
+    await wait(FRESH_SETTLE_MS + 60);
+    expect(said).toEqual([]);
+    expect((doc.querySelector(".kids") as HTMLElement).dataset.read).toBeUndefined();
+    // Every box has been on screen: read.
+    for (const f of shownBoxes) f();
     expect((doc.querySelector(".kids") as HTMLElement).dataset.read).toBe("yes");
     box(doc, "plug/k3").checked = false;
     click(approve(doc));
