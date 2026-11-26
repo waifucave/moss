@@ -4324,9 +4324,16 @@ async function computersRun(): Promise<void> {
       ta = await terminal(home);
       // With no handshake service a pair's lease lives in no record: a restarted Alpha with Beta paired (and off) never
       // takes the bots back on its own (lease/coordinator.ts, the no-scope step). The person's way out today: make Alpha
-      // the main from its own terminal (`main.set`, which a terminal applies at once).
-      const chosen = await ta.t.request<{ applied?: boolean }>("main.set", { device: alphaDevice });
-      if (chosen.applied !== true) fail(`Alpha's terminal couldn't make Alpha the main (${JSON.stringify(chosen)})`);
+      // the main from its own terminal (`moss device main set`). Alpha's app is connected, so the terminal's choice raises
+      // Alpha's own card (lane XC 5c), which the person answers in that app. Just after the restart the engine's card
+      // broker may not be up yet (ipc/device-links.ts `openOnBroker` refuses until it is): asked again until it is.
+      const chosen = await until("Alpha's terminal choosing Alpha as the main", 30_000, async () =>
+        ta.t.request<{ applied?: boolean; card?: string }>("main.set", { device: alphaDevice }).catch((e: unknown) => (String(e).includes("refused") ? undefined : Promise.reject(e))));
+      if (chosen.applied !== true) {
+        if (chosen.card === undefined) fail(`Alpha's terminal couldn't make Alpha the main (${JSON.stringify(chosen)})`);
+        const card = await until("Alpha's card making it the main", 30_000, async () => (await cards(c)).find((k) => k.id === chosen.card));
+        await approve(c, card);
+      }
       await until("Alpha holding the bots' lease", 120_000, async () => {
         const got = await c.request<{ lease: { holder: string | null } }>("main.get", {}).catch(() => undefined);
         return got?.lease.holder === alphaDevice ? true : undefined;

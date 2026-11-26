@@ -236,8 +236,8 @@ describe("F-M2's screens: the pages the runtime adds, and add-ons", () => {
     const levels = [...frame("settings-levels").querySelectorAll(".cl-window__dialog select")].map((s) => (s as HTMLSelectElement).value);
     expect(levels).toEqual(["ask-risky", "ask", "automatic"]);
     const devices = frame("settings-devices").querySelector(".cl-window__dialog .cl-settings")!;
-    // Trust-changing controls are not offered from a part (backlog), so the list shows the devices only.
-    expect(devices.querySelector('[aria-label="Make Laptop the main computer"]')).toBeNull();
+    // Making a computer the main one is offered (lane XC 5c), ending in that computer's own sealed card.
+    expect(devices.querySelector('[aria-label="Make Laptop the main computer"]') !== null).toBe(true);
     expect(devices.textContent).toContain("Laptop");
     const atItem = frame("settings-device-item").querySelector(".cl-window__dialog .cl-settings")!;
     expect([...atItem.querySelectorAll<HTMLElement>("[data-marked]")].map((el) => el.textContent)).toEqual([expect.stringContaining("Laptop")]);
@@ -264,7 +264,7 @@ describe("F-M2's screens: the pages the runtime adds, and add-ons", () => {
 // holds `devices.manage`; the engine raises each one's sealed card itself); the window's own handling of a card raised from a
 // dialog is covered by window.test.tsx.
 describe("Settings offers only the trust-changing controls the engine seals", () => {
-  test("levels are shown, not changed; a device can be removed from here (its card is the engine's), and none is made the main", async () => {
+  test("levels are shown, not changed; a device can be removed or made the main from here (each card is the engine's)", async () => {
     const frame = root!.querySelector('[data-story="screen/settings-1024"]') as HTMLElement;
     expect(frame.querySelector(".cl-window__dialog .cl-settings")).toBeTruthy();
     fireEvent.click(within(frame).getByRole("button", { name: "Levels" }));
@@ -274,6 +274,7 @@ describe("Settings offers only the trust-changing controls the engine seals", ()
     fireEvent.click(within(wide).getByRole("button", { name: "Devices" }));
     await until(() => within(wide).queryByText(/Laptop/) !== null, 2000);
     expect(within(wide).queryByRole("button", { name: "Remove Laptop" })).not.toBeNull();
-    expect(within(wide).queryByRole("button", { name: "Make Laptop the main computer" })).toBeNull();
+    // Lane XC 5c: Make main is offered; it asks the engine (`main.set`), which raises that computer's sealed card.
+    expect(within(wide).queryByRole("button", { name: "Make Laptop the main computer" }) !== null).toBe(true);
   });
 });
