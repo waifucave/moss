@@ -122,6 +122,8 @@ final class CardFieldsTests: XCTestCase {
         await model.answer(ok, with: ok.options[0])
         let sent = await fake.answeredChildren[ok.id]
         XCTAssertEqual(sent, ["office", "office-mail"], "Allow carries exactly the ticked ones, in the card's order")
+        // The card below moved up when this one left: it waits out its (zero) settle before it answers.
+        try? await Task.sleep(for: .milliseconds(50))
 
         // Twelve: cut at eight, like a list. Allow waits until they are opened and read to their end; Deny sends none.
         XCTAssertEqual(many.cutFields, [Card.childrenField])

@@ -266,7 +266,9 @@ final class ClientTests: XCTestCase {
         var got: Card?
         while got == nil, let e = await it.next() { if case .cardRequested(let card) = e { got = card } }
         let card = try XCTUnwrap(got)
-        XCTAssertEqual(card.title, "a\\u202Eb", "a computer's text is drawn through the core's visible-text rule")
+        // The core types the card, every string already through its visible-text rule (`typed.rs`); the client draws
+        // exactly the card the core gave, changing nothing.
+        XCTAssertEqual(card, s.card, "the card drawn is the core's own")
         try await c.answer(card: card, option: card.options[0])
         XCTAssertTrue(conn.answered.first?.0 === s, "the very object the core issued goes back")
         do { try await c.answer(card: card, option: card.options[0]); XCTFail("answered twice") } catch is CardNotShown {}

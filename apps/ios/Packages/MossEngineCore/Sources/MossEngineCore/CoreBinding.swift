@@ -166,7 +166,7 @@ enum Records {
             switch f.value {
             case .text(let t): fields[f.name] = .text(t)
             case .code(let s, let l): fields[f.name] = .code(s, language: l)
-            case .list(let items): fields[f.name] = .list(items)
+            case .items(let items): fields[f.name] = .list(items)
             case .rows(let rows): fields[f.name] = .rows(rows.map { .init(label: $0.label, value: $0.value) })
             }
         }

@@ -164,7 +164,8 @@ impl CardView {
 pub enum SealedField {
     Text { text: String },
     Code { code: String, language: Option<String> },
-    List { items: Vec<String> },
+    /// A list (`list`): named `Items` so no binding's own `List` type is shadowed (Kotlin's is).
+    Items { items: Vec<String> },
     Rows { rows: Vec<SealedRow> },
 }
 
@@ -239,7 +240,7 @@ fn sealed_field(v: &Value) -> Option<SealedField> {
         "list" => {
             let a = v.get("items")?.as_array()?;
             let items: Vec<String> = a.iter().filter_map(|x| x.as_str().map(shown)).collect();
-            (items.len() == a.len()).then_some(SealedField::List { items })
+            (items.len() == a.len()).then_some(SealedField::Items { items })
         }
         "rows" => {
             let a = v.get("rows")?.as_array()?;

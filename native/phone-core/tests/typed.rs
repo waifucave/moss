@@ -166,7 +166,7 @@ fn a_card_is_typed_for_the_app() {
     let field = |n: &str| c.fields.iter().find(|f| f.name == n).map(|f| f.value.clone());
     assert_eq!(field("title"), Some(SealedField::Text { text: "Turn onU+202E Office?".into() }), "a hidden character is shown");
     assert_eq!(field("command"), Some(SealedField::Code { code: "ls".into(), language: Some("sh".into()) }));
-    assert!(matches!(field("paths"), Some(SealedField::List { items }) if items == ["a", "b"]));
+    assert!(matches!(field("paths"), Some(SealedField::Items { items }) if items == ["a", "b"]));
     assert!(matches!(field("detail"), Some(SealedField::Rows { rows }) if rows.len() == 1));
     assert_eq!(c.options[0].label, "Allow", "a Text in English first");
     assert!(c.options[0].remember_always);
