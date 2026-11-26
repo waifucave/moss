@@ -40,6 +40,7 @@
 // NEVER THROUGH A LINK: a `cache`, `cache/runs` or run-folder entry that is a symbolic link is never
 // reconciled (the router would scan `<target>/projects/*.jsonl` and could append a planted transcript to
 // the canonical store) and never followed by the delete. Diagnostics carry counts and paths only.
+import { insideFolded } from "../fence/spelling";
 import { lstatSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -286,7 +287,7 @@ export async function recoverRunRoots(deps: RootRecoveryDeps): Promise<RootRecov
     // A root some live generation names, or one still younger than the stale rule, is not ours to touch YET:
     // it stays a candidate BY PATH (the marker's `pending`), so the 24 h rule keeps meaning what it meant
     // when every boot re-listed the folder.
-    if ([...claimed].some((root) => root === dir || root.startsWith(`${dir}/`))) { stillPending.push(dir); continue; }
+    if ([...claimed].some((root) => insideFolded(root, dir))) { stillPending.push(dir); continue; }
     let ageMs: number;
     try { ageMs = Date.now() - statSync(dir).mtimeMs; } catch { continue; }
     if (ageMs < CLAUDE_RESUME_STALE_MS && !recordedStaging.has(dir)) { stillPending.push(dir); continue; }
