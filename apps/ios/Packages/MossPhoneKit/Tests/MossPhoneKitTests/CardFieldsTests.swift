@@ -155,6 +155,17 @@ final class CardFieldsTests: XCTestCase {
         XCTAssertFalse(same.drawnWhole)
         var lookAlike = ok; lookAlike.children = [.init(id: "a", label: "Mail\nSend", checked: true), .init(id: "b", label: "Mail ⏎ Send", checked: false)]
         XCTAssertFalse(lookAlike.drawnWhole, "a label that only differs by a line break reads the same")
+        var spaced = ok; spaced.children = [.init(id: "a", label: "Office", checked: true), .init(id: "b", label: "  Office ", checked: false)]
+        XCTAssertFalse(spaced.drawnWhole, "labels that differ only by spaces at either end read the same")
+        var endBreak = ok; endBreak.children = [.init(id: "a", label: "Office", checked: true), .init(id: "b", label: "Office\n", checked: false)]
+        XCTAssertFalse(endBreak.drawnWhole, "a trailing line break doesn't tell two labels apart either")
+        var different = ok; different.children = [.init(id: "a", label: "Office", checked: true), .init(id: "b", label: " Office mail", checked: false)]
+        XCTAssertTrue(different.drawnWhole, "labels that read differently are drawn")
+        // A label too long to be on screen whole goes to the computer; one at the limit is drawn.
+        var atLimit = ok; atLimit.children = [.init(id: "a", label: String(repeating: "x", count: Card.Cut.checkboxLabel), checked: true)]
+        XCTAssertTrue(atLimit.drawnWhole)
+        var tooLong = ok; tooLong.children = [.init(id: "a", label: String(repeating: "x", count: Card.Cut.checkboxLabel + 1), checked: true)]
+        XCTAssertFalse(tooLong.drawnWhole, "a label longer than the screen holds is answered on the computer")
 
         // A card whose content changed starts again from the engine's defaults.
         var changed = ok; changed.id = "card_plug0003"; changed.hash = String(repeating: "f", count: 64)

@@ -302,6 +302,11 @@ public struct Card: Identifiable, Codable, Hashable, Sendable {
             }
             return out
         }
+        /// How two labels are compared for reading the same: as drawn (one line, the visible-text rule), spaces and line
+        /// breaks at either end dropped.
+        static func compared(_ label: String) -> String {
+            oneLine(Sealed.visible(label).trimmingCharacters(in: .whitespacesAndNewlines)).trimmingCharacters(in: .whitespaces)
+        }
         private enum Keys: String, CodingKey { case id, label, checked }
         /// The label is the protocol's `Text`: a string, or one per language (English first, else the first in order).
         public init(from decoder: Decoder) throws {
@@ -341,8 +346,11 @@ public struct Card: Identifiable, Codable, Hashable, Sendable {
             && fields["what"].map { if case .text = $0 { return true } else { return false } } ?? true
             && (children ?? []).allSatisfy { !$0.id.isEmpty && !$0.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             && Set((children ?? []).map(\.id)).count == (children ?? []).count
-            // Two checkboxes that read the same can't be told apart on the phone: answered on the computer.
-            && Set((children ?? []).map { Card.Child.oneLine($0.label) }).count == (children ?? []).count
+            // Two checkboxes that read the same can't be told apart on the phone (spaces at either end don't tell them
+            // apart either): answered on the computer.
+            && Set((children ?? []).map { Card.Child.compared($0.label) }).count == (children ?? []).count
+            // A label too long to be on screen whole at the largest text size: answered on the computer.
+            && (children ?? []).allSatisfy { Card.Child.oneLine(Sealed.visible($0.label)).count <= Cut.checkboxLabel }
             && characters <= Card.tooLargeCharacters
     }
 
@@ -351,6 +359,9 @@ public struct Card: Identifiable, Codable, Hashable, Sendable {
         public static let text = 600
         public static let code = 800
         public static let items = 8
+        /// A checkbox's label, drawn whole (never cut): at the largest text size about 120 characters still fit on a
+        /// phone's screen with the box; a longer one sends the card to the computer.
+        public static let checkboxLabel = 120
     }
     /// A card with more text than this is too long to read on a phone: answered on the computer.
     public static let tooLargeCharacters = 40_000
