@@ -2,7 +2,7 @@ import { SDK_VERSION } from "@waifucave/clover-agent-sdk";
 
 /** The exact peer versions this daemon was written against (P8b-3). The ^ ranges in package.json
  *  are what INSTALLS; these are what the tests PROVE installed. Bump together with the pins. */
-export const REQUIRED_WINTER_AGENT_SDK = "0.0.88";
+export const REQUIRED_WINTER_AGENT_SDK = "0.0.89";
 /**
  * THE CODING AGENT BINARY, on its own pin since A-M1. Code sessions run embedded and no session spawns
  * it any more; it is lane K's (the coding agent that becomes an ACP agent, spec §9.3), and the tests that
@@ -11,7 +11,10 @@ export const REQUIRED_WINTER_AGENT_SDK = "0.0.88";
  * builds its own.
  */
 export const CODING_AGENT_BINARY_VERSION = "0.0.55";
-/** Bumped to 0.0.88 (2026-11-26): on Windows a path outside a file rule's folder is outside it, not an error that denied the call (`path.relative`'s backslash, drive and
+/** Bumped to 0.0.89 (2026-11-26): on Linux the held-names walk has one budget per command (400,000 entries and 3 s across
+ *  every write root, the working folder first) and fails closed: a root it can't finish isn't handed as writable; node_modules
+ *  is walked to 64 levels; a held name's quarantine checks its parent against the walk's identity.
+ *  Earlier: bumped to 0.0.88 (2026-11-26): on Windows a path outside a file rule's folder is outside it, not an error that denied the call (`path.relative`'s backslash, drive and
  *  8.3 forms); both sides compare in long names; a network or device path (`\\\\server\\share`, `\\\\.\\C:`, `\\??\\`) fails closed with its own reason; a junction inside the root keeps its deny.
  *  Earlier: bumped to 0.0.87 (2026-11-25): a host's PreToolUse hook may answer a call itself (`toolResult`; host hooks only, deny wins,
  *  a toolResult that can't be honoured denies): the bot driver answers a call on another computer's tree path with that computer's

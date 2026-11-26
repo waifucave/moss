@@ -124,5 +124,8 @@ describeWithEmbeddedRuntime("a bot's Bash on Linux with today's write roots: wha
     };
     console.log(`linux walk cost at accept-edits: the same 100-folder layout draws ${rootsAt("accept-edits")} roots (fully automatic ${rootsAt("automatic")})`);
     expect(auto.big.leftOut).toBe(0);
+    // Agent runtime 0.0.89 walks the roots on one budget per command (400,000 entries, 3 s) and fails closed past it:
+    // the ~300 s a command on 0.0.88 is now about a second; 10 s is the bound, the bot's own folder written either way.
+    expect(auto.big.first - auto.tiny.first).toBeLessThan(10_000);
   }, 1_000_000);
 });
