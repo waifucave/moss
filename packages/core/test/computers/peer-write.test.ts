@@ -7,6 +7,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Caller, Level, Os } from "@waifucave/moss-protocol";
+import { createHash } from "node:crypto";
+import { callCardRenderer } from "../../src/computers/call-cards";
 import { fencedExecutor } from "../../src/computers/fenced-executor";
 import { MossFence } from "../../src/fence/fence";
 import { fencedSpawner } from "../../src/fence/fenced-process";
@@ -103,6 +105,47 @@ describe("which folder a peer's command gets (peerFolderFor: the local rule, mir
     });
     expect(e.peerFolder?.({ holder: "Beta", folder: w.project, by: "level", level: "automatic", readOnly: false, verdict: "safe" })).toEqual({ folder: w.project });
     expect(e.peerFolder?.({ holder: "Beta", folder: w.home, by: "answer", level: "ask", readOnly: false })).toEqual({ why: expect.stringContaining("never writes there") });
+  });
+
+  test("runs that write a folder wait per folder: one in another folder runs meanwhile; temp-only runs never wait", async () => {
+    const w = world();
+    const other = join(w.home, "Documents");
+    const inner = join(w.project, "src");
+    mkdirSync(inner);
+    const started: string[] = [];
+    const gates = new Map<string, () => void>();
+    const spawner = (label: string) => ({
+      available: true,
+      run: async () => { started.push(label); await new Promise<void>((r) => gates.set(label, r)); return { kind: "exit", code: 0, stdout: "", stderr: "" }; },
+    }) as unknown as Parameters<typeof fencedExecutor>[0]["spawner"];
+    let n = 0;
+    const e = fencedExecutor({
+      spawner: spawner("local"), home: w.home, temp: w.tmp, mossHome: w.moss, os: "macos",
+      peerSpawner: () => spawner(`run${++n}`),
+      peerFloor: { userHome: w.home, mossHome: w.moss, os: "macos", pathFolders: () => [] },
+    });
+    const go = (cwd: string, write: ToolRunContext["write"]) => e.run("Bash", { command: "make" }, { as: PEER, session: "s", callId: `c${cwd}`, cwd, treeCwd: "x", signal: new AbortController().signal, output: () => {}, ...(write ? { write } : {}) });
+    const tick = () => new Promise((r) => setTimeout(r, 30));
+    const a = go(w.project, { folder: w.project });
+    await tick();
+    const b = go(other, { folder: other });
+    const a2 = go(w.project, { folder: w.project });
+    const nested = go(inner, { folder: inner });
+    const t = go(w.project, { why: "temp-only" });
+    await tick();
+    // run1 (project) and run2 (Documents) and the temp-only one run; the second in project and the nested one wait.
+    expect(started.sort()).toEqual(["run1", "run2", "run3"].sort());
+    gates.get("run1")!();
+    await a;
+    await tick();
+    expect(started.length).toBe(4);
+    for (const g of [...gates.values()]) g();
+    await tick();
+    for (const g of [...gates.values()]) g();
+    await tick();
+    for (const g of [...gates.values()]) g();
+    await Promise.all([b, a2, nested, t]);
+    expect(started.length).toBe(5);
   });
 
   test("the holder's reason reaches the bot's text, on a result and on a refusal", () => {
@@ -278,6 +321,25 @@ describe("on the tree service: the read-only rule, the card for the folder, auto
     expect(install.isError).toBe(false);
     expect(phone.shown.map((s) => [s.computer, s.method])).toEqual([["Beta", "tool.run"]]);
     expect(got.at(-1)).toEqual({ folder: project });
+  });
+
+  test("a read-only command asks nothing at every level, ask and read-only included, as a bot's does here", async () => {
+    if (process.platform === "win32") return;
+    for (const level of ["ask", "read-only", "accept-edits", "automatic"] as const) {
+      const { phone, got, reviewed, run } = await pair({ level, reviewer: async () => "risky" });
+      for (const c of ["ls", "cat notes.md", "git status"]) expect([level, c, (await run(c)).isError]).toEqual([level, c, false]);
+      expect([level, phone.shown]).toEqual([level, []]);
+      expect([level, reviewed]).toEqual([level, []]);
+      expect([level, got]).toEqual([level, [{}, {}, {}]]);
+      cluster?.close();
+      cluster = undefined;
+    }
+  });
+
+  test("the card for a command says what a yes does now", () => {
+    const render = callCardRenderer((t) => createHash("sha256").update(t).digest("hex"));
+    const card = render({ computer: "Beta", method: "tool.run", params: { tool: "Bash", input: { command: "npm install", cwd: "home/Beta/Projects/app" } } });
+    expect(JSON.stringify(card?.fields.what)).toContain("Run this command? It can change files in the folder below, but never its .git or settings that run later.");
   });
 
   test("ask for risky actions: the person's no to the folder's card runs nothing", async () => {

@@ -146,7 +146,8 @@ function fieldsFor(computer: string, method: string, params: unknown): { kind: C
       const input = (typeof p.input === "object" && p.input !== null ? p.input : {}) as { command?: unknown; cwd?: unknown };
       if (p.tool === "Bash" && typeof input.command === "string") {
         return { kind: "tool", fields: {
-          title: text("Run a command from another computer"), what: text("Run this command?"), computer: on,
+          // A yes lets the command write the folder it runs in (lane XC step 3b, fence/peer-floor.ts), the card says so.
+          title: text("Run a command from another computer"), what: text("Run this command? It can change files in the folder below, but never its .git or settings that run later."), computer: on,
           ...codeOr(input.command, "Command"), ...(typeof input.cwd === "string" ? { paths: pathsField([input.cwd]) } : {}),
         } };
       }

@@ -81,8 +81,8 @@ export async function judgePeer(o: {
   reviewer?: PeerReviewer;
   answers?: Answers;
   now: number;
-  /** A command the bot check judges read-only (`fencedReadOnlyCommand`): at a level that would ask the reviewer, it
-   *  runs with no reviewer and no card, as a bot's read-only command does here (step 3b). */
+  /** A command the bot check judges read-only (`fencedReadOnlyCommand`): at every level it runs with no reviewer and
+   *  no card, as a bot's read-only command does here (step 3b). */
   readOnly?: boolean;
 }): Promise<PeerPass> {
   // The computer the card names: this one, or for a move or copy between two (R15) the destination its params name,
@@ -91,8 +91,10 @@ export async function judgePeer(o: {
   const level = strictestLevel([o.ownLevel ?? DEFAULT_LEVEL, o.callLevel])!;
   const d = levelDecision(level, o.effect);
   if (d === "allow") return { by: "level", level };
+  // A read-only command runs with no reviewer and no card at every level, as a bot's does here (the bot check allows
+  // it before any level's rule); it writes only its own temp folder.
+  if (o.readOnly === true) return { by: "read-only", level };
   if (d === "deny") throw new ContractError("refused", `${o.computer} doesn't let another computer do this at its level`);
-  if (d === "review" && o.readOnly === true) return { by: "read-only", level };
   if (!o.answer) {
     if (d === "review" && o.reviewer) {
       const verdict = await o.reviewer({ computer: o.computer, method: o.method, params: o.params, as: o.as, effect: o.effect });

@@ -13,8 +13,9 @@
 //
 // Step 3b: a peer's command may also write the folder it runs in, where the tree service says so (`ctx.write`, by
 // `peerFolderFor`), under exactly the local bot sandbox's denies there (`peerFolderDenies`). Such runs go one at a
-// time on this computer, and the folder's real path is read again right before each: no other peer command can then
-// swap it for a link between the service's check and the spawn (a temp-only one can't write its parent).
+// time per folder (and with any run in a folder holding it or inside it), and the folder's real path is read again
+// right before each: no other peer command can then swap it for a link between the service's check and the spawn (a
+// temp-only one can't write its parent, and one granted a folder elsewhere can't reach it).
 import { createHash, randomBytes } from "node:crypto";
 import { lstatSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -87,11 +88,17 @@ export function fencedExecutor(o: FencedExecutorOptions): ToolExecutor {
     }
     return o.temp;
   };
-  // Peer runs that write a folder go one at a time (the head comment).
-  let folderRuns: Promise<unknown> = Promise.resolve();
-  const oneAtATime = <T>(fn: () => Promise<T>): Promise<T> => {
-    const next = folderRuns.then(fn, fn);
-    folderRuns = next.catch(() => {});
+  // Peer runs that write a folder go one at a time PER FOLDER, by its real path (the head comment): a build in one folder
+  // never holds a run in another; a run in a folder inside another's, or holding it, waits for that one too, since it
+  // could swap a link in there. Temp-only runs are never held.
+  const folderRuns = new Map<string, Promise<unknown>>();
+  const overlaps = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`) || a.startsWith(`${b}\\`) || b.startsWith(`${a}\\`);
+  const oneAtATime = <T>(folder: string, fn: () => Promise<T>): Promise<T> => {
+    const before = [...folderRuns].filter(([f]) => overlaps(f, folder)).map(([, p]) => p);
+    const next = Promise.allSettled(before).then(fn);
+    const held = next.catch(() => {});
+    folderRuns.set(folder, held);
+    void held.then(() => { if (folderRuns.get(folder) === held) folderRuns.delete(folder); });
     return next;
   };
   // The homes by their real paths, as the folder is (the service's `realFolder`): a home reached through a link
@@ -120,7 +127,7 @@ export function fencedExecutor(o: FencedExecutorOptions): ToolExecutor {
     }),
     async run(tool, input, ctx) {
       const wants = ctx.as.kind === "peer" && ctx.write !== undefined && "folder" in ctx.write ? ctx.write.folder : undefined;
-      if (wants !== undefined) return oneAtATime(() => runOnce(tool, input, ctx, wants));
+      if (wants !== undefined) return oneAtATime(realOr(wants), () => runOnce(tool, input, ctx, wants));
       return runOnce(tool, input, ctx, undefined);
     },
   };
