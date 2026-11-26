@@ -12,6 +12,7 @@ import { MossFence } from "../../src/fence/fence";
 import { fencedSpawner } from "../../src/fence/fenced-process";
 import { botSandboxSettings, denyRegex, heldNames, leftOutRoots, LINUX_LEAVE_OUT_UNHELD, linuxHoldProblem, shellRunLaterDenies } from "../../src/fence/sandbox-settings";
 import { leftOutNote } from "../../src/runtime-sdk/turn-loop/driver";
+import { hostOs } from "../../src/tree/names";
 
 const temps: string[] = [];
 afterAll(() => { for (const d of temps.splice(0)) rmSync(d, { recursive: true, force: true }); });
@@ -40,15 +41,16 @@ describe("no deny glob MOSS hands the runtime is wider than the roots drawn", ()
     const moss = join(home, ".moss");
     mkdirSync(join(moss, "scratch", "luna"), { recursive: true });
     for (const f of ["Documents", "Projects", "app"]) mkdirSync(join(home, f), { recursive: true });
-    const fence = new MossFence({ os: process.platform === "darwin" ? "macos" : "linux", home, mossHome: moss, temp: temp("xc-wide-tmp-") });
+    const fence = new MossFence({ os: hostOs(), home, mossHome: moss, temp: temp("xc-wide-tmp-") });
     for (const level of ["automatic", "accept-edits"] as const) {
       const s = botSandboxSettings(fence.policy(), { mossHome: moss, userHome: home, level, ownFolders: [join(moss, "scratch", "luna")], pathFolders: [] });
       const roots = s.filesystem?.allowWrite ?? [];
       // The home is drawn as its entries here (the MOSS home is inside it).
       expect([level, roots.includes(home)]).toEqual([level, false]);
       const denies = [...(s.filesystem?.denyWrite ?? []), ...(s.filesystem?.denyRead ?? [])];
-      // macOS's run-later names go from `/` on purpose (Seatbelt matches as each path opens, nothing is walked).
-      const walked = process.platform === "darwin" ? denies.filter((d) => !d.startsWith("/**")) : denies;
+      // The held names go from `/` on purpose: on macOS Seatbelt matches as each path opens; on Linux the runtime never
+      // makes `/` a prefix of its own and walks such a pattern under the roots only (the next describe).
+      const walked = denies.filter((d) => !d.startsWith("/**"));
       expect([level, widerThanTheRoots(walked, roots, home)]).toEqual([level, []]);
     }
   });
