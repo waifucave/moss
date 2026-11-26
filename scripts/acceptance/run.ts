@@ -74,8 +74,9 @@ import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, r
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { DEFAULT_LEVEL, MOSS_PROTOCOL_VERSION, programAnswerKeyRotateStatement, programAnswerKeyStatement, programCardAnswerSigningInput } from "../../packages/protocol/src/index";
+import { DEFAULT_LEVEL, MOSS_PROTOCOL_VERSION, cardAnswerSigningInput, programAnswerKeyRotateStatement, programAnswerKeyStatement, programCardAnswerSigningInput } from "../../packages/protocol/src/index";
 import { answerKeyWords } from "../../packages/core/src/identity/sas";
+import { answerKeyStatement } from "../../packages/core/src/devices/registry";
 import { notOnLinux, onLinux, onUnfencedOs } from "./not-on-linux";
 import { TEST_KEYCHAIN_PASSWORD } from "../../packages/core/src/auth/login-keychain";
 import { HARNESS_TOKEN_FILE } from "../../packages/core/src/platform/pair/run-files";
@@ -139,7 +140,7 @@ import { AGENT_STEP, COLD_START_STEP, COPY_UPGRADE_STEPS, FULL_STEPS, IDLE_STEP,
 import { DISTRUST, answerKeyFileFor, keepStateProblem, oldHalfRow, readState, settingsWithFake, socketPathProblem, statePaths, treeDigest, writeState, type KeptState } from "./state";
 import { FAKE_ARTICLE_TEXT, FAKE_HIT_PATH, FAKE_PRIVATE_ADDRESS, FAKE_PRIVATE_SITE, FAKE_PUBLIC_SITE, FAKE_SEARCH_HIT, serveOutsideWorld, type OutsideWorld } from "./fake-exa";
 import { FAKE_LINKED_PATH, FAKE_LINKS_PATH } from "./fake-exa";
-import { BETA_MEMORY_DUMMY, BETA_NOTE, BETA_SECRETS_DUMMY, COMPUTERS_BASH_STEP, COMPUTERS_CARD_NO_STEP, COMPUTERS_CARD_STEP, COMPUTERS_REINSTALL_STEP, COMPUTERS_ROTATE_STEP, COMPUTERS_MOVE_STEP, COMPUTERS_OFFLINE_STEP, COMPUTERS_PAIR_STEP, COMPUTERS_READ_STEP, COMPUTERS_REFUSED_STEP, COMPUTERS_STEPS, COMPUTERS_WRITE_STEP, offlineWrong, refusedWrong, type Seen } from "./computers-step";
+import { BETA_MEMORY_DUMMY, BETA_NOTE, BETA_SECRETS_DUMMY, COMPUTERS_BASH_STEP, COMPUTERS_CARD_NO_STEP, COMPUTERS_CARD_STEP, COMPUTERS_LOST_STEP, COMPUTERS_REINSTALL_STEP, COMPUTERS_ROTATE_STEP, COMPUTERS_MOVE_STEP, COMPUTERS_OFFLINE_STEP, COMPUTERS_PAIR_STEP, COMPUTERS_READ_STEP, COMPUTERS_REFUSED_STEP, COMPUTERS_STEPS, COMPUTERS_WRITE_STEP, offlineWrong, refusedWrong, type Seen } from "./computers-step";
 import { CODE_ADAPTER_STEP, codeAdapterWrong, GEMINI_MODEL, GEMINI_REPLY, GOOGLE_PLUGIN, OAUTH_MODEL, OAUTH_PLUGIN, OAUTH_REPLY, OAUTH_SIGN_IN_STEP, OPENAI_REPLY, OPENAI_WIRE_PROVIDERS, openAiWireWrong, THIRD_PARTY_KEY, THIRD_PARTY_MODEL, THIRD_PARTY_MODEL_STEP, THIRD_PARTY_PLUGIN, THIRD_PARTY_REPLY } from "./code-adapter-step";
 import { placeModelsFixture, startFakeModels, type FakeModels } from "./fake-models";
 import { placeOAuthFixture, startFakeOAuth, type FakeOAuth } from "./fake-oauth";
@@ -4307,6 +4308,42 @@ async function computersRun(): Promise<void> {
       const w = await cardedWrite("rotated.md");
       if (w.cards !== 1 || !w.landed) fail(`the write answered with the new key didn't land (${w.cards} card(s) naming Beta; ${w.r?.text.slice(0, 160) ?? "no result"})`);
       return "MOSS's key replaced on Alpha with its hand-over (Alpha's own card); Beta took the new key with no card, and a write on Beta answered with it landed";
+    });
+    await step(COMPUTERS_LOST_STEP, async () => {
+      // MOSS Code's own key on Alpha (the device's single answer key), registered as MOSS Code registers it.
+      const codeKey = generateKeyPairSync("ed25519").privateKey;
+      const codePub = rawPub(codeKey);
+      const codeSet = await c.request<{ applied?: boolean }>("device.answerKey.set", { publicKey: codePub, held: "none", signature: sign(null, Buffer.from(answerKeyStatement(alphaDevice, codePub, "none")), codeKey).toString("base64") });
+      if (codeSet.applied !== true) fail("Alpha's engine didn't take MOSS Code's answer key");
+      // MOSS's key lost (reinstalled, its data gone) while the engine's table keeps the old one: MOSS registers a new key.
+      const lostKey = generateKeyPairSync("ed25519").privateKey;
+      const lostPub = rawPub(lostKey);
+      const lostReg = { publicKey: lostPub, held: "none", alg: "ed25519", signature: registration(lostKey, lostPub) };
+      const asked = await mossApp.request<{ applied?: boolean; card?: string }>("device.programKey.set", lostReg);
+      if (asked.applied !== false || asked.card === undefined) fail(`Alpha's engine didn't ask on a card for MOSS's new key (${JSON.stringify(asked)})`);
+      const card = await until("Alpha's card for MOSS's new key", 30_000, async () => (await cards(c)).find((k) => k.id === asked.card));
+      if (card.change !== "answer-key-lost") fail(`Alpha's card is ${String(card.change)}, not the lost key's`);
+      if (!JSON.stringify(card).includes(answerKeyWords(lostPub).join(" "))) fail("Alpha's card doesn't show the new key's four words");
+      // MOSS Code's window in front (the card in its strip), its yes signed with MOSS Code's own key.
+      await c.request("presence.report", { windows: [{ window: "main", focused: true, visible: true, showing: { kind: "bot", id: "alpha" } }] });
+      const option = card.options.find((x) => x.kind === "approve")!.id;
+      const at = Date.now();
+      const signature = sign(null, Buffer.from(cardAnswerSigningInput({ id: card.id, hash: card.hash, option, at })), codeKey).toString("base64");
+      const answered = await until("MOSS Code's yes on Alpha's card", 30_000, async () => {
+        const r = await c.request<{ accepted: boolean; reason?: string }>("card.answer", { id: card.id, hash: card.hash, option, proof: { via: "device", device: alphaDevice, at, signature } });
+        return r.accepted ? r : undefined;
+      });
+      if (!answered.accepted) fail("card.answer refused MOSS Code's signed yes");
+      await until("Alpha holding MOSS's new key", 30_000, async () => ((await mossApp.request<{ applied?: boolean }>("device.programKey.set", lostReg)).applied === true ? true : undefined));
+      mossKey = lostKey;
+      mossPub = lostPub;
+      // Beta: a key with no hand-over from the one it holds: its own card, in Beta's app.
+      const bcard = await until("Beta's card for Alpha's new MOSS key", 60_000, async () => (await cards(betaApp)).find((k) => k.change === "peer-answer-key" && JSON.stringify(k).includes(answerKeyWords(lostPub).join(" "))));
+      await approve(betaApp, bcard);
+      await until("Beta holding MOSS's new key", 60_000, async () => ((await betaHolds(lostPub)) ? true : undefined));
+      const w = await cardedWrite("lost-key.md");
+      if (!w.landed) fail(`the write answered with MOSS's new key didn't land (${w.r?.text.slice(0, 160) ?? "no result"})`);
+      return "MOSS's key lost on Alpha: Alpha's own card answered with MOSS Code's key took the new one; Beta asked on its own card in Beta's app; after its yes a write answered with the new key landed";
     });
     await step(COMPUTERS_REINSTALL_STEP, async () => {
       // A key lost with no hand-over, as it can happen today: Alpha's program-key table is gone while its device stays (the
