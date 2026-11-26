@@ -152,7 +152,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Core · the Windows fence's unit tests (arm64)
         working-directory: packages/core
-        run: bun test --timeout 30000 test/platform/win-pipe.test.ts test/platform/win-job.test.ts test/fence/win-sandbox.test.ts test/fence/win-fenced.test.ts test/fence/fold-paths.test.ts test/fence/long-path.test.ts
+        run: bun test --timeout 30000 test/platform/win-pipe.test.ts test/platform/win-job.test.ts test/fence/win-sandbox.test.ts test/fence/win-fenced.test.ts test/fence/fold-paths.test.ts test/fence/long-path.test.ts test/tree/windows-shell.test.ts
 
   # The Windows fence's own unit tests, which no other job ran (the core suite's Windows run doesn't exist; the Linux
   # shards skip them): the named pipe, the job object and the launcher's pure half.
@@ -177,7 +177,7 @@ jobs:
 
       - name: Core · the Windows fence's unit tests
         working-directory: packages/core
-        run: bun test --timeout 30000 test/platform/win-pipe.test.ts test/platform/win-job.test.ts test/fence/win-sandbox.test.ts test/fence/win-fenced.test.ts test/fence/fold-paths.test.ts test/fence/long-path.test.ts
+        run: bun test --timeout 30000 test/platform/win-pipe.test.ts test/platform/win-job.test.ts test/fence/win-sandbox.test.ts test/fence/win-fenced.test.ts test/fence/fold-paths.test.ts test/fence/long-path.test.ts test/tree/windows-shell.test.ts
 
       - name: Core · the plugin host's link, the plugin guard, the secrets store and the ACL read-back on Windows
         working-directory: packages/core

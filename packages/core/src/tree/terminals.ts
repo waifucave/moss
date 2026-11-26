@@ -46,6 +46,13 @@ export function windowsShell(env: Record<string, string>, look: { which(name: st
   return [env.ComSpec ?? "cmd.exe"];
 }
 
+/** What a shell on PIPES (Windows, no PTY) reads as Enter: a line ends at `\n`, so the Enter key's `\r` (which a PTY turns into a line
+ *  end) is sent as `\n`; a `\r\n` already there stays one line end, never two. Without it PowerShell echoes the typed line and waits
+ *  for a terminator that never comes (browser and browser-host acceptance rows on Windows). */
+export function pipeEnter(data: string): string {
+  return data.replace(/\r\n?/g, "\n");
+}
+
 export function userShell(cwd: string): { cmd: string[]; env: Record<string, string> } {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined) env[k] = v;
@@ -135,7 +142,7 @@ export class LocalTerminals {
       void proc.exited.then((code) => done(code));
       entry = {
         id, device, session, bracketed: false,
-        write: (d) => { proc.stdin.write(d); void proc.stdin.flush(); },
+        write: (d) => { proc.stdin.write(pipeEnter(d)); void proc.stdin.flush(); },
         resize: () => {},
         close: () => proc.kill(),
       };
