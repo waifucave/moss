@@ -11,6 +11,7 @@ export * from "./cowork";
 export * from "./common";
 export * from "./strings";
 export * from "./visible-text";
+export * from "./card-children";
 export * from "./roles";
 export * from "./rpc";
 export * from "./plugins";

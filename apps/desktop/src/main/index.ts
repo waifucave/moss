@@ -699,7 +699,7 @@ async function ready(): Promise<void> {
       const out = sealed.buildAnswer(token, option_, children, senderKey, key, signedDevice ?? "", undefined, program === "host" ? "host" : undefined);
       if ("error" in out) { log(`sealed: answer refused (${out.error})`); return { accepted: false, reason: out.error }; }
       disarmFallback(out.card.id); // a part's own button answered first: the fallback's timer is gone.
-      const r = await client.request<{ accepted: boolean; reason?: string }>("card.answer", { id: out.card.id, hash: out.card.hash, option: option_, proof: out.proof, ...(children !== undefined ? { children } : {}) }, 15_000).catch((err: unknown) => ({ accepted: false, reason: err instanceof Error ? err.message.slice(0, 200) : "refused" }));
+      const r = await client.request<{ accepted: boolean; reason?: string }>("card.answer", { id: out.card.id, hash: out.card.hash, option: option_, proof: out.proof, ...(out.kids !== undefined ? { children: out.kids } : {}) }, 15_000).catch((err: unknown) => ({ accepted: false, reason: err instanceof Error ? err.message.slice(0, 200) : "refused" }));
       if (r.accepted !== true) {
         sealed.confirmedAnswer(out.card.id, false);
         // The press disarmed the card's fallback and the buttons stopped showing while the answer was out (the fallback stays
