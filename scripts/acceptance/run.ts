@@ -4302,6 +4302,11 @@ async function computersRun(): Promise<void> {
       alpha = await startDaemonProc(alphaEnv);
       c = (await appDriver()).client;
       ta = await terminal(home);
+      // With no handshake service a pair's lease lives in no record: a restarted Alpha with Beta paired (and off) never
+      // takes the bots back on its own (lease/coordinator.ts, the no-scope step). The person's way out today: make Alpha
+      // the main from its own terminal (`main.set`, which a terminal applies at once).
+      const chosen = await ta.t.request<{ applied?: boolean }>("main.set", { device: alphaDevice });
+      if (chosen.applied !== true) fail(`Alpha's terminal couldn't make Alpha the main (${JSON.stringify(chosen)})`);
       await until("Alpha holding the bots' lease alone", 120_000, async () => {
         const got = await c.request<{ lease: { holder: string | null } }>("main.get", {}).catch(() => undefined);
         return got?.lease.holder === alphaDevice ? true : undefined;

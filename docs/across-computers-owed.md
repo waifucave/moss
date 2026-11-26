@@ -13,8 +13,15 @@ reach, because it needs something that isn't in a test run.
   (two engines on loopback, or an in-memory network), so a lease taken and handed over through the real service, and
   one that outlives the service going away, are unproven. And without it, after a main computer restarts, the lease
   stays with the other computer that took it meanwhile. It doesn't move back (main.handOver can't move it either), so
-  the computers unit's restart row stops both engines and starts the main one first. Owed: the handshake service's
-  deploy, which needs the owner's word.
+  the computers unit's restart row stops both engines and starts the main one first.
+
+  The consequence for a person today: until that service is deployed, a pair's lease lives in no record (it is held
+  in memory by the computer that took it while it was alone). So after the main computer restarts with its peer off,
+  nobody takes the bots back on their own (lease/coordinator.ts, the no-scope step takes a lease only with no other
+  computer paired), and the bots stop. The engine's way out is `main.set` for that computer from a terminal
+  connection on it, which makes it the main at once; the restart row does exactly that. A person has no control for it
+  yet: neither the CLI nor Settings offers it, so Settings' "Make main" (5c) is owed with it. Owed: the handshake
+  service's deploy, which needs the owner's word.
 - **The short pairing code.** The typed code (40 bits naming a rendezvous slot, 80 bits of secret,
   `links/pairing.ts`) waits in a slot the service holds. The proofs pair with the QR, which carries the host's key and
   addresses itself, so the code's round trip through a deployed rendezvous is unproven.
