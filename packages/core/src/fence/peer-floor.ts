@@ -20,11 +20,11 @@
 //   Inside it, exactly the local bot sandbox's denies (`shellRunLaterDenies`: every `.git`/`*.git` whole, at any depth
 //   and in any case, the run-later names, `*.app`, the PATH folders, what the repos' configs name) and the user's
 //   secret places, read and write. On macOS as Seatbelt globs from `/`; on Linux as the matches found under the
-//   folder when the command starts (held read-only by bubblewrap), and what the command made at a held name taken
-//   away after it (`sweepRunLater`), the local sandbox's own residual.
+//   folder when the command starts (held read-only by bubblewrap), and what appeared at a held name during the run
+//   moved aside after it (`sweepRunLater`: recoverable, never deleted), the local sandbox's own residual.
 //   Nothing the asking computer sends widens it: its level, its answer and its bot are the holder's to judge.
-import { lstatSync, readdirSync, rmSync } from "node:fs";
-import { join, posix, win32 } from "node:path";
+import { cpSync, lstatSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync } from "node:fs";
+import { dirname, join, posix, relative, win32 } from "node:path";
 import type { Level, Os } from "@waifucave/moss-protocol";
 import { secretReadPlaces, type Fence, type FenceContext, type SandboxPolicy } from "../contracts/fence";
 import { pathClass } from "../approvals/ordinary-paths";
@@ -171,17 +171,31 @@ export function peerFolderDenies(folder: string, f: PeerFolderOptions, held: rea
   return [...new Set([...drawn, ...secrets])];
 }
 
-/** After a peer's command on Linux: the held places under `folder` it made (there now, not in `before`), removed.
- *  Returns what was removed, and whether the look finished (past the budget a place made deeper isn't found). */
-export function sweepRunLater(folder: string, before: readonly string[], f: PeerFloorOptions): { removed: string[]; complete: boolean } {
+/** After a peer's command on Linux: the held places under `folder` that weren't there at its start (not in `before`),
+ *  moved aside into `putAway` at their path under the folder, never deleted: one the person made meanwhile (an
+ *  editor's `.vscode`, their own `git init`) is theirs to take back. Each is moved only while its parent is still its
+ *  own real path (no link swapped in since the walk). Returns what was moved, and whether the look finished (past the
+ *  budget a place made deeper isn't found). */
+export function sweepRunLater(folder: string, before: readonly string[], f: PeerFloorOptions, putAway: string): { moved: string[]; complete: boolean } {
   const was = new Set(before);
   const now = runLaterUnder(folder, f);
-  const removed: string[] = [];
+  const moved: string[] = [];
   for (const p of now.found) {
     if (was.has(p)) continue;
-    try { rmSync(p, { recursive: true, force: true }); removed.push(p); } catch { /* reported as not removed by its absence */ }
+    try {
+      if (realpathSync.native(dirname(p)) !== dirname(p)) continue;
+      const to = join(putAway, relative(folder, p));
+      mkdirSync(dirname(to), { recursive: true });
+      try { renameSync(p, to); } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "EXDEV") throw e;
+        // Another volume: a copy (links as links), then the original away.
+        cpSync(p, to, { recursive: true, verbatimSymlinks: true, errorOnExist: true });
+        rmSync(p, { recursive: true, force: true });
+      }
+      moved.push(p);
+    } catch { /* left where it is: not in `moved` */ }
   }
-  return { removed, complete: now.complete };
+  return { moved, complete: now.complete };
 }
 
 /** The folder a peer's command may write, with what is held inside it. */

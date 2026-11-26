@@ -15,7 +15,7 @@
 // `peerFolderFor`), under exactly the local bot sandbox's denies there (`peerFolderDenies`). Such runs go one at a
 // time on this computer, and the folder's real path is read again right before each: no other peer command can then
 // swap it for a link between the service's check and the spawn (a temp-only one can't write its parent).
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { lstatSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Caller, Os } from "@waifucave/moss-protocol";
@@ -94,7 +94,11 @@ export function fencedExecutor(o: FencedExecutorOptions): ToolExecutor {
     folderRuns = next.catch(() => {});
     return next;
   };
-  const floor = o.peerFloor;
+  // The homes by their real paths, as the folder is (the service's `realFolder`): a home reached through a link
+  // (macOS's /var → /private/var) would otherwise read every folder in it as outside the home. The daemon's own folder
+  // class does the same (`folderClass`).
+  const realOr = (p: string) => { try { return realpathSync.native(p); } catch { return p; } };
+  const floor = o.peerFloor === undefined ? undefined : { ...o.peerFloor, userHome: realOr(o.peerFloor.userHome), mossHome: realOr(o.peerFloor.mossHome) };
   /** The folder a peer's run may write, with its denies and (Linux) what was held at the start; or why not now. */
   const prepare = (folder: string): { folder: PeerWriteFolder; held: string[] } | { why: string } => {
     if (floor === undefined) return { why: `this computer gives another computer's commands no folder, so it ran without access to ${folder}` };
@@ -157,10 +161,13 @@ export function fencedExecutor(o: FencedExecutorOptions): ToolExecutor {
       } finally {
         if (peerRoot !== undefined) rmSync(peerRoot, { recursive: true, force: true });
         // Linux (the local sandbox's own residual): what the command made at a held name in the folder, taken away.
-        if (swept !== undefined && floor !== undefined) {
-          const s = sweepRunLater(swept.folder, swept.held, floor);
+        if (swept !== undefined && floor !== undefined && o.temp !== undefined) {
+          // Moved aside, never deleted (the person may have made one meanwhile): next to the peer folders, kept by
+          // `sweepPeerFolders`, which clears only `peer-…`.
+          const putAway = join(peerFolderParent(o.temp, o.mossHome), `put-away-${Date.now()}-${randomBytes(4).toString("hex")}`);
+          const s = sweepRunLater(swept.folder, swept.held, floor, putAway);
           const said: string[] = [];
-          if (s.removed.length > 0) said.push(`removed what it made where commands from another computer never write: ${s.removed.join(", ")}`);
+          if (s.moved.length > 0) said.push(`moved aside to ${putAway} what appeared during the run where commands from another computer never write: ${s.moved.join(", ")}`);
           if (!s.complete) said.push(`${swept.folder} grew past what can be checked for such places`);
           if (said.length > 0) note = [note, ...said].filter((x) => x !== undefined).join("; ");
         }

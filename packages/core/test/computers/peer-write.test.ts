@@ -10,6 +10,7 @@ import type { Caller, Level, Os } from "@waifucave/moss-protocol";
 import { fencedExecutor } from "../../src/computers/fenced-executor";
 import { MossFence } from "../../src/fence/fence";
 import { fencedSpawner } from "../../src/fence/fenced-process";
+import { bwrapPlan } from "../../src/fence/linux-bwrap";
 import { filterOf } from "../../src/fence/macos-profile";
 import {
   peerFence, peerFolderDenies, peerFolderFor, peerFolderRefusal, runLaterUnder, sweepRunLater,
@@ -91,6 +92,19 @@ describe("which folder a peer's command gets (peerFolderFor: the local rule, mir
     }
   });
 
+  test("a home reached through a link (macOS's /var): the executor judges by real paths, so its folders are in the home", () => {
+    const w = world();
+    const linked = join(w.root, "linked-home");
+    symlinkSync(w.home, linked);
+    const e = fencedExecutor({
+      spawner: { run: async () => ({ kind: "refused", reason: "unused" }) } as unknown as Parameters<typeof fencedExecutor>[0]["spawner"],
+      home: linked, temp: w.tmp, mossHome: join(linked, ".moss"), os: "macos",
+      peerFloor: { userHome: linked, mossHome: join(linked, ".moss"), os: "macos", pathFolders: () => [] },
+    });
+    expect(e.peerFolder?.({ holder: "Beta", folder: w.project, by: "level", level: "automatic", readOnly: false, verdict: "safe" })).toEqual({ folder: w.project });
+    expect(e.peerFolder?.({ holder: "Beta", folder: w.home, by: "answer", level: "ask", readOnly: false })).toEqual({ why: expect.stringContaining("never writes there") });
+  });
+
   test("the holder's reason reaches the bot's text, on a result and on a refusal", () => {
     expect(treeResultText("Bash", { stdout: "", stderr: "sh: out.txt: Operation not permitted\n", code: 1, note: "no access, because" }))
       .toBe("sh: out.txt: Operation not permitted\nExit code 1\n(no access, because)");
@@ -160,12 +174,48 @@ describe("the denies inside the folder: the local bot sandbox's own", () => {
     mkdirSync(join(w.project, "deep", "a", "b", ".git", "hooks"), { recursive: true });
     writeFileSync(join(w.project, "deep", ".envrc"), "x");
     writeFileSync(join(w.project, "deep", "out.txt"), "kept");
-    const s = sweepRunLater(w.project, look.found, f);
+    const putAway = join(w.tmp, "put-away-1");
+    const s = sweepRunLater(w.project, look.found, f, putAway);
     expect(s.complete).toBe(true);
-    expect(s.removed.sort()).toEqual([join(w.project, "deep", ".envrc"), join(w.project, "deep", "a", "b", ".git")].sort());
+    expect(s.moved.sort()).toEqual([join(w.project, "deep", ".envrc"), join(w.project, "deep", "a", "b", ".git")].sort());
     expect(existsSync(join(w.project, "deep", "a", "b", ".git"))).toBe(false);
+    // Moved aside, never deleted: one the person made meanwhile is theirs to take back.
+    expect(existsSync(join(putAway, "deep", "a", "b", ".git", "hooks"))).toBe(true);
+    expect(readFileSync(join(putAway, "deep", ".envrc"), "utf8")).toBe("x");
     expect(existsSync(join(w.project, ".git", "config"))).toBe(true);
     expect(readFileSync(join(w.project, "deep", "out.txt"), "utf8")).toBe("kept");
+  });
+
+  test("Linux: a parent swapped for a link since the walk: what's behind it isn't touched", () => {
+    const w = world();
+    const f = floorOf(w, "linux");
+    const look = runLaterUnder(w.project, f);
+    const elsewhere = join(w.home, "Documents", "repo");
+    mkdirSync(join(elsewhere, ".git"), { recursive: true });
+    symlinkSync(elsewhere, join(w.project, "linked"));
+    // The walk doesn't follow the link, so nothing behind it is found or moved.
+    const s = sweepRunLater(w.project, look.found, f, join(w.tmp, "put-away-2"));
+    expect(s.moved).toEqual([]);
+    expect(existsSync(join(elsewhere, ".git"))).toBe(true);
+  });
+
+  test("Linux: bubblewrap's mounts for a peer's folder: the folder bound, its .git read-only, the secrets hidden", () => {
+    const w = world();
+    const f = floorOf(w, "linux");
+    const fence = new MossFence({ os: "linux", home: w.home, mossHome: w.moss, temp: w.tmp });
+    const held = runLaterUnder(w.project, f).found;
+    const root = join(w.tmp, "peer-x");
+    mkdirSync(root);
+    const view = peerFence(fence, root, { userHome: w.home, mossHome: w.moss, os: "linux" }, { path: w.project, denyWrite: peerFolderDenies(w.project, f, held) });
+    const args = bwrapPlan({ policy: view.policy(), mossHome: w.moss, cwd: w.project, uid: 501 }).args;
+    const has = (...seq: string[]) => args.some((_, i) => seq.every((s, j) => args[i + j] === s));
+    expect(has("--bind", w.project, w.project)).toBe(true);
+    expect(has("--bind", root, root)).toBe(true);
+    expect(has("--ro-bind", join(w.project, ".git"), join(w.project, ".git"))).toBe(true);
+    expect(has("--tmpfs", join(w.home, ".ssh"))).toBe(true);
+    // Never the home or Documents writable.
+    expect(has("--bind", w.home, w.home)).toBe(false);
+    expect(has("--bind", join(w.home, "Documents"), join(w.home, "Documents"))).toBe(false);
   });
 
   test("the walk is bounded: past the budget it says so, and the executor gives no folder then", () => {
