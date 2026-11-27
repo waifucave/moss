@@ -139,7 +139,7 @@ describe("ci-changes", () => {
     const runners = (j: Job): string[] => [...(j["runs-on"] !== undefined && !j["runs-on"].includes("${{") ? [j["runs-on"]] : []), ...(j.strategy?.matrix?.include ?? []).map((r) => r.runner), ...(j.strategy?.matrix?.runner ?? [])];
     const on = (event: Event): string[] => Object.keys(jobs).filter((id) => id !== "gate" && can(jobs[id]!, event)).sort();
     // What only a push to an integration branch and a manual run take, besides the dispatch-only jobs.
-    const LANE_ONLY = ["acceptance", "lane-gate", "acceptance-linux", "acceptance-windows"];
+    const LANE_ONLY = ["acceptance", "lane-gate", "acceptance-linux", "acceptance-windows", "computers-windows"];
     expect(on("pull_request")).toEqual(["changes", "core-linux", "lockfiles", "names", "protocol-codegen", "scripts", "test-extension", "typecheck", "workspaces-pr"]);
     for (const id of on("pull_request")) expect([id, runners(jobs[id]!).every((r) => r.startsWith("ubuntu-24.04") && !r.endsWith("-arm"))]).toEqual([id, true]);
     // The merge queue: every job a change can take, but the PR-only one, the dispatch-only ones and the lane's two.
@@ -148,12 +148,14 @@ describe("ci-changes", () => {
       expect([id, on("merge_group").includes(id), on("workflow_dispatch").includes(id), on("push").includes(id), on("pull_request").includes(id)]).toEqual([id, true, true, true, false]);
     }
     // A push to an integration branch runs what a manual run does, but for the dispatch-only jobs (the Swift kits, Cowork).
-    expect(on("push")).toEqual(on("workflow_dispatch").filter((id) => !["swift", "swift-cowork-launcher", "libkrun-queue", "acceptance-linux", "acceptance-windows"].includes(id)));
-    for (const id of LANE_ONLY.filter((x) => x !== "acceptance-linux" && x !== "acceptance-windows")) expect([id, on("pull_request").includes(id), on("merge_group").includes(id), on("push").includes(id), on("workflow_dispatch").includes(id)]).toEqual([id, false, false, true, true]);
+    expect(on("push")).toEqual(on("workflow_dispatch").filter((id) => !["swift", "swift-cowork-launcher", "libkrun-queue", "acceptance-linux", "acceptance-windows", "computers-windows"].includes(id)));
+    for (const id of LANE_ONLY.filter((x) => x !== "acceptance-linux" && x !== "acceptance-windows" && x !== "computers-windows"))expect([id, on("pull_request").includes(id), on("merge_group").includes(id), on("push").includes(id), on("workflow_dispatch").includes(id)]).toEqual([id, false, false, true, true]);
     // The Linux acceptance (lane LX) is on a manual run only: not on a pull request, in the merge queue or on a push, and neither gate waits for it.
     expect(["acceptance-linux", on("pull_request").includes("acceptance-linux"), on("merge_group").includes("acceptance-linux"), on("push").includes("acceptance-linux"), on("workflow_dispatch").includes("acceptance-linux")]).toEqual(["acceptance-linux", false, false, false, true]);
     // The Windows acceptance (lane WA) is likewise a manual run's only.
     expect(["acceptance-windows", on("pull_request").includes("acceptance-windows"), on("merge_group").includes("acceptance-windows"), on("push").includes("acceptance-windows"), on("workflow_dispatch").includes("acceptance-windows")]).toEqual(["acceptance-windows", false, false, false, true]);
+    // And the computers unit on Windows (lane XC, owed item 7).
+    expect(["computers-windows", on("pull_request").includes("computers-windows"), on("merge_group").includes("computers-windows"), on("push").includes("computers-windows"), on("workflow_dispatch").includes("computers-windows")]).toEqual(["computers-windows", false, false, false, true]);
     // The machines: Windows is its own job, so the lane gate can leave it out.
     expect(runners(jobs.machine!).sort()).toEqual(["macos-latest", "ubuntu-24.04", "ubuntu-24.04-arm"]);
     expect(runners(jobs["machine-windows"]!)).toEqual(["windows-latest"]);
@@ -274,7 +276,7 @@ describe("ci-changes", () => {
     const gated = Object.values(jobs).flatMap((j) => [...(j.if ?? "").matchAll(/needs\.changes\.outputs\.(\w+) == 'true'/g)].map((m) => m[1]!));
     expect([...new Set(gated)].sort()).toEqual([...CI_AREA_NAMES].sort());
     const gateNeeds = jobs.gate?.needs;
-    const all = Object.keys(jobs).filter((id) => !["gate", "acceptance", "acceptance-linux", "acceptance-windows", "lane-gate", "swift-cowork-launcher", "libkrun-queue"].includes(id));
+    const all = Object.keys(jobs).filter((id) => !["gate", "acceptance", "acceptance-linux", "acceptance-windows", "computers-windows", "lane-gate", "swift-cowork-launcher", "libkrun-queue"].includes(id));
     expect([...(Array.isArray(gateNeeds) ? gateNeeds : [])].sort()).toEqual(all.sort());
   });
 });
@@ -340,7 +342,7 @@ describe("CI for the lanes", () => {
 
   test("the lane gate is the gate without the Windows jobs, plus the acceptance run and the fence's guard", () => {
     const windows = Object.keys(ci.jobs).filter((id) => runnersOf(ci.jobs[id]!).some((r) => r.startsWith("windows")));
-    expect(windows.sort()).toEqual(["acceptance-windows", "installers-windows", "link-windows", "machine-windows", "sealed-core-windows", "tree-windows", "windows-fence", "windows-fence-guard"]);
+    expect(windows.sort()).toEqual(["acceptance-windows", "computers-windows", "installers-windows","link-windows", "machine-windows", "sealed-core-windows", "tree-windows", "windows-fence", "windows-fence-guard"]);
     const gate = needsOf("gate");
     const lane = needsOf("lane-gate");
     // The one Windows job in the lane gate (lane WS11): the fence's end-to-end guard, for a change to the fence, the approval
@@ -350,8 +352,9 @@ describe("CI for the lanes", () => {
     expect((ci.jobs["windows-fence-guard"] as { with?: Record<string, unknown> }).with).toEqual({ only: "e2e" });
     // Every job the full gate needs is a Windows job or the lane gate's too: nothing weakens `gate`.
     // (`acceptance-windows` is the one Windows job in neither gate: the Windows acceptance run is evidence, not a requirement, until its rows are classed)
-    for (const id of windows.filter((x) => x !== "acceptance-windows")) expect([id, gate.includes(id)]).toEqual([id, true]);
+    for (const id of windows.filter((x) => x !== "acceptance-windows" && x !== "computers-windows")) expect([id, gate.includes(id)]).toEqual([id, true]);
     expect(["acceptance-windows", gate.includes("acceptance-windows"), lane.includes("acceptance-windows")]).toEqual(["acceptance-windows", false, false]);
+    expect(["computers-windows", gate.includes("computers-windows"), lane.includes("computers-windows")]).toEqual(["computers-windows", false, false]);
     expect(ci.jobs["lane-gate"]!.if).toContain("always()");
     expect(ci.jobs.gate!.if).toBe("always()");
   });
