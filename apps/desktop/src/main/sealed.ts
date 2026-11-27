@@ -118,6 +118,10 @@ export class SealedFrames {
   private readonly resolved = new Set<string>();
   /** A card whose proof the core accepted: served pages' answers carry, and a second answer is "answered already". */
   private readonly answered = new Set<string>();
+  /** The window a press came from, by token, bound at the page's first "received" from the sender itself (never a page's word), for a
+   *  card minted for no window (the app's own fallback card): the press's mouse-down and the OS cover check are read for it. It is NOT
+   *  `windowId`: that one says where a card is held (a window closing folds the cards held in it), and this one never does. */
+  private readonly pressWindows = new Map<string, number>();
   /** The frame's channels: one per element of a pending card. */
   private readonly channels = new Map<string, { cardId: string; element: string; at: number; windowId?: number; tokens?: Readonly<Record<string, TokenValue>>; look?: "label" | "check" | "cross" | "open"; bound?: string; served?: boolean }>();
   /** The answers whose own `card.answer` went out and is not answered back yet: `buildAnswer` burns the channel, the
@@ -263,6 +267,18 @@ export class SealedFrames {
   /** The card a token's channel belongs to. */
   cardOf(token: string): string | undefined {
     return this.channels.get(token)?.cardId;
+  }
+
+  /** Binds the window a token's page pressed from, once (a later call changes nothing). A token that is not a live channel binds nothing. */
+  bindPressWindow(token: string, windowId: number): void {
+    if (!this.channels.has(token) || this.pressWindows.has(token)) return;
+    if (this.pressWindows.size >= 256) this.pressWindows.delete(this.pressWindows.keys().next().value!);
+    this.pressWindows.set(token, windowId);
+  }
+
+  /** The window a press of this token comes from: the one it was minted for, else the one its page pressed from. */
+  pressWindowOf(token: string): number | undefined {
+    return this.channels.get(token)?.windowId ?? this.pressWindows.get(token);
   }
 
   /** The window a frame token was minted for, if it was minted for one. */

@@ -49,3 +49,9 @@ export class PressPoints {
     return cur.kind === "pointer" && cur.point === undefined;
   }
 }
+
+/** The mouse-down a press's point is read from: the one of the window the press came from, never another window's (a click
+ *  elsewhere on the screen must not become this card's point). */
+export function pressDownFor(windowId: number | undefined, downs: ReadonlyMap<number, { x: number; y: number; at: number }>): { x: number; y: number; at: number } | undefined {
+  return windowId === undefined ? undefined : downs.get(windowId);
+}

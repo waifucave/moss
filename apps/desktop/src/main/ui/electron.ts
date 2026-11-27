@@ -462,7 +462,7 @@ export interface IpcHooks {
   /** The report a press asked for: the button showed whole and uncovered at the press (`seen`), after `ms`. */
   sealedFresh(token: string, seen: boolean, ms: number, press: PressRef): void;
   /** A press the sealed page saw and what it did with it (one of `SEALED_PRESS_WORDS`). */
-  sealedPress(token: string, what: string, press?: PressRef): void;
+  sealedPress(token: string, what: string, press?: PressRef, senderWindow?: number): void;
   /** The app's own card page says how tall it is, so its window fits it (a number, nothing else). */
   sealedSize(token: string, height: number): void;
   /** The app's own card page asks for its card's Review (`plugin.review`): only that page, on its own token. */
@@ -1056,7 +1056,9 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
     if (urlToken === null || urlToken !== token) return;
     const key = f.parent !== null && !f.parent.detached ? `p:${f.parent.processId}:${f.parent.routingId}` : `m:${f.processId}:${f.routingId}`;
     if (runtime.boundOf(token) !== key) return;
-    hooks.sealedPress(token, what, what === "received" ? parsePressRef(a.press) : undefined);
+    // The window is the sender's own (this frame's web contents), never a page's word: a card minted for no window is bound to it.
+    const senderWindow = BrowserWindow.fromWebContents(event.sender)?.id;
+    hooks.sealedPress(token, what, what === "received" ? parsePressRef(a.press) : undefined, senderWindow);
   });
   // The app's own card page says how tall it is (a number): only its own window's main frame, on its own token, which the
   // mint bound to that frame, so a plugin's sealed frame can't size a card window.

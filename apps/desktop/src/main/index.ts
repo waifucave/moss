@@ -54,7 +54,7 @@ import { placeWindow, TitleDrag } from "./ui/window-drag";
 import { KeyLog, PasteModes, keyBytes, preparePaste } from "./terminal-input";
 import { OWN_ELEMENT, SealedFrames } from "./sealed";
 import type { PressRef } from "./press-bound";
-import { PressPoints } from "./press-point";
+import { PressPoints, pressDownFor } from "./press-point";
 import { BrowserAreaFrames, isBrowserEvent, ViewBindings } from "./ui/browser-calls";
 import { FRESH_LIMIT_MS, NOT_CHECKED_REASON, NOT_SHOWN_REASON, ownCardPage, pinVisible } from "./sealed-pages";
 import { translate } from "@waifucave/moss-plugin-sdk/ui/bridge";
@@ -683,7 +683,7 @@ async function ready(): Promise<void> {
         return { accepted: false, reason: placed?.kind === "island" ? "this card is on the island now" : "this card is in MOSS's window now" };
       }
       // R12 (lane RT): no window of any app lies over the button, read from the OS's own window list (overlap.ts).
-      const cover = osCoverOf(from, pressPoints.pointOf(token, press));
+      const cover = osCoverOf(sealed.pressWindowOf(token), pressPoints.pointOf(token, press));
       if (cover !== undefined) {
         log(`sealed: answer refused (a window lies over the button: ${cover.advice})`);
         return { accepted: false, covered: cover.name, reason: cover.advice };
@@ -779,15 +779,15 @@ async function ready(): Promise<void> {
       log(`sealed: press on ${cardId} ${sealed.elementOf(token) ?? "?"} in ${surfaceName(sealed.windowOf(token))}: fresh report ${seen ? "uncovered" : ms >= FRESH_LIMIT_MS ? "none in time" : "covered"} after ${ms} ms`);
     },
     // A press the sealed page saw (a word, never a text): every one is in the log with its card, the surface and what came of it.
-    sealedPress: (token: string, what: string, press?: PressRef) => {
+    sealedPress: (token: string, what: string, press?: PressRef, senderWindow?: number) => {
       const cardId = sealed.cardOf(token);
       if (cardId === undefined) return;
       // The page's "received" opens the numbered press its report and its answer must carry (press-bound.ts).
       if (what === "received" && press !== undefined && sealed.notePress(token, press) === "ok") {
-        const wid = sealed.windowOf(token);
-        // A card's own page (the fallback's) is minted for no window: then the newest mouse-down of any window is the press's.
-        const down = wid !== undefined ? windowDowns.get(wid) : [...windowDowns.values()].sort((a, b) => b.at - a.at)[0];
-        pressPoints.save(token, press, down, Date.now());
+        // A card's own page (the fallback's) is minted for no window: the sender's own window is bound to the token here, once.
+        if (senderWindow !== undefined) sealed.bindPressWindow(token, senderWindow);
+        const wid = sealed.pressWindowOf(token);
+        pressPoints.save(token, press, pressDownFor(wid, windowDowns), Date.now());
       }
       // A sealed page heard the press: it isn't a missed one (sealed-miss.ts).
       const pressedIn = sealed.windowOf(token);
