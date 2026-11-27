@@ -615,6 +615,9 @@ const heldGrants = { inFlight: 0, chain: Promise.resolve() as Promise<unknown> }
  *  count and its grant. */
 /** srt-win's answer while another process writes or removes the profile read grant: exit 25, its JSON code
  *  `profile_operation_in_progress`. Only that one is tried again. */
+/** What a command's live output says while its session grant waits for another process's profile operation. */
+export const PROFILE_BUSY_WAIT_LINE = "moss: waiting for the sandbox's setup to finish (its read access to your profile is being changed)";
+
 export function profileBusy(r: { code: number; stdout: string; stderr: string }): boolean {
   return r.code === 25 && `${r.stderr}\n${r.stdout}`.includes("\"code\":\"profile_operation_in_progress\"");
 }
@@ -853,6 +856,7 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         // 20 s (run 46003230665).
         const busyUntil = Date.now() + (deps.profileBusyWaitMs ?? 120_000);
         let grant: { code: number; stdout: string; stderr: string };
+        let saidWaiting = false;
         for (;;) {
           grant = await grantsInTurn(() => {
             heldGrants.inFlight++;
@@ -862,6 +866,11 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
           });
           if (!profileBusy(grant) || Date.now() >= busyUntil) break;
           heldGrants.inFlight--;
+          // Said once while it waits (srt-win itself waited 3 s before answering busy), to whoever streams the output.
+          if (!saidWaiting) {
+            saidWaiting = true;
+            try { r.onOutput?.(`${PROFILE_BUSY_WAIT_LINE}\n`, "stderr"); } catch { /* a listener never fails the command */ }
+          }
           await Bun.sleep(deps.profileBusyPollMs ?? 1_000);
         }
         try {

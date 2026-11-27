@@ -8,7 +8,7 @@ import type { Caller, Level } from "@waifucave/moss-protocol";
 import { MossFence } from "../../src/fence/fence";
 import { endWindowsBackgroundOf, endWindowsBackgroundOn, escapedSandbox, stopWindowsBackground, windowsBackgroundOf, windowsShellTools, WIN_SHELL_BACKGROUND_ENGINE, WIN_SHELL_BACKGROUND_PER_SESSION } from "../../src/fence/win-shell-tools";
 import {
-  existingDenies, existingDeniesOf, grantsConflict, parsePersistentRoots, parseProfileExclusions, strayRoots, treeWithin, planFromPolicy, planFromSettings, profileExcludeCandidates, quarantineWin, shellArgv, winChainIsClean, winChildEnv, winExecArgv, lateFenceStep, profileBusy, watchedReadDenies, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
+  existingDenies, existingDeniesOf, grantsConflict, parsePersistentRoots, parseProfileExclusions, strayRoots, treeWithin, planFromPolicy, planFromSettings, profileExcludeCandidates, quarantineWin, shellArgv, winChainIsClean, winChildEnv, winExecArgv, lateFenceStep, profileBusy, PROFILE_BUSY_WAIT_LINE, watchedReadDenies, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
   type WinFencedDeps,
 } from "../../src/fence/win-fenced";
 import { formatInstallMarker, poolStateFiles, type LeaseStore } from "../../src/fence/win-sandbox";
@@ -861,11 +861,13 @@ describe("a session grant while another process writes the profile grant (srt-wi
     expect(profileBusy({ code: 25, stdout: "", stderr: "some other failure" })).toBe(false);
   });
 
-  test("tried again while it lasts: the grant then goes through, and the run isn't refused for it", async () => {
+  test("tried again while it lasts: the grant then goes through, the run isn't refused for it, and the wait is said once", async () => {
     const { m, s } = spawnerWith(2, 5_000);
-    const r = await s.run(runOf(m.home)).catch((e: unknown) => ({ kind: "threw", e }));
+    const streamed: string[] = [];
+    const r = await s.run({ ...runOf(m.home), onOutput: (t) => streamed.push(t) }).catch((e: unknown) => ({ kind: "threw", e }));
     expect(m.execs.filter(isSessionGrant).length).toBe(3);
     expect(JSON.stringify(r)).not.toContain("exited 25");
+    expect(streamed.filter((t) => t === `${PROFILE_BUSY_WAIT_LINE}\n`).length).toBe(1);
   });
 
   test("past its bounded wait: refused as before, with srt-win's reason", async () => {
