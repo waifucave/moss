@@ -190,7 +190,7 @@ describe("what a plugin leaves when its folder goes by hand", () => {
       await w.deleteByHand();
       w.failDeletes(true);
       const why = await w.install(source("two")).then(() => "installed", (e: Error) => e.message);
-      expect(why).toContain("couldn't be cleared for this one: the keychain refused");
+      expect(why).toContain("couldn't be cleared for this one: removing it stopped part-way");
       expect(existsSync(w.dir)).toBe(false);
       expect(w.opened.indexes!.leftBy("tarot")).toBeDefined();
     } finally {
@@ -251,6 +251,8 @@ describe("what a plugin leaves when its folder goes by hand", () => {
       decline = false;
       await m["plugin.remove"]!({ id: "tarot", card: true }, APP);
       expect(ran).toEqual(["commit"]);
+      // The card's yes finishes the removal a few steps later (its data folder, its keys and settings, then the folder).
+      for (let i = 0; i < 100 && existsSync(w.dir); i++) await new Promise((r) => setTimeout(r, 20));
       expect(existsSync(w.dir)).toBe(false);
     } finally {
       w.opened.close();

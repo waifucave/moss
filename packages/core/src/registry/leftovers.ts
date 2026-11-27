@@ -9,7 +9,7 @@
 // from a backup) must never cost a plugin its keys. And while the records weren't trusted at start, no left-by record
 // is written that run. Accepted residual: what a plugin left in a home from before these records, with no record, stays
 // for whatever tree next comes under its id (it asks for its OK as any new tree does).
-import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PluginProvenance } from "@waifucave/moss-protocol";
 import { ContractError } from "../contracts/common";
@@ -19,61 +19,172 @@ import { pluginPath } from "../plugin-host/paths";
 import type { IndexClient } from "./indexes/client";
 import { PluginSecretFiles } from "./secret-files";
 
-/** What removing a plugin leaves behind, and where (#332's review): its secrets, its settings file and its synced store
- *  are deleted, for it and each of its children, so a later plugin installed under the same id inherits none of them.
- *  Its data folder is kept, as the spec says (§5.4), but moved out of the id's path to
- *  `<home>/plugin-data/.removed/<id>/<when>-<tree hash>/`, keyed to that install, so another publisher's plugin with
- *  the same id starts with an empty one. No plugin id starts with a dot. */
-/** Tries before a rename or removal of a plugin's data folder is given up on EBUSY/EPERM/ENOTEMPTY (Windows keeps a folder a process still has open): a few tries over about 2.4 s. */
+/** Tries before a step of a removal is given up on a busy file (Windows keeps a file or folder a process still has open): a few tries over about 2.4 s. */
 export const BUSY_TRIES = 9;
 export const BUSY_WAIT_MS = 300;
-const BUSY = new Set(["EBUSY", "EPERM", "EACCES", "ENOTEMPTY"]);
+/** The codes that mean "in use, try again": on Windows a held file or folder reports any of these; elsewhere only EBUSY does (EPERM and EACCES there are permission faults, never waited out). */
+export function busyCodes(platform: string = process.platform): ReadonlySet<string> {
+  return platform === "win32" ? new Set(["EBUSY", "EPERM", "EACCES", "ENOTEMPTY"]) : new Set(["EBUSY"]);
+}
 
-/** Runs `fn`, again after a short wait while it fails busy; the last failure is thrown. `sleep` is the test's seam. */
-export function retryBusy(fn: () => void, sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))): void | Promise<void> {
+type Sleep = (ms: number) => Promise<void>;
+const realSleep: Sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Runs `fn`, again after a short wait while it fails busy; the last failure is thrown. A success (the usual) is done in the same tick. */
+export function retryBusy(fn: () => void, sleep: Sleep = realSleep, platform?: string): void | Promise<void> {
+  const busy = busyCodes(platform);
   try { return fn(); } catch (e) {
-    // Only a failure takes the slow path: a success is done in the same tick, as before.
-    if (!BUSY.has((e as NodeJS.ErrnoException).code ?? "")) throw e;
+    if (!busy.has((e as NodeJS.ErrnoException).code ?? "")) throw e;
     return (async () => {
       for (let i = 2; ; i++) {
         await sleep(BUSY_WAIT_MS);
         try { return fn(); } catch (err) {
-          if (i >= BUSY_TRIES || !BUSY.has((err as NodeJS.ErrnoException).code ?? "")) throw err;
+          if (i >= BUSY_TRIES || !busy.has((err as NodeJS.ErrnoException).code ?? "")) throw err;
         }
       }
     })();
   }
 }
 
-export async function forgetRemovedPlugin(o: { home: string; secrets?: Pick<SecretStore, "list" | "delete">; record: Pick<PluginRecord, "id" | "source" | "treeHash" | "okHash" | "provenance">; children: readonly string[]; now?: () => number; deleteData?: boolean; sleep?: (ms: number) => Promise<void> }): Promise<{ dataKeptAt?: string }> {
-  // Its data folder goes FIRST: on Windows a folder a process still holds open can't be moved or deleted, and a removal that
-  // can't do that stops here with nothing else forgotten (its secrets and settings still there), never half-removed.
+/** The same for a step that is async (the secrets store). */
+export async function retryBusyAsync(fn: () => Promise<void>, sleep: Sleep = realSleep, platform?: string): Promise<void> {
+  const busy = busyCodes(platform);
+  for (let i = 1; ; i++) {
+    try { return await fn(); } catch (err) {
+      if (i >= BUSY_TRIES || !busy.has((err as NodeJS.ErrnoException).code ?? "")) throw err;
+      await sleep(BUSY_WAIT_MS);
+    }
+  }
+}
+
+/** Thrown by the data folder's step ALONE, when it is still in use after the tries: nothing else has been touched. */
+export class DataFolderBusy extends Error {
+  constructor(readonly code: string) { super(`a file in its data folder is still in use (${code})`); this.name = "DataFolderBusy"; }
+}
+
+/** Thrown when a step AFTER the data folder moved failed: what was already done, and that removing it again finishes the removal. */
+export class RemovalIncomplete extends Error {
+  constructor(readonly removed: readonly string[], readonly step: string, readonly code: string | undefined, readonly why?: string) {
+    super(`removing it stopped part-way: ${removed.join(", ") || "nothing yet"} done; "${step}" failed${code !== undefined ? ` (${code})` : ""}${why !== undefined ? `: ${why}` : ""}. Removing it again finishes the job.`);
+    this.name = "RemovalIncomplete";
+  }
+}
+
+/** The "removing" mark: what a half-done removal needs to finish on the next attempt (the record's own facts, where the data went). */
+interface Mark { record: unknown; children: readonly string[]; deleteData: boolean; kept?: string; at: number }
+const markPath = (home: string, id: string): string => `${pluginPath(join(home, "plugin-data", ".removing"), id)}.json`;
+
+/** Makes `parts` under `base` one directory at a time, each a real directory: a link (symlink or junction) planted at any of them is refused, never followed. */
+function mkdirNoLink(base: string, parts: readonly string[]): string {
+  let dir = base;
+  for (const part of parts) {
+    dir = join(dir, part);
+    let st;
+    try { st = lstatSync(dir); } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      mkdirSync(dir, { mode: 0o700 });
+      continue;
+    }
+    if (st.isSymbolicLink() || !st.isDirectory()) throw new ContractError("refused", `${dir} is not a plain folder (a link or a file is there)`);
+  }
+  return dir;
+}
+
+function writeMark(home: string, id: string, mark: Mark): void {
+  const path = markPath(home, id);
+  const tmp = `${path}.${process.pid}.tmp`;
+  mkdirNoLink(home, ["plugin-data", ".removing", ...id.split("/").slice(0, -1)]);
+  try { if (lstatSync(path).isSymbolicLink()) rmSync(path, { force: true }); } catch { /* none */ }
+  writeFileSync(tmp, JSON.stringify(mark), { mode: 0o600, flag: "wx" });
+  renameSync(tmp, path);
+}
+
+function readMark(home: string, id: string): Mark | undefined {
+  try {
+    const path = markPath(home, id);
+    if (lstatSync(path).isSymbolicLink()) return undefined;
+    const m = JSON.parse(readFileSync(path, "utf8")) as Mark;
+    return typeof m === "object" && m !== null ? m : undefined;
+  } catch { return undefined; }
+}
+
+/** The ids with a removal that stopped part-way (their data moved, the rest to finish): a person's next `plugin.remove` of one finishes it. */
+export function pendingRemovals(home: string): string[] {
+  const dir = join(home, "plugin-data", ".removing");
+  const out: string[] = [];
+  const walk = (d: string, prefix: string): void => {
+    let names: string[];
+    try { names = readdirSync(d); } catch { return; }
+    for (const n of names) {
+      const full = join(d, n);
+      try {
+        const st = lstatSync(full);
+        if (st.isDirectory()) walk(full, `${prefix}${n}/`);
+        else if (n.endsWith(".json")) out.push(`${prefix}${n.slice(0, -5)}`);
+      } catch { /* gone */ }
+    }
+  };
+  walk(dir, "");
+  return out;
+}
+
+/** What removing a plugin leaves behind, and where (#332's review): its secrets, its settings file and its synced store
+ *  are deleted, for it and each of its children, so a later plugin installed under the same id inherits none of them.
+ *  Its data folder is kept, as the spec says (§5.4), but moved out of the id's path to
+ *  `<home>/plugin-data/.removed/<id>/<when>-<tree hash>/`, keyed to that install, so another publisher's plugin with
+ *  the same id starts with an empty one. No plugin id starts with a dot.
+ *
+ *  The data folder goes FIRST, tried again briefly while it is in use: on Windows a folder a process still holds open can't
+ *  be moved, and when it can't, `DataFolderBusy` is thrown with nothing else touched. Once it has moved, a "removing" mark
+ *  is kept and each later step is tried again on a busy file; a step that still fails throws `RemovalIncomplete` naming what
+ *  was done, and the next attempt (every step is idempotent) finishes it from the mark. */
+export async function forgetRemovedPlugin(o: { home: string; secrets?: Pick<SecretStore, "list" | "delete">; record: Pick<PluginRecord, "id" | "source" | "treeHash" | "okHash" | "provenance">; children: readonly string[]; now?: () => number; deleteData?: boolean; sleep?: Sleep; platform?: string; rename?: (from: string, to: string) => void }): Promise<{ dataKeptAt?: string }> {
   const data = pluginPath(join(o.home, "plugin-data"), o.record.id);
-  let kept: string | undefined;
-  // The user asked for its data to go too (`plugin.remove`'s `deleteData`): its folder, and what earlier removals of
-  // the same id set aside.
-  if (o.deleteData === true) {
-    const first = retryBusy(() => rmSync(data, { recursive: true, force: true }), o.sleep);
-    if (first !== undefined) await first;
-    const second = retryBusy(() => rmSync(join(o.home, "plugin-data", ".removed", ...o.record.id.split("/")), { recursive: true, force: true }), o.sleep);
-    if (second !== undefined) await second;
-  } else if (existsSync(data)) {
+  const resumed = readMark(o.home, o.record.id);
+  let kept: string | undefined = resumed?.kept;
+  const deleteData = o.deleteData === true || resumed?.deleteData === true;
+  const busy = busyCodes(o.platform);
+  const codeOf = (e: unknown): string | undefined => (e as NodeJS.ErrnoException).code;
+  // The data folder's step: its busy failure is `DataFolderBusy`, and only that.
+  const folderStep = async (fn: () => void): Promise<void> => {
+    try {
+      const r = retryBusy(fn, o.sleep, o.platform);
+      if (r !== undefined) await r;
+    } catch (e) {
+      if (busy.has(codeOf(e) ?? "")) throw new DataFolderBusy(codeOf(e)!);
+      throw e;
+    }
+  };
+  // `rmSync` of a link at the folder's name unlinks it (a junction is not followed into its target).
+  if (deleteData) {
+    await folderStep(() => rmSync(data, { recursive: true, force: true }));
+    await folderStep(() => rmSync(join(o.home, "plugin-data", ".removed", ...o.record.id.split("/")), { recursive: true, force: true }));
+  } else if (existsSync(data) || (() => { try { return lstatSync(data) !== undefined; } catch { return false; } })()) {
     const hash = (o.record.okHash ?? o.record.treeHash ?? "unknown").replace(/^sha256:/, "").slice(0, 16);
-    kept = join(o.home, "plugin-data", ".removed", ...o.record.id.split("/"), `${new Date(o.now?.() ?? Date.now()).toISOString().replace(/[:.]/g, "-")}-${hash}`);
-    const to = kept;
-    mkdirSync(join(to, ".."), { recursive: true, mode: 0o700 });
-    const moved = retryBusy(() => renameSync(data, to), o.sleep);
-    if (moved !== undefined) await moved;
-    writeFileSync(join(to, ".moss-removed.json"), JSON.stringify({ id: o.record.id, source: o.record.source, treeHash: o.record.treeHash, okHash: o.record.okHash, provenance: o.record.provenance, removedAt: o.now?.() ?? Date.now() }), { mode: 0o600 });
+    const to = join(mkdirNoLink(o.home, ["plugin-data", ".removed", ...o.record.id.split("/")]), `${new Date(o.now?.() ?? Date.now()).toISOString().replace(/[:.]/g, "-")}-${hash}`);
+    await folderStep(() => (o.rename ?? renameSync)(data, to));
+    kept = to;
+  }
+  // From here the data is gone from its place: a failure says what was done, and the mark lets the next attempt finish.
+  const done: string[] = [];
+  if (kept !== undefined || deleteData) done.push(deleteData ? "its data folder was deleted" : "its data folder was moved aside");
+  try { writeMark(o.home, o.record.id, { record: o.record, children: o.children, deleteData, ...(kept !== undefined ? { kept } : {}), at: o.now?.() ?? Date.now() }); } catch { /* a missing mark only means the next attempt reads the folder as gone */ }
+  const step = async (name: string, fn: () => void | Promise<void>): Promise<void> => {
+    try { await retryBusyAsync(async () => { await fn(); }, o.sleep, o.platform); } catch (e) { throw new RemovalIncomplete(done, name, codeOf(e), e instanceof Error ? e.message.slice(0, 200) : undefined); }
+    done.push(name);
+  };
+  if (kept !== undefined) {
+    try { writeFileSync(join(kept, ".moss-removed.json"), JSON.stringify({ id: o.record.id, source: o.record.source, treeHash: o.record.treeHash, okHash: o.record.okHash, provenance: o.record.provenance, removedAt: o.now?.() ?? Date.now() }), { mode: 0o600 }); } catch { /* the folder is kept without its note */ }
   }
   const ids = [o.record.id, ...o.children];
   for (const pluginId of ids) {
-    if (o.secrets !== undefined) for (const meta of await o.secrets.list({ kind: "plugin", pluginId })) await o.secrets.delete(meta.ref);
-    rmSync(`${pluginPath(join(o.home, "settings", "plugins"), pluginId)}.json`, { force: true });
-    rmSync(`${pluginPath(join(o.home, "settings", "plugin-stores"), pluginId)}.json`, { force: true });
+    if (o.secrets !== undefined) await step(`${pluginId}'s keys deleted`, async () => { for (const meta of await o.secrets!.list({ kind: "plugin", pluginId })) await o.secrets!.delete(meta.ref); });
+    await step(`${pluginId}'s settings deleted`, () => rmSync(`${pluginPath(join(o.home, "settings", "plugins"), pluginId)}.json`, { force: true }));
+    await step(`${pluginId}'s synced store deleted`, () => rmSync(`${pluginPath(join(o.home, "settings", "plugin-stores"), pluginId)}.json`, { force: true }));
   }
   // Its secrets' files (`${secretFile:…}`) go with it.
-  new PluginSecretFiles(o.home).releasePlugin(o.record.id);
+  await step("its secret files released", () => new PluginSecretFiles(o.home).releasePlugin(o.record.id));
+  try { rmSync(markPath(o.home, o.record.id), { force: true }); } catch { /* a stale mark is read as nothing left to do */ }
   return kept === undefined ? {} : { dataKeptAt: kept };
 }
 

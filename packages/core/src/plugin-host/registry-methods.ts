@@ -33,7 +33,7 @@ import { folderTreeHash } from "../registry/tree";
 import { manifestPathIn } from "../old-names";
 import { homedir } from "node:os";
 import { installWrapped } from "../registry/wrap";
-import { forgetRemovedPlugin } from "../registry/leftovers";
+import { DataFolderBusy, forgetRemovedPlugin, RemovalIncomplete } from "../registry/leftovers";
 import { redactReadText } from "../computer-use/browser/http-read";
 import { REDACTED } from "../computer-use/browser/page-runtime/redact";
 import type { CardOpener } from "../devices/rpc";
@@ -115,6 +115,12 @@ export type ComponentInstallDoor = (pluginId: string, source: InstallSource) => 
 /** How long a plugin removal waits for the plugin's processes to stop. */
 const REMOVE_STOP_DEADLINE_MS = 10_000;
 
+/** `p`'s answer, or undefined once the deadline passes or it fails (a stop that can't be waited for never blocks a removal). */
+async function within<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try { return await Promise.race([p.catch(() => undefined), new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), ms); })]); } finally { clearTimeout(timer); }
+}
+
 export function pluginRegistryMethods(o: {
   opened: OpenedRegistry;
   host: Pick<PluginHost, "restart"> & Partial<Pick<PluginHost, "stop">>;
@@ -133,6 +139,9 @@ export function pluginRegistryMethods(o: {
   beforeRemove?: (pluginId: string) => Promise<{ commit: () => Promise<void>; note?: string } | undefined>;
   /** The same for switching a plugin off (`plugin.setEnabled` with `enabled: false`, the whole plugin): asked first; what
    *  the answer means is done at once, before it is switched off, and a failure of it stops the switch. */
+  /** Ends what a plugin runs outside its module before its removal moves its data folder: its own host process, its supervised
+   *  processes and its stdio MCP servers. Answers the names of what is still alive afterwards (named on a "still in use" card). */
+  stopProcesses?: (pluginId: string) => Promise<string[]>;
   beforeDisable?: (pluginId: string) => Promise<{ commit: () => Promise<void>; note?: string } | undefined>;
   os?: "macos" | "windows" | "linux";
   /** The plugin indexes (§5.1); absent, there are none (the lists are empty and adding one is refused). */
@@ -312,23 +321,30 @@ export function pluginRegistryMethods(o: {
         const children = registry.list().filter((c) => c.parent === now.id).map((c) => c.id);
         // What it leaves goes first: a secret that can't be deleted stops the removal, so no later plugin under the same
         // id finds it (#332's second review).
-        // Its processes stop first (its module and, through it, its servers), each with a deadline: on Windows a folder a process still
-        // has open can't be moved, and a removal that can't move it leaves the plugin switched OFF with everything else kept, said so.
-        if (o.host.stop !== undefined) {
-          for (const pid of [now.id, ...children]) {
-            let timer: ReturnType<typeof setTimeout> | undefined;
-            await Promise.race([o.host.stop(pid, "being removed").catch(() => undefined), new Promise<void>((r) => { timer = setTimeout(r, REMOVE_STOP_DEADLINE_MS); })]);
-            clearTimeout(timer);
+        // Its processes stop first, each with a deadline: its module and channels, then its own host process, its supervised
+        // processes and its stdio servers (`stopProcesses`). A folder a process still has open can't be moved on Windows.
+        const still: string[] = [];
+        for (const pid of [now.id, ...children]) {
+          if (o.host.stop !== undefined) await within(o.host.stop(pid, "being removed"), REMOVE_STOP_DEADLINE_MS);
+          if (o.stopProcesses !== undefined) {
+            const left = await within(o.stopProcesses(pid), REMOVE_STOP_DEADLINE_MS);
+            if (Array.isArray(left)) still.push(...left);
           }
         }
         try {
           await forgetRemovedPlugin({ home: o.home, ...(o.secrets !== undefined ? { secrets: o.secrets } : {}), record: now, children, ...(deleteData === true ? { deleteData: true } : {}) });
         } catch (err) {
-          const code = (err as NodeJS.ErrnoException).code;
-          if (code !== "EBUSY" && code !== "EPERM" && code !== "EACCES" && code !== "ENOTEMPTY") throw err;
-          try { registry.setEnabled(id, false); } catch { /* it stays as it is */ }
-          o.log?.(`plugins: removing ${id} stopped: its data folder is still in use (${code}); it is switched off and nothing else was removed`);
-          throw new ContractError("refused", `${id} couldn't be removed because a file in its data folder is still in use. It is switched off and nothing else was removed; try again in a moment.`);
+          if (err instanceof DataFolderBusy) {
+            try { registry.setEnabled(id, false); } catch { /* it stays as it is */ }
+            o.log?.(`plugins: removing ${id} stopped: its data folder is still in use (${err.code}); it is switched off and nothing else was removed`);
+            throw new ContractError("refused", `${id} couldn't be removed because a file in its data folder is still in use${still.length > 0 ? ` (still running: ${[...new Set(still)].join(", ")})` : ""}. It is switched off and nothing else was removed; try again in a moment.`);
+          }
+          if (err instanceof RemovalIncomplete) {
+            try { registry.setEnabled(id, false); } catch { /* it stays as it is */ }
+            o.log?.(`plugins: removing ${id} stopped part-way: ${err.message}`);
+            throw new ContractError("refused", `${id} is switched off and only partly removed: ${err.message}`);
+          }
+          throw err;
         }
         // This computer's record for the id goes too: a later install under it is never pinned.
         o.indexes?.setPinned(id, false);

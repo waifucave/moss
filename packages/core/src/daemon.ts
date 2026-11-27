@@ -4453,7 +4453,22 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       ...glossaryMethods(glossary),
       // Its sealed cards (a development folder from the app, a removal or an update from the Plugins page) ask on the
       // daemon's one broker once the parts are up (`pluginsBroker`); before, they wait for it, bounded.
-      ...pluginRegistryMethods({ beforeRemove: (id) => askCloudComputers(id, "remove"), beforeDisable: (id) => askCloudComputers(id, "switch-off"), componentInstalls: (door) => { componentInstall = door; }, onRestart: (id) => notices.userRestarted(id), opened, host: pluginHost.host, home: mossHome, secrets: contractSecrets, os: hostOs(), openCard: brokerCardOpener(pluginsBroker), emit: (event) => void mossServer?.coreEvent(event), log: (line) => console.error(line), ...(pluginIndexes ? { indexes: pluginIndexes } : {}), ...(opened.updater ? { updater: opened.updater } : {}), ...(pluginReviews ? { reviews: pluginReviews } : {}) }),
+      ...pluginRegistryMethods({ stopProcesses: async (id) => {
+        // What a plugin runs outside its module: its own host process, its supervised process and its stdio servers.
+        const pid = pluginHost?.pidOf(id);
+        pluginHost?.stopOwn(id);
+        pluginSupervisor.stop(id);
+        await stdioMcp?.stopPlugin(id).catch(() => undefined);
+        const left: string[] = [];
+        if (pid !== undefined) {
+          for (let i = 0; i < 10; i++) {
+            try { process.kill(pid, 0); } catch { return left; }
+            await new Promise((r) => setTimeout(r, 200));
+          }
+          left.push("its host process");
+        }
+        return left;
+      }, beforeRemove: (id) => askCloudComputers(id, "remove"), beforeDisable: (id) => askCloudComputers(id, "switch-off"), componentInstalls: (door) => { componentInstall = door; }, onRestart: (id) => notices.userRestarted(id), opened, host: pluginHost.host, home: mossHome, secrets: contractSecrets, os: hostOs(), openCard: brokerCardOpener(pluginsBroker), emit: (event) => void mossServer?.coreEvent(event), log: (line) => console.error(line), ...(pluginIndexes ? { indexes: pluginIndexes } : {}), ...(opened.updater ? { updater: opened.updater } : {}), ...(pluginReviews ? { reviews: pluginReviews } : {}) }),
       ...pluginUiParts.methods,
       // The deletion lane: Settings › Erase everything (`home.erase`): on the person's yes the apps quit, the engine stops,
       // and `afterStop` erases.
