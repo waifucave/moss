@@ -11,7 +11,7 @@
 import { existsSync } from "node:fs";
 import { posix } from "node:path";
 import type { MossProfile } from "../../profile";
-import type { Runner } from "../login/live";
+import { schtasksExe, type Runner } from "../login/live";
 import { appTaskName, appUnitName, systemdUserDir } from "../login/render";
 import type { DaemonPlatform } from "../transport";
 import type { AppStartOutcome, AppStartWhy } from "./policy";
@@ -77,10 +77,10 @@ export async function resolveAppLauncher(input: AppLauncherInput, run: Runner): 
     };
   }
   const task = appTaskName(input.profile);
-  if (!(await run(["schtasks", "/Query", "/TN", task])).ok) return null;
+  if (!(await run([schtasksExe(), "/Query", "/TN", task])).ok) return null;
   return {
     how: `schtasks /Run /TN ${task}`,
-    async start() { return (await run(["schtasks", "/Run", "/TN", task])).ok ? "started" : "failed"; },
+    async start() { return (await run([schtasksExe(), "/Run", "/TN", task])).ok ? "started" : "failed"; },
   };
 }
 

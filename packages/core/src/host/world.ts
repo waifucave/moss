@@ -21,7 +21,7 @@ import { dirname, join, posix } from "node:path";
 import { APP_RECORDS_DIR, AppInstallRecord, HOST_LOCK_FILE, HOST_START_FILE, PROGRAM_IDENTIFIERS, compareReleases, type HostExitReason } from "@waifucave/moss-protocol";
 import { DEVELOPER_ID_CLAUSES, MOSS_TEAM_ID } from "../bundled-identities";
 import type { HostWorld } from "../contracts/host-supervisor";
-import type { Runner } from "../platform/login/live";
+import { schtasksExe, type Runner } from "../platform/login/live";
 import type { DaemonPlatform } from "../platform/transport";
 import type { MossProfile } from "../profile";
 import type { HostWorldExtras } from "./supervisor";
@@ -241,7 +241,7 @@ export function engineHostWorld(input: EngineHostWorldInput): HostWorld & HostWo
       if (!(await input.run(["systemctl", "--user", "start", hostUnitName(input.profile)])).ok) throw new Error(`systemctl refused ${hostUnitName(input.profile)}`);
       return;
     }
-    if (!(await input.run(["schtasks", "/Run", "/TN", hostTaskName(input.profile)])).ok) throw new Error(`no task ${hostTaskName(input.profile)}`);
+    if (!(await input.run([schtasksExe(), "/Run", "/TN", hostTaskName(input.profile)])).ok) throw new Error(`no task ${hostTaskName(input.profile)}`);
   };
 
   return {

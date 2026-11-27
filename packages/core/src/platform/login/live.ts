@@ -6,8 +6,15 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hostTaskName, hostUnitName } from "../../host/world";
+import { systemDirectory } from "../../secrets/private-file";
 import type { LoginOsDeps, TaskDef } from "./manager";
 import { appTaskName, appUnitName, loginLabel, loginUnitPath, schtasksTaskName, systemdUnitName, type LoginSpec } from "./render";
+
+/** `schtasks` by its System32 path on Windows (as `icacls` and `whoami` are, `system32` in secrets/private-file.ts): a program a user's PATH names
+ *  first is not to be trusted with the logon tasks. Elsewhere (a test on a Mac) the bare name, which no OS runs. */
+export function schtasksExe(): string {
+  return process.platform === "win32" ? `${systemDirectory()}\\schtasks.exe` : "schtasks";
+}
 
 export interface RunResult { readonly ok: boolean; readonly out: string }
 /** Runs one command and reports whether it exited 0, with its stdout and stderr. */
@@ -83,7 +90,7 @@ export function logonTriggerState(queryXml: string): "on" | "off" | "absent" {
 export function liveLoginOsDeps(run: Runner = bunRunner, taskXml: TaskXmlWriter = tempTaskXml): LoginOsDeps {
   async function createTask(t: TaskDef): Promise<boolean> {
     const file = taskXml(t.xml);
-    try { return (await run(["schtasks", "/Create", "/F", "/TN", t.name, "/XML", file.path])).ok; }
+    try { return (await run([schtasksExe(), "/Create", "/F", "/TN", t.name, "/XML", file.path])).ok; }
     finally { file.cleanup(); }
   }
   return {
@@ -104,7 +111,7 @@ export function liveLoginOsDeps(run: Runner = bunRunner, taskXml: TaskXmlWriter 
         return (await run(loginOn ? ["systemctl", "--user", "enable", "--now", unit] : ["systemctl", "--user", "disable", unit])).ok;
       }
       let ok = true;
-      for (const name of drop ?? []) await run(["schtasks", "/Delete", "/F", "/TN", name]);
+      for (const name of drop ?? []) await run([schtasksExe(), "/Delete", "/F", "/TN", name]);
       for (const t of tasks) ok = (await createTask(t)) && ok;
       return ok;
     },
@@ -122,8 +129,8 @@ export function liveLoginOsDeps(run: Runner = bunRunner, taskXml: TaskXmlWriter 
         return;
       }
       for (const name of [schtasksTaskName(spec.profile), appTaskName(spec.profile), hostTaskName(spec.profile)]) {
-        await run(["schtasks", "/End", "/TN", name]);
-        await run(["schtasks", "/Delete", "/F", "/TN", name]);
+        await run([schtasksExe(), "/End", "/TN", name]);
+        await run([schtasksExe(), "/Delete", "/F", "/TN", name]);
       }
     },
     async query(spec) {
@@ -136,11 +143,14 @@ export function liveLoginOsDeps(run: Runner = bunRunner, taskXml: TaskXmlWriter 
         const word = r.out.trim().split(/\s+/)[0] ?? "";
         return word === "enabled" ? "on" : word === "disabled" ? "off" : "absent";
       }
-      const r = await run(["schtasks", "/Query", "/TN", schtasksTaskName(spec.profile), "/XML"]);
+      const r = await run([schtasksExe(), "/Query", "/TN", schtasksTaskName(spec.profile), "/XML"]);
       return r.ok ? logonTriggerState(r.out) : "absent";
     },
+    async reload(spec) {
+      if (spec.os === "linux") await run(["systemctl", "--user", "daemon-reload"]);
+    },
     async hostDefined(spec) {
-      return spec.os === "win32" && (await run(["schtasks", "/Query", "/TN", hostTaskName(spec.profile)])).ok;
+      return spec.os === "win32" && (await run([schtasksExe(), "/Query", "/TN", hostTaskName(spec.profile)])).ok;
     },
   };
 }
@@ -154,5 +164,5 @@ export async function stopThroughOs(spec: LoginSpec, run: Runner): Promise<boole
     return (await run(["launchctl", "kill", "SIGTERM", `${domain}/${loginLabel(spec.profile)}`])).ok;
   }
   if (spec.os === "linux") return (await run(["systemctl", "--user", "stop", systemdUnitName(spec.profile)])).ok;
-  return (await run(["schtasks", "/End", "/TN", schtasksTaskName(spec.profile)])).ok;
+  return (await run([schtasksExe(), "/End", "/TN", schtasksTaskName(spec.profile)])).ok;
 }

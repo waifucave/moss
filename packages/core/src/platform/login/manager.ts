@@ -43,6 +43,8 @@ export interface LoginOsDeps {
   /** The OS's view: "on" when the job is loaded (macOS), the unit enabled (Linux) or the daemon's
    *  task has its logon trigger on (Windows); "off" when installed but not; "absent" otherwise. */
   query(spec: LoginSpec): Promise<"on" | "off" | "absent">;
+  /** Linux: `systemctl --user daemon-reload`, after unit files were deleted. */
+  reload?(spec: LoginSpec): Promise<void>;
   /** Windows: whether the host's task is registered (Linux reads its unit file). */
   hostDefined?(spec: LoginSpec): Promise<boolean>;
 }
@@ -108,6 +110,8 @@ export async function loginRemove(spec: LoginSpec, os: LoginOsDeps): Promise<Log
   remove(appUnitPath(spec));
   remove(hostUnitPath(spec));
   remove(xdgAutostartPath(spec));
+  // The files are gone: systemd reads the units again, so none of them lingers loaded (unregister reloaded before they went).
+  if (spec.os === "linux") await os.reload?.(spec);
   return { state: "not-installed", unitPath: loginUnitPath(spec), registered: false, label: loginLabel(spec.profile) };
 }
 

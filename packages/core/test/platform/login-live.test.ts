@@ -11,7 +11,8 @@ import { appBundleOf, hasGraphicalSession, resolveAppLauncher } from "../../src/
 function recorder(answers: Array<[string | RegExp, boolean, string?]> = []) {
   const calls: string[] = [];
   const run: Runner = async (argv) => {
-    const line = argv.join(" ");
+    // On Windows schtasks is run by its System32 path (schtasksExe): the tests name it bare.
+    const line = argv.join(" ").replace(/^\S*[\\/]schtasks\.exe /i, "schtasks ");
     calls.push(line);
     const hit = answers.find(([m]) => (typeof m === "string" ? line.startsWith(m) : m.test(line)));
     return { ok: hit ? hit[1] : true, out: hit?.[2] ?? "" };

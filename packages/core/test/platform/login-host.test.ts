@@ -9,7 +9,7 @@ import { hostTaskName, hostUnitName } from "../../src/host/world";
 import { hostExecutable } from "../../src/platform/login/host-exe";
 import { liveLoginOsDeps, type Runner } from "../../src/platform/login/live";
 import { loginDisable, loginEnable, loginRemove, loginStatus, type LoginOsDeps, type TaskDef } from "../../src/platform/login/manager";
-import { HOST_PROGRAM_ARG, hostUnitPath, renderHostSchtasksXml, renderHostSystemdUnit, type LoginSpec } from "../../src/platform/login/render";
+import { HOST_PROGRAM_ARG, appUnitPath, hostUnitPath, loginUnitPath, renderHostSchtasksXml, renderHostSystemdUnit, type LoginSpec } from "../../src/platform/login/render";
 
 const LINUX_HOST = "/opt/moss-code/moss-code";
 const WIN_HOST = "C:\\Users\\me\\AppData\\Local\\Programs\\MOSS Code\\MOSS Code.exe";
@@ -126,6 +126,21 @@ describe("the manager writes, refreshes and removes the host's definition beside
     await loginEnable(s, f.os);
     expect(f.calls.at(-1)!.tasks!.map((t) => t.name)).toEqual(["\\MOSS\\moss-core"]);
     expect(f.calls.at(-1)!.drop).toEqual(["\\MOSS\\moss-host"]);
+  });
+
+  test("Linux remove reloads systemd once more AFTER the unit files are deleted (the app's and the host's too)", async () => {
+    const s = spec("linux", LINUX_HOST, "dist");
+    const withApp: LoginSpec = { ...s, app: { bin: "/opt/moss-code/moss-code" } };
+    const f = fakeOs();
+    await loginEnable(withApp, f.os);
+    const seen: boolean[][] = [];
+    const os: LoginOsDeps = { ...f.os, async reload(sp) { seen.push([existsSync(hostUnitPath(sp)!), existsSync(appUnitPath(sp)!), existsSync(loginUnitPath(sp)!)]); } };
+    await loginRemove(withApp, os);
+    expect(seen).toEqual([[false, false, false]]);
+    const calls: string[] = [];
+    const run: Runner = async (argv) => { calls.push(argv.join(" ")); return { ok: true, out: "" }; };
+    await liveLoginOsDeps(run).reload!(withApp);
+    expect(calls).toEqual(["systemctl --user daemon-reload"]);
   });
 
   test("Linux remove stops the host's unit through the recorded runner, never a real systemctl", async () => {

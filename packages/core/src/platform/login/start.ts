@@ -8,7 +8,7 @@
 // The app's side calls this as `moss-core daemon start` when no daemon answers, and so does the CLI.
 import { existsSync } from "node:fs";
 import { launchdPlistToLoad } from "./manager";
-import { launchdDomain, type Runner } from "./live";
+import { launchdDomain, schtasksExe, type Runner } from "./live";
 import { loginLabel, loginUnitPath, schtasksTaskName, systemdUnitName, type LoginSpec } from "./render";
 
 export type DaemonStartResult = "started" | "not-installed" | "failed";
@@ -26,6 +26,6 @@ export async function startDaemonThroughOs(spec: LoginSpec, run: Runner): Promis
     const unit = loginUnitPath(spec);
     return unit !== null && existsSync(unit) ? "failed" : "not-installed";
   }
-  if ((await run(["schtasks", "/Run", "/TN", schtasksTaskName(spec.profile)])).ok) return "started";
-  return (await run(["schtasks", "/Query", "/TN", schtasksTaskName(spec.profile)])).ok ? "failed" : "not-installed";
+  if ((await run([schtasksExe(), "/Run", "/TN", schtasksTaskName(spec.profile)])).ok) return "started";
+  return (await run([schtasksExe(), "/Query", "/TN", schtasksTaskName(spec.profile)])).ok ? "failed" : "not-installed";
 }
