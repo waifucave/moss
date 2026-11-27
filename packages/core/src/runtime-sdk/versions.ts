@@ -2,7 +2,7 @@ import { SDK_VERSION } from "@waifucave/clover-agent-sdk";
 
 /** The exact peer versions this daemon was written against (P8b-3). The ^ ranges in package.json
  *  are what INSTALLS; these are what the tests PROVE installed. Bump together with the pins. */
-export const REQUIRED_WINTER_AGENT_SDK = "0.0.89";
+export const REQUIRED_WINTER_AGENT_SDK = "0.0.90";
 /**
  * THE CODING AGENT BINARY, on its own pin since A-M1. Code sessions run embedded and no session spawns
  * it any more; it is lane K's (the coding agent that becomes an ACP agent, spec §9.3), and the tests that
@@ -11,7 +11,11 @@ export const REQUIRED_WINTER_AGENT_SDK = "0.0.89";
  * builds its own.
  */
 export const CODING_AGENT_BINARY_VERSION = "0.0.55";
-/** Bumped to 0.0.89 (2026-11-26): on Linux the held-names walk has one budget per command (400,000 entries and 3 s across
+/** Bumped to 0.0.90 (2026-11-27): on Linux the held-names patterns are gathered once per command (each prefix
+ *  canonicalized once, each pattern only under the prefixes it can match: a host's thousands of patterns took a minute
+ *  and left no time to walk); the walk's 3 s starts at its first walk; the working folder's walk first, then the
+ *  prefixes smallest first by their last walk, unknown ones on a fair share, so the largest folders are what drop.
+ *  Earlier: bumped to 0.0.89 (2026-11-26): on Linux the held-names walk has one budget per command (400,000 entries and 3 s across
  *  every write root, the working folder first) and fails closed: a root it can't finish isn't handed as writable; node_modules
  *  is walked to 64 levels; a held name's quarantine checks its parent against the walk's identity.
  *  Earlier: bumped to 0.0.88 (2026-11-26): on Windows a path outside a file rule's folder is outside it, not an error that denied the call (`path.relative`'s backslash, drive and

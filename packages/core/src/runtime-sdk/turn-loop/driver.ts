@@ -199,6 +199,24 @@ export function leftOutNote(response: unknown, leftOut: readonly { root: string;
   return { ...r, stderr: stderr === "" ? note : `${stderr.replace(/\n+$/, "")}\n${note}` };
 }
 
+/** The agent runtime's own line (0.0.89 and later, Linux) for the write roots its walk couldn't finish this command. */
+const RUNTIME_DROPPED = /\[sandbox\] not writable this run, too large to check for protected paths[^\n]*?\):\s*([^\n]+)/;
+
+/** A Bash result the runtime marked with the roots it dropped this command (on a big home, the largest folders): the
+ *  same in plain words after it (the owner's ruling, 2026-11-27: the bot is told), so the bot knows to use Write or Edit
+ *  there rather than retry. Undefined when the result has no such line. */
+export function droppedRootsNote(response: unknown): unknown {
+  const text = typeof response === "string" ? response : response !== null && typeof response === "object" ? String((response as Record<string, unknown>).stderr ?? "") : "";
+  const m = RUNTIME_DROPPED.exec(text);
+  if (m === null) return undefined;
+  const roots = m[1]!.split(",").map((s) => s.trim()).filter((s) => s !== "").slice(0, 20);
+  const shown = roots.map((r) => r.replace(/[\u0000-\u001f\u007f-\u009f]/g, "?").slice(0, 200)).join(", ");
+  const note = `[MOSS] This computer's sandbox couldn't finish checking ${shown}${roots.length === 20 ? " (and more)" : ""} in time, so shell commands can't write there this time; Write and Edit still can.`;
+  if (typeof response === "string") return `${response}\n${note}`;
+  const r = response as Record<string, unknown>;
+  return { ...r, stderr: `${String(r.stderr ?? "").replace(/\n+$/, "")}\n${note}` };
+}
+
 export function treeResultText(tool: string, output: unknown): string {
   if (typeof output === "string") return output;
   if (output === null || typeof output !== "object") return String(output ?? "");
@@ -1045,7 +1063,9 @@ export class BotSessionDriver implements SessionDriver {
     // A search's hits through a link out of the session's folders are dropped before anyone sees them, plugins too.
     const fenced = this.#fileFence === undefined || remote ? undefined : fenceSearchOutput(name, input.tool_response, this.#fileFence, this.#ctx.paths.scratch, input.tool_input);
     // Linux (lane XC 3c): a command whose write was refused under a root the sandbox left out is told why.
-    const noted = remote || name !== "Bash" ? undefined : leftOutNote(fenced ?? input.tool_response, this.#leftOut);
+    const left = remote || name !== "Bash" ? undefined : leftOutNote(fenced ?? input.tool_response, this.#leftOut);
+    // Linux (0.0.90): the roots the runtime's own walk dropped this command, said in plain words too.
+    const noted = remote || name !== "Bash" ? left : (droppedRootsNote(left ?? fenced ?? input.tool_response) ?? left);
     const result = await this.#hooks.toolAfter(this.#hookSession, { name, callId: input.tool_use_id ?? toolUseId ?? "" }, input.tool_input, noted ?? fenced ?? input.tool_response, signal);
     try { this.#d.observe?.toolResult?.(this.#ctx, name, input.tool_response, input.tool_input); } catch { /* an observer never fails the call */ }
     // A core tool asked for the turn to end here (`#continueWith`): the runtime stops after this round, and `turn`

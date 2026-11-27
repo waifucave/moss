@@ -11,7 +11,7 @@ import type { Fence } from "../../src/contracts/fence";
 import { MossFence } from "../../src/fence/fence";
 import { fencedSpawner } from "../../src/fence/fenced-process";
 import { botSandboxSettings, denyRegex, heldNames, leftOutRoots, LINUX_LEAVE_OUT_UNHELD, linuxHoldProblem, shellRunLaterDenies } from "../../src/fence/sandbox-settings";
-import { leftOutNote } from "../../src/runtime-sdk/turn-loop/driver";
+import { droppedRootsNote, leftOutNote } from "../../src/runtime-sdk/turn-loop/driver";
 import { hostOs } from "../../src/tree/names";
 
 const temps: string[] = [];
@@ -125,6 +125,20 @@ describe("linuxHoldProblem: the runtime's walk, as it runs", () => {
     mkdirSync(join(root, ".GIT"), { recursive: true });
     for (let i = 0; i < 50; i++) writeFileSync(join(root, ".GIT", `o${i}`), "x");
     expect(linuxHoldProblem(root, { now: 7, limits: small })).toContain("more than the sandbox can check");
+  });
+});
+
+describe("droppedRootsNote: the roots the runtime's walk dropped this command, in plain words for the bot", () => {
+  // The agent runtime 0.0.90's own line (sandbox/spawn.ts `notHeldNote`), added to a failed command's stderr.
+  const runtimeLine = "\n[sandbox] not writable this run, too large to check for protected paths (over 200,000 entries or 16 folders deep, or past the 400,000 entries or 3 s one command reads, node_modules included): /h/Photos, /h/.cache\n";
+  test("after the runtime's line, which roots and that Write and Edit still can", () => {
+    const r = droppedRootsNote({ stdout: "", stderr: `bash: /h/Photos/x: Read-only file system${runtimeLine}`, code: 1 }) as { stderr: string };
+    expect(r.stderr).toContain("[MOSS] This computer's sandbox couldn't finish checking /h/Photos, /h/.cache in time, so shell commands can't write there this time; Write and Edit still can.");
+    expect(droppedRootsNote(`x${runtimeLine}`)).toEqual(expect.stringContaining("couldn't finish checking /h/Photos, /h/.cache"));
+  });
+  test("nothing on a result without that line", () => {
+    expect(droppedRootsNote({ stdout: "ok", stderr: "", code: 0 })).toBeUndefined();
+    expect(droppedRootsNote("Read-only file system")).toBeUndefined();
   });
 });
 

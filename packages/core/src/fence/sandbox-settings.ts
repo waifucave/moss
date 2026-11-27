@@ -239,8 +239,8 @@ export function botSandboxSettings(policy: SandboxPolicy, o: {
   // Linux (lane XC 3c): the runtime holds a pattern's matches only as far as its walk reaches (`linuxHoldProblem`); a
   // root of the user's whose walk can't finish there, or that holds a repository inside `node_modules`, isn't handed to
   // it at all, so the command runs with the narrower roots, and a write it can't make says why (`leftOutRoots`).
-  // Off for now (`LINUX_LEAVE_OUT_UNHELD`): every root is handed as before, until the owner decides with the runtime's
-  // budgeted walk (0.0.89).
+  // Off (`LINUX_LEAVE_OUT_UNHELD`): every root is handed, and the runtime (0.0.90) drops the ones its walk can't finish
+  // this command, largest first (the owner's ruling: the whole home, the largest may drop, the bot is told).
   const leftOut: LeftOutRoot[] = [];
   const keptWrite = os !== "linux" || !(o.linuxLeaveOut ?? LINUX_LEAVE_OUT_UNHELD) ? covered : covered.filter((r) => {
     if (!pathWithin(r, o.userHome, os) || pathWithin(r, o.mossHome, os) || own.some((f) => pathWithin(r, f, os))) return true;
@@ -264,8 +264,9 @@ export function botSandboxSettings(policy: SandboxPolicy, o: {
 
 /** Whether `botSandboxSettings` leaves out, on Linux, a user's write root the runtime's walk can't hold. Off: from
  *  agent runtime 0.0.89 the runtime fails closed itself (a root whose walk can't finish within its per-command budget
- *  isn't handed as writable), so MOSS doesn't walk the roots a second time before each command; the check and its note
- *  stay for a runtime that drops a root, and for turning this on. */
+ *  isn't handed as writable), and from 0.0.90 it walks the smallest first, so the largest are what drop; MOSS doesn't
+ *  walk the roots a second time before each command (the owner's ruling, 2026-11-27: the whole home stays the shell's
+ *  reach at fully automatic, the largest folders may drop per command, the bot is told). */
 export const LINUX_LEAVE_OUT_UNHELD = false;
 
 /** A write root MOSS didn't hand the runtime on Linux, and why (`linuxHoldProblem`). */
@@ -284,9 +285,11 @@ function shownPath(p: string): string {
   return t.length > 200 ? `${t.slice(0, 199)}…` : t;
 }
 
-/** The runtime's own walk for a pattern-shaped deny on Linux (the agent runtime 0.0.89's `perCommandExpander`): one
- *  budget per command, 400,000 entries and 3 s across every write root (the working folder first), 16 levels down,
- *  `node_modules` walked to 64. A root the runtime can't finish it doesn't hand as writable (it fails closed itself).
+/** The runtime's own walk for a pattern-shaped deny on Linux (the agent runtime 0.0.90's `perCommandExpander`): one
+ *  budget per command, 400,000 entries and 3 s from its first walk, across every write root: the working folder first
+ *  on the whole budget, then the roots smallest first by their last walk, a root never walked on a fair share of
+ *  what's left; 16 levels down, `node_modules` walked to 64. A root the runtime can't finish it doesn't hand as
+ *  writable (it fails closed itself), so on a big home the largest folders are what drop for that command.
  *  These must be the runtime's numbers, never larger: a root this check passes past the runtime's limit would be one
  *  the runtime drops anyway. */
 export const LINUX_WALK = { maxVisited: 400_000, maxDepth: 16 } as const;
