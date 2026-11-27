@@ -846,8 +846,12 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         const grantSid = installed;
         // srt-win refuses every session grant while ANOTHER process writes or removes the profile read grant (exit 25):
         // this engine's own grant is awaited above, so that is another engine on this user (a second home) or the CLI's
-        // `sandbox forget`. Tried again, a bounded while, then refused as before.
-        const busyUntil = Date.now() + (deps.profileBusyWaitMs ?? 20_000);
+        // `sandbox forget`. Tried again, a bounded while, then refused as before. The wait is what a principal lease waits
+        // (2 minutes): srt-win answers 25 only while a LIVE profile operation holds its init lock (an OS lock let go when
+        // its process dies, and its holder word checked), and those operations queue on that one lock, each 15-25 s on the
+        // runner and often two per engine (the grant, then again for the folders it made): row 150 still met one after
+        // 20 s (run 46003230665).
+        const busyUntil = Date.now() + (deps.profileBusyWaitMs ?? 120_000);
         let grant: { code: number; stdout: string; stderr: string };
         for (;;) {
           grant = await grantsInTurn(() => {
