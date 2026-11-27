@@ -24,3 +24,7 @@ It helps to include:
 - Please give us reasonable time to ship a fix before you disclose it publicly. We'll tell you when the fix is out.
 
 Fixes ship in a new release; only the latest release is supported, and the apps update themselves. The full policy is the repository's [SECURITY.md](https://github.com/waifucave/moss/blob/main/SECURITY.md).
+
+## A known limit on Linux
+
+On macOS, a bot's command can't make a new repository or a file that runs later (a `.git`, `.husky`, `.envrc`, `.vscode`) anywhere it writes: the sandbox refuses the write. Linux's sandbox can't refuse a name that doesn't exist yet. It holds the ones that are there when the command starts, and puts back any it finds swapped when the command ends, but a command of a bot on your own computer can still make a new repository with hooks, which then run when you use git there. For a command from another of your computers, MOSS also checks the one folder it was given when the command ends, moves aside anything of that kind the command made, and tells the bot if the folder couldn't be fully checked. A proper fix needs to know who made each file, which Linux's sandbox can't tell today. It is planned after the first release.

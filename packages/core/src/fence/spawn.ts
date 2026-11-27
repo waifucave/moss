@@ -62,8 +62,9 @@ export interface FencedRun {
 export type RunShell = "sh" | "git-bash" | "cmd" | "none";
 
 export type FencedRunResult =
-  | { readonly kind: "exited"; readonly code: number; readonly stdout: string; readonly stderr: string; readonly shell: RunShell }
-  | { readonly kind: "timeout"; readonly stdout: string; readonly stderr: string; readonly shell: RunShell }
+  // `note`: what the sandbox says about the run's end (moved aside, not checked), kept apart from the command's own output.
+  | { readonly kind: "exited"; readonly code: number; readonly stdout: string; readonly stderr: string; readonly shell: RunShell; readonly note?: string }
+  | { readonly kind: "timeout"; readonly stdout: string; readonly stderr: string; readonly shell: RunShell; readonly note?: string }
   | { readonly kind: "refused"; readonly reason: string };
 
 export interface FencedSpawner {

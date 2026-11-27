@@ -89,7 +89,14 @@ reach, because it needs something that isn't in a test run.
     folder now runs under the agent runtime's own sandbox, the one a local bot's Bash gets
     (fence/peer-folder-linux.ts): the walk that fails closed, and the quarantine that checks identity. Today's peer
     floor carries over: no network, the per-call temp root, the secret places and the MOSS home denied. A
-    temp-only call still runs under MOSS's fence.
+    temp-only call still runs under MOSS's fence. At the command's end the call's two roots are swept
+    (`sweepRoots`): a new repository or run-later name it made there is moved aside whole, never deleted, and a folder
+    the sweep couldn't fully read is said to the bot (the person should look).
+  - The Linux limit, for a LOCAL bot too (backlog, after the first release): bubblewrap can't refuse a name that
+    doesn't exist yet, so a local bot's sandboxed command can make a new repository with hooks in a folder it writes
+    (macOS refuses the write). The sweep isn't used there: after the fact it can't tell the command's new files from
+    the person's, and at fully automatic the roots are the whole home. A proper fix needs who made each file: an
+    overlay upper layer for the write roots, or seccomp user notification on the creating calls.
   - Windows: a peer's command writes only its own temp folder; it waits on its fence's deny depth being checked for a
     peer's folder.
 - **A bot committing on another computer.** Every `.git` is denied whole to a peer's command, as to a local bot's

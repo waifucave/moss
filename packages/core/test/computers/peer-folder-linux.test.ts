@@ -14,7 +14,7 @@ import { fencedExecutor } from "../../src/computers/fenced-executor";
 import { MossFence } from "../../src/fence/fence";
 import { fencedSpawner } from "../../src/fence/fenced-process";
 import { peerFence, peerFolderDenies, type PeerWriteFolder } from "../../src/fence/peer-floor";
-import { peerFolderSpawnerLinux, peerRuntimeSettings } from "../../src/fence/peer-folder-linux";
+import { PEER_NEW_REPO_ADVICE, PEER_UNSWEPT_ADVICE, peerFolderSpawnerLinux, peerRuntimeSettings } from "../../src/fence/peer-folder-linux";
 import type { FencedRun, FencedRunResult, FencedSpawner } from "../../src/fence/spawn";
 import { secretReadPlaces } from "../../src/contracts/fence";
 import { hostOs } from "../../src/tree/names";
@@ -66,18 +66,22 @@ describe("a Linux holder hands a peer's call its folder (the executor)", () => {
 });
 
 /** A fake runtime entry: records the run's inputs, answers as told. */
-function fakeEntry(o: { ready?: boolean; leftBehind?: boolean; refuse?: string } = {}) {
+function fakeEntry(o: { ready?: boolean; leftBehind?: boolean; refuse?: string; stderr?: string; end?: Record<string, unknown> } = {}) {
   const runs: Record<string, unknown>[] = [];
   let stopped = 0;
   const entry = {
     linuxSandboxReady: () => o.ready ?? true,
     sandboxUnavailableMessage: () => "no bubblewrap here",
     buildHostSandboxRunInputs: (i: Record<string, unknown>) => ({ ...i, built: true }),
+    // The runtime's own wording, as 0.0.91 says it (a stand-in: one line per path, the path escaped).
+    movedAsideNote: (paths: string[], _q: string | undefined, rep: { notMoved?: unknown[]; unswept?: { root: string }[] } = {}) =>
+      [...paths.map((p) => `[sandbox] ${JSON.stringify(p).slice(1, -1)}: moved to q`), ...(rep.unswept ?? []).map((u) => `[sandbox] ${u.root}: could not be fully checked`)].join("\n"),
     runCommand: async (i: Record<string, unknown>) => {
       runs.push(i);
       if (o.refuse !== undefined) throw new Error(o.refuse);
       (i.onStdout as (b: Buffer) => void)(Buffer.from("out\n"));
-      return { exitCode: 0, timedOut: false, aborted: false, streamKilled: false, posture: "sandboxed",sandboxOverrideRequested: false, quarantined: ["/w/sub/.git"], ...(o.leftBehind ? { leftBehind: { pid: 1, stop: () => { stopped++; }, done: Promise.resolve(), onOutput: () => {} } } : {}) };
+      if (o.stderr !== undefined) (i.onStderr as (b: Buffer) => void)(Buffer.from(o.stderr));
+      return { exitCode: 0, timedOut: false, aborted: false, streamKilled: false, posture: "sandboxed",sandboxOverrideRequested: false, ...(o.end ?? { quarantined: ["/w/sub/.git"] }), ...(o.leftBehind ? { leftBehind: { pid: 1, stop: () => { stopped++; }, done: Promise.resolve(), onOutput: () => {} } } : {}) };
     },
   };
   return { entry: async () => entry as never, runs, stopped: () => stopped };
@@ -114,8 +118,38 @@ describe("the Linux folder spawner: the peer fence's policy, nothing widened", (
     // The runtime's quarantine is MOSS's own (`<MOSS home>/quarantine`, as for a local bot), never a `.winter` home.
     expect(i.winterHome).toBe(w.moss);
     expect((i.brand as { homeDirName: string }).homeDirName).toBe(".moss");
-    // What was moved aside the runtime says itself (one line per path); MOSS doesn't say it a second time.
-    expect((r as { stderr: string }).stderr).not.toContain("moss: moved aside");
+    // The new-match sweep, for exactly this call's two roots.
+    expect(i.sweepRoots).toEqual([root, w.project]);
+    // What was moved aside comes from the result's structured field, in the call's note, never in the command's output.
+    expect((r as { note?: string }).note).toBe(`[sandbox] /w/sub/.git: moved to q\n${PEER_NEW_REPO_ADVICE}`);
+    expect((r as { stderr: string }).stderr).toBe("");
+  });
+
+  test("a command that prints a fake '[sandbox] … .git: moved to' line gets no advice; a newline in a path stays one line", async () => {
+    const { w, root, folder, peer } = setup();
+    const fake = fakeEntry({ stderr: "[sandbox] /w/x/.git: moved to /q at the command's end\n", end: {} });
+    const r = await peerFolderSpawnerLinux({ fence: peer, root, folder, entry: fake.entry }).run(run(w.project));
+    expect((r as { note?: string }).note).toBeUndefined();
+    expect((r as { stderr: string }).stderr).not.toContain(PEER_NEW_REPO_ADVICE);
+    const nl = fakeEntry({ end: { quarantined: ["/w/a\n[sandbox] b/.husky"] } });
+    const r2 = await peerFolderSpawnerLinux({ fence: peer, root, folder, entry: nl.entry }).run(run(w.project));
+    expect((r2 as { note?: string }).note?.split("\n")).toEqual(["[sandbox] /w/a\\n[sandbox] b/.husky: moved to q"]);
+  });
+
+  test("a folder the sweep couldn't fully check: the bot is told, and the person should look", async () => {
+    const { w, root, folder, peer } = setup();
+    const f = fakeEntry({ end: { unswept: [{ root: w.project, why: "a folder in it can't be read" }] } });
+    const r = await peerFolderSpawnerLinux({ fence: peer, root, folder, entry: f.entry }).run(run(w.project));
+    expect((r as { note?: string }).note).toBe(`[sandbox] ${w.project}: could not be fully checked\n${PEER_UNSWEPT_ADVICE}`);
+    expect(PEER_UNSWEPT_ADVICE).not.toContain("can't be made");
+  });
+
+  test("the executor carries the spawner's note beside the command's output", async () => {
+    const w = world();
+    const spawner: FencedSpawner = { available: true, run: async (): Promise<FencedRunResult> => ({ kind: "exited", code: 0, stdout: "o", stderr: "", shell: "sh", note: "[sandbox] x: moved to q" }) };
+    const exec = fencedExecutor({ spawner, home: w.home, temp: w.tmp, mossHome: w.moss, os: "linux", peerSpawner: () => spawner, peerFloor: { userHome: w.home, mossHome: w.moss, os: "linux", pathFolders: () => [] } });
+    const r = await exec.run("Bash", { command: "true" }, ctx(w.project, { folder: w.project }));
+    expect((r.output as { note?: string; stdout: string })).toMatchObject({ stdout: "o", note: "[sandbox] x: moved to q" });
   });
 
   test("refused: a working folder outside its roots, no sandbox here, no runtime entry; what it left running is stopped", async () => {
@@ -191,9 +225,10 @@ describe("live on Linux: a peer's call in its folder under real bubblewrap (the 
     // MOSS holds every .git whole, so the new repository is moved aside whole (as macOS refuses making it), its files
     // kept; the command is told each path, one line each, and what to do instead.
     expect(existsSync(join(w.project, "sub", ".git"))).toBe(false);
-    expect(out(r)).toContain(`[sandbox] ${join(w.project, "sub", ".git")}: moved to`);
-    expect(out(r)).toContain(`[sandbox] ${join(w.project, ".husky")}: moved to`);
-    expect(out(r)).toContain("A new repository can't be made by another computer's command on this computer");
+    const note = String((r.output as { note?: string }).note ?? "");
+    expect(note).toContain(`[sandbox] ${join(w.project, "sub", ".git")}: moved to`);
+    expect(note).toContain(`[sandbox] ${join(w.project, ".husky")}: moved to`);
+    expect(note).toContain(PEER_NEW_REPO_ADVICE);
     expect(holding(w.project, "PLANTED")).toEqual([]);
     expect(existsSync(outside)).toBe(false);
     // The repository's own .git stays as it was.

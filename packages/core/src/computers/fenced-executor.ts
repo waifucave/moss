@@ -163,7 +163,11 @@ export function fencedExecutor(o: FencedExecutorOptions): ToolExecutor {
       } finally {
         if (peerRoot !== undefined) rmSync(peerRoot, { recursive: true, force: true });
       }
-      const noted = note === undefined ? {} : { note };
+      // The sandbox's own word on the run's end (what it moved aside, a folder it couldn't fully check) joins the note,
+      // never the command's output: a command can't print it, and its output can't push it out.
+      const runNote = r.kind !== "refused" ? r.note : undefined;
+      const allNotes = [note, runNote].filter((n): n is string => n !== undefined && n.length > 0).join("\n");
+      const noted = allNotes.length === 0 ? {} : { note: allNotes };
       if (r.kind === "refused") return { output: { error: `refused: ${r.reason}`, ...noted }, isError: true };
       // The fenced process gives its output at the end; it goes to the caller's stream once, in order.
       if (r.stdout) ctx.output(r.stdout, "stdout");

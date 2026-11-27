@@ -199,23 +199,6 @@ export function droppedRootsNote(response: unknown): unknown {
   return { ...r, stderr: `${String(r.stderr ?? "").replace(/\n+$/, "")}\n${note}` };
 }
 
-/** The runtime's line for a whole `.git` it moved aside at a command's end (agent runtime 0.0.91, Linux). */
-const RUNTIME_MOVED_REPO = /\[sandbox\] ([^\n]*?\.git): moved to /;
-
-/** The advice for a repository a command made inside the sandbox, as a bot's Bash on this computer gets it: the same
- *  that a refused write leads to on macOS (MOSS holds every `.git` whole, so a new one can't be made in the sandbox). */
-export const NEW_REPO_ADVICE = "[MOSS] A new repository can't be made inside the sandbox on this computer; run the git command outside it (Bash with dangerouslyDisableSandbox, which asks first).";
-
-/** A Bash result in which the runtime moved aside a new `.git`, with MOSS's advice after it (`advice`: the words for
- *  who ran it); undefined when there is no such line. */
-export function newRepoNote(response: unknown, advice: string = NEW_REPO_ADVICE): unknown {
-  const text = typeof response === "string" ? response : response !== null && typeof response === "object" ? String((response as Record<string, unknown>).stderr ?? "") : "";
-  if (!RUNTIME_MOVED_REPO.test(text)) return undefined;
-  if (typeof response === "string") return `${response}\n${advice}`;
-  const r = response as Record<string, unknown>;
-  return { ...r, stderr: `${String(r.stderr ?? "").replace(/\n+$/, "")}\n${advice}` };
-}
-
 export function treeResultText(tool: string, output: unknown): string {
   if (typeof output === "string") return output;
   if (output === null || typeof output !== "object") return String(output ?? "");
@@ -1060,9 +1043,7 @@ export class BotSessionDriver implements SessionDriver {
     // A search's hits through a link out of the session's folders are dropped before anyone sees them, plugins too.
     const fenced = this.#fileFence === undefined || remote ? undefined : fenceSearchOutput(name, input.tool_response, this.#fileFence, this.#ctx.paths.scratch, input.tool_input);
     // Linux (0.0.90): the roots the runtime's own walk dropped this command, said in plain words too.
-    const dropped = remote || name !== "Bash" ? undefined : droppedRootsNote(fenced ?? input.tool_response);
-    // Linux (0.0.91): a repository the command made was moved aside at its end; the bot is told how to make one.
-    const noted = remote || name !== "Bash" ? undefined : (newRepoNote(dropped ?? fenced ?? input.tool_response) ?? dropped);
+    const noted = remote || name !== "Bash" ? undefined : droppedRootsNote(fenced ?? input.tool_response);
     const result = await this.#hooks.toolAfter(this.#hookSession, { name, callId: input.tool_use_id ?? toolUseId ?? "" }, input.tool_input, noted ?? fenced ?? input.tool_response, signal);
     try { this.#d.observe?.toolResult?.(this.#ctx, name, input.tool_response, input.tool_input); } catch { /* an observer never fails the call */ }
     // A core tool asked for the turn to end here (`#continueWith`): the runtime stops after this round, and `turn`
