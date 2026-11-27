@@ -370,7 +370,10 @@ function whereOf(err: RpcError): string {
 // Linux's fence lets an agent a bot started write only temp (/tmp), and drops any write root that holds the agent's folder
 // (agents/manager.ts botChildPolicy): a user home under /tmp is held by it, so the agent could write nowhere and never started. A
 // real user's home is not under /tmp, so the run's world is under the runner's own temp folder there (`RUNNER_TEMP`), not /tmp.
-const root = mkdtempSync(join(process.platform === "linux" && process.env.RUNNER_TEMP !== undefined && process.env.RUNNER_TEMP !== "" ? process.env.RUNNER_TEMP : tmpdir(), "clv-acc-"));
+// Windows the same: the user's own Temp (under C:\Users\<runner>) is a folder the sandbox's pool accounts can't enter, so
+// srt-win refuses a fenced command whose working folder is there (computers row 150, run 46009890592); the runner's
+// work drive is what a person's project folder is to them.
+const root = mkdtempSync(join((process.platform === "linux" || process.platform === "win32") && process.env.RUNNER_TEMP !== undefined && process.env.RUNNER_TEMP !== "" ? process.env.RUNNER_TEMP : tmpdir(), "clv-acc-"));
 // A --keep-state or --upgrade-from run keeps the home, the user home and the keychain file in its state dir; the rest
 // (logs, TMPDIR, the stub, a packaged core's copy) stays in the temp folder and goes.
 const kept_ = stateDir === undefined ? undefined : statePaths(stateDir);

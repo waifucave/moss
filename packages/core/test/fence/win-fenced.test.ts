@@ -870,6 +870,19 @@ describe("a session grant while another process writes the profile grant (srt-wi
     expect(streamed.filter((t) => t === `${PROFILE_BUSY_WAIT_LINE}\n`).length).toBe(1);
   });
 
+  test("the engine's own profile grant waits it out the same way (and the command's read note says nothing failed)", async () => {
+    const m = machine();
+    let busy = 0;
+    const isProfileGrant = (a: readonly string[]) => a[1] === "profile" && a[2] === "grant";
+    const deps: WinFencedDeps = { ...m.deps, profileBusyWaitMs: 5_000, profileBusyPollMs: 1, exec: async (argv, x) => {
+      if (isProfileGrant(argv) && busy < 2) { busy++; m.execs.push(argv); return BUSY; }
+      return m.deps.exec(argv, x);
+    } };
+    const r = await winFencedSpawner({ fence: m.fence, deps, grantAhead: false }).run(runOf(m.home)).catch((e: unknown) => ({ kind: "threw", e }));
+    expect(m.execs.filter(isProfileGrant).length).toBeGreaterThanOrEqual(3);
+    expect(JSON.stringify(r)).not.toContain("didn't complete");
+  });
+
   test("past its bounded wait: refused as before, with srt-win's reason", async () => {
     const { m, s } = spawnerWith(1_000, 0);
     const r = await s.run(runOf(m.home));

@@ -689,7 +689,16 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
     if (had !== undefined) return had;
     const p = (async () => {
       const started = Date.now();
-      const grant = (ex: readonly string[]) => deps.exec([deps.launcher, "profile", "grant", "--quiet", "--json", ...ex.flatMap((p) => ["--exclude", p])], { timeoutMs: 1_800_000 });
+      // Another process's profile operation holds srt-win's lock (exit 25: another engine on this user, or the CLI's
+      // `sandbox forget`): this grant waits it out the same bounded while a session grant does, then fails as before.
+      const busyUntil = Date.now() + (deps.profileBusyWaitMs ?? 120_000);
+      const grant = async (ex: readonly string[]) => {
+        for (;;) {
+          const r = await deps.exec([deps.launcher, "profile", "grant", "--quiet", "--json", ...ex.flatMap((p) => ["--exclude", p])], { timeoutMs: 1_800_000 });
+          if (!profileBusy(r) || Date.now() >= busyUntil) return r;
+          await Bun.sleep(deps.profileBusyPollMs ?? 1_000);
+        }
+      };
       let excludes = profileExcludes();
       let r = await grant(excludes);
       // srt-win makes each protected folder of its own list that is missing (`.aws`, `.kube`, `.gnupg`…) to carry its
