@@ -125,7 +125,7 @@ export interface MossCodeDeps {
   /** Lane WS8, Windows: MOSS's fenced Bash and PowerShell for a session (`agentShellTools`), served under their plain
    *  names in place of the runtime's own, which has no Windows sandbox. Given, the runtime's `Bash` and `PowerShell` are
    *  left out of the session's tools. */
-  windowsShell?: (o: { sessionId: string; root: string; sandbox: () => NonNullable<Options["sandbox"]> }) => readonly CoreToolDef[];
+  windowsShell?: (o: { sessionId: string; root: string; sandbox: () => NonNullable<Options["sandbox"]>; served: boolean; bot?: string }) => readonly CoreToolDef[];
   /** Lane WS: a Windows background command of the session is the core's, not the runtime's, so the runtime's `TaskStop` and
    *  `TaskOutput` don't know its id: this answers the call (the host's own PreToolUse hook answers it, agent SDK 0.0.87)
    *  when the id is one of THIS session's commands, and is null for anything else, which goes on to the runtime
@@ -364,7 +364,7 @@ export class MossCodeBackend implements AgentBackend {
     const deps = this.#deps;
     // The user's own session: the bots' pause doesn't hold it (an open gate, never none: with none a session fails closed).
     const usage = contextUpdates();
-    const { query, options, abort } = await this.#agentParts({ ...spec, shellSession: `served-${randomUUID()}` }, undefined, { mayAct: () => true }, usage.report);
+    const { query, options, abort } = await this.#agentParts({ ...spec, shellSession: `served-${randomUUID()}`, served: true }, undefined, { mayAct: () => true }, usage.report);
     const server = serveAcpAgent({
       query,
       options: options as unknown as Record<string, unknown>,
@@ -390,7 +390,7 @@ export class MossCodeBackend implements AgentBackend {
 
   /** What `start` and `serve` share: the session's query on the embedded runtime and its options (the coding tools,
    *  the fence's sandbox and deny rules, the pause and the fence's hooks), checked and filled. */
-  async #agentParts(spec: Pick<AcpStartSpec, "root" | "model" | "effort" | "fence"> & Partial<Pick<AcpStartSpec, "bot" | "level">> & { shellSession: string }, bridge: AcpStartSpec["inProcessBridge"], gate: AgentPauseGate, onContext?: (tokens: number) => void, onTasks?: TaskFrames): Promise<{ query: AcpQueryFn; options: Options; abort: AbortController; bridgeCalls: Map<string, BridgeCall> }> {
+  async #agentParts(spec: Pick<AcpStartSpec, "root" | "model" | "effort" | "fence"> & Partial<Pick<AcpStartSpec, "bot" | "level">> & { shellSession: string; served?: boolean }, bridge: AcpStartSpec["inProcessBridge"], gate: AgentPauseGate, onContext?: (tokens: number) => void, onTasks?: TaskFrames): Promise<{ query: AcpQueryFn; options: Options; abort: AbortController; bridgeCalls: Map<string, BridgeCall> }> {
     const deps = this.#deps;
     // The root is a folder that exists: the manager resolved it; one that went away isn't made again here.
     if (!isDirectory(spec.root)) throw new ContractError("not_found", `the agent's root folder ${spec.root} isn't there`);
@@ -478,7 +478,7 @@ export class MossCodeBackend implements AgentBackend {
     // Windows (lane WS8): the core's fenced Bash and PowerShell in place of the runtime's (`windowsShell`), on the
     // session's sandbox as drawn below; served by an in-process server under their plain names.
     let sessionSandbox: NonNullable<Options["sandbox"]> | undefined;
-    const shellTools = deps.windowsShell?.({ sessionId: spec.shellSession, root: spec.root, sandbox: () => sessionSandbox! });
+    const shellTools = deps.windowsShell?.({ sessionId: spec.shellSession, root: spec.root, sandbox: () => sessionSandbox!, served: spec.served === true, ...(spec.bot === undefined ? {} : { bot: spec.bot }) });
     const shellServer = shellTools === undefined ? undefined : coreToolsServer(() => shellTools);
     const options: Options = {
       ...base,

@@ -110,6 +110,29 @@ describe("MOSS's coding agent's background tasks", () => {
       await s.stop();
     }
   }, 30_000);
+
+  test("Windows shell tools: a session's own start says it is not served and names its bot; the one-off served query says served (no wake, no task report)", async () => {
+    const seen: { sessionId: string; served: boolean; bot?: string }[] = [];
+    const fence = new FakeFence({ home: root, mossHome: join(root, ".moss") });
+    const quiet = (args: { prompt: AsyncIterable<string>; options: Options }) => {
+      async function* run() { yield { type: "system", subtype: "init", model: MODEL, permissionMode: "default" }; for await (const _ of args.prompt) { /* idle */ } }
+      return Object.assign(run(), { interrupt: async () => {}, setModel: async () => {}, setPermissionMode: async () => {}, setEffort: async () => {}, supportedModels: async () => [] });
+    };
+    const backend = new MossCodeBackend({
+      clock: { now: () => Date.now() } as never, defaultModel: () => MODEL, sandboxReady: () => true, pause: { mayAct: () => true },
+      baseOptions: (o) => ({ model: o.model, cwd: o.cwd, env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin" }, settingSources: [] }) as Options,
+      query: quiet as never,
+      windowsShell: (o) => { seen.push({ sessionId: o.sessionId, served: o.served, ...(o.bot === undefined ? {} : { bot: o.bot }) }); return []; },
+    });
+    const served = await backend.serve({ root, fence: fence.policy() } as never, () => {});
+    try {
+      expect(seen).toHaveLength(1);
+      expect(seen[0]!.served).toBe(true);
+      expect(seen[0]!.sessionId.startsWith("served-")).toBe(true);
+    } finally {
+      await (served as unknown as { stop?: () => Promise<void> }).stop?.();
+    }
+  }, 30_000);
 });
 
 test("reportingTasks logs each task frame's kind and id, never anything else", async () => {

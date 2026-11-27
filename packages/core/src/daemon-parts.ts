@@ -521,15 +521,20 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
                 const spawner = fencedSpawner({ fence });
                 return {
                   sandboxReady: () => spawner.available,
-                  windowsShell: (s: { sessionId: string; root: string; sandbox: () => SandboxSettingsConfig }) => agentShellTools({
-                    spawner, caller: { kind: "session", sessionId: s.sessionId, sessionKind: "agent" } as Extract<Caller, { kind: "session" }>,
+                  windowsShell: (s: { sessionId: string; root: string; sandbox: () => SandboxSettingsConfig; served: boolean; bot?: string }) => agentShellTools({
+                    // A bot-child agent's commands carry its bot, so "its bot was removed" ends them directly.
+                    spawner, caller: { kind: "session", sessionId: s.sessionId, sessionKind: "agent", ...(s.bot === undefined ? {} : { bot: s.bot }) } as Extract<Caller, { kind: "session" }>,
                     cwd: () => s.root, sandbox: s.sandbox, userHome: input.userHome, temp: fence.temp, mossHome: input.mossHome,
                     // A background command: its end comes back as a note in the agent's session (it wakes it), and the
                     // host's graph hears it start and end as it does the runtime's own tasks (the runtime never sees a
                     // host tool's command, so it sends no task frames for it).
                     level: () => d.levelOf(here),
-                    wake: ({ text }) => d.host.deliver(s.sessionId, { from: "note", label: "Background command", text, by: { kind: "core" } }),
-                    tasks: { started: (id) => d.host.taskStarted(s.sessionId, id), ended: (id) => d.host.taskEnded(s.sessionId, id) },
+                    // A served session (the backend's one-off `served-…` query) has no session to wake and no end event: its
+                    // commands run in the foreground only (no wake: the tool says it can't be told when one ends).
+                    ...(s.served ? {} : {
+                      wake: ({ text }: { text: string }) => d.host.deliver(s.sessionId, { from: "note", label: "Background command", text, by: { kind: "core" } }),
+                      tasks: { started: (id: string) => d.host.taskStarted(s.sessionId, id), ended: (id: string) => d.host.taskEnded(s.sessionId, id) },
+                    }),
                   }),
                 };
               })() : {}),
