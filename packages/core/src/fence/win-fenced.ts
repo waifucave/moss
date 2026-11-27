@@ -355,6 +355,10 @@ export interface WinFencedDeps {
   /** How long a command waits for a free, reset principal before it is refused, and how often it looks. */
   readonly leaseTimeoutMs?: number;
   readonly leasePollMs?: number;
+  /** How long a command's session grant waits while another process's profile grant is being written or removed
+   *  (srt-win's exit 25, `profile_operation_in_progress`), and how often it tries again. */
+  readonly profileBusyWaitMs?: number;
+  readonly profileBusyPollMs?: number;
   /** Rule 8c: how often a long command's fenced set is looked at again (`FencedRun.onFenceGrew`). */
   readonly fenceWatchMs?: number;
 }
@@ -609,6 +613,12 @@ export function grantsConflict(x: PlanInFlight, y: PlanInFlight): boolean {
 const heldGrants = { inFlight: 0, chain: Promise.resolve() as Promise<unknown> };
 /** `f` after every grant and revoke this process started before it: a revoke never lands between another command's
  *  count and its grant. */
+/** srt-win's answer while another process writes or removes the profile read grant: exit 25, its JSON code
+ *  `profile_operation_in_progress`. Only that one is tried again. */
+export function profileBusy(r: { code: number; stdout: string; stderr: string }): boolean {
+  return r.code === 25 && `${r.stderr}\n${r.stdout}`.includes("\"code\":\"profile_operation_in_progress\"");
+}
+
 function grantsInTurn<T>(f: () => Promise<T>): Promise<T> {
   const next = heldGrants.chain.then(f, f);
   heldGrants.chain = next.catch(() => {});
@@ -834,12 +844,22 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         const installed = await installedSandboxSid();
         if (installed === null) return refuse("the launcher reports no installed sandbox user; run `moss-core sandbox setup` again");
         const grantSid = installed;
-        const grant = await grantsInTurn(() => {
-          heldGrants.inFlight++;
-          return deps.exec(sessionGrantArgs({ launcher: deps.launcher, sid: grantSid, holderPid: process.pid }), {
-            stdin: sessionGrantInput({ read: grantPlan.readGrants.filter((g) => !roots.some((x) => winUnder(g, x))), write: roots }), timeoutMs: 600_000,
+        // srt-win refuses every session grant while ANOTHER process writes or removes the profile read grant (exit 25):
+        // this engine's own grant is awaited above, so that is another engine on this user (a second home) or the CLI's
+        // `sandbox forget`. Tried again, a bounded while, then refused as before.
+        const busyUntil = Date.now() + (deps.profileBusyWaitMs ?? 20_000);
+        let grant: { code: number; stdout: string; stderr: string };
+        for (;;) {
+          grant = await grantsInTurn(() => {
+            heldGrants.inFlight++;
+            return deps.exec(sessionGrantArgs({ launcher: deps.launcher, sid: grantSid, holderPid: process.pid }), {
+              stdin: sessionGrantInput({ read: grantPlan.readGrants.filter((g) => !roots.some((x) => winUnder(g, x))), write: roots }), timeoutMs: 600_000,
+            });
           });
-        });
+          if (!profileBusy(grant) || Date.now() >= busyUntil) break;
+          heldGrants.inFlight--;
+          await Bun.sleep(deps.profileBusyPollMs ?? 1_000);
+        }
         try {
           mark("grant");
           if (grant.code !== 0) return refuse(`srt-win acl grant exited ${grant.code}: ${(grant.stderr || grant.stdout).trim().slice(0, 400)}`);

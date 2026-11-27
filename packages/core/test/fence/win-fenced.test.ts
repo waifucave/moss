@@ -8,7 +8,7 @@ import type { Caller, Level } from "@waifucave/moss-protocol";
 import { MossFence } from "../../src/fence/fence";
 import { endWindowsBackgroundOf, endWindowsBackgroundOn, escapedSandbox, stopWindowsBackground, windowsBackgroundOf, windowsShellTools, WIN_SHELL_BACKGROUND_ENGINE, WIN_SHELL_BACKGROUND_PER_SESSION } from "../../src/fence/win-shell-tools";
 import {
-  existingDenies, existingDeniesOf, grantsConflict, parsePersistentRoots, parseProfileExclusions, strayRoots, treeWithin, planFromPolicy, planFromSettings, profileExcludeCandidates, quarantineWin, shellArgv, winChainIsClean, winChildEnv, winExecArgv, lateFenceStep, watchedReadDenies, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
+  existingDenies, existingDeniesOf, grantsConflict, parsePersistentRoots, parseProfileExclusions, strayRoots, treeWithin, planFromPolicy, planFromSettings, profileExcludeCandidates, quarantineWin, shellArgv, winChainIsClean, winChildEnv, winExecArgv, lateFenceStep, profileBusy, watchedReadDenies, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
   type WinFencedDeps,
 } from "../../src/fence/win-fenced";
 import { formatInstallMarker, poolStateFiles, type LeaseStore } from "../../src/fence/win-sandbox";
@@ -839,5 +839,40 @@ describe("the exclusions follow the fenced set (rule 8b, lane WS7)", () => {
     });
     expect(got.sort()).toEqual(["C:\\m\\projects\\p1\\s.provider-state.jsonl", "C:\\m\\secret.txt"]);
     expect(listed.some((d) => d.startsWith("C:\\m\\deep"))).toBe(false);
+  });
+});
+
+describe("a session grant while another process writes the profile grant (srt-win exit 25; computers row 150)", () => {
+  const BUSY = { code: 25, stdout: "", stderr: "srt-win: error: the read grant on the user profile is being written or removed {\"code\":\"profile_operation_in_progress\",\"message\":\"…\"}" };
+  const isSessionGrant = (a: readonly string[]) => a[1] === "acl" && a[2] === "grant" && a.includes("--holder-pid");
+  const spawnerWith = (busyTimes: number, waitMs: number) => {
+    const m = machine();
+    let busy = 0;
+    const deps: WinFencedDeps = { ...m.deps, profileBusyWaitMs: waitMs, profileBusyPollMs: 1, exec: async (argv, x) => {
+      if (isSessionGrant(argv) && busy < busyTimes) { busy++; m.execs.push(argv); return BUSY; }
+      return m.deps.exec(argv, x);
+    } };
+    return { m, s: winFencedSpawner({ fence: m.fence, deps, grantAhead: false }) };
+  };
+
+  test("only that answer counts as busy", () => {
+    expect(profileBusy(BUSY)).toBe(true);
+    expect(profileBusy({ ...BUSY, code: 24 })).toBe(false);
+    expect(profileBusy({ code: 25, stdout: "", stderr: "some other failure" })).toBe(false);
+  });
+
+  test("tried again while it lasts: the grant then goes through, and the run isn't refused for it", async () => {
+    const { m, s } = spawnerWith(2, 5_000);
+    const r = await s.run(runOf(m.home)).catch((e: unknown) => ({ kind: "threw", e }));
+    expect(m.execs.filter(isSessionGrant).length).toBe(3);
+    expect(JSON.stringify(r)).not.toContain("exited 25");
+  });
+
+  test("past its bounded wait: refused as before, with srt-win's reason", async () => {
+    const { m, s } = spawnerWith(1_000, 0);
+    const r = await s.run(runOf(m.home));
+    expect(r).toMatchObject({ kind: "refused" });
+    expect((r as { reason: string }).reason).toContain("srt-win acl grant exited 25");
+    expect(m.execs.filter(isSessionGrant).length).toBe(1);
   });
 });
