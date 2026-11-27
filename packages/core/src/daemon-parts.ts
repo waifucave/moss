@@ -30,6 +30,7 @@ import type { CanUseTool, Options, SandboxSettingsConfig, SpawnClaudeCodeProcess
 import type { AgentDefView, Caller } from "@waifucave/moss-protocol";
 import { fencedSpawner } from "./fence/fenced-process";
 import { peerFence, type PeerWriteFolder } from "./fence/peer-floor";
+import { peerFolderSpawnerLinux } from "./fence/peer-folder-linux";
 import { hostPathFolders } from "./agents/bot-child";
 import { sweepPeerFolders } from "./computers/fenced-executor";
 import { agentShellTools } from "./fence/win-shell-tools";
@@ -403,7 +404,12 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
         // (fence/peer-floor.ts): never more than a bot here gets.
         ...(input.spawner === false ? {} : { bash: {
           spawner: input.spawner ?? fencedSpawner({ fence }), home: input.userHome, mossHome: input.mossHome, temp: fence.temp,
-          peerSpawner: input.peerSpawner ?? ((root: string, folder?: PeerWriteFolder) => fencedSpawner({ fence: peerFence(fence, root, { userHome: input.userHome, mossHome: input.mossHome, os: hostOs() }, folder) })),
+          // A Linux holder runs a peer's call that was given its folder under the agent runtime's own sandbox, the one a
+          // local bot's Bash gets (fence/peer-folder-linux.ts); a temp-only call, and every call elsewhere, under the fence.
+          peerSpawner: input.peerSpawner ?? ((root: string, folder?: PeerWriteFolder) => {
+            const peer = peerFence(fence, root, { userHome: input.userHome, mossHome: input.mossHome, os: hostOs() }, folder);
+            return folder !== undefined && hostOs() === "linux" ? peerFolderSpawnerLinux({ fence: peer, root, folder }) : fencedSpawner({ fence: peer });
+          }),
           // Step 3b: the folder a peer's command runs in, judged as a bot's grant here (its PATH read at each call).
           peerFloor: { userHome: input.userHome, mossHome: input.mossHome, os: hostOs(), pathFolders: () => hostPathFolders(hostOs()) },
         } }),

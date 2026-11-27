@@ -15,12 +15,13 @@
 //   - by the person's yes to the holder's card, as a one-call RequestAccess grant (its never-given checks);
 //   - never at all for a folder RequestAccess never gives (the home, its Library or Applications, one holding the MOSS
 //     home or a PATH folder, a sensitive place), a run-later or secret place, or a name a glob would misread;
-//   - on macOS only. On Linux bubblewrap holds a place by its path at the start, and the folder holding it can be
-//     renamed during the run, so a planted repo could take a held `.git`'s path (the review's blocker on 24516c887):
-//     Linux and Windows peers stay in their temp folder (owed, docs/across-computers-owed.md).
+//   - on macOS and Linux. On Linux MOSS's own bubblewrap holds a place by its path at the start, so a planted repo
+//     could take a renamed `.git`'s path (the review's blocker on 24516c887); a call given its folder there runs under
+//     the agent runtime's own sandbox instead, which holds the names by identity as for a local bot
+//     (fence/peer-folder-linux.ts). Windows peers stay in their temp folder (owed, docs/across-computers-owed.md).
 //   Inside it, exactly the local bot sandbox's denies (`shellRunLaterDenies`: every `.git`/`*.git` whole, at any depth
 //   and in any case, the run-later names, `*.app`, the PATH folders, what the repos' configs name) and the user's
-//   secret places, read and write, as Seatbelt globs from `/`.
+//   secret places, read and write, as globs from `/` (Seatbelt's on macOS, the runtime's walk on Linux).
 //   Nothing the asking computer sends widens it: its level, its answer and its bot are the holder's to judge.
 import { join, posix, win32 } from "node:path";
 import type { Level, Os } from "@waifucave/moss-protocol";
@@ -113,10 +114,10 @@ export function peerFolderFor(o: {
   // A read-only command reads where its sandbox reads, whatever its write roots: nothing to give, nothing to say.
   if (o.readOnly || o.by === "read-only") return {};
   if (f.os === "windows") return { why: `${holder} runs another computer's commands only in their own temp folder on Windows for now, ${without}` };
-  // Linux (the review's blocker on 24516c887): bubblewrap holds a place by its path at the start, and the folder holding
-  // it can be renamed during the run, so a planted repo could take a held `.git`'s path. Until the held names are held
-  // by identity (lane/xc-3c-linux-held-names), a peer's command there writes only its own temp folder.
-  if (f.os === "linux") return { why: `On Linux ${holder} gives another computer's commands no folder for now (its sandbox can't yet hold a repository's .git against a rename), ${without}` };
+  // Linux (the review's blocker on 24516c887, lane XC): MOSS's own bubblewrap held a place by its path at the start, so
+  // a planted repo could take a renamed `.git`'s path. A peer's call given its folder now runs under the agent
+  // runtime's own sandbox (fence/peer-folder-linux.ts), which holds the names by identity, exactly as a local bot's
+  // Bash; so the rule below is macOS's.
   const refusal = peerFolderRefusal(folder, f);
   if (refusal !== undefined) return { why: `${refusal}: another computer's command never writes there, ${without}` };
   const covered = levelShellRoots(o.level, f).some((r) => within(folder, r, f.os));
@@ -138,7 +139,7 @@ export function peerFolderFor(o: {
 }
 
 /** What a peer's command under `folder` may not write, as `denyWrite` entries (macOS: Seatbelt holds them by pattern
- *  as each path opens): the local bot sandbox's own (`shellRunLaterDenies` for the folder, globs from `/`) and the
+ *  as each path opens; Linux: the agent runtime's sandbox, `peerFolderSpawnerLinux`): the local bot sandbox's own (`shellRunLaterDenies` for the folder, globs from `/`) and the
  *  user's secret places. */
 export function peerFolderDenies(folder: string, f: PeerFolderOptions): string[] {
   const local = shellRunLaterDenies([folder], { userHome: f.userHome, mossHome: f.mossHome, os: f.os, pathFolders: f.pathFolders });

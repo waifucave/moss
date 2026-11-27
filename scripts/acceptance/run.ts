@@ -4231,13 +4231,13 @@ async function computersRun(): Promise<void> {
       if (!r.text.startsWith("now on Beta: home/Beta/project")) fail(`the result's first line doesn't say where the shell now is (${r.text.split("\n")[0]})`);
       // Step 3b at fully automatic: no card ever; a command that writes gets Beta's folder only on its reviewer's
       // "safe", and this engine has no model to judge it, so it runs with only its own temp folder, and says why.
-      // A Linux or Windows holder gives a peer's command no folder at all for now (fence/peer-floor.ts), and says that.
+      // A Windows holder gives a peer's command no folder at all for now (fence/peer-floor.ts), and says that; a Linux
+      // holder follows macOS's rule (fence/peer-folder-linux.ts).
       const write = await callOn("Bash", { command: "cd home/Beta/project && echo from-alpha > bash-write.txt", description: "write a file" });
       const landed = join(betaUser, "project", "bash-write.txt");
       if (write === undefined) return fail("the writing command was given no result");
       if (existsSync(landed)) fail("a command Beta's reviewer couldn't judge wrote Beta's folder at fully automatic");
-      const reason = process.platform === "linux" ? "On Linux Beta gives another computer's commands no folder for now"
-        : process.platform === "win32" ? "Beta runs another computer's commands only in their own temp folder on Windows for now"
+      const reason = process.platform === "win32" ? "Beta runs another computer's commands only in their own temp folder on Windows for now"
         : "Beta's reviewer couldn't judge this command";
       // The reason comes last in the result, after the command's own output: shown from the end when it's missing.
       if (!write.text.includes(`${reason}`) || !write.text.includes("so it ran without access to")) fail(`the result doesn't say why the write didn't land (…${write.text.slice(-400)})`);

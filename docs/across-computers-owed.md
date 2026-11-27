@@ -80,16 +80,18 @@ reach, because it needs something that isn't in a test run.
   on the CLI caller check alone: the person's own terminal, outside the sandbox and not under a process the daemon
   started. That is no weaker than the item above (the app role has no signature check there, so any first key
   already proves only "a process running as you"), and it tightens with that item.
-- **A peer's command writing its folder on Linux and Windows** (step 3b). On a macOS holder, another computer's command
-  writes the folder it runs in where a bot there would: on the holder reviewer's "safe" where the level's own shell
-  roots cover it, or after the person's yes to the holder's card (a one-call RequestAccess grant). On Linux and
-  Windows a peer's command writes only its own temp folder. On Linux, bubblewrap holds a run-later place by its path
-  at the command's start, and the folder holding it can be renamed during the run: `mv proj proj-old && mkdir -p
-  proj/.git/hooks` puts a planted repo at the held path while the real `.git` moves away (the review's blocker on
-  24516c887). The agent runtime now holds those names against that (0.0.89: a held name's quarantine checks its parent
-  against the walk's identity; a walk that can't finish fails closed; 0.0.90: one budget per command, smallest folders
-  first), so Linux waits only on a ruling to give a peer's command its folder there as on macOS. Windows waits on its
-  fence's deny depth being checked for a peer's folder.
+- **A peer's command writing its folder on Windows** (step 3b). On a macOS or Linux holder, another computer's
+  command writes the folder it runs in where a bot there would: on the holder reviewer's "safe" where the level's own
+  shell roots cover it, or after the person's yes to the holder's card (a one-call RequestAccess grant).
+  - Linux (lane XC, the controller's ruling, option (a); waits on agent runtime 0.0.91's `./sandbox` entry): MOSS's own
+    bubblewrap held a run-later place by its path at the command's start, so `mv proj proj-old && mkdir -p
+    proj/.git/hooks` could put a planted repo at the held path (the review's blocker on 24516c887). A call given its
+    folder now runs under the agent runtime's own sandbox, the one a local bot's Bash gets
+    (fence/peer-folder-linux.ts): the walk that fails closed, and the quarantine that checks identity. Today's peer
+    floor carries over: no network, the per-call temp root, the secret places and the MOSS home denied. A
+    temp-only call still runs under MOSS's fence.
+  - Windows: a peer's command writes only its own temp folder; it waits on its fence's deny depth being checked for a
+    peer's folder.
 - **A bot committing on another computer.** Every `.git` is denied whole to a peer's command, as to a local bot's
   sandboxed one; a commit is the outside-the-sandbox card on the bot's own computer only. A peer's form of that card
   (on the holder, run as the person there) is not built. One backlog item for both.

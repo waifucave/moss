@@ -106,10 +106,12 @@ export function fencedExecutor(o: FencedExecutorOptions): ToolExecutor {
   // class does the same (`folderClass`).
   const realOr = (p: string) => { try { return realpathSync.native(p); } catch { return p; } };
   const floor = o.peerFloor === undefined ? undefined : { ...o.peerFloor, userHome: realOr(o.peerFloor.userHome), mossHome: realOr(o.peerFloor.mossHome) };
-  /** The folder a peer's run may write, with its denies; or why not now. macOS only (Seatbelt holds the denies by
-   *  pattern as each path opens); elsewhere no folder, whatever the service said. */
+  /** The folder a peer's run may write, with its denies; or why not now. macOS (Seatbelt holds the denies by pattern
+   *  as each path opens) and Linux (the agent runtime's own sandbox holds them, as for a local bot: the peer spawner's
+   *  `peerFolderSpawnerLinux`); on Windows no folder, whatever the service said. */
   const prepare = (folder: string): { folder: PeerWriteFolder } | { why: string } => {
-    if (floor === undefined || floor.os !== "macos" || o.os !== "macos") return { why: `this computer gives another computer's commands no folder, so it ran without access to ${folder}` };
+    const held = (os: Os | undefined) => os === "macos" || os === "linux";
+    if (floor === undefined || !held(floor.os) || !held(o.os) || floor.os !== o.os) return { why: `this computer gives another computer's commands no folder, so it ran without access to ${folder}` };
     let real: string;
     try { real = realpathSync.native(folder); } catch { real = ""; }
     if (real !== folder || !lstatSync(folder, { throwIfNoEntry: false })?.isDirectory()) return { why: `${folder} changed before the command started, so it ran without access to it` };

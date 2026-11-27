@@ -60,11 +60,12 @@ const decide = (w: ReturnType<typeof world>, os: Os, by: PeerPassBy, level: Leve
   peerFolderFor({ holder: "Beta", folder: extra.folder ?? w.project, by, level, readOnly: extra.readOnly ?? false, ...(extra.verdict ? { verdict: extra.verdict } : {}) }, floorOf(w, os));
 
 describe("which folder a peer's command gets (peerFolderFor: the local rule, mirrored)", () => {
-  posixTest("the person's yes: the folder on macOS; never on Linux or Windows", () => {
+  posixTest("the person's yes: the folder on macOS and Linux (lane XC: the runtime's sandbox holds it there); never on Windows", () => {
     const w = world();
     expect(decide(w, "macos", "answer", "ask")).toEqual({ folder: w.project });
     expect(decide(w, "macos", "answer", "ask-risky")).toEqual({ folder: w.project });
-    expect(decide(w, "linux", "answer", "ask-risky")).toEqual({ why: expect.stringContaining("On Linux") });
+    expect(decide(w, "linux", "answer", "ask")).toEqual({ folder: w.project });
+    expect(decide(w, "linux", "answer", "ask-risky")).toEqual({ folder: w.project });
     expect(decide(w, "windows", "answer", "ask")).toEqual({ why: expect.stringContaining("Windows") });
   });
 
@@ -201,22 +202,23 @@ describe("the denies inside the folder: the local bot sandbox's own", () => {
     for (const p of ["/x/.gitignore", "/x/agit2/y", "/x/digit"]) expect([p, re.test(p)]).toEqual([p, false]);
   });
 
-  test("Linux and Windows: no folder for a peer's command, whatever let it through; the executor refuses one there too", async () => {
+  test("Windows: no folder for a peer's command, whatever let it through; the executor refuses one there too", async () => {
     const w = world();
-    for (const os of ["linux", "windows"] as const) {
+    for (const os of ["windows"] as const) {
       for (const [by, level, verdict] of [["answer", "ask"], ["answer", "accept-edits"], ["reviewer", "accept-edits"], ["reviewer", "ask-risky"], ["level", "automatic", "safe"]] as const) {
         const d = decide(w, os, by, level, verdict === undefined ? {} : { verdict });
         expect([os, by, level, "why" in d]).toEqual([os, by, level, true]);
       }
     }
-    expect(decide(w, "linux", "answer", "ask")).toEqual({ why: expect.stringContaining("against a rename") });
-    // A service that handed a folder anyway on a Linux holder: the executor's own gate gives none, with the reason.
+    // Linux follows macOS's rule now (lane XC): the person's yes gives the folder.
+    expect(decide(w, "linux", "answer", "ask")).toEqual({ folder: w.project });
+    // A service that handed a folder anyway on a Windows holder: the executor's own gate gives none, with the reason.
     let given: unknown = "unset";
     const e = fencedExecutor({
       spawner: { run: async () => ({ kind: "exit", code: 0, stdout: "", stderr: "" }) } as unknown as Parameters<typeof fencedExecutor>[0]["spawner"],
-      home: w.home, temp: w.tmp, mossHome: w.moss, os: "linux",
+      home: w.home, temp: w.tmp, mossHome: w.moss, os: "windows",
       peerSpawner: (_root, folder) => { given = folder; return { run: async () => ({ kind: "exit", code: 0, stdout: "", stderr: "" }) } as unknown as Parameters<typeof fencedExecutor>[0]["spawner"]; },
-      peerFloor: { userHome: w.home, mossHome: w.moss, os: "linux", pathFolders: () => [] },
+      peerFloor: { userHome: w.home, mossHome: w.moss, os: "windows", pathFolders: () => [] },
     });
     const r = await e.run("Bash", { command: "make" }, { as: PEER, session: "s", callId: "c", cwd: w.project, treeCwd: "x", signal: new AbortController().signal, output: () => {}, write: { folder: w.project } });
     expect(given).toBeUndefined();
@@ -331,24 +333,33 @@ describe("on the tree service: the read-only rule, the card for the folder, auto
     expect(got).toEqual([{ why: expect.stringContaining("couldn't judge") }]);
   });
 
-  test("a Linux holder: a writing command runs temp-only, and the Linux reason reaches the asking bot's result text", async () => {
-    if (process.platform === "win32") return;
-    const { run, project } = await pair({
-      level: "automatic",
-      executor: (home) => {
-        const moss = join(home, ".moss");
-        const temp = join(home, "tmp");
-        mkdirSync(temp, { recursive: true });
-        // The real executor, its OS Linux; the spawner fails the write the way a read-only mount does.
-        const ro = { run: async () => ({ kind: "exit", code: 2, stdout: "", stderr: "/bin/sh: 1: cannot create bash-write.txt: Read-only file system\n" }) } as unknown as Parameters<typeof fencedExecutor>[0]["spawner"];
-        return fencedExecutor({ spawner: ro, home, temp, mossHome: moss, os: "linux", peerSpawner: () => ro, peerFloor: { userHome: home, mossHome: moss, os: "linux", pathFolders: () => [] } });
-      },
+  // Lane XC: a Linux holder follows macOS's rule now (its folder runs under the agent runtime's own sandbox,
+  // fence/peer-folder-linux.ts); a Windows holder stays temp-only, and says so.
+  for (const os of ["linux", "windows"] as const) {
+    test(`a ${os} holder at fully automatic, no reviewer to judge: a writing command runs temp-only, and ${os === "linux" ? "macOS's" : "the Windows"} reason reaches the asking bot's result text`, async () => {
+      if (process.platform === "win32") return;
+      const { run, project } = await pair({
+        level: "automatic",
+        executor: (home) => {
+          const moss = join(home, ".moss");
+          const temp = join(home, "tmp");
+          mkdirSync(temp, { recursive: true });
+          // The real executor, its OS as named; the spawner fails the write the way a read-only mount does.
+          const ro = { run: async () => ({ kind: "exit", code: 2, stdout: "", stderr: "/bin/sh: 1: cannot create bash-write.txt: Read-only file system\n" }) } as unknown as Parameters<typeof fencedExecutor>[0]["spawner"];
+          return fencedExecutor({ spawner: ro, home, temp, mossHome: moss, os, peerSpawner: () => ro, peerFloor: { userHome: home, mossHome: moss, os, pathFolders: () => [] } });
+        },
+      });
+      const r = await run("echo from-alpha > bash-write.txt");
+      const text = treeResultText("Bash", r.output);
+      expect(text).toContain("Read-only file system");
+      if (os === "linux") {
+        expect(text).toContain(`Beta's reviewer couldn't judge this command, so it ran without access to ${project}`);
+        expect(text).not.toContain("On Linux");
+      } else {
+        expect(text).toContain(`Beta runs another computer's commands only in their own temp folder on Windows for now, so it ran without access to ${project}`);
+      }
     });
-    const r = await run("echo from-alpha > bash-write.txt");
-    const text = treeResultText("Bash", r.output);
-    expect(text).toContain("Read-only file system");
-    expect(text).toContain(`On Linux Beta gives another computer's commands no folder for now (its sandbox can't yet hold a repository's .git against a rename), so it ran without access to ${project}`);
-  });
+  }
 });
 
 darwinDescribe("a peer's command writing its folder on the real fenced process (Seatbelt)", () => {
