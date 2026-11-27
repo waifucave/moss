@@ -121,11 +121,13 @@ describeWithEmbeddedRuntime("tool results are projected as each call of a batch 
     // The Bash stamps the wall clock (ms, the same machine's clock the test reads) when its sleep ENDS, and prints it. The Write's result
     // must have reached the client before that instant: two real events ordered by the clock, with no margin to tune (a slow sandbox start,
     // such as the held-names walk before a sandboxed Bash on Linux, only moves the Bash's own start and end together). A file marker
-    // written by the Bash was not used: under the Linux sandbox it did not always land where the test looked.
+    // written by the Bash is kept too, as the check that a write inside the working folder is not lost: when it is missing the test
+    // fails with the Bash's whole result (the sandbox's own lines, `touch`'s error, and where the folder is as the command sees it).
+    const marker = join(cwd, "bash-finished");
     const NOW = `perl -MTime::HiRes=time -e 'printf "%d", time()*1000'`;
     const script = [
       `CALL Write ${JSON.stringify({ file_path: target, content: "written first\n" })}`,
-      `+CALL Bash ${JSON.stringify({ command: `sleep ${SLEEP_SECONDS}; echo bash-end-ms=$(${NOW}); echo slow-one` })}`,
+      `+CALL Bash ${JSON.stringify({ command: `sleep ${SLEEP_SECONDS}; touch ${marker} 2>&1; echo touch-exit=$?; echo bash-end-ms=$(${NOW}); echo slow-one; pwd -P; df . | tail -1; ls -la` })}`,
     ].join("\n");
     let writeArrivedMs: number | undefined;
     client.onEvent = (e) => {
@@ -165,6 +167,10 @@ describeWithEmbeddedRuntime("tool results are projected as each call of a batch 
     expect(bashEnded).not.toBeNull();
     expect(writeArrivedMs).toBeDefined();
     expect(writeArrivedMs!).toBeLessThan(Number(bashEnded![1]));
+    if (!existsSync(marker)) {
+      const flags = { sandboxLine: /\[sandbox\]/.test(bash.output), mossLine: /\[MOSS\]/.test(bash.output), readOnly: /Read-only file system/i.test(bash.output) };
+      throw new Error(`the Bash's write into the working folder was lost: ${marker} is missing. flags ${JSON.stringify(flags)}; the cwd is ${cwd}; the Bash's whole result:\n${bash.output}`);
+    }
     client.onEvent = undefined;
 
     // The hooks lane's diff rides the early event — nothing was lost by projecting it before the round ended.
