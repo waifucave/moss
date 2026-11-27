@@ -648,7 +648,9 @@ async function ready(): Promise<void> {
       const fresh = sealed.takeFresh(token, press);
       // A pointer press whose point was never learned (its "received" came more than 2 s after the mouse-down) can't be cover-checked: refused,
       // never taken for a keyboard press (press-point.ts).
-      const noPoint = fresh === "ok" && pressPoints.lacksPoint(token, press);
+      // A test build's presses come from a DevTools connection the harness holds (or main's own dispatchers, which say their point):
+      // `before-mouse-event` sees none of them, and the same gate that lets that input in lets it have no point (never a packaged app).
+      const noPoint = fresh === "ok" && !((typeof __MOSS_TEST_BUILD__ === "string" && headless) || sealedInputAllowed({ packaged: app.isPackaged, headless })) && pressPoints.lacksPoint(token, press);
       if (fresh !== "ok" || noPoint) {
         log(`sealed: answer refused (${noPoint ? "the press's pointer point wasn't known" : fresh === "covered" ? "the button was covered or not shown at the press" : fresh === "late" ? "the page's visibility report didn't come in time" : `no visibility report came with the press${sealed.noneWhy !== undefined ? ` (${sealed.noneWhy})` : ""}`})`);
         // Most often the button wasn't laid out yet (it had only just been drawn): nothing is wrong with it, and the page says to
@@ -780,7 +782,9 @@ async function ready(): Promise<void> {
       // The page's "received" opens the numbered press its report and its answer must carry (press-bound.ts).
       if (what === "received" && press !== undefined && sealed.notePress(token, press) === "ok") {
         const wid = sealed.windowOf(token);
-        pressPoints.save(token, press, wid === undefined ? undefined : windowDowns.get(wid), Date.now());
+        // A card's own page (the fallback's) is minted for no window: then the newest mouse-down of any window is the press's.
+        const down = wid !== undefined ? windowDowns.get(wid) : [...windowDowns.values()].sort((a, b) => b.at - a.at)[0];
+        pressPoints.save(token, press, down, Date.now());
       }
       // A sealed page heard the press: it isn't a missed one (sealed-miss.ts).
       const pressedIn = sealed.windowOf(token);
