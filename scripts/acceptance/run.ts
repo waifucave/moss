@@ -4227,7 +4227,8 @@ async function computersRun(): Promise<void> {
       const r = await callOn("Bash", { command: "cd home/Beta/project && pwd && cat notes.md", description: "where am I" });
       const real = realpathSync.native(join(betaUser, "project"));
       if (r === undefined) return fail("the bot was given no result");
-      if (r.isError || !r.text.includes(real) || !r.text.includes(BETA_NOTE)) fail(`the output doesn't show Beta's folder and file (${r.text.slice(0, 200)})`);
+      // The whole result when it fails (a refusal's reason comes last: run 45940374811 cut srt-win's own words off).
+      if (r.isError || !r.text.includes(real) || !r.text.includes(BETA_NOTE)) fail(`the output doesn't show Beta's folder and file (${r.text.slice(0, 1_500)})`);
       if (!r.text.startsWith("now on Beta: home/Beta/project")) fail(`the result's first line doesn't say where the shell now is (${r.text.split("\n")[0]})`);
       // Step 3b at fully automatic: no card ever; a command that writes gets Beta's folder only on its reviewer's
       // "safe", and this engine has no model to judge it, so it runs with only its own temp folder, and says why.
