@@ -25,6 +25,7 @@
 import { lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { join, posix, win32 } from "node:path";
 import { ffiLib, ffiPtr as ptr } from "./ffi";
+import { foldedSpelling, UNJUDGEABLE, type SpellingOptions } from "../fence/spelling";
 import type { PeerFacts } from "./caller-probe";
 
 declare const __MOSS_DIST__: boolean | undefined;
@@ -92,15 +93,18 @@ export function judgeLinuxImage(f: AppImageFacts, seam: Seam): AppImageVerdict {
   return v;
 }
 
-/** Windows: the judge. `localAppData` is the daemon's own (the person's) %LOCALAPPDATA%. */
-export function judgeWindowsImage(f: AppImageFacts, localAppData: string | undefined, seam: Seam): AppImageVerdict {
+/** Windows: the judge. `localAppData` is the daemon's own (the person's) %LOCALAPPDATA%. Both sides are compared in the
+ *  shared Windows spelling (`foldedSpelling`: an 8.3 short name such as `RUNNER~1` expanded, case, separators, a trailing
+ *  dot and the `\\?\` prefix folded); a spelling it can't judge matches nothing. `spelling`: a test's machine. */
+export function judgeWindowsImage(f: AppImageFacts, localAppData: string | undefined, seam: Seam, spelling: SpellingOptions = { win32: true }): AppImageVerdict {
   if (f.image === null) return { ok: false, why: "its executable couldn't be read" };
   if (f.integrity === null || f.integrity === undefined || f.integrity < MEDIUM_INTEGRITY) return { ok: false, why: "it runs below medium integrity" };
-  const key = (p: string) => win32.normalize(p).toLowerCase();
-  const installed = localAppData === undefined || localAppData === "" ? [] : WINDOWS_INSTALLED.map((p) => key(win32.join(localAppData, "Programs", p)));
+  const key = (p: string) => { const k = foldedSpelling(p, spelling); return k === UNJUDGEABLE ? undefined : k; };
+  const installed = localAppData === undefined || localAppData === "" ? [] : WINDOWS_INSTALLED.map((p) => key(win32.join(localAppData, "Programs", p))).filter((k): k is string => k !== undefined);
+  const image = key(f.image);
   let v: AppImageVerdict;
   // A per-user install is the user's to write: never "verified" on Windows.
-  if (installed.includes(key(f.image))) v = { ok: true, verified: false, image: f.image };
+  if (image !== undefined && installed.includes(image)) v = { ok: true, verified: false, image: f.image };
   else v = seam?.(f.image, "win32") ?? { ok: false, why: `its executable (${shown(f.image)}) isn't the installed MOSS's, MOSS Code's or host's` };
   if (v.ok && !f.stillThere) return { ok: false, why: "it exited while it was checked" };
   return v;

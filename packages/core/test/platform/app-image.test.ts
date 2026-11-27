@@ -8,7 +8,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import {
-  imageSeam, integrityRidOf, judgeLinuxImage, judgeWindowsImage, linuxFacts, MEDIUM_INTEGRITY, rootOwnedChain, windowsFacts, type AppImageFacts,
+  imageSeam, integrityRidOf, judgeLinuxImage, judgeWindowsImage as judgeWindowsOn, linuxFacts,MEDIUM_INTEGRITY, rootOwnedChain, windowsFacts, type AppImageFacts,
 } from "../../src/platform/app-image";
 import type { PeerFacts } from "../../src/platform/caller-probe";
 import { MOSS_METHODS } from "@waifucave/moss-protocol";
@@ -81,9 +81,27 @@ describe("the Linux judge", () => {
   });
 });
 
+/** A machine whose user folder `C:\Users\runneradmin` has the 8.3 name `RUNNER~1` (as GitHub's runners), every path
+ *  there; `GetLongPathNameW` as the fold asks it. */
+const RUNNER_MACHINE = { win32: true, long: (p: string) => p.replace(/\\RUNNER~1(?=\\|$)/gi, "\\runneradmin") };
+/** The judge on that machine (the live Windows case below asks the real one). */
+const judgeWindowsImage = (f: AppImageFacts, lad: string | undefined, seam: typeof imageSeam) => judgeWindowsOn(f, lad, seam, RUNNER_MACHINE);
+
 describe("the Windows judge", () => {
   const lad = "C:\\Users\\u\\AppData\\Local";
   const win = (f: Partial<AppImageFacts>): AppImageFacts => ({ image: null, integrity: MEDIUM_INTEGRITY, stillThere: true, ...f });
+  test("an 8.3 short name on either side (RUNNER~1 for runneradmin), the extended prefix, a trailing dot: the same install", () => {
+    const short = "C:\\Users\\RUNNER~1\\AppData\\Local", long = "C:\\Users\\runneradmin\\AppData\\Local";
+    const exe = (root: string) => win32.join(root, "Programs", "@waifucavemoss-desktop", "MOSS Code.exe");
+    expect(judgeWindowsImage(win({ image: exe(long) }), short, undefined)).toMatchObject({ ok: true, verified: false });
+    expect(judgeWindowsImage(win({ image: exe(short) }), long, undefined)).toMatchObject({ ok: true });
+    expect(judgeWindowsImage(win({ image: `\\\\?\\${exe(long)}` }), short, undefined)).toMatchObject({ ok: true });
+    expect(judgeWindowsImage(win({ image: exe(long).replace("Programs", "Programs.") }), long, undefined)).toMatchObject({ ok: true });
+    // A spelling the fold can't judge (a UNC path, a stream, a short name it can't expand) matches nothing.
+    expect(judgeWindowsImage(win({ image: `\\\\localhost\\C$\\Users\\runneradmin\\AppData\\Local\\Programs\\@waifucavemoss-desktop\\MOSS Code.exe` }), long, undefined).ok).toBe(false);
+    expect(judgeWindowsImage(win({ image: `${exe(long)}:evil` }), long, undefined).ok).toBe(false);
+    expect(judgeWindowsOn(win({ image: exe(long) }), short, undefined, { win32: true, long: () => null }).ok).toBe(false);
+  });
   test("the per-user install's executables, any case: accepted, never verified (the user can write them)", () => {
     for (const p of ["@waifucavemoss-desktop\\MOSS Code.exe", "@waifucavemoss-moss\\MOSS.exe", "@waifucavemoss-moss\\resources\\host\\moss-host.exe"]) {
       expect(judgeWindowsImage(win({ image: win32.join(lad, "Programs", p) }), lad, undefined)).toMatchObject({ ok: true, verified: false });
@@ -221,10 +239,17 @@ describe("live on Windows: the real image and integrity", () => {
     Bun.sleepSync(300);
     const fa = windowsFacts(peer(a.pid!));
     expect(fa.integrity).toBeGreaterThanOrEqual(MEDIUM_INTEGRITY);
-    expect(judgeWindowsImage(fa, lad, undefined)).toMatchObject({ ok: true, verified: false });
+    // This machine's own spelling fold (GetLongPathNameW), as the daemon judges.
+    expect(judgeWindowsOn(fa, lad, undefined)).toMatchObject({ ok: true, verified: false });
+    // %LOCALAPPDATA% in its 8.3 form (the runner's TEMP is `C:\Users\RUNNER~1\…`): still the same install.
+    const shortTemp = process.env.TEMP ?? "";
+    const longTemp = shortTemp === "" ? "" : realpathSync.native(shortTemp);
+    const shortLad = shortTemp !== "" && shortTemp.toLowerCase() !== longTemp.toLowerCase() && lad.toLowerCase().startsWith(longTemp.toLowerCase()) ? shortTemp + lad.slice(longTemp.length) : undefined;
+    console.log(`app-image live: the install's folder spelled short as well: ${shortLad !== undefined}`);
+    if (shortLad !== undefined) expect(judgeWindowsOn(fa, shortLad, undefined)).toMatchObject({ ok: true, verified: false });
     const fb = windowsFacts(peer(b.pid!));
-    expect(judgeWindowsImage(fb, lad, undefined).ok).toBe(false);
-    expect(judgeWindowsImage(fb, lad, imageSeam)).toMatchObject({ ok: true, seam: MARKER });
-    expect(judgeWindowsImage(windowsFacts(peer(process.pid)), lad, undefined).ok).toBe(false);
+    expect(judgeWindowsOn(fb, lad, undefined).ok).toBe(false);
+    expect(judgeWindowsOn(fb, lad, imageSeam)).toMatchObject({ ok: true, seam: MARKER });
+    expect(judgeWindowsOn(windowsFacts(peer(process.pid)), lad, undefined).ok).toBe(false);
   });
 });
