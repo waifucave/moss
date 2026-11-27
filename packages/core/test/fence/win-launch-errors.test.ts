@@ -1,4 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { missingFolderNote } from "../../src/fence/win-fenced";
 import { explainLauncherCwd } from "../../src/fence/win-launch-errors";
 
 const line = (o: Record<string, unknown>) => `srt-win: launching runner as 'moss-sb-1' (overlay=16 var(s))\n${JSON.stringify(o)}\n`;
@@ -29,5 +33,15 @@ describe("the launcher's working-folder refusals, in words", () => {
     expect(explainLauncherCwd(27, "{not json}\n")).toBeNull();
     const long = explainLauncherCwd(27, line({ code: "cwd_unusable", cwd: `C:\\${"a".repeat(5000)}`, exists: false }))!;
     expect(long.length).toBeLessThan(900);
+  });
+  test("a working folder the daemon sees is missing, or a file, is said plainly before any spawn; one that exists is left to the launcher", () => {
+    const d = mkdtempSync(join(tmpdir(), "moss-cwd-"));
+    try {
+      writeFileSync(join(d, "f.txt"), "x");
+      expect(missingFolderNote(d)).toBeNull();
+      expect(missingFolderNote(join(d, "gone"))).toContain("isn't there");
+      expect(missingFolderNote(join(d, "f.txt"))).toContain("isn't a folder");
+      expect(missingFolderNote(join(d, "f.txt", "below"))).toContain("isn't there");
+    } finally { rmSync(d, { recursive: true, force: true }); }
   });
 });

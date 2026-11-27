@@ -124,6 +124,16 @@ export function planFromSettings(s: SandboxSettingsConfig): WinPlan {
  *  per-launch plan (`winLaunchPlan`: the fenced set, the home default-deny and the caller's own folders), written into
  *  the caller's own folders and the fence's temp folder; the run's working folder too when the policy lets the caller
  *  write it. The user's whole home is not a root here: a persistent grant walks a root's whole tree. */
+/** Why a command's folder can't be its working folder when the daemon itself sees it isn't one, else null. */
+export function missingFolderNote(cwd: string): string | null {
+  try {
+    return statSync(cwd).isDirectory() ? null : `the folder ${cwd} isn't a folder (it is a file), so the command can't run in it; run it from a folder that exists`;
+  } catch (err) {
+    const code = (err as { code?: unknown } | null)?.code;
+    return code === "ENOENT" || code === "ENOTDIR" ? `the folder ${cwd} isn't there (it was removed or renamed away), so the command can't run in it; run it from a folder that exists` : null;
+  }
+}
+
 export function planFromPolicy(fence: Pick<MossFence, "policy" | "mossHome" | "temp" | "contextFor">, caller: Caller, cwd: string, o: { bots?: readonly string[]; entries?: (dir: string) => readonly string[] } = {}): WinPlan {
   const ctx = fence.contextFor?.(caller) ?? fenceContextFor(caller);
   const policy = fence.policy(ctx);
@@ -797,6 +807,11 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
       // command only as a pool account (no network); an install without the escape account refuses the escape.
       const members = got.marker.members.filter((m) => (m.network === true) === (r.network === true));
       if (members.length === 0) return refuse(r.network === true ? "the escape account isn't set up; run `moss-core sandbox setup` again" : setupBashRefusal(null));
+      // The command's folder must be there: the launcher starts in it (the process's own cwd), so a missing one makes the spawn itself
+      // fail with an ENOENT that reads as a missing launcher. Said plainly here; a folder that exists but the sandbox account
+      // can't enter is the launcher's own `cwd_unusable` (win-launch-errors.ts).
+      const folder = missingFolderNote(r.cwd);
+      if (folder !== null) return refuse(folder);
       // Rule 3c's seed first, before an account is leased: a refusal here uses no account up (leasing marks a generation used, and a failed
       // read can wait up to 30 s for `user status`). It needs neither the plan nor the account.
       if (!(await seedRoots())) return refuse("the sandbox's list of folders it already opened (srt-win user status) couldn't be read; try again in a moment, and if it keeps failing run `moss-core sandbox setup` again, or restart MOSS");

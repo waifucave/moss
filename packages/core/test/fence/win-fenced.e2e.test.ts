@@ -875,8 +875,8 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     rmSync(gone, { recursive: true, force: true });
     const missing = await call(at(gone).Bash!, { command: "echo hi" }, { refusal: true });
     console.log(`[e2e] cwd gone: ${missing.text.replace(/\s+/g, " ").slice(0, 400)}`);
-    expect(missing.text).toContain("can't enter");
-    expect(missing.text).toContain("isn't there");
+    expect(missing.text).toContain(`the folder ${gone} isn't there`);
+    expect(missing.text).not.toMatch(/ENOENT|srt-win\.exe/);
     expect(missing.text).not.toContain("DRIVE_REMOTE");
     expect(missing.text).not.toMatch(/mapped|network/i);
     // 2. A folder the sandbox accounts have no right to enter (a deny for each of them; the test's own user is untouched).
