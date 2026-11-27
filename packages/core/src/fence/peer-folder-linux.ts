@@ -99,7 +99,11 @@ export function peerFolderSpawnerLinux(o: PeerFolderSpawnerOptions): FencedSpawn
         if (res.leftBehind !== undefined) { res.leftBehind.stop(); stderr += "moss: what the command left running was stopped (another computer's command runs only while it runs)\n"; }
         // What the runtime moved aside, couldn't move or couldn't check: from its structured result, in the call's note.
         const end = peerEndNote(e, res);
-        const noted = end.length > 0 ? { note: end } : {};
+        const problems = { unswept: res.unswept ?? [], notMoved: res.notMoved ?? [] };
+        const noted = {
+          ...(end.length > 0 ? { note: end } : {}),
+          ...(problems.unswept.length > 0 || problems.notMoved.length > 0 ? { endProblems: problems } : {}),
+        };
         if (res.spawnError !== undefined) return { kind: "refused", reason: `the command couldn't start: ${res.spawnError}` };
         if (res.timedOut) return { kind: "timeout", stdout, stderr, shell: "sh", ...noted };
         return { kind: "exited", code: res.exitCode ?? 1, stdout, stderr, shell: "sh", ...noted };

@@ -61,10 +61,18 @@ export interface FencedRun {
 /** The shell that ran the command, for the hook's record. */
 export type RunShell = "sh" | "git-bash" | "cmd" | "none";
 
+/** What a run's end couldn't do in its folder (the agent runtime's `unswept` and `notMoved`). */
+export interface EndProblems {
+  readonly unswept: readonly { readonly root: string; readonly why: string }[];
+  readonly notMoved: readonly { readonly path: string; readonly why: string }[];
+}
+
 export type FencedRunResult =
   // `note`: what the sandbox says about the run's end (moved aside, not checked), kept apart from the command's own output.
-  | { readonly kind: "exited"; readonly code: number; readonly stdout: string; readonly stderr: string; readonly shell: RunShell; readonly note?: string }
-  | { readonly kind: "timeout"; readonly stdout: string; readonly stderr: string; readonly shell: RunShell; readonly note?: string }
+  // `endProblems`: what the end couldn't do in the run's folder (a root it couldn't fully check, a path it couldn't move
+  // aside), as data, for the holder's own notice (fenced-executor.ts).
+  | { readonly kind: "exited"; readonly code: number; readonly stdout: string; readonly stderr: string; readonly shell: RunShell; readonly note?: string; readonly endProblems?: EndProblems }
+  | { readonly kind: "timeout"; readonly stdout: string; readonly stderr: string; readonly shell: RunShell; readonly note?: string; readonly endProblems?: EndProblems }
   | { readonly kind: "refused"; readonly reason: string };
 
 export interface FencedSpawner {

@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpath
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Caller } from "@waifucave/moss-protocol";
-import { fencedExecutor } from "../../src/computers/fenced-executor";
+import { fencedExecutor, HOLDER_NOTICE_WINDOW_MS, PEER_END_NOT_CLEAN } from "../../src/computers/fenced-executor";
 import { MossFence } from "../../src/fence/fence";
 import { fencedSpawner } from "../../src/fence/fenced-process";
 import { peerFence, peerFolderDenies, type PeerWriteFolder } from "../../src/fence/peer-floor";
@@ -142,6 +142,47 @@ describe("the Linux folder spawner: the peer fence's policy, nothing widened", (
     const r = await peerFolderSpawnerLinux({ fence: peer, root, folder, entry: f.entry }).run(run(w.project));
     expect((r as { note?: string }).note).toBe(`[sandbox] ${w.project}: could not be fully checked\n${PEER_UNSWEPT_ADVICE}`);
     expect(PEER_UNSWEPT_ADVICE).not.toContain("can't be made");
+  });
+
+  test("a folder left unchecked: the person HERE gets one notice per folder per hour, and the bot's result is marked", async () => {
+    const w = world();
+    const problems = { unswept: [{ root: w.project, why: "a folder in it can't be read" }], notMoved: [] };
+    const spawner: FencedSpawner = { available: true, run: async (): Promise<FencedRunResult> => ({ kind: "exited", code: 0, stdout: "o", stderr: "e", shell: "sh", endProblems: problems }) };
+    const notices: string[] = [];
+    let t = 1_000_000;
+    const exec = fencedExecutor({ spawner, home: w.home, temp: w.tmp, mossHome: w.moss, os: "linux", peerSpawner: () => spawner, peerFloor: { userHome: w.home, mossHome: w.moss, os: "linux", pathFolders: () => [] }, holderNotice: (x) => notices.push(x), now: () => t });
+    const r = await exec.run("Bash", { command: "true" }, ctx(w.project, { folder: w.project }));
+    expect(notices).toEqual([`A command from Laptop made more in ${w.project} than MOSS could check. Look there before you run git or open it in an editor.`]);
+    // The exit code kept, the plain line first, an error to the asking bot.
+    expect(r.isError).toBe(true);
+    expect(r.output).toMatchObject({ code: 0, notClean: true, stdout: "o" });
+    expect((r.output as { stderr: string }).stderr).toBe(`${PEER_END_NOT_CLEAN}\ne`);
+    // Again within the hour: no second notice; after it, one more.
+    await exec.run("Bash", { command: "true" }, ctx(w.project, { folder: w.project }));
+    expect(notices.length).toBe(1);
+    t += HOLDER_NOTICE_WINDOW_MS;
+    await exec.run("Bash", { command: "true" }, ctx(w.project, { folder: w.project }));
+    expect(notices.length).toBe(2);
+  });
+
+  test("a path that couldn't be moved aside: named, clamped and escaped; one only in the call's temp root says nothing", async () => {
+    const w = world();
+    const odd = join(w.project, `a\n${"x".repeat(300)}`, ".git");
+    const run = (problems: { unswept: { root: string; why: string }[]; notMoved: { path: string; why: string }[] }) => {
+      const spawner: FencedSpawner = { available: true, run: async (): Promise<FencedRunResult> => ({ kind: "exited", code: 0, stdout: "", stderr: "", shell: "sh", endProblems: problems }) };
+      const notices: string[] = [];
+      const exec = fencedExecutor({ spawner, home: w.home, temp: w.tmp, mossHome: w.moss, os: "linux", peerSpawner: () => spawner, peerFloor: { userHome: w.home, mossHome: w.moss, os: "linux", pathFolders: () => [] }, holderNotice: (x) => notices.push(x) });
+      return exec.run("Bash", { command: "true" }, ctx(w.project, { folder: w.project })).then((r) => ({ r, notices }));
+    };
+    const a = await run({ unswept: [], notMoved: [{ path: odd, why: "EACCES" }] });
+    expect(a.notices.length).toBe(1);
+    expect(a.notices[0]).toStartWith(`A command from Laptop left ${join(w.project, "a?")}`);
+    expect(a.notices[0]!.split("\n").length).toBe(1);
+    expect(a.notices[0]).toContain("…");
+    expect(a.notices[0]).toContain("that MOSS couldn't move aside. Look there before you run git or open it in an editor.");
+    const b = await run({ unswept: [], notMoved: [{ path: join(w.tmp, "peer-x", ".git"), why: "EACCES" }] });
+    expect(b.notices).toEqual([]);
+    expect(b.r.isError).toBe(false);
   });
 
   test("the executor carries the spawner's note beside the command's output", async () => {

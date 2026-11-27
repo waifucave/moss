@@ -23,7 +23,7 @@ import type { Caller, Os } from "@waifucave/moss-protocol";
 import { fenceContextFor, ownFoldersOf } from "../contracts/fence";
 import { mkdirNoLinks } from "../fence/fenced-process";
 import { peerFolderDenies, peerFolderFor, type PeerFloorOptions, type PeerWriteFolder } from "../fence/peer-floor";
-import type { FencedRunResult, FencedSpawner } from "../fence/spawn";
+import type { EndProblems, FencedRunResult, FencedSpawner } from "../fence/spawn";
 import type { ToolExecutor, ToolRunContext } from "../tree/service";
 
 /** How long a Bash call runs when it doesn't say (Claude Code's default). */
@@ -51,7 +51,33 @@ export interface FencedExecutorOptions {
   /** What a peer's folder is judged against here (step 3b, `peerFolderFor`): the homes, the OS and the PATH's folders
    *  now. Without it, a peer's command writes only its own temp folder, as before. */
   peerFloor?: PeerFloorOptions & { pathFolders: () => readonly string[] };
+  /** The holder's own notice for the PERSON here (not a card: shown, and kept in the log): a peer's command whose end
+   *  left its folder not fully checked, or a path in it that couldn't be moved aside (`holderNoticeText`). At most one
+   *  per folder per `HOLDER_NOTICE_WINDOW_MS`. */
+  holderNotice?: (text: string) => void;
+  /** The clock for that window (tests). */
+  now?: () => number;
 }
+
+/** How often one folder may raise the holder's notice. */
+export const HOLDER_NOTICE_WINDOW_MS = 60 * 60_000;
+
+/** A name or path as the notice shows it: control and bidirectional characters escaped as `?`, at most 200 characters. */
+function clamp(s: string): string {
+  const t = s.replace(/[\u0000-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/g, "?");
+  return t.length > 200 ? `${t.slice(0, 199)}…` : t;
+}
+
+/** The holder's notice: what a command from `computer` left in `folder` that MOSS couldn't check or move aside. */
+export function holderNoticeText(computer: string, folder: string, p: EndProblems): string {
+  const what = p.unswept.length > 0
+    ? `made more in ${clamp(folder)} than MOSS could check`
+    : `left ${clamp(p.notMoved[0]!.path)} that MOSS couldn't move aside`;
+  return `A command from ${clamp(computer)} ${what}. Look there before you run git or open it in an editor.`;
+}
+
+/** The plain line the asking bot reads first when its call's folder wasn't left clean (the exit code stays). */
+export const PEER_END_NOT_CLEAN = "[MOSS] This command's folder on this computer couldn't be fully checked after it ran (see the note); the person here has been told to look. Don't treat this run as a clean success.";
 
 /** Where another computer's calls get their own folders: one parent per MOSS home (`moss-peer-<hash>` in the fence's
  *  temp folder), so a daemon on another home never sweeps them, and this daemon sweeps what a crash left
@@ -105,6 +131,18 @@ export function fencedExecutor(o: FencedExecutorOptions): ToolExecutor {
   // (macOS's /var → /private/var) would otherwise read every folder in it as outside the home. The daemon's own folder
   // class does the same (`folderClass`).
   const realOr = (p: string) => { try { return realpathSync.native(p); } catch { return p; } };
+  // The holder's notice, at most once per folder per window.
+  const noticed = new Map<string, number>();
+  const now = o.now ?? Date.now;
+  const tellHolder = (as: Caller, folder: string, p: EndProblems): void => {
+    if (o.holderNotice === undefined) return;
+    const at = now();
+    const last = noticed.get(folder);
+    if (last !== undefined && at - last < HOLDER_NOTICE_WINDOW_MS) return;
+    noticed.set(folder, at);
+    const computer = as.kind === "peer" ? (as as { computer?: string; device?: string }).computer ?? (as as { device?: string }).device ?? "another computer" : "another computer";
+    try { o.holderNotice(holderNoticeText(computer, folder, p)); } catch { /* a notice never fails the call */ }
+  };
   const floor = o.peerFloor === undefined ? undefined : { ...o.peerFloor, userHome: realOr(o.peerFloor.userHome), mossHome: realOr(o.peerFloor.mossHome) };
   /** The folder a peer's run may write, with its denies; or why not now. macOS (Seatbelt holds the denies by pattern
    *  as each path opens) and Linux (the agent runtime's own sandbox holds them, as for a local bot: the peer spawner's
@@ -169,10 +207,19 @@ export function fencedExecutor(o: FencedExecutorOptions): ToolExecutor {
       const allNotes = [note, runNote].filter((n): n is string => n !== undefined && n.length > 0).join("\n");
       const noted = allNotes.length === 0 ? {} : { note: allNotes };
       if (r.kind === "refused") return { output: { error: `refused: ${r.reason}`, ...noted }, isError: true };
+      // A peer's folder the end couldn't fully check, or a path in it it couldn't move aside: the PERSON here is told (the
+      // holder's notice), and the asking bot's result is marked: its plain line first, an error, the exit code kept.
+      // Only what is in the folder: the call's own temp root is removed after it anyway.
+      // A root that isn't a path ("(the sweep)": the sweep failed) checked nothing, so it counts.
+      const inFolder = (x: string) => wants !== undefined && overlaps(x, realOr(wants)) && x.length >= realOr(wants).length;
+      const p = r.endProblems === undefined ? undefined : { unswept: r.endProblems.unswept.filter((u) => inFolder(u.root) || !u.root.startsWith("/")), notMoved: r.endProblems.notMoved.filter((n) => inFolder(n.path)) };
+      const notClean = ctx.as.kind === "peer" && wants !== undefined && p !== undefined && (p.unswept.length > 0 || p.notMoved.length > 0);
+      if (notClean) tellHolder(ctx.as, wants!, p!);
+      const stderr = notClean ? `${PEER_END_NOT_CLEAN}\n${r.stderr}` : r.stderr;
       // The fenced process gives its output at the end; it goes to the caller's stream once, in order.
       if (r.stdout) ctx.output(r.stdout, "stdout");
-      if (r.stderr) ctx.output(r.stderr, "stderr");
-      if (r.kind === "timeout") return { output: { stdout: r.stdout, stderr: r.stderr, code: null, timedOut: true, aborted: ctx.signal.aborted, ...noted }, isError: true };
-      return { output: { stdout: r.stdout, stderr: r.stderr, code: r.code, aborted: ctx.signal.aborted, ...noted }, isError: r.code !== 0 || ctx.signal.aborted };
+      if (stderr) ctx.output(stderr, "stderr");
+      if (r.kind === "timeout") return { output: { stdout: r.stdout, stderr, code: null, timedOut: true, aborted: ctx.signal.aborted, ...noted }, isError: true };
+      return { output: { stdout: r.stdout, stderr, code: r.code, aborted: ctx.signal.aborted, ...noted, ...(notClean ? { notClean: true } : {}) }, isError: r.code !== 0 || ctx.signal.aborted || notClean };
   }
 }
