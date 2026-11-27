@@ -25,16 +25,16 @@ export type SrtWinArch = "x64" | "arm64";
 /**
  * The pinned launcher digests, one per architecture. Shape is load-bearing: lane M's build check parses this exact
  * constant (`parsePins` in `scripts/release/srt-win.ts`), so keep it a frozen object literal with `x64` and `arm64`.
- * Both are CI digests of the patched static-CRT build with patches 0001-0004 (per-principal records, Addendum 13;
- * session 0's named objects; the network-open principal; the delete-child deny on a denied target's parent alone),
- * measured on 2026-11-24 by the windows-fence workflow (`scripts/ci/windows-fence/build-launcher.ps1`): x64 on
+ * Both are CI digests of the patched static-CRT build with patches 0001-0005 (per-principal records, Addendum 13;
+ * session 0's named objects; the network-open principal; the delete-child deny on a denied target's parent alone; a cwd seclogon refused on a local drive is cwd_unusable, not a mapped drive),
+ * re-measured on 2026-11-27 (patch 0005) by the windows-fence workflow (`scripts/ci/windows-fence/build-launcher.ps1`): x64 on
  * windows-latest (Server 2025 26100), arm64 built natively on GitHub's `windows-11-arm` (Rust 1.98.1
  * aarch64-pc-windows-msvc). /BREPRO makes a build repeatable only on one toolchain: a release must ship the launcher
  * built on the toolchain that measured its pin (an arm64 launcher cross-built on x64 will not match this pin).
  */
 export const SRT_WIN_PINS = Object.freeze({
-  x64: "b73f8f0afaea29757068363b7a4fab197dc6f8e3153b07a1842e160812fa14be",
-  arm64: "0d52667a4d22750405bd086b47a541e81890c4c3b89f97d4122cb6aed15ea8e0",
+  x64: "d2fe4a5ef9aa8a5beb81ed43d94f7798b95f6fd69f522007a5ad801a12b2df17",
+  arm64: "66a1675618867a243e492c309f6ad455ea5e8f793c1cd29c058386f7c38955e9",
 });
 
 /** The running process's launcher architecture. Windows on ARM reports `arm64`; everything else `x64`. */

@@ -104,8 +104,8 @@ describe("the pinned launcher", () => {
   });
 
   test("the launcher has Authenticode digest pins for x64 and arm64", () => {
-    expect(SRT_WIN_PINS.x64).toBe("b73f8f0afaea29757068363b7a4fab197dc6f8e3153b07a1842e160812fa14be"); // re-measured 2026-11-24 with patches 0001-0004 (windows-launcher.ts)
-    expect(SRT_WIN_PINS.arm64).toBe("0d52667a4d22750405bd086b47a541e81890c4c3b89f97d4122cb6aed15ea8e0"); // measured natively on windows-11-arm, 2026-11-24
+    expect(SRT_WIN_PINS.x64).toBe("d2fe4a5ef9aa8a5beb81ed43d94f7798b95f6fd69f522007a5ad801a12b2df17"); // re-measured 2026-11-24 with patches 0001-0004 (windows-launcher.ts)
+    expect(SRT_WIN_PINS.arm64).toBe("66a1675618867a243e492c309f6ad455ea5e8f793c1cd29c058386f7c38955e9"); // measured natively on windows-11-arm, 2026-11-24
   });
 
   test("a missing launcher is missing, and only the exact digest pins", () => {
