@@ -6,7 +6,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BUSY_TRIES, DataFolderBusy, RemovalIncomplete, busyCodes, forgetRemovedPlugin, pendingRemovals, retryBusy, retryBusyAsync } from "../leftovers";
+import { BUSY_TRIES, DataFolderBusy, RemovalIncomplete, busyCodes, forgetRemovedPlugin, hasRemovingMark, pendingRemovals, retryBusy, retryBusyAsync } from "../leftovers";
 
 const temps: string[] = [];
 afterAll(() => { for (const d of temps) rmSync(d, { recursive: true, force: true }); });
@@ -152,6 +152,30 @@ describe("a stale removing mark", () => {
     writeFileSync(mark, JSON.stringify(m));
     const out = await forgetRemovedPlugin({ home: w.home, record: rec, children: [], sleep: noWait, now: () => 4 });
     expect(out.dataKeptAt).toBeUndefined();
+  });
+});
+
+describe("the removing mark's life", () => {
+  const failing = { list: async () => [{ ref: "r1" }] as never, delete: async () => { throw busy("EBUSY"); } };
+
+  test("it holds for the same install (switch-on stays refused) and is dropped only once the registry holds a DIFFERENT tree under the id", async () => {
+    const w = world();
+    await forgetRemovedPlugin({ home: w.home, record: rec, children: [], secrets: failing, sleep: noWait, now: () => 1 }).catch(() => undefined);
+    expect(hasRemovingMark(w.home, "busy-plugin", rec as never)).toBe(true);
+    expect(hasRemovingMark(w.home, "busy-plugin", rec as never)).toBe(true);
+    expect(hasRemovingMark(w.home, "busy-plugin", { treeHash: "sha256:new", okHash: "sha256:new" })).toBe(false);
+    expect(pendingRemovals(w.home)).toEqual([]);
+  });
+
+  test("a mark that can't be written stops the removal with RemovalIncomplete BEFORE any later step runs", async () => {
+    const w = world();
+    // A plain file where the marks' folder must be: the mark can't be made.
+    writeFileSync(join(w.home, "plugin-data", ".removing"), "not a folder");
+    const err = await forgetRemovedPlugin({ home: w.home, record: rec, children: [], sleep: noWait, now: () => 1 }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RemovalIncomplete);
+    expect((err as RemovalIncomplete).step).toContain("removing mark");
+    expect((err as RemovalIncomplete).removed).toEqual(["its data folder was moved aside"]);
+    expect(existsSync(w.settings)).toBe(true);
   });
 });
 

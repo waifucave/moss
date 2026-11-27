@@ -33,7 +33,7 @@ import { folderTreeHash } from "../registry/tree";
 import { manifestPathIn } from "../old-names";
 import { homedir } from "node:os";
 import { installWrapped } from "../registry/wrap";
-import { clearRemovingMark, DataFolderBusy, forgetRemovedPlugin, hasRemovingMark, RemovalIncomplete } from "../registry/leftovers";
+import { DataFolderBusy, forgetRemovedPlugin, hasRemovingMark, RemovalIncomplete } from "../registry/leftovers";
 import { redactReadText } from "../computer-use/browser/http-read";
 import { REDACTED } from "../computer-use/browser/page-runtime/redact";
 import type { CardOpener } from "../devices/rpc";
@@ -251,9 +251,9 @@ export function pluginRegistryMethods(o: {
     [M.pluginSetEnabled.name]: handler(M.pluginSetEnabled, async ({ id, enabled, bots, part }, ctx) => {
       requireUser(ctx, "switch a plugin on or off");
       if (bots !== undefined) notServed("choosing the bots a plugin dresses", "a plugin's `when.bot` override isn't kept yet");
-      must(id);
+      const held = must(id);
       // A removal that stopped part-way (its data moved, its keys or settings maybe gone) can't be switched on: it runs again, or is removed.
-      if (enabled === true && hasRemovingMark(o.home, id)) throw new ContractError("refused", `${id} is only partly removed: finish removing it first (Remove it again)`);
+      if (enabled === true && hasRemovingMark(o.home, id, held)) throw new ContractError("refused", `${id} is only partly removed: finish removing it first (Remove it again)`);
       // Switching a plugin off with machines it runs (a cloud computer provider) asks first, and does what the answer says.
       if (enabled === false && part === undefined) await (await o.beforeDisable?.(id))?.commit();
       // `part: "app"`: only its parts beside its bot (§5.5), the bot kept.
@@ -463,15 +463,12 @@ export function pluginRegistryMethods(o: {
     // OK card raised at once (§5.1). The index and npm wait for their clients.
     [M.pluginInstall.name]: handler(M.pluginInstall, async ({ source }, ctx) => {
       const user = requireUser(ctx, "install a plugin");
-      const installed = await installDoor(source, user.client === "cli" ? { by: "user-terminal" } : { by: "user-app" });
-      // An install under an id with a half-done removal owns the id now: the old mark is cleared (a mark is used again only by its own install's hashes).
-      const installedId = (installed as { id?: unknown })?.id;
-      if (typeof installedId === "string") clearRemovingMark(o.home, installedId);
-      return installed;
+      // A half-done removal's mark is never cleared here (the OK card can still be declined): it stays until the registry holds a DIFFERENT tree under
+      // the id (`hasRemovingMark` with the record, which clears a mismatching one) or the removal is finished.
+      return installDoor(source, user.client === "cli" ? { by: "user-terminal" } : { by: "user-app" });
     }),
     [M.pluginUpdate.name]: handler(M.pluginUpdate, async ({ id, list, card }, ctx) => {
       const user = requireUser(ctx, "update a plugin");
-      if (id !== undefined) clearRemovingMark(o.home, id);
       if (o.updater === undefined || o.indexes === undefined) notServed("plugin.update", "this computer has no index client");
       // The indexes now, then the updates: without an id (or with `list`), what is newer, each offered with why, nothing
       // applied; with an id, the user's click on that plugin's update, which applies it.

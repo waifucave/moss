@@ -91,8 +91,12 @@ function mkdirNoLink(base: string, parts: readonly string[]): string {
 }
 
 /** Whether a removing mark is there for `id` (a half-done removal): the plugin must be removed again, not switched on. */
-export function hasRemovingMark(home: string, id: string): boolean {
-  return readMark(home, id) !== undefined;
+export function hasRemovingMark(home: string, id: string, record?: { treeHash?: string; okHash?: string }): boolean {
+  const m = readMark(home, id);
+  if (m === undefined) return false;
+  // The registry holds a different tree under the id now (a reinstall or update that landed): the mark belongs to the old install and is dropped.
+  if (record !== undefined && (m.record?.treeHash !== record.treeHash || m.record?.okHash !== record.okHash)) { clearRemovingMark(home, id); return false; }
+  return true;
 }
 
 /** Drops a removing mark (a reinstall or update of the id owns it now). */
@@ -183,7 +187,7 @@ export async function forgetRemovedPlugin(o: { home: string; secrets?: Pick<Secr
   // From here the data is gone from its place: a failure says what was done, and the mark lets the next attempt finish.
   const done: string[] = [];
   if (kept !== undefined || deleteData) done.push(deleteData ? "its data folder was deleted" : "its data folder was moved aside");
-  try { writeMark(o.home, o.record.id, { record: { ...(o.record.treeHash !== undefined ? { treeHash: o.record.treeHash } : {}), ...(o.record.okHash !== undefined ? { okHash: o.record.okHash } : {}) }, children: o.children, ...(kept !== undefined ? { kept } : {}), at: o.now?.() ?? Date.now() }); } catch { /* a missing mark only means the next attempt reads the folder as gone */ }
+  try { writeMark(o.home, o.record.id, { record: { ...(o.record.treeHash !== undefined ? { treeHash: o.record.treeHash } : {}), ...(o.record.okHash !== undefined ? { okHash: o.record.okHash } : {}) }, children: o.children, ...(kept !== undefined ? { kept } : {}), at: o.now?.() ?? Date.now() }); } catch (e) { throw new RemovalIncomplete(done, "the removing mark written", codeOf(e), e instanceof Error ? e.message.slice(0, 200) : undefined); }
   const step = async (name: string, fn: () => void | Promise<void>): Promise<void> => {
     try { await retryBusyAsync(async () => { await fn(); }, o.sleep, o.platform); } catch (e) { throw new RemovalIncomplete(done, name, codeOf(e), e instanceof Error ? e.message.slice(0, 200) : undefined); }
     done.push(name);
