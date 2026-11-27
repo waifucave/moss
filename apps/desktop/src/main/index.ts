@@ -54,6 +54,7 @@ import { placeWindow, TitleDrag } from "./ui/window-drag";
 import { KeyLog, PasteModes, keyBytes, preparePaste } from "./terminal-input";
 import { OWN_ELEMENT, SealedFrames } from "./sealed";
 import type { PressRef } from "./press-bound";
+import { PressPoints } from "./press-point";
 import { BrowserAreaFrames, isBrowserEvent, ViewBindings } from "./ui/browser-calls";
 import { FRESH_LIMIT_MS, NOT_CHECKED_REASON, NOT_SHOWN_REASON, ownCardPage, pinVisible } from "./sealed-pages";
 import { translate } from "@waifucave/moss-plugin-sdk/ui/bridge";
@@ -674,7 +675,7 @@ async function ready(): Promise<void> {
         return { accepted: false, reason: placed?.kind === "island" ? "this card is on the island now" : "this card is in MOSS's window now" };
       }
       // R12 (lane RT): no window of any app lies over the button, read from the OS's own window list (overlap.ts).
-      const cover = osCoverOf(from);
+      const cover = osCoverOf(from, pressPoints.pointOf(token, press));
       if (cover !== undefined) {
         log(`sealed: answer refused (a window lies over the button: ${cover.advice})`);
         return { accepted: false, covered: cover.name, reason: cover.advice };
@@ -774,7 +775,10 @@ async function ready(): Promise<void> {
       const cardId = sealed.cardOf(token);
       if (cardId === undefined) return;
       // The page's "received" opens the numbered press its report and its answer must carry (press-bound.ts).
-      if (what === "received" && press !== undefined) sealed.notePress(token, press);
+      if (what === "received" && press !== undefined && sealed.notePress(token, press) === "ok") {
+        const wid = sealed.windowOf(token);
+        pressPoints.save(token, press, wid === undefined ? undefined : windowDowns.get(wid), Date.now());
+      }
       // A sealed page heard the press: it isn't a missed one (sealed-miss.ts).
       const pressedIn = sealed.windowOf(token);
       if (pressedIn !== undefined) missWatch.heard(pressedIn);
@@ -2885,7 +2889,7 @@ function steerSurface(windowId: number, request: Record<string, unknown>): void 
 let windowList: WindowList | undefined | null = null;
 let overlapUnread = false;
 let overlapRead = false;
-function osCoverOf(windowId: number | undefined): { name: ReturnType<typeof coverName>; advice: string } | undefined {
+function osCoverOf(windowId: number | undefined, press: { x: number; y: number } | undefined): { name: ReturnType<typeof coverName>; advice: string } | undefined {
   if (windowId === undefined) return undefined;
   if (windowList === null) windowList = loadWindowList(join(here, "native", "screen.node"), log);
   const win = BrowserWindow.fromId(windowId);
@@ -2895,8 +2899,8 @@ function osCoverOf(windowId: number | undefined): { name: ReturnType<typeof cove
     return undefined;
   }
   const list = windowList;
-  const recent = windowDowns.get(windowId);
-  const down = recent !== undefined && Date.now() - recent.at <= 2_000 ? recent : undefined;
+  // The press's own point, saved when its "received" came (press-point.ts): an answer up to PRESS_BOUND_MS late is still checked at it.
+  const down = press;
   const content = win.getContentBounds();
   const own = new Map<number, { origin: { x: number; y: number }; regions?: readonly Rect[] }>();
   for (const s of surfaces.values()) {
@@ -2929,6 +2933,8 @@ function osCoverOf(windowId: number | undefined): { name: ReturnType<typeof cove
 const missWatch = new MissWatch();
 /** Each window's latest mouse-down in window coordinates (from the screen point; the event's own x/y are its target widget's). */
 const windowDowns = new Map<number, { x: number; y: number; at: number }>();
+/** Each sealed press's own point, saved at its "received" (press-point.ts). */
+const pressPoints = new PressPoints();
 async function noticeMissedPress(win: BrowserWindow, windowId: number): Promise<void> {
   const point = missWatch.missed(windowId);
   if (point === undefined || win.isDestroyed()) return;

@@ -9,6 +9,7 @@
 import { describe, expect, test } from "bun:test";
 import { StallWatch, STALL_CREDIT_MAX_MS, STALL_TICK_MS } from "@waifucave/moss-app-release/stall-watch";
 import { PRESS_MS, PressRecord, REPORT_MS } from "../src/main/press";
+import { PRESS_BOUND_MS } from "../src/main/press-bound";
 
 /** A small seeded generator (mulberry32). */
 function rng(seed: number): () => number {
@@ -93,15 +94,15 @@ describe("generated press sequences", () => {
             }
           }
         } else if (op === 5) {
-          // The strict take (sealed buttons) never takes beyond its own bounds, whatever the stalls.
+          // The sealed take never takes beyond the press's own bound, whatever the stalls (the stall credit is bounded by it).
           const how = rec.take(win, frame);
           if (how === "click") {
             const d = downs.get(win)!;
-            expect([where, d.report?.frame, w.c.now - d.at <= PRESS_MS, d.report!.at - d.at <= REPORT_MS]).toEqual([where, frame, true, true]);
+            expect([where, d.report?.frame, w.c.now - d.at <= PRESS_BOUND_MS, d.report!.at - d.at <= REPORT_MS]).toEqual([where, frame, true, true]);
             d.spent = true;
           } else if (how === "key") {
             const k = keys.get(win)!;
-            expect([where, k.frame, w.c.now - k.at <= PRESS_MS]).toEqual([where, frame, true]);
+            expect([where, k.frame, w.c.now - k.at <= PRESS_BOUND_MS]).toEqual([where, frame, true]);
             k.spent = true;
           }
         } else {

@@ -9,6 +9,7 @@
 import { describe, expect, test } from "bun:test";
 import { StallWatch, STALL_CREDIT_MAX_MS, STALL_TICK_MS } from "@waifucave/moss-app-release/stall-watch";
 import { PRESS_MS, PressRecord, REPORT_MS, writeRefusalWords } from "../src/main/press";
+import { PRESS_BOUND_MS } from "../src/main/press-bound";
 
 const WIN = 7;
 const MAIN = "11:22";
@@ -398,21 +399,44 @@ describe("what a stall never buys", () => {
     expect(r.record.takeWrite(WIN, MAIN).ok).toBe(true);
   });
 
-  test("the sealed buttons' take keeps its strict bounds on a stalled machine: it takes no late report and no late answer", () => {
-    // Late report: the stalled timeline that takeWrite accepts.
+  test("the sealed buttons' take: a late report is still refused; a late answer is taken only for the time main itself was not running, in the press's frame, once, and never later than PRESS_BOUND_MS", () => {
+    // Late report: the stalled timeline that takeWrite accepts is still no sealed press (the report names no frame in time).
     const a = rig();
     a.record.mouseDown(WIN);
     a.calm(20);
     a.pass(STALL_TICK_MS + 4_000, 30, false);
     a.record.frameSaw(WIN, MAIN);
     expect(a.record.take(WIN, MAIN)).toBeUndefined();
-    // Late answer, report in time.
+    // Late answer, report in time, main stalled for 4 s in between: taken (the stall is not the person's delay), once.
     const b = rig();
     b.record.mouseDown(WIN);
     b.calm(20);
     b.record.frameSaw(WIN, MAIN);
     b.pass(STALL_TICK_MS + 4_000, 30, false);
-    expect(b.record.take(WIN, MAIN)).toBeUndefined();
+    expect(b.record.take(WIN, "99:1")).toBeUndefined(); // another frame: no
+    expect(b.record.take(WIN, MAIN)).toBe("click");
+    expect(b.record.take(WIN, MAIN)).toBeUndefined(); // one use
+    // The same lateness with no stall (a main that kept up; the page was slow): refused, as before.
+    const n = rig();
+    n.record.mouseDown(WIN);
+    n.calm(20);
+    n.record.frameSaw(WIN, MAIN);
+    n.calm(3_000);
+    expect(n.record.take(WIN, MAIN)).toBeUndefined();
+    // A stall the process spent working is no credit either.
+    const w = rig();
+    w.record.mouseDown(WIN);
+    w.calm(20);
+    w.record.frameSaw(WIN, MAIN);
+    w.pass(STALL_TICK_MS + 4_000, 4_000, false);
+    expect(w.record.take(WIN, MAIN)).toBeUndefined();
+    // Never later than PRESS_BOUND_MS after the press, whatever the stall.
+    const l = rig();
+    l.record.mouseDown(WIN);
+    l.calm(20);
+    l.record.frameSaw(WIN, MAIN);
+    l.pass(PRESS_BOUND_MS + 1, 5, false);
+    expect(l.record.take(WIN, MAIN)).toBeUndefined();
     // On time: taken once.
     const c = rig();
     c.record.mouseDown(WIN);
@@ -421,6 +445,14 @@ describe("what a stall never buys", () => {
     c.calm(1_000);
     expect(c.record.take(WIN, MAIN)).toBe("click");
     expect(c.record.take(WIN, MAIN)).toBeUndefined();
+    // The press point of a late click is still there for the overlap check.
+    const p = rig();
+    p.record.mouseDown(WIN, { x: 4, y: 5 });
+    p.calm(20);
+    p.record.frameSaw(WIN, MAIN);
+    p.pass(STALL_TICK_MS + 4_000, 30, false);
+    expect(p.record.take(WIN, MAIN)).toBe("click");
+    expect(p.record.lastPoint(WIN)).toEqual({ x: 4, y: 5 });
   });
 
   test("a press taken by a write is spent for the sealed path too, and the other way", () => {

@@ -204,6 +204,33 @@ describe("a press on a card MOSS draws", () => {
     expect(await answerPress({ ...r.deps, cover }, { token: keyed, option: "allow_once", senderKey: SENDER, frame: FRAME, windowId: WIN, press: P1 })).toEqual({ accepted: true });
   });
 
+  test("a late answer (a stalled main, 2.5 s after the press) is still checked at its own point and place: a window over the button refuses it, a changed placement refuses it, and with neither it is taken", async () => {
+    const r = await rig();
+    const clock = { t: 1_000_000 };
+    // Main was not running for 2 s of the 2.5 s between the press and its answer: the sealed take credits it (press.ts withinBound).
+    const lateRecord = () => new PressRecord(() => clock.t, { arm: () => {}, credit: () => 2_000 });
+    const lateRig = (over: Partial<typeof r.deps>) => {
+      const record = lateRecord();
+      const token = r.sealed.mint("card_juniper_book", OWN_ELEMENT, { parent: PARENT }, WIN)!.token;
+      press1(r.sealed, token);
+      record.mouseDown(WIN, { x: 40, y: 60 });
+      record.frameSaw(WIN, FRAME);
+      clock.t += 2_500;
+      return { token, deps: { ...r.deps, record, ...over } as typeof r.deps };
+    };
+    const seen: { x: number; y: number }[] = [];
+    const cover = (_w: number, point: { x: number; y: number } | undefined) => { if (point !== undefined) seen.push(point); return point === undefined ? undefined : "another MOSS program's window (lay over)"; };
+    const a = lateRig({ cover });
+    expect(await answerPress(a.deps, { token: a.token, option: "allow_once", senderKey: SENDER, frame: FRAME, windowId: WIN, press: P1 })).toMatchObject({ accepted: false, covered: true });
+    // The point was still known 2.5 s on: the cover check ran at it, it was not taken for a keyboard press.
+    expect(seen).toEqual([{ x: 40, y: 60 }]);
+    const b = lateRig({ placementOf: () => ({ kind: "island" }) });
+    expect(await answerPress(b.deps, { token: b.token, option: "allow_once", senderKey: SENDER, frame: FRAME, windowId: WIN, press: P1 })).toMatchObject({ accepted: false });
+    expect(r.e.answered()).toEqual([]);
+    const c = lateRig({});
+    expect(await answerPress(c.deps, { token: c.token, option: "allow_once", senderKey: SENDER, frame: FRAME, windowId: WIN, press: P1 })).toEqual({ accepted: true });
+  });
+
   test("refused while MOSS's key isn't registered", async () => {
     const r = await rig({ register: false });
     expect(await go(r, r.press("card_juniper_book"))).toMatchObject({ accepted: false, reason: "this computer's answer key for MOSS isn't registered yet" });

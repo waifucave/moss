@@ -28,7 +28,7 @@
 // XTEST). Neither app has it yet; it is not built here either (the report says so).
 import { pressMatchesPlacement, type CardPlacement } from "@waifucave/moss-protocol";
 import type { SealedFrames, AnswerSigner } from "./sealed";
-import type { PressRef } from "./press-bound";
+import { PRESS_BOUND_MS, type PressRef } from "./press-bound";
 import { STALL_CREDIT_MAX_MS } from "@waifucave/moss-app-release/stall-watch";
 import type { KeyState } from "./answer-key";
 
@@ -108,7 +108,7 @@ export class PressRecord {
   }
 
   /** Where the window's latest mouse down landed, while it is recent (the overlap check's press point). */
-  lastPoint(windowId: number, maxMs = PRESS_MS): { x: number; y: number } | undefined {
+  lastPoint(windowId: number, maxMs = PRESS_BOUND_MS): { x: number; y: number } | undefined {
     const d = this.downs.get(windowId);
     return d === undefined || this.now() - d.at > maxMs ? undefined : d.point;
   }
@@ -137,16 +137,26 @@ export class PressRecord {
   take(windowId: number, frame: string): "click" | "key" | undefined {
     const now = this.now();
     const d = this.downs.get(windowId);
-    if (d !== undefined && !d.spent && d.frame === frame && now - d.at <= PRESS_MS) {
+    if (d !== undefined && !d.spent && d.frame === frame && this.withinBound(d.at, now)) {
       d.spent = true;
       return "click";
     }
     const k = this.keys.get(windowId);
-    if (k !== undefined && !k.spent && k.frame === frame && now - k.at <= PRESS_MS) {
+    if (k !== undefined && !k.spent && k.frame === frame && this.withinBound(k.at, now)) {
       k.spent = true;
       return "key";
     }
     return undefined;
+  }
+
+  /** Whether an answer at `now` is inside the sealed buttons' bound for a press main saw at `at`: PRESS_MS counted without the time the
+   *  main process itself was not running (the stall watch's measured wait, never the page's word, at most STALL_CREDIT_MAX_MS, as a
+   *  person's write counts it), and in all never more than PRESS_BOUND_MS after the press (press-bound.ts). With no stall it is exactly
+   *  PRESS_MS: a page that is merely slow is not paid for here; the press's own fresh report (press-bound.ts) covers that. */
+  private withinBound(at: number, now: number): boolean {
+    const age = now - at;
+    if (age < 0 || age > PRESS_BOUND_MS) return false;
+    return age - this.stalled(at, now) <= PRESS_MS;
   }
 
   /** Takes the press for a PERSON'S WRITE from `frame` (a send, a new bot, a setting): the same press and the same frame as
@@ -182,7 +192,8 @@ export class PressRecord {
       const age = now - x.at;
       if (kind === "click" && x.frame === undefined) return `no report from the page named a frame; the mouse down was ${age} ms ago${x.late !== undefined ? `; a report came ${x.late.at - x.at} ms after it, limit ${REPORT_MS}` : ""}`;
       if (x.frame !== frame) return `the ${kind} landed in another frame`;
-      if (age > PRESS_MS) return `the answer came ${age - PRESS_MS} ms past the bound of ${PRESS_MS}`;
+      if (age > PRESS_BOUND_MS) return `the answer came ${age - PRESS_BOUND_MS} ms past the press's bound of ${PRESS_BOUND_MS}`;
+      if (!this.withinBound(x.at, now)) return `the answer came ${Math.max(0, age - this.stalled(x.at, now) - PRESS_MS)} ms past the bound of ${PRESS_MS}`;
       return undefined;
     };
     const click = why(d, "click");
