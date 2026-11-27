@@ -54,10 +54,11 @@ $PinnedPatches = @{
   "0002-session-0-named-objects.patch" = "60497de7a7c50a166eb73ff03e91e4cbe6389453d6f73fcfc9e06e029c0b3f81"
   "0003-network-open-principal.patch" = "4c12672bfdc91edd85c88a3b677b502a6c0eb0bf9a5d972fbeee803be7b1cfb9"
   "0004-delete-child-deny-on-the-parent-alone.patch" = "e3f2aa3b836f7af4a3d7e0ddc543f09b7b0de3ec1f19bd7fd62d4809da26dea8"
+  "0005-cwd-unusable-is-not-a-mapped-drive.patch" = "251bb4f8f1279b9a99421e601a7f45a45ffc1467f7c673bddef640ba7185af8b"
 }
 
 # What the pinned patch set must change (per-principal records; session 0's named objects; a network-open principal;
-# the delete-child deny on a denied target's parent alone). After
+# the delete-child deny on a denied target's parent alone; a cwd seclogon turned down is a mapped drive only when it is remote). After
 # applying, the tree must show exactly these files with this shape, or
 # the build stops: a patch that applies cleanly but changes nothing
 # (wrong -p level, already-applied upstream, CRLF damage) must fail
@@ -70,10 +71,11 @@ $ExpectedPatchFiles = @(
   "vendor/srt-win-src/src/winsta.rs",
   "vendor/srt-win-src/src/wfp.rs",
   "vendor/srt-win-src/src/acl.rs",
+  "vendor/srt-win-src/src/logon.rs",
   "vendor/srt-win-src/tests/persistent_grant_access_check.rs"
 )
-$ExpectedPatchAdded = 628
-$ExpectedPatchDeleted = 59
+$ExpectedPatchAdded = 722
+$ExpectedPatchDeleted = 70
 
 function Check-Tools {
   foreach ($t in @("git", "cargo") ) {

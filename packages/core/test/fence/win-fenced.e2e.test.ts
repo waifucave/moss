@@ -865,6 +865,60 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     rmSync(project, { recursive: true, force: true });
   }, 900_000);
 
+  test("a working folder the sandbox can't use is told as what it is (patch 0005): a folder that isn't there, one the account may not enter, and a really remote one still says mapped drive", async () => {
+    const spawner = fencedSpawner({ fence });
+    const at = (dir: string) => Object.fromEntries(windowsShellTools({
+      spawner, caller: CALLER, kind: "bot", cwd: () => dir, sandbox: sandboxFor, userHome: home, temp: fence.temp, mossHome: moss,
+    }).map((t) => [t.name, t]));
+    // 1. A folder that is not there.
+    const gone = join(home, "ws-cwd-gone");
+    rmSync(gone, { recursive: true, force: true });
+    const missing = await call(at(gone).Bash!, { command: "echo hi" }, { refusal: true });
+    console.log(`[e2e] cwd gone: ${missing.text.replace(/\s+/g, " ").slice(0, 400)}`);
+    expect(missing.text).toContain("can't enter");
+    expect(missing.text).toContain("isn't there");
+    expect(missing.text).not.toContain("DRIVE_REMOTE");
+    expect(missing.text).not.toMatch(/mapped|network/i);
+    // 2. A folder the sandbox accounts have no right to enter (a deny for each of them; the test's own user is untouched).
+    const shut = join(home, "ws-cwd-shut");
+    rmSync(shut, { recursive: true, force: true });
+    mkdirSync(shut, { recursive: true });
+    const accounts = Bun.spawnSync(["powershell", "-NoProfile", "-NonInteractive", "-Command", "(Get-LocalUser -Name 'moss-sb-*' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) -join ','"], { stdout: "pipe" }).stdout.toString().trim().split(",").filter((n) => n !== "");
+    console.log(`[e2e] cwd shut: sandbox accounts ${accounts.length}`);
+    expect(accounts.length).toBeGreaterThan(0);
+    try {
+      for (const a of accounts) Bun.spawnSync(["icacls", shut, "/deny", `${a}:(RX)`], { stdout: "ignore", stderr: "ignore" });
+      const closed = await call(at(shut).Bash!, { command: "echo hi" }, { refusal: true });
+      console.log(`[e2e] cwd shut: ${closed.text.replace(/\s+/g, " ").slice(0, 400)}`);
+      expect(closed.text).toContain("can't enter");
+      expect(closed.text).not.toContain("DRIVE_REMOTE");
+      expect(closed.text).not.toMatch(/mapped|network/i);
+    } finally {
+      for (const a of accounts) Bun.spawnSync(["icacls", shut, "/remove:d", a], { stdout: "ignore", stderr: "ignore" });
+      rmSync(shut, { recursive: true, force: true });
+    }
+    // 3. A really remote drive: a letter mapped to this computer's own share (as the WS9 test does) still says so.
+    const remote = join(home, "ws-cwd-remote");
+    rmSync(remote, { recursive: true, force: true });
+    mkdirSync(remote, { recursive: true });
+    const letter = ["Y", "X", "W", "V", "U"].find((l) => !existsSync(`${l}:\\`));
+    const share = `\\\\localhost\\${home.slice(0, 1)}$${remote.slice(2)}`;
+    const mapped = letter === undefined ? undefined : Bun.spawnSync(["net", "use", `${letter}:`, share, "/persistent:no"], { stdin: "ignore", timeout: 60_000 });
+    const ok = mapped !== undefined && mapped.exitCode === 0 && existsSync(`${letter}:\\`);
+    console.log(`[e2e] cwd remote: ${letter ?? "(no free letter)"}: mapped ${ok}`);
+    try {
+      if (ok) {
+        const far = await call(at(`${letter}:\\`).Bash!, { command: "echo hi" }, { refusal: true });
+        console.log(`[e2e] cwd remote: ${far.text.replace(/\s+/g, " ").slice(0, 400)}`);
+        expect(far.text).toMatch(/network or mapped drive/);
+        expect(far.text).not.toContain("can't enter");
+      }
+    } finally {
+      if (ok) Bun.spawnSync(["net", "use", `${letter}:`, "/delete", "/y"], { stdin: "ignore", timeout: 60_000 });
+      rmSync(remote, { recursive: true, force: true });
+    }
+  }, 600_000);
+
   test("rule 8c (lane WS8): a new conversation's sidecar made while a background command runs is stamped for it, and it runs on; a new protected root ends it", async () => {
     wakes.length = 0;
     // The sidecar and, as the control, the transcript beside it (a bot reads transcripts): made after the command started.

@@ -52,6 +52,7 @@ import { pathWithin } from "./fold";
 import { randomBytes } from "node:crypto";
 import { closeSync, cpSync, existsSync, fsyncSync, ftruncateSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { join, win32 } from "node:path";
+import { explainLauncherCwd } from "./win-launch-errors";
 import type { SandboxSettingsConfig } from "@waifucave/clover-agent-sdk";
 import type { Caller } from "@waifucave/moss-protocol";
 import { BOT_READ_DENIED, fenceContextFor, secretReadPlaces } from "../contracts/fence";
@@ -977,6 +978,11 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
             const said = ran.stderr.split(/\r?\n/).filter((l) => l.startsWith("srt-win:"));
             phases.push(`denies ${denyRead.length}r/${denyWrite.length}w (read: ${denyRead.map((d) => win32.basename(d)).join(",").slice(0, 300)}), except ${grantPlan.denyReadExcept.length}, roots ${roots.length}; ${said.join(" | ").slice(0, 1500)}`);
             result = { ...ran, stderr: ran.stderr.split(/\r?\n/).filter((l) => !l.startsWith("srt-win:")).join("\n") };
+          }
+          // A folder the launcher couldn't start the command in is said in words, not as its JSON line and exit code.
+          if (ran.kind === "exited") {
+            const refused = explainLauncherCwd(ran.code, ran.stderr);
+            if (refused !== null) result = { ...result, stderr: `${refused}\n` };
           }
           const after = gitPlaces(roots);
           for (const p of after.configs) if (!configBefore.has(p)) configBefore.set(p, null);

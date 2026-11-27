@@ -1,0 +1,162 @@
+From: MOSS Windows lane <moss@example.com>
+Date: Fri, 27 Nov 2026 00:00:00 +0000
+Subject: [PATCH] A working directory seclogon turned down on a local drive is not a mapped drive
+
+---
+
+Upstream: anthropics/sandbox-runtime, tag v0.0.81 (c40cf14), after 0001-0004.
+Reason: spawn_runner turned ANY ERROR_DIRECTORY from CreateProcessWithLogonW into the typed
+mapped_drive_cwd error ("C:\ is DRIVE_REMOTE ..."), whatever the drive was. A folder that was removed, or
+that the sandbox account may not enter, was reported to the person as a mapped drive. Now the post-check
+asks GetDriveTypeW: a remote drive is still mapped_drive_cwd (exit 16); anything else is cwd_unusable
+(exit 27), carrying the cwd, the HRESULT, whether the caller's own token sees the folder, and the
+drive type.
+
+diff --git a/src/cli.rs b/src/cli.rs
+index abc717b..40ba00e 100644
+--- a/src/cli.rs
++++ b/src/cli.rs
+@@ -269,7 +269,9 @@ enum Cmd {
+     /// build with this one's setup version; otherwise exits **15**.
+     /// Typed launch failures print one line of JSON
+     /// `{"code":…,"message":…}` to stderr and exit with a dedicated
+-    /// code: **16** `mapped_drive_cwd`, **18** `seclogon_disabled`
++    /// code: **16** `mapped_drive_cwd`, **27** `cwd_unusable` (seclogon turned the
++    /// cwd down on a drive that is not remote: the folder is gone, or the sandbox
++    /// account cannot enter it), **18** `seclogon_disabled`
+     /// (the Secondary Logon service is disabled or absent), **19**
+     /// `wfp_loopback_mismatch` (the installed loopback mode is not
+     /// the one `--allow-loopback`, or its absence, names; nothing is
+@@ -3060,17 +3062,37 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
+                     // 16 — distinct from the child's own exit
+                     // status. `?` propagates any other
+                     // spawn_runner error unchanged.
+-                    let m = e.downcast::<logon::MappedDriveCwd>()?;
++                    let e = match e.downcast::<logon::MappedDriveCwd>() {
++                        Ok(m) => {
++                            eprintln!(
++                                "{}",
++                                json!({
++                                    "code": "mapped_drive_cwd",
++                                    "drive": m.drive,
++                                    "message": m.to_string(),
++                                })
++                            );
++                            drop(per_exec_guard);
++                            std::process::exit(16);
++                        }
++                        Err(e) => e,
++                    };
++                    // A cwd seclogon turned down on a drive that is not remote: exit 27, the cwd, the
++                    // error, whether the caller sees the folder and the drive type.
++                    let c = e.downcast::<logon::CwdUnusable>()?;
+                     eprintln!(
+                         "{}",
+                         json!({
+-                            "code": "mapped_drive_cwd",
+-                            "drive": m.drive,
+-                            "message": m.to_string(),
++                            "code": "cwd_unusable",
++                            "cwd": c.cwd,
++                            "hresult": format!("0x{:08X}", c.hresult as u32),
++                            "exists": c.exists,
++                            "driveType": c.drive_type,
++                            "message": c.to_string(),
+                         })
+                     );
+                     drop(per_exec_guard);
+-                    std::process::exit(16);
++                    std::process::exit(27);
+                 }
+             };
+             // `cred` drops here → `SandboxCred::Drop` zeroes the
+diff --git a/src/logon.rs b/src/logon.rs
+index 95d9b54..729d02b 100644
+--- a/src/logon.rs
++++ b/src/logon.rs
+@@ -97,6 +97,49 @@ impl std::fmt::Display for MappedDriveCwd {
+ 
+ impl std::error::Error for MappedDriveCwd {}
+ 
++/// Typed error for [`spawn_runner`] when seclogon refused the working directory (`ERROR_DIRECTORY`) and
++/// the cwd's drive is NOT a network drive: the sandbox logon could not make this folder current. The
++/// usual reasons are that the folder is not there (removed, or renamed away), or that the sandbox account
++/// has no right to enter it or one of its parents (an ACL, a deny entry). It used to be reported as
++/// [`MappedDriveCwd`] whatever the drive was, which told a person with a local folder that their drive
++/// was remote.
++#[derive(Debug)]
++pub struct CwdUnusable {
++    /// The working directory as given.
++    pub cwd: String,
++    /// The HRESULT `CreateProcessWithLogonW` failed with.
++    pub hresult: i32,
++    /// Whether the caller's own token sees the cwd as a directory (`Some(false)`: it is not there, or not
++    /// a folder; `None`: it could not be told, e.g. access denied for the caller too).
++    pub exists: Option<bool>,
++    /// `GetDriveTypeW` of the cwd's root (`DRIVE_UNKNOWN` 0, `NO_ROOT_DIR` 1, `REMOVABLE` 2, `FIXED` 3,
++    /// `REMOTE` 4, `CDROM` 5, `RAMDISK` 6), or `None` when the cwd names no drive root.
++    pub drive_type: Option<u32>,
++}
++
++impl std::fmt::Display for CwdUnusable {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        write!(
++            f,
++            "the sandbox account cannot use {} as its working directory (error 0x{:08X}; {}; drive type {}). \
++             The folder may have been removed, or its permissions keep the sandbox account out.",
++            self.cwd,
++            self.hresult as u32,
++            match self.exists {
++                Some(true) => "the folder exists for the caller",
++                Some(false) => "the folder is not there for the caller",
++                None => "the caller could not tell whether the folder exists",
++            },
++            match self.drive_type {
++                Some(t) => t.to_string(),
++                None => "unknown".to_string(),
++            },
++        )
++    }
++}
++
++impl std::error::Error for CwdUnusable {}
++
+ /// `GetDriveTypeW` return value for a network drive. The `windows`
+ /// crate parks this constant under `Win32_System_WindowsProgramming`
+ /// (a grab-bag feature we don't otherwise need); the value is a
+@@ -565,12 +608,30 @@ pub fn spawn_runner(
+         // cwd under the sandbox logon (mapped drive / unreachable
+         // UNC share) — same typed error as the pre-check above,
+         // catching shapes it didn't classify.
++        //
++        // Only a drive that IS remote is the mapped-drive case; any other cwd seclogon turned down is
++        // [`CwdUnusable`], which says what the caller can see of it.
+         if e.code() == ERROR_DIRECTORY.to_hresult() {
+-            let drive = cwd
+-                .and_then(cwd_drive_root)
+-                .or_else(|| cwd.map(str::to_owned))
+-                .unwrap_or_else(|| "<unknown>".into());
+-            return Err(MappedDriveCwd { drive }.into());
++            let root = cwd.and_then(cwd_drive_root);
++            let drive_type = root
++                .as_ref()
++                .map(|r| unsafe { GetDriveTypeW(PCWSTR(wstr(r).as_ptr())) });
++            if let (Some(root), Some(DRIVE_REMOTE)) = (root, drive_type) {
++                return Err(MappedDriveCwd { drive: root }.into());
++            }
++            let given = cwd.unwrap_or("<unknown>").to_owned();
++            let exists = cwd.and_then(|c| match std::fs::metadata(c) {
++                Ok(m) => Some(m.is_dir()),
++                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Some(false),
++                Err(_) => None,
++            });
++            return Err(CwdUnusable {
++                cwd: given,
++                hresult: e.code().0,
++                exists,
++                drive_type,
++            }
++            .into());
+         }
+         let state = seclogon_state();
+         if logon_failure_is_seclogon(e.code() == ERROR_SERVICE_DISABLED.to_hresult(), state) {
