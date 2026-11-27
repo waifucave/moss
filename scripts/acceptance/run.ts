@@ -7504,7 +7504,8 @@ try {
   {
     const text = ["app.log.1", "app.log"].flatMap((f) => readLog(join(home, "logs", f)).split("\n")).filter((l) => !(/^\d{4}-\d\d-\d\dT/.test(l) && l.slice(0, 24) < runStartedAt)).join("\n");
     // The app prints every line to its process output whole; the file cuts a long one, so a cut line is judged by its whole copy there.
-    const whole = (() => { try { return readdirSync(logs); } catch { return [] as string[]; } })().filter((f) => f.endsWith(".log")).flatMap((f) => readLog(join(logs, f)).split("\n")).flatMap((l) => (l.startsWith("[moss-app] ") ? [l.slice("[moss-app] ".length)] : []));
+    // (Split on CRLF too: a Windows process output ends each line with \r, which cleanLogLine turns into a space the file's cut form lacks.)
+    const whole = (() => { try { return readdirSync(logs); } catch { return [] as string[]; } })().filter((f) => f.endsWith(".log")).flatMap((f) => readLog(join(logs, f)).split(/\r?\n/)).flatMap((l) => (l.startsWith("[moss-app] ") ? [l.slice("[moss-app] ".length)] : []));
     const stats: EvidenceStats = { cut: 0 };
     const unkept = unkeptEvidence(text, fileLine, whole, stats);
     if (unkept.length > 0) {
