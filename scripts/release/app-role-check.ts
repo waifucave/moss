@@ -5,17 +5,18 @@
 // of the image check: "verified image" for a root-owned package install, "unverified image" for a user-writable one), and
 // its host must say `host.ready`. And the negative: a script holding the home's app token is refused the app role.
 //
-//   bun scripts/release/app-role-check.ts --core <installed moss-core> --app <installed app exe> [--app …] --expect verified|unverified
+//   bun scripts/release/app-role-check.ts --core <installed moss-core> --app <installed app exe> [--app …] [--host <installed host exe>] --expect verified|unverified
 //
 // Linux runs it under xvfb-run and scripts/with-private-secret-service.sh (the apps draw windows; the engine's secrets go
 // to a private keyring). The engine keeps its own keychain service (a release refuses a test's).
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { hello } from "../acceptance/client";
 import { coreEndpoint, killTree } from "../acceptance/win";
 import { MOSS_PROTOCOL_VERSION } from "../../packages/protocol/src/index";
+import { USAGE_INERT_ENV } from "../../packages/core/src/usage/wiring";
 
 function arg(name: string): string[] {
   const out: string[] = [];
@@ -27,8 +28,14 @@ function arg(name: string): string[] {
 const core = arg("--core")[0];
 const apps = arg("--app");
 const expect = arg("--expect")[0];
+// The installed host's executable. No package installs the host's start yet (the engine starts it on Windows and Linux
+// through the task `\MOSS\moss-host` or the user unit `moss-host.service`, packages/core/src/host/world.ts, and neither
+// package installs one: the engine's log says "no task …" or "systemctl refused …"), so this script plays that task: it
+// starts the installed host itself, outside the engine's tree, as `<exe> --moss-program=host` on the same home, and its
+// connection goes through the same default check.
+const host = arg("--host")[0];
 if (core === undefined || apps.length === 0 || (expect !== "verified" && expect !== "unverified")) {
-  console.log("usage: bun scripts/release/app-role-check.ts --core <moss-core> --app <exe> [--app <exe>] --expect verified|unverified");
+  console.log("usage: bun scripts/release/app-role-check.ts --core <moss-core> --app <exe> [--app <exe>] [--host <exe>] --expect verified|unverified");
   process.exit(2);
 }
 
@@ -37,7 +44,8 @@ const home = realpathSync.native(mkdtempSync(join(tmpdir(), "moss-app-role-check
 // run 45988405527), on a disposable runner whose keychain is its own (Linux: the private keyring of
 // with-private-secret-service.sh; Windows: the runner's Credential Manager, gone with the runner).
 const { MOSS_KEYCHAIN_SERVICE: _test, ...inherited } = process.env as Record<string, string>;
-const env: Record<string, string> = { ...inherited, MOSS_HOME: home };
+// Usage-inert as every daemon outside the tests (test/usage/script-daemons.test.ts): no usage source of the runner's is read.
+const env: Record<string, string> = { ...inherited, ...USAGE_INERT_ENV, MOSS_HOME: home };
 const started: ChildProcess[] = [];
 const log = () => { try { return readFileSync(join(home, "logs", "daemon.log"), "utf8"); } catch { return ""; } };
 /** What each started process printed, and how it ended (said when a step fails). */
@@ -97,6 +105,21 @@ try {
     const branch = line.includes("verified image (root-owned install)") ? "verified" : line.includes("unverified image") ? "unverified" : "other";
     if (branch !== expect) throw new Error(`${app}: the image check took the ${branch} branch, expected ${expect}`);
     say(`${app}: the app role, by the "${branch}" branch`);
+  }
+  if (host !== undefined) {
+    const before = log().length;
+    const p = spawn(host, ["--moss-program=host"], { env, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
+    started.push(p);
+    watch(`${host} (the host)`, p);
+    say(`started the installed host as its task would: ${host} --moss-program=host`);
+    const line = await until(`${host}: the engine taking the host's connection`, 180_000, () => {
+      const fresh = log().slice(before);
+      const refusedLine = /\[moss\] an app connection was refused: .*/.exec(fresh)?.[0];
+      if (refusedLine !== undefined) throw new Error(`the host was refused: ${refusedLine}`);
+      // Its own line (an app's reconnect meanwhile says its own path).
+      return fresh.split("\n").find((l) => l.includes("[moss] app connection from ") && l.includes(basename(host)));
+    });
+    say(line);
   }
   const ready = await until("the host's host.ready", 180_000, () => /\[host\] ready: .*/.exec(log())?.[0]);
   say(`the host said host.ready: ${ready}`);

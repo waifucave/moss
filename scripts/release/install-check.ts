@@ -114,7 +114,7 @@ export function checkWin(dist: string, version: string): void {
   // it (a per-user install: the "unverified" branch, never verified on Windows), its host says host.ready, and a script with
   // the app token is refused (scripts/release/app-role-check.ts).
   const role = run([process.execPath, join(dirname(fileURLToPath(import.meta.url)), "app-role-check.ts"), "--core", join(dirs.code, "resources", "daemon", engineFile("win")),
-    "--app", join(dirs.moss, `${APPS.moss.product}.exe`), "--app", join(dirs.code, `${APPS.code.product}.exe`), "--expect", "unverified"]);
+    "--app", join(dirs.moss, `${APPS.moss.product}.exe`), "--app", join(dirs.code, `${APPS.code.product}.exe`), "--host", host, "--expect", "unverified"]);
   console.log(role.out);
   must("the installed apps get the app role through the engine's own check, its host says host.ready, a script with the token is refused", role.status === 0, role.out.split("\n").slice(-5).join(" | "));
   // Removing one app leaves the other working: MOSS first (MOSS Code stays), then MOSS Code. `_?=<dir>` makes the uninstaller

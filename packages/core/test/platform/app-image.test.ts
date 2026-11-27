@@ -8,7 +8,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import {
-  imageSeam, integrityRidOf, judgeLinuxImage, judgeWindowsImage as judgeWindowsOn, linuxFacts,MEDIUM_INTEGRITY, rootOwnedChain, windowsFacts, type AppImageFacts,
+  appImageCheck, imageSeam, integrityRidOf, judgeLinuxImage, judgeWindowsImage as judgeWindowsOn, linuxFacts,MEDIUM_INTEGRITY, rootOwnedChain, rootOwnedProblem, windowsFacts, type AppImageFacts,
 } from "../../src/platform/app-image";
 import type { PeerFacts } from "../../src/platform/caller-probe";
 import { MOSS_METHODS } from "@waifucave/moss-protocol";
@@ -78,6 +78,19 @@ describe("the Linux judge", () => {
     expect(rootOwnedChain("/opt/moss/moss-app", stat({ ...tree, "/opt": { uid: 0, mode: 0o40777 } }))).toBe(false);
     expect(rootOwnedChain("/opt/moss/moss-app", stat({ ...tree, "/opt/moss/moss-app": { uid: 0, mode: 0o100775 } }))).toBe(false);
     expect(rootOwnedChain("/opt/moss/moss-app", stat({ ...tree, "/opt": undefined as never }))).toBe(false);
+  });
+  test("why it failed, for the log: the first path on the chain, its owner and mode", () => {
+    const tree: Record<string, { uid: number; mode: number }> = { "/": { uid: 0, mode: 0o40755 }, "/opt": { uid: 0, mode: 0o40755 }, "/opt/moss": { uid: 0, mode: 0o40755 }, "/opt/moss/moss-app": { uid: 0, mode: 0o100755 } };
+    const stat = (t: typeof tree) => (p: string) => t[p] ?? null;
+    expect(rootOwnedProblem("/opt/moss/moss-app", stat(tree))).toBeUndefined();
+    expect(rootOwnedProblem("/opt/moss/moss-app", stat({ ...tree, "/opt/moss": { uid: 0, mode: 0o40775 } }))).toBe("/opt/moss: owner uid 0, mode 0775");
+    expect(rootOwnedProblem("/opt/moss/moss-app", stat({ ...tree, "/opt": undefined as never }))).toBe("/opt couldn't be read");
+  });
+  test("the engine's line names that path when an install at the packages' path comes out unverified", () => {
+    const lines: string[] = [];
+    const check = appImageCheck("linux", { log: (l) => lines.push(l), seam: undefined, facts: () => ({ image: "/opt/moss/moss-app", tracer: 0, stillThere: true, rootOwned: () => false, rootOwnedWhy: () => "/opt/moss: owner uid 0, mode 0775", hasAppAsar: () => true }) });
+    expect(check({ pid: 1, uid: 0 } as never)).toBe(true);
+    expect(lines).toEqual(["[moss] app connection from /opt/moss/moss-app: unverified image (a user-writable install: /opt/moss: owner uid 0, mode 0775)"]);
   });
 });
 

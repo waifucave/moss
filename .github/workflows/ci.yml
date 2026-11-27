@@ -612,7 +612,9 @@ jobs:
           MOSS_HOME="$(mktemp -d)" moss --version
           # The app role through the installed engine's own caller check (lane XC, platform/app-image.ts): each installed app gets it
           # by the "verified" branch (root-owned /opt), its host says host.ready, and a script with the app token is refused.
-          xvfb-run -a scripts/with-private-secret-service.sh bun scripts/release/app-role-check.ts --core /opt/moss/resources/daemon/moss-core --app /opt/moss/moss-app --app /opt/moss-code/moss-code --expect verified
+          # The chain the "verified" branch reads, as the package left it (owner, group, mode): said before the check.
+          for p in / /opt /opt/moss /opt/moss/moss-app /opt/moss/resources /opt/moss/resources/host /opt/moss/resources/host/moss-host /opt/moss-code /opt/moss-code/moss-code; do stat -c '%U:%G %a %n' "$p" || true; done
+          xvfb-run -a scripts/with-private-secret-service.sh bun scripts/release/app-role-check.ts --core /opt/moss/resources/daemon/moss-core --app /opt/moss/moss-app --app /opt/moss-code/moss-code --host /opt/moss/resources/host/moss-host --expect verified
           # Removing MOSS leaves MOSS Code, its `moss` command and its profile working.
           sudo apt-get remove -y -qq moss
           test ! -e /opt/moss/resources/daemon/install.json

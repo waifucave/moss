@@ -71,6 +71,8 @@ export interface AppImageFacts {
   integrity?: number | null;
   /** Linux: whether the image and every folder above it is root-owned and writable by no one else. */
   rootOwned?: (path: string) => boolean;
+  /** Linux: for the log only, why `rootOwned` said no (the first path on the chain that failed, its owner and mode). */
+  rootOwnedWhy?: (path: string) => string | undefined;
   /** Linux: whether `<dir>/resources/app.asar` is there (an Electron app laid out as ours). */
   hasAppAsar?: (dir: string) => boolean;
   /** Still the process the reads were about (the pidfd after the reads). */
@@ -117,11 +119,22 @@ function shown(p: string): string {
 }
 
 /** Root-owned and writable by no one else: the path and every folder above it. */
-export function rootOwnedChain(path: string, stat: (p: string) => { uid: number; mode: number } | null = (p) => { try { const s = lstatSync(p); return { uid: s.uid, mode: s.mode }; } catch { return null; } }): boolean {
+export function rootOwnedChain(path: string, stat: (p: string) => { uid: number; mode: number } | null = lstatOwner): boolean {
+  return rootOwnedProblem(path, stat) === undefined;
+}
+
+function lstatOwner(p: string): { uid: number; gid: number; mode: number } | null {
+  try { const s = lstatSync(p); return { uid: s.uid, gid: s.gid, mode: s.mode }; } catch { return null; }
+}
+
+/** Why `rootOwnedChain` fails, for the log: the first path on the chain that isn't root-owned or is writable by its
+ *  group or by others, with its owner and mode (nothing secret: what `ls -ld` shows). Undefined when it passes. */
+export function rootOwnedProblem(path: string, stat: (p: string) => { uid: number; gid?: number; mode: number } | null = lstatOwner): string | undefined {
   for (let at = path; ; at = posix.dirname(at)) {
     const s = stat(at);
-    if (s === null || s.uid !== 0 || (s.mode & 0o022) !== 0) return false;
-    if (at === posix.dirname(at)) return true;
+    if (s === null) return `${shown(at)} couldn't be read`;
+    if (s.uid !== 0 || (s.mode & 0o022) !== 0) return `${shown(at)}: owner uid ${s.uid}${s.gid !== undefined ? `, group gid ${s.gid}` : ""}, mode ${(s.mode & 0o7777).toString(8).padStart(4, "0")}`;
+    if (at === posix.dirname(at)) return undefined;
   }
 }
 
@@ -138,7 +151,7 @@ export function linuxFacts(peer: PeerFacts): AppImageFacts {
   } catch { /* unreadable: refused */ }
   const stillThere = peer.handle === undefined ? (() => { try { process.kill(pid, 0); return true; } catch { return false; } })() : peer.handle.alive();
   return {
-    image, tracer, stillThere, rootOwned: (p) => rootOwnedChain(p),
+    image, tracer, stillThere, rootOwned: (p) => rootOwnedChain(p), rootOwnedWhy: (p) => rootOwnedProblem(p),
     hasAppAsar: (d) => { try { return lstatSync(join(d, "resources", "app.asar")).isFile(); } catch { return false; } },
   };
 }
@@ -200,7 +213,9 @@ export function appImageCheck(os: "linux" | "win32", o: { log?: (line: string) =
     const facts = (o.facts ?? (os === "linux" ? linuxFacts : windowsFacts))(peer);
     const v = os === "linux" ? judgeLinuxImage(facts, seam) : judgeWindowsImage(facts, o.localAppData ?? process.env.LOCALAPPDATA, seam);
     if (!v.ok) { o.log?.(`[moss] an app connection was refused: ${v.why}`); return false; }
-    o.log?.(`[moss] app connection from ${shown(v.image)}: ${v.seam !== undefined ? `a dev or test build's image (${v.seam})` : v.verified ? "verified image (root-owned install)" : "unverified image (a user-writable install)"}`);
+    // An install at the packages' own path that still came out unverified says which path on its chain failed.
+    const why = os === "linux" && v.seam === undefined && !v.verified && (LINUX_INSTALLED as readonly string[]).includes(v.image) ? facts.rootOwnedWhy?.(v.image) : undefined;
+    o.log?.(`[moss] app connection from ${shown(v.image)}: ${v.seam !== undefined ? `a dev or test build's image (${v.seam})` : v.verified ? "verified image (root-owned install)" : `unverified image (a user-writable install${why !== undefined ? `: ${why}` : ""})`}`);
     return true;
   };
 }
