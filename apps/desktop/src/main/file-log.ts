@@ -70,7 +70,7 @@ export const KEEP: RegExp[] = [
   kp(String.raw`send: refused \((?:not a place the user's words go|MOSS Code isn't running|the frame reported no user activation)\)(?: \(\d{1,6} like it left out\))?`),
   kp(String.raw`overlap: (?:the OS window list wasn't read for a press \((?:no window list here|no window id)\); the in-page check stands alone|the OS window list read for a press \(${N} above, ${N} of this program's own(?:; headless: its own only)?(?:; no point: a keyboard press)?\))`),
   // sealed pages and cards
-  kp(String.raw`sealed: answer refused \((?:the button was covered or not shown at the press|the page's visibility report didn't come in time|no visibility report came with the press|a press from a window that has closed|a press (?:on the island|in the window) for a card the router placed (?:on the island|in the window)|no answer key|no client|no option|computer use acting)\)`),
+  kp(String.raw`sealed: answer refused \((?:the button was covered or not shown at the press|the page's visibility report didn't come in time|no visibility report came with the press(?: \((?:no press|another press|another page load|already used|over the bound|no report)\))?|a press from a window that has closed|a press (?:on the island|in the window) for a card the router placed (?:on the island|in the window)|no answer key|no client|no option|computer use acting)\)`),
   kp(String.raw`sealed: refusing a sealed load \((?:bad host|bad token|no channel)\)`),
   kp(String.raw`card: ${N} card\(s\) resolved while the connection was down, dropped`),
   // layers and plugins' parts (a plugin or mount is named by its id, one token)

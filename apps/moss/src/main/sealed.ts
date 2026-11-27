@@ -21,6 +21,7 @@
 import { randomBytes } from "node:crypto";
 import { CHILDREN_OWN_CARD_ONLY, checkTicks, programCardAnswerSigningInput, type Program } from "@waifucave/moss-protocol";
 import type { TokenValue } from "@waifucave/moss-plugin-sdk";
+import { PRESS_BOUND_MS, PressBound, type FreshVerdict, type NoneWhy, type PressRef } from "./press-bound";
 
 /** What the app hears of a card: the whole sealed one (`card_requested`, or `card.get`'s re-read for a resolved one a
  *  plugin still shows). The store keeps `hash` and the fields verbatim from the core; nothing else ships anywhere. */
@@ -106,9 +107,10 @@ const SERVE_TTL_MS = 60_000;
  *  (a reader takes their time, S5: the serve's ttl is the scheme's alone). */
 const ANSWER_TTL_MS = 60 * 60_000;
 
-/** How long after a press's fresh visibility report the answer that rides on it may still be taken (the page sends the report, then
- *  the answer at once; this is only the slack for a starved main process). */
-export const FRESH_MAX_AGE_MS = 1_500;
+/** How long after the page said "received" for a press its answer may still be taken, on that press's own fresh report (press-bound.ts: the
+ *  report is bound to the press by its number, so it is never older than its press and never another's; the old clock from the report to the
+ *  answer, 1,500 ms, lost a press whose page was slow between the two). */
+export const FRESH_MAX_AGE_MS = PRESS_BOUND_MS;
 
 /** The app's own fallback card's channel element: the page answers with the user's pick, checked like any button's. */
 export const OWN_ELEMENT = "own";
@@ -130,9 +132,12 @@ export class SealedFrames {
   /** The frame tokens whose page has reported itself visible (IOv2), for the fallback rule (§5.5: only show the
    *  fallback when no plugin has both buttons visible within 2 s). */
   private readonly visible = new Set<string>();
-  private readonly fresh = new Map<string, { seen: boolean; at: number }>();
+  /** Each sealed page's numbered press: "received", the press's own fresh report, one answer (press-bound.ts). */
+  private readonly pressBound: PressBound;
 
-  constructor(private readonly program: Program = "moss", private readonly now: () => number = Date.now) {}
+  constructor(private readonly program: Program = "moss", private readonly now: () => number = Date.now) {
+    this.pressBound = new PressBound(now);
+  }
 
   /** The store takes the app's incoming cards off the core events and the re-reads. */
   fromCore(card: unknown): void {
@@ -244,20 +249,28 @@ export class SealedFrames {
     else this.visible.delete(token);
   }
 
-  /** The report a press asked for (a new observer the page made at the press): whether the button showed whole and uncovered
-   *  right then. One per press: `takeFresh` spends it, and one older than FRESH_MAX_AGE_MS counts for nothing. */
-  noteFresh(token: string, seen: boolean): void {
-    if (this.fresh.size > 256) this.fresh.delete(this.fresh.keys().next().value!);
-    this.fresh.set(token, { seen, at: this.now() });
+  /** The page said "received" for a press (its number in its load, press-bound.ts). Only a number above the last of this token's page, in the
+   *  load the token's first press named, opens a press. */
+  notePress(token: string, press: PressRef): "ok" | "another page load" | "not newer" {
+    return this.pressBound.note(token, press);
   }
 
-  /** Spends the press's fresh report: "ok" if it said the button showed uncovered, "covered" if it said otherwise (or the
-   *  page's limit ran out), "none" if no report came with the press or it is stale. */
-  takeFresh(token: string): "ok" | "covered" | "none" {
-    const f = this.fresh.get(token);
-    this.fresh.delete(token);
-    if (f === undefined || this.now() - f.at > FRESH_MAX_AGE_MS) return "none";
-    return f.seen ? "ok" : "covered";
+  /** The report a press asked for (a new observer the page made at the press): whether the button showed whole and uncovered right
+   *  then. It is the press's own (same number, after its "received"), one per press, and `takeFresh` spends it with the answer. */
+  noteFresh(token: string, press: PressRef, seen: boolean, late = false): "ok" | "no press" | "another press" | "another page load" | "second report" | "already used" {
+    return this.pressBound.report(token, press, seen, late);
+  }
+
+  /** Spends the press's fresh report for its answer: "ok" if it said the button showed uncovered, "covered" if it said otherwise (or the
+   *  page's limit ran out), "none" if the answer has no report of its own press to ride on (no press, another press or load, spent,
+   *  over the bound, no report: `noneWhy` says which). */
+  takeFresh(token: string, press: PressRef | undefined): FreshVerdict {
+    return this.pressBound.take(token, press);
+  }
+
+  /** Why the last `takeFresh` that said "none" said it. */
+  get noneWhy(): NoneWhy | undefined {
+    return this.pressBound.lastWhy;
   }
 
   /** Whether a frame's page has reported itself visible (its IOv2 verdict): what the smoke run waits for before it

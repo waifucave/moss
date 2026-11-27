@@ -116,10 +116,10 @@ if (where === "moss-app:" && location.host === "app" && window.top === window) {
   // through MOSS's main process's own press path (press.ts), signed there with MOSS's answer key.
   const token = new URLSearchParams(location.search).get("token") ?? "";
   contextBridge.exposeInMainWorld("mossSealed", {
-    answer: (option: string, children?: readonly string[]) => ipcRenderer.invoke("moss:sealed-answer", { token, option, children }),
+    answer: (option: string, children?: readonly string[], press?: unknown) => ipcRenderer.invoke("moss:sealed-answer", { token, option, children, press }),
     visible: (visible: boolean) => void ipcRenderer.send("moss:sealed-visible", { token, visible }),
-    fresh: (seen: boolean, ms: number) => void ipcRenderer.send("moss:sealed-fresh", { token, seen, ms }),
-    pressed: (what: string) => void ipcRenderer.send("moss:sealed-press", { token, what }),
+    fresh: (seen: boolean, ms: number, press?: unknown) => void ipcRenderer.send("moss:sealed-fresh", { token, seen, ms, press }),
+    pressed: (what: string, press?: unknown) => void ipcRenderer.send("moss:sealed-press", { token, what, press }),
     size: (height: number) => void ipcRenderer.send("moss:sealed-size", { token, height }),
     review: (peek?: boolean) => ipcRenderer.invoke("moss:sealed-review", { token, ...(peek === true ? { peek: true } : {}) }),
   });

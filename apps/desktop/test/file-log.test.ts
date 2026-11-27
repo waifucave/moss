@@ -125,6 +125,8 @@ const KEPT: string[] = [
   "overlap: the OS window list wasn't read for a press (no window id); the in-page check stands alone",
   "overlap: the OS window list read for a press (2 above, 1 of this program's own; headless: its own only; no point: a keyboard press)",
   "sealed: answer refused (the button was covered or not shown at the press)",
+  "sealed: answer refused (no visibility report came with the press (another press))",
+  "sealed: answer refused (no visibility report came with the press)",
   "sealed: answer refused (a press on the island for a card the router placed in the window)",
   "sealed: answer refused (a press from a window that has closed)",
   "sealed: answer refused (computer use acting)",

@@ -28,6 +28,7 @@
 // XTEST). Neither app has it yet; it is not built here either (the report says so).
 import { pressMatchesPlacement, type CardPlacement } from "@waifucave/moss-protocol";
 import type { SealedFrames, AnswerSigner } from "./sealed";
+import type { PressRef } from "./press-bound";
 import { STALL_CREDIT_MAX_MS } from "@waifucave/moss-app-release/stall-watch";
 import type { KeyState } from "./answer-key";
 
@@ -285,7 +286,7 @@ export function refusalWords(r: { reason: string; covered?: true }): string {
 }
 
 /** One press's answer, from the sealed frame's own channel (checks 2 to 6; check 1 is the IPC handler's). */
-export async function answerPress(d: PressDeps, a: { token: string; option: string | undefined; senderKey: string; frame: string; windowId: number; children?: readonly string[] }): Promise<PressResult> {
+export async function answerPress(d: PressDeps, a: { token: string; option: string | undefined; senderKey: string; frame: string; windowId: number; children?: readonly string[]; press?: PressRef }): Promise<PressResult> {
   const refuse = (why: string, say = why, covered = false): PressResult => {
     d.log(`sealed: answer refused (${why})`);
     return { accepted: false, reason: say, ...(covered ? { covered: true as const } : {}) };
@@ -293,8 +294,8 @@ export async function answerPress(d: PressDeps, a: { token: string; option: stri
   const cardId = d.sealed.cardOf(a.token);
   if (cardId === undefined) return refuse("no such sealed button");
   // 2. The fresh reading, spent first so a refused answer spends it.
-  const fresh = d.sealed.takeFresh(a.token);
-  if (fresh !== "ok") return refuse(fresh === "covered" ? "the button was covered or not shown at the press" : "no visibility reading came with the press", fresh === "covered" ? "the button wasn't fully showing when it was pressed" : "the press wasn't checked just now");
+  const fresh = d.sealed.takeFresh(a.token, a.press);
+  if (fresh !== "ok") return refuse(fresh === "covered" ? "the button was covered or not shown at the press" : `no visibility reading came with the press${d.sealed.noneWhy !== undefined ? ` (${d.sealed.noneWhy})` : ""}`, fresh === "covered" ? "the button wasn't fully showing when it was pressed" : "the press wasn't checked just now");
   // 3. The press record.
   const how = d.record.take(a.windowId, a.frame);
   if (how === undefined) return refuse(`MOSS saw no press of its own land in this button (${d.record.explainTake(a.windowId, a.frame)})`, "the press didn't come to this button");

@@ -54,7 +54,7 @@ describe("a sealed button's page", () => {
     expect(p).toContain('data-option="allow_once"');
     expect(p).toContain('data-kind="approve"');
     expect(p).toContain(">Allow</span>");
-    expect(p).toContain("b.answer(option)");
+    expect(p).toContain("b.answer(option, undefined, press)");
         expect(p).toContain('data-token="${TOKEN}"'.replace("${TOKEN}", TOKEN));
   });
 
@@ -106,7 +106,7 @@ describe("the app's own fallback card page", () => {
     expect(p).toContain('data-option="always"');
     expect(p).toContain(">Always allow</span>");
     expect(p).toContain('data-token="' + TOKEN + '"');
-    expect(p).toContain("b.answer(b2.dataset.option)");
+    expect(p).toContain("b.answer(b2.dataset.option, undefined, press)");
   });
 
   test("the page's inline script parses: plain script alone, never the author's types (a `as` or `: string` in it kills the page's own listeners at parse)", () => {
@@ -175,7 +175,7 @@ describe("every press a sealed page sees is told to the app, in one word of a fi
     const words = new Set(said(button));
     for (const w of ["received", "untrusted", "answering", "not-visible", "opening", "settling"]) expect(words.has(w)).toBe(true);
     for (const w of words) expect(SEALED_PRESS_WORDS).toContain(w);
-    expect(button).toContain("b.pressed?.(w)");
+    expect(button).toContain("b.pressed?.(w, press)");
   });
   test("the fallback card's page says it too", () => {
     const own = ownCardPage({ cardId: "card_x", token: TOKEN, origin: "x", issuedAt: 1, expiresAt: null, fields: {}, options: [{ id: "allow_once", kind: "approve", label: { type: "text", text: "Allow" } }] } as never);

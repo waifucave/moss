@@ -34,6 +34,7 @@ import { buttonAt, inWindow, MISS_BOUND_MS, MissWatch, type Box } from "./sealed
 import { watchSealedDraw, type RedrawDeps } from "./sealed-redraw";
 import { coverOfPress, loadWindowList, windowIdOfMediaSource, type WindowList } from "./overlap";
 import { OWN_ELEMENT, SealedFrames } from "./sealed";
+import { parsePressRef } from "./press-bound";
 import { FRESH_LIMIT_MS, ownCardPage } from "./sealed-pages";
 import { alwaysSentence, summarize as summarizeCard } from "./card-summary";
 import { isTalkKey, Talk } from "./voice";
@@ -1058,7 +1059,7 @@ function wireSealed(): void {
     const f = frameKey(event.senderFrame);
     if (w !== null && f !== undefined) record.frameSaw(w.id, f);
   });
-  ipcMain.handle("moss:sealed-answer", (event, a: { token?: unknown; option?: unknown; children?: unknown }) => {
+  ipcMain.handle("moss:sealed-answer", (event, a: { token?: unknown; option?: unknown; children?: unknown; press?: unknown }) => {
     // The binding is the answer's own (the sender's parent frame), checked in the store; here the sender and its token.
     const f = event.senderFrame;
     const w = mainWindow;
@@ -1067,6 +1068,7 @@ function wireSealed(): void {
     if (t === undefined || new URL(f.url).searchParams.get("token") !== t) throw new Error("bad sealed answer");
     const key = f.parent !== null && !f.parent.detached ? `p:${f.parent.processId}:${f.parent.routingId}` : `m:${f.processId}:${f.routingId}`;
     const children = Array.isArray(a?.children) && a.children.every((c) => typeof c === "string") ? a.children as string[] : undefined;
+    const press = parsePressRef(a?.press);
     const cardId = sealed.cardOf(t);
     return answerPress({
       sealed, record, log,
@@ -1081,7 +1083,7 @@ function wireSealed(): void {
         if (client === undefined) return { accepted: false, reason: "MOSS isn't connected to its engine" };
         return client.request<{ accepted: boolean; reason?: string }>("card.answer", x, 15_000);
       },
-    }, { token: t, option: str(a?.option, 64), senderKey: key, frame: `${f.processId}:${f.routingId}`, windowId: w.id, ...(children !== undefined ? { children } : {}) }).then((r) => {
+    }, { token: t, option: str(a?.option, 64), senderKey: key, frame: `${f.processId}:${f.routingId}`, windowId: w.id, ...(children !== undefined ? { children } : {}), ...(press !== undefined ? { press } : {}) }).then((r) => {
       // Why a press was refused, in plain words, beside the card in MOSS's own window (the sealed page shows only that it
       // was refused; its own line is lane RT's): what the engine said, or what covers the button and what to do.
       if (!r.accepted && cardId !== undefined) mainWindow?.webContents.send("moss:card-said", cardId, refusalWords(r));
@@ -1098,17 +1100,20 @@ function wireSealed(): void {
       if (sealedEverSeen.size > 512) sealedEverSeen.delete(sealedEverSeen.values().next().value!);
     }
   });
-  ipcMain.on("moss:sealed-fresh", (event, a: { token?: unknown; seen?: unknown; ms?: unknown }) => {
+  ipcMain.on("moss:sealed-fresh", (event, a: { token?: unknown; seen?: unknown; ms?: unknown; press?: unknown }) => {
     const s = sealedSender(event, a?.token);
-    if (s === undefined || typeof a.seen !== "boolean") return;
-    sealed.noteFresh(s.token, a.seen);
+    const press = parsePressRef(a?.press);
+    if (s === undefined || typeof a.seen !== "boolean" || press === undefined) return;
+    sealed.noteFresh(s.token, press, a.seen);
     // How long the page took for the reading a press asked for, as the island's copy logs it: a limit that is too short shows in the log.
     const ms = typeof a.ms === "number" && Number.isFinite(a.ms) ? Math.max(0, Math.min(60_000, Math.round(a.ms))) : undefined;
     if (ms !== undefined) log(`sealed: press on ${sealed.cardOf(s.token) ?? "?"}: fresh report ${a.seen ? "uncovered" : ms >= FRESH_LIMIT_MS ? "none in time" : "covered"} after ${ms} ms`);
   });
-  ipcMain.on("moss:sealed-press", (event, a: { token?: unknown; what?: unknown }) => {
+  ipcMain.on("moss:sealed-press", (event, a: { token?: unknown; what?: unknown; press?: unknown }) => {
     const s = sealedSender(event, a?.token);
     if (s === undefined || typeof a.what !== "string") return;
+    // The page's "received" opens the numbered press its report and its answer must carry (press-bound.ts).
+    if (a.what === "received") { const press = parsePressRef(a.press); if (press !== undefined) sealed.notePress(s.token, press); }
     // A sealed page heard the press: it isn't a missed one (sealed-miss.ts).
     missWatch.heard(s.windowId);
     log(`sealed: press on ${sealed.cardOf(s.token) ?? "?"}: ${a.what.slice(0, 20)}`);

@@ -86,7 +86,7 @@ async function rig(opts: { register?: boolean; surface?: "moss" | "code" } = {})
     e, client, sealed, engine, key, record, front, deps,
     press: (card, p = {}) => {
       const made = sealed.mint(card, OWN_ELEMENT, { parent: PARENT }, WIN)!;
-      if (p.fresh !== "none") sealed.noteFresh(made.token, p.fresh ?? true);
+      if (p.fresh !== "none") press1(sealed, made.token, p.fresh ?? true);
       if (p.pressed !== false) {
         record.mouseDown(WIN);
         record.frameSaw(WIN, p.frame ?? FRAME);
@@ -96,7 +96,12 @@ async function rig(opts: { register?: boolean; surface?: "moss" | "code" } = {})
   };
 }
 
-const go = (r: Rig, token: string, option = "allow_once", frame = FRAME) => answerPress(r.deps, { token, option, senderKey: SENDER, frame, windowId: WIN });
+// A press as the page numbers it (press-bound.ts): the store hears "received" for it, then its own report, and its answer carries it.
+const LOAD = "a1b2c3d4e5f60718293a4b5c";
+const ref = (n: number) => ({ load: LOAD, n });
+const P1 = ref(1);
+const press1 = (sealed: SealedFrames, token: string, seen = true): void => { sealed.notePress(token, P1); sealed.noteFresh(token, P1, seen); };
+const go = (r: Rig, token: string, option = "allow_once", frame = FRAME, press = P1) => answerPress(r.deps, { token, option, senderKey: SENDER, frame, windowId: WIN, press });
 
 describe("MOSS's answer key", () => {
   test("registers as the moss program, proved by its own signature", async () => {
@@ -147,8 +152,10 @@ describe("a press on a card MOSS draws", () => {
     r.e.setActing(true);
     expect(await go(r, token)).toMatchObject({ accepted: false, reason: "computer use is acting right now" });
     r.e.setActing(false);
-    r.sealed.noteFresh(token, true);
-    expect(await go(r, token)).toMatchObject({ accepted: false, reason: "the press didn't come to this button" });
+    // A second press on the same token (number 2) with its own report: the first press's record was spent.
+    r.sealed.notePress(token, ref(2));
+    r.sealed.noteFresh(token, ref(2), true);
+    expect(await go(r, token, "allow_once", FRAME, ref(2))).toMatchObject({ accepted: false, reason: "the press didn't come to this button" });
   });
 
   test("refused when MOSS's window isn't in front, or the router placed the card elsewhere", async () => {
@@ -166,7 +173,7 @@ describe("a press on a card MOSS draws", () => {
     const lines: string[] = [];
     r.e.setActing(true);
     const token = r.press("card_juniper_book");
-    expect(await answerPress({ ...r.deps, log: (l) => lines.push(l) }, { token, option: "allow_once", senderKey: SENDER, frame: FRAME, windowId: WIN })).toEqual({ accepted: false, reason: "computer use is acting right now" });
+    expect(await answerPress({ ...r.deps, log: (l) => lines.push(l) }, { token, option: "allow_once", senderKey: SENDER, frame: FRAME, windowId: WIN, press: P1 })).toEqual({ accepted: false, reason: "computer use is acting right now" });
     expect(lines.some((l) => l.includes("the engine refused the answer (computer use is acting right now)"))).toBe(true);
     // The card waits on, and the next press once it stops answers it.
     r.e.setActing(false);
@@ -179,10 +186,10 @@ describe("a press on a card MOSS draws", () => {
     const seen: { x: number; y: number }[] = [];
     const cover = (_w: number, point: { x: number; y: number } | undefined) => { if (point !== undefined) seen.push(point); return point === undefined ? undefined : "another MOSS program's window (layer 3)"; };
     const token = r.sealed.mint("card_juniper_book", OWN_ELEMENT, { parent: PARENT }, WIN)!.token;
-    r.sealed.noteFresh(token, true);
+    press1(r.sealed, token);
     r.record.mouseDown(WIN, { x: 40, y: 60 });
     r.record.frameSaw(WIN, FRAME);
-    const covered = await answerPress({ ...r.deps, cover }, { token, option: "allow_once", senderKey: SENDER, frame: FRAME, windowId: WIN });
+    const covered = await answerPress({ ...r.deps, cover }, { token, option: "allow_once", senderKey: SENDER, frame: FRAME, windowId: WIN, press: P1 });
     expect(covered).toEqual({ accepted: false, reason: "another MOSS window lies over the button: move it away and press again", covered: true });
     // What the person reads beside the card: what covers the button and what to do.
     if (covered.accepted) throw new Error("taken");
@@ -192,9 +199,9 @@ describe("a press on a card MOSS draws", () => {
     expect(r.e.answered()).toEqual([]);
     // A key press: no point, so nothing over a point to find; it answers.
     const keyed = r.sealed.mint("card_juniper_book", OWN_ELEMENT, { parent: PARENT }, WIN)!.token;
-    r.sealed.noteFresh(keyed, true);
+    press1(r.sealed, keyed);
     r.record.keyDown(WIN, FRAME);
-    expect(await answerPress({ ...r.deps, cover }, { token: keyed, option: "allow_once", senderKey: SENDER, frame: FRAME, windowId: WIN })).toEqual({ accepted: true });
+    expect(await answerPress({ ...r.deps, cover }, { token: keyed, option: "allow_once", senderKey: SENDER, frame: FRAME, windowId: WIN, press: P1 })).toEqual({ accepted: true });
   });
 
   test("refused while MOSS's key isn't registered", async () => {
@@ -205,7 +212,7 @@ describe("a press on a card MOSS draws", () => {
   test("a sender on another binding answers nothing", async () => {
     const r = await rig();
     const token = r.press("card_juniper_book");
-    expect(await answerPress(r.deps, { token, option: "allow_once", senderKey: "p:9:9", frame: FRAME, windowId: WIN })).toMatchObject({ accepted: false, reason: "no such sealed button" });
+    expect(await answerPress(r.deps, { token, option: "allow_once", senderKey: "p:9:9", frame: FRAME, windowId: WIN, press: P1 })).toMatchObject({ accepted: false, reason: "no such sealed button" });
   });
 
   test("the engine refuses an answer signed for another program", async () => {

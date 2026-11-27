@@ -53,6 +53,7 @@ import { LAYER_CALL_MAX, LayerLinks } from "./layer-links";
 import { placeWindow, TitleDrag } from "./ui/window-drag";
 import { KeyLog, PasteModes, keyBytes, preparePaste } from "./terminal-input";
 import { OWN_ELEMENT, SealedFrames } from "./sealed";
+import type { PressRef } from "./press-bound";
 import { BrowserAreaFrames, isBrowserEvent, ViewBindings } from "./ui/browser-calls";
 import { FRESH_LIMIT_MS, NOT_CHECKED_REASON, NOT_SHOWN_REASON, ownCardPage, pinVisible } from "./sealed-pages";
 import { translate } from "@waifucave/moss-plugin-sdk/ui/bridge";
@@ -639,13 +640,13 @@ async function ready(): Promise<void> {
     // the hour it stood visible), and here the app signs with the answer key over the card's id and hash and takes the
     // core's answer. The computer-use gate runs here in the main process, on both this button path and the fallback
     // (B3): fail closed — anything the core can't answer about it, the answer is refused.
-    sealedAnswer: async (token, option, senderKey, children) => {
+    sealedAnswer: async (token, option, senderKey, children, press) => {
       // A press counts only if the visibility report that FOLLOWS it (a new observer the page made at the press) says the button
       // showed whole and uncovered: a cover drawn a moment before the press is in that report, while the page's last timer-driven
       // verdict (up to ~200 ms old and longer when the renderer is starved) is not. Taken first, so a refused answer spends it.
-      const fresh = sealed.takeFresh(token);
+      const fresh = sealed.takeFresh(token, press);
       if (fresh !== "ok") {
-        log(`sealed: answer refused (${fresh === "covered" ? "the button was covered or not shown at the press" : fresh === "late" ? "the page's visibility report didn't come in time" : "no visibility report came with the press"})`);
+        log(`sealed: answer refused (${fresh === "covered" ? "the button was covered or not shown at the press" : fresh === "late" ? "the page's visibility report didn't come in time" : `no visibility report came with the press${sealed.noneWhy !== undefined ? ` (${sealed.noneWhy})` : ""}`})`);
         // Most often the button wasn't laid out yet (it had only just been drawn): nothing is wrong with it, and the page says to
         // press again (`again`), never that the answer failed.
         return { accepted: false, again: true, reason: fresh === "covered" ? NOT_SHOWN_REASON : NOT_CHECKED_REASON };
@@ -759,19 +760,21 @@ async function ready(): Promise<void> {
       }
     },
     // The report a press asked for: logged with how long the page took to get it, so a limit that is too short shows in the log.
-    sealedFresh: (token: string, seen: boolean, ms: number) => {
+    sealedFresh: (token: string, seen: boolean, ms: number, press: PressRef) => {
       // A test build can drop the report, to prove an answer with no report refuses (never in a packaged app).
       if (SMOKE_DROP_FRESH && !app.isPackaged) return;
       // No reading within the page's limit is "late" (the page was too busy to read the button), never "covered".
-      sealed.noteFresh(token, seen, !seen && ms >= FRESH_LIMIT_MS);
+      sealed.noteFresh(token, press, seen, !seen && ms >= FRESH_LIMIT_MS);
       const cardId = sealed.cardOf(token);
       if (cardId === undefined) return;
       log(`sealed: press on ${cardId} ${sealed.elementOf(token) ?? "?"} in ${surfaceName(sealed.windowOf(token))}: fresh report ${seen ? "uncovered" : ms >= FRESH_LIMIT_MS ? "none in time" : "covered"} after ${ms} ms`);
     },
     // A press the sealed page saw (a word, never a text): every one is in the log with its card, the surface and what came of it.
-    sealedPress: (token: string, what: string) => {
+    sealedPress: (token: string, what: string, press?: PressRef) => {
       const cardId = sealed.cardOf(token);
       if (cardId === undefined) return;
+      // The page's "received" opens the numbered press its report and its answer must carry (press-bound.ts).
+      if (what === "received" && press !== undefined) sealed.notePress(token, press);
       // A sealed page heard the press: it isn't a missed one (sealed-miss.ts).
       const pressedIn = sealed.windowOf(token);
       if (pressedIn !== undefined) missWatch.heard(pressedIn);

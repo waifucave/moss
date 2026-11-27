@@ -24,6 +24,7 @@ import { NAMED_EVENTS, NAMED_METHODS, type IpcStats } from "./ipc-stats";
 import { isComponentCall } from "@waifucave/moss-plugin-sdk";
 import type { AppNote } from "./web-views";
 import { mayPlaceAppView } from "./app-page";
+import { parsePressRef, type PressRef } from "../press-bound";
 
 /** Registers the app's schemes as standard and secure origins, before the app is ready. Service workers and
  *  `bypassCSP` are never granted. */
@@ -453,15 +454,15 @@ export interface IpcHooks {
   /** A sealed button's answer: the app signs it with the answer key over the frame's own channel (§5.5; E-M3), the
    *  computer-use gate first, in the main process (B3). `senderKey` is the sender frame's own key, checked against the
    *  mint's binding (B4). */
-  sealedAnswer(token: string, option: string | undefined, senderKey: string, children?: readonly string[]): Promise<{ accepted: boolean; reason?: string; key?: "changed" | "fault"; again?: true; covered?: "this" | "moss" | "code" | "host" | "ours" }>;
+  sealedAnswer(token: string, option: string | undefined, senderKey: string, children?: readonly string[], press?: PressRef): Promise<{ accepted: boolean; reason?: string; key?: "changed" | "fault"; again?: true; covered?: "this" | "moss" | "code" | "host" | "ours" }>;
   /** A sealed frame's page reports its own visibility (IOv2), so the main process can disarm the fallback once all of
    *  a card's buttons show (§5.5's fallback rule). Checked like the answer: the sender must be the sealed frame its
    *  token was served to. */
   sealedVisible(token: string, visible: boolean): void;
   /** The report a press asked for: the button showed whole and uncovered at the press (`seen`), after `ms`. */
-  sealedFresh(token: string, seen: boolean, ms: number): void;
+  sealedFresh(token: string, seen: boolean, ms: number, press: PressRef): void;
   /** A press the sealed page saw and what it did with it (one of `SEALED_PRESS_WORDS`). */
-  sealedPress(token: string, what: string): void;
+  sealedPress(token: string, what: string, press?: PressRef): void;
   /** The app's own card page says how tall it is, so its window fits it (a number, nothing else). */
   sealedSize(token: string, height: number): void;
   /** The app's own card page asks for its card's Review (`plugin.review`): only that page, on its own token. */
@@ -997,7 +998,7 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
       const key = f.parent !== null && !f.parent.detached
         ? `p:${f.parent.processId}:${f.parent.routingId}`
         : `m:${f.processId}:${f.routingId}`;
-      return hooks.sealedAnswer(token, option, key, ch);
+      return hooks.sealedAnswer(token, option, key, ch, parsePressRef(a.press));
     } catch (err) {
       if (err instanceof LayerError) log(`sealed: answer refused at handler (${err.message})`);
       throw err;
@@ -1039,7 +1040,9 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
       : `m:${f.processId}:${f.routingId}`;
     const bound = runtime.boundOf(token);
     if (bound === undefined || bound !== key) throw new LayerError("bad sealed report");
-    return hooks.sealedFresh(token, seen, ms);
+    const press = parsePressRef(a.press);
+    if (press === undefined) throw new LayerError("bad sealed report");
+    return hooks.sealedFresh(token, seen, ms, press);
   });
   // A press the sealed page saw, in one word of a fixed set: logged with the card's id, so a press that did nothing says why.
   // Checked like the visibility report: the sender is the sealed frame its token was served to, on the channel the mint bound.
@@ -1053,7 +1056,7 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
     if (urlToken === null || urlToken !== token) return;
     const key = f.parent !== null && !f.parent.detached ? `p:${f.parent.processId}:${f.parent.routingId}` : `m:${f.processId}:${f.routingId}`;
     if (runtime.boundOf(token) !== key) return;
-    hooks.sealedPress(token, what);
+    hooks.sealedPress(token, what, what === "received" ? parsePressRef(a.press) : undefined);
   });
   // The app's own card page says how tall it is (a number): only its own window's main frame, on its own token, which the
   // mint bound to that frame, so a plugin's sealed frame can't size a card window.

@@ -28,8 +28,8 @@ export const pinVisible = { on: false };
  *  the button, which is "not ready", never "covered"). The reading is two (the first, then one FRESH_SETTLE_MS after the press), each a frame
  *  and an IntersectionObserver report; on the GitHub macOS runners 608 presses (three full CI runs) took 5 to 373 ms (median about 140, p95 about
  *  210; the longest were 373, 360 and 351), and 400 ms cost a real press its answer once (a `moss` row, run 44210352605). 800 ms is twice the longest of those
- *  and about 6 times the median, so a busy Mac rarely reaches it, and it stays well inside FRESH_MAX_AGE_MS (sealed.ts: 1,500 ms from the report
- *  to its answer). It decides only when a reading that has not come is given up: a reading that comes in the extra time passes the same two
+ *  and about 6 times the median, so a busy Mac rarely reaches it, and it stays well inside FRESH_MAX_AGE_MS (sealed.ts: 10 s from the press's "received"
+ *  to its answer, on the press's own numbered report: press-bound.ts). It decides only when a reading that has not come is given up: a reading that comes in the extra time passes the same two
  *  checks (both readings after the press, none between them that says the button didn't show), so a longer wait can only turn a "late" into a
  *  verdict: a cover that appears during it still spoils the press, and it never takes a press whose readings did not both say the button showed. The missed-press watch (sealed-miss.ts)
  *  counts to the page's `received` word, which comes at the press, so it doesn't move with this. */
@@ -50,7 +50,13 @@ export const FRESH_SETTLE_MS = 100;
  *  takes only presses the single reading also took. One report goes to the app (the verdict, with the time since the press) before
  *  the answer does, and the app takes the answer only on it; no verdict within the limit counts as not checked. */
 const FRESH_SCRIPT = `
-  const askFresh = (btn) => new Promise((resolve) => {
+  // Each TRUSTED press the page handles is numbered (one counter per page load, upward only; an untrusted event gets no number and so
+  // answers nothing): the number and the load's id ride the press's "received", its fresh report and its answer, and the app takes the
+  // answer only on the report that carries the same number (press-bound.ts).
+  const loadId = (() => { let h = ""; try { const a = new Uint8Array(12); crypto.getRandomValues(a); for (const x of a) h += (x < 16 ? "0" : "") + x.toString(16); } catch (e) { h = ""; } while (h.length < 24) h += Math.floor(Math.random() * 16).toString(16); return h; })();
+  let pressSeq = 0;
+  const numberPress = (e) => (e.isTrusted === true ? { load: loadId, n: ++pressSeq } : undefined);
+  const askFresh = (btn, press) => new Promise((resolve) => {
     const t0 = performance.now();
     let done = false;
     let o = null;
@@ -67,7 +73,7 @@ const FRESH_SCRIPT = `
       if (done) return;
       done = true;
       stop();
-      try { b.fresh?.(seen, Math.round(performance.now() - t0)); } catch (e) { /* going */ }
+      try { b.fresh?.(seen, Math.round(performance.now() - t0), press); } catch (e) { /* going */ }
       resolve(seen);
     };
     const onEntries = (entries) => {
@@ -86,7 +92,7 @@ const FRESH_SCRIPT = `
     };
     // No reading within the limit: the page was too busy to read the button (a renderer starved, layers loading again around the
     // press), which is "not ready", never "covered": it resolves null, and the press is said as "late".
-    timer = setTimeout(() => { if (done) return; done = true; stop(); try { b.fresh?.(false, Math.round(performance.now() - t0)); } catch (e) { /* going */ } resolve(null); }, ${FRESH_LIMIT_MS});
+    timer = setTimeout(() => { if (done) return; done = true; stop(); try { b.fresh?.(false, Math.round(performance.now() - t0), press); } catch (e) { /* going */ } resolve(null); }, ${FRESH_LIMIT_MS});
     // Observed afresh, its first report is a new reading. The page's own observer reads the button where there is one (no second
     // observer watches the same button); otherwise one of its own.
     const look = () => {
@@ -365,10 +371,11 @@ export function buttonPage(input: { cardId: string; token: string; option: strin
   });
   mark();
   // Each press is told to the app by one word (never a text), so a press that did nothing leaves a line in its log: why.
-  const say = (w) => { try { b.pressed?.(w); } catch (e) { /* going */ } };${FRESH_SCRIPT}
+  const say = (w, press) => { try { b.pressed?.(w, press); } catch (e) { /* going */ } };${FRESH_SCRIPT}
   window.addEventListener("pointerdown", (e) => {
     if (answering) { say("answering"); return; }
     if (!e.isTrusted) { say("untrusted"); return; }
+    const press = numberPress(e);
     const closest = e.target instanceof Element ? e.target.closest(".seal-button") : null;
     if (closest === null) return;
     if (!isReady()) {
@@ -383,7 +390,7 @@ export function buttonPage(input: { cardId: string; token: string; option: strin
     }
     const option = closest ? closest.dataset.option : null;
     if (typeof option !== "string" || option === "") return;
-    say("received");
+    say("received", press);
     answering = true;
     const state = document.querySelector(".state");
     // Nothing on the page changes before the fresh reading (a status line growing could move the button, and a button that moved is not
@@ -391,7 +398,7 @@ export function buttonPage(input: { cardId: string; token: string; option: strin
     // A refused answer says so on the card and the button answers again: never a "…" that stays.
     const refused = (r) => { answering = false; document.body.dataset.answered = "no"; delete document.body.dataset.answering; const said = r !== null && typeof r === "object" && typeof r.covered === "string" ? (${JSON.stringify(WINDOW_OVER_TEXTS)}[r.covered] ?? ${JSON.stringify(WINDOW_OVER_TEXTS.ours)}) : r !== null && typeof r === "object" && r.again === true ? ${JSON.stringify(PRESS_AGAIN_TEXT)} : r !== null && typeof r === "object" && r.key === "changed" ? ${JSON.stringify(KEY_CHANGED_TEXT)} : r !== null && typeof r === "object" && r.key === "fault" ? ${JSON.stringify(KEY_FAULT_TEXT)} : ${JSON.stringify(REFUSED_TEXT)}; if (state !== null) state.textContent = said; closest.title = said; };
     // The press counts only if the report that follows it says the button shows uncovered: asked for now, not read from the last one.
-    askFresh(closest).then((ok) => {
+    askFresh(closest, press).then((ok) => {
       if (!ok) {
         say(ok === null ? "late" : "covered");
         answering = false;
@@ -402,7 +409,7 @@ export function buttonPage(input: { cardId: string; token: string; option: strin
       }
       if (state !== null) state.textContent = "…";
       document.body.dataset.answering = "yes";
-      return b.answer(option).then((r) => {
+      return b.answer(option, undefined, press).then((r) => {
         if (r !== null && typeof r === "object" && r.accepted === true) { document.body.dataset.answered = "yes"; delete document.body.dataset.answering; answering = false; if (state !== null) state.textContent = ""; }
         else refused(r);
       });
@@ -555,9 +562,10 @@ export function ownCardPage(input: {
     });
   };
   if (document.readyState === "loading") addEventListener("DOMContentLoaded", wireKids); else wireKids();
-  const say = (w) => { try { b.pressed?.(w); } catch (e) { /* going */ } };${FRESH_SCRIPT}
+  const say = (w, press) => { try { b.pressed?.(w, press); } catch (e) { /* going */ } };${FRESH_SCRIPT}
   document.addEventListener("click", (e) => {
     if (!e.isTrusted) { say("untrusted"); return; }
+    const press = numberPress(e);
     const b2 = e.target !== null && e.target instanceof Element ? e.target.closest(".seal-button") : null;
     if (b2 === null) return;
     if (b2.dataset.kind === "approve" && !read) {
@@ -578,7 +586,7 @@ export function ownCardPage(input: {
       return;
     }
     e.preventDefault();
-    say("received");
+    say("received", press);
     // Exactly the boxes ticked on screen at the press go with an approve; a deny carries none.
     const picked = b2.dataset.kind === "approve" ? ticks() : undefined;
     lockKids(true);
@@ -587,7 +595,7 @@ export function ownCardPage(input: {
     // A refused answer says so on the card, and its buttons answer again.
     const refused = (r) => { lockKids(false); document.body.dataset.answered = "no"; if (state !== null) state.textContent = r !== null && typeof r === "object" && typeof r.covered === "string" ? (${JSON.stringify(WINDOW_OVER_TEXTS)}[r.covered] ?? ${JSON.stringify(WINDOW_OVER_TEXTS.ours)}) : r !== null && typeof r === "object" && r.again === true ? ${JSON.stringify(PRESS_AGAIN_TEXT)} : r !== null && typeof r === "object" && r.key === "changed" ? ${JSON.stringify(KEY_CHANGED_TEXT)} : r !== null && typeof r === "object" && r.key === "fault" ? ${JSON.stringify(KEY_FAULT_TEXT)} : ${JSON.stringify(REFUSED_TEXT)}; };
     // The same rule as a part's button: the press counts only if the report that follows it says the button shows uncovered.
-    void askFresh(b2).then((ok) => {
+    void askFresh(b2, press).then((ok) => {
       if (!ok) {
         lockKids(false);
         say(ok === null ? "late" : "covered");
@@ -596,7 +604,7 @@ export function ownCardPage(input: {
         setTimeout(() => { delete b2.dataset.again; b2.removeAttribute("title"); if (state !== null && state.textContent === ${JSON.stringify(PRESS_AGAIN_TEXT)}) state.textContent = ""; }, 1800);
         return null;
       }
-      return (picked === undefined ? b.answer(b2.dataset.option) : b.answer(b2.dataset.option, picked)).then((r) => {
+      return (picked === undefined ? b.answer(b2.dataset.option, undefined, press) : b.answer(b2.dataset.option, picked, press)).then((r) => {
         if (r !== null && typeof r === "object" && r.accepted === true) { document.body.dataset.answered = "yes"; if (state !== null) state.textContent = ""; }
         else refused(r);
       });

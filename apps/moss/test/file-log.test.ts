@@ -54,6 +54,8 @@ const KEPT: string[] = [
   "updater: installing 0.125.0 now the daemon is idle",
   "updater: the daemon can't be asked whether it is idle; the update waits",
   "sealed: answer refused (no such sealed button)",
+  "sealed: answer refused (no visibility reading came with the press (already used))",
+  "sealed: answer refused (no visibility reading came with the press)",
   "sealed: answer refused (the card is placed on the island)",
   "sealed: answer refused (MOSS saw no press of its own land in this button (the answer came 200 ms past the bound of 1500))",
   "sealed: answer refused (MOSS's answer key isn't registered (waiting))",

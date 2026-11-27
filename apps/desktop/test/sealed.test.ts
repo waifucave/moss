@@ -262,18 +262,23 @@ describe("the sealed frames' store", () => {
 });
 
 describe("the fresh report a press asks for", () => {
-  test("it is single use, covered says covered, a missing or stale one says none", () => {
+  const P = { load: "a1b2c3d4e5f60718293a4b5c", n: 1 };
+  test("it is single use, covered says covered, a missing report says none", () => {
     let t = 0;
     const f = new SealedFrames(() => t);
-    expect(f.takeFresh("tok")).toBe("none");
-    f.noteFresh("tok", true);
-    expect(f.takeFresh("tok")).toBe("ok");
-    expect(f.takeFresh("tok")).toBe("none"); // spent
-    f.noteFresh("tok", false);
-    expect(f.takeFresh("tok")).toBe("covered");
-    f.noteFresh("tok", true);
+    expect(f.takeFresh("tok", P)).toBe("none");
+    f.notePress("tok", P);
+    f.noteFresh("tok", P, true);
+    expect(f.takeFresh("tok", P)).toBe("ok");
+    expect(f.takeFresh("tok", P)).toBe("none"); // spent
+    const P2 = { ...P, n: 2 };
+    f.notePress("tok", P2);
+    f.noteFresh("tok", P2, false);
+    expect(f.takeFresh("tok", P2)).toBe("covered");
+    const P3 = { ...P, n: 3 };
+    f.notePress("tok", P3);
     t += FRESH_MAX_AGE_MS + 1;
-    expect(f.takeFresh("tok")).toBe("none"); // stale
+    expect(f.takeFresh("tok", P3)).toBe("none"); // a press with no report at all, past the bound
   });
 });
 
@@ -296,14 +301,15 @@ describe("a fresh reading that never came in time is 'late', not 'covered' (lane
   test("late, covered and ok are told apart; a late one is spent like any other", () => {
     let t = 0;
     const store = new SealedFrames(() => t);
-    store.noteFresh("tok_late", false, true);
-    store.noteFresh("tok_covered", false, false);
-    store.noteFresh("tok_ok", true, true);
-    expect(store.takeFresh("tok_late")).toBe("late");
-    expect(store.takeFresh("tok_late")).toBe("none");
-    expect(store.takeFresh("tok_covered")).toBe("covered");
-    expect(store.takeFresh("tok_ok")).toBe("ok");
-    t += FRESH_MAX_AGE_MS + 1;
+    const P = { load: "a1b2c3d4e5f60718293a4b5c", n: 1 };
+    for (const tok of ["tok_late", "tok_covered", "tok_ok"]) store.notePress(tok, P);
+    store.noteFresh("tok_late", P, false, true);
+    store.noteFresh("tok_covered", P, false, false);
+    store.noteFresh("tok_ok", P, true, true);
+    expect(store.takeFresh("tok_late", P)).toBe("late");
+    expect(store.takeFresh("tok_late", P)).toBe("none");
+    expect(store.takeFresh("tok_covered", P)).toBe("covered");
+    expect(store.takeFresh("tok_ok", P)).toBe("ok");
   });
 
   test("the page reads a reading that didn't come within the limit as 'late' and shows 'press again', never a cover", async () => {

@@ -123,13 +123,13 @@ if (isRoot || isLayer) {
   ipcRenderer.on("moss:scheme", (_event, scheme: unknown) => page.hear(scheme));
   document.addEventListener("DOMContentLoaded", () => page.apply());
   contextBridge.exposeInMainWorld("mossSealed", {
-    answer: (option: string, children?: readonly string[]) => ipcRenderer.invoke("moss:sealed-answer", { token, option, children }),
+    answer: (option: string, children?: readonly string[], press?: unknown) => ipcRenderer.invoke("moss:sealed-answer", { token, option, children, press }),
     visible: (visible: boolean) => void ipcRenderer.send("moss:sealed-visible", { token, visible }),
     // The report a press asked for (a new observer made at the press): whether the button showed whole and uncovered right then, and how
     // long the report took. The answer that follows is taken only on this.
-    fresh: (seen: boolean, ms: number) => void ipcRenderer.send("moss:sealed-fresh", { token, seen, ms }),
+    fresh: (seen: boolean, ms: number, press?: unknown) => void ipcRenderer.send("moss:sealed-fresh", { token, seen, ms, press }),
     // A press the page saw, in one word of a fixed set (what it did with it); the app logs it with the card's id.
-    pressed: (what: string) => void ipcRenderer.send("moss:sealed-press", { token, what }),
+    pressed: (what: string, press?: unknown) => void ipcRenderer.send("moss:sealed-press", { token, what, press }),
     size: (height: number) => void ipcRenderer.send("moss:sealed-size", { token, height }),
     // The Review on the app's own card page (a plugin's OK or update card): advice the app fetches for its own page,
     // never an answer.
