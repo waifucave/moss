@@ -73,7 +73,7 @@ export function peerFolderSpawnerLinux(o: PeerFolderSpawnerOptions): FencedSpawn
         });
         // A peer's call adopts nothing: what it left running ends with it.
         if (res.leftBehind !== undefined) { res.leftBehind.stop(); stderr += "moss: what the command left running was stopped (another computer's command runs only while it runs)\n"; }
-        if ((res.quarantined?.length ?? 0) > 0) stderr += `moss: moved aside what the command made where repositories and settings are held: ${res.quarantined!.join(", ")}\n`;
+        // What the runtime moved aside it says itself on the command's stderr, one line per path (0.0.91 movedAsideNote).
         if (res.spawnError !== undefined) return { kind: "refused", reason: `the command couldn't start: ${res.spawnError}` };
         if (res.timedOut) return { kind: "timeout", stdout, stderr, shell: "sh" };
         return { kind: "exited", code: res.exitCode ?? 1, stdout, stderr, shell: "sh" };

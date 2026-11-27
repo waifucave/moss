@@ -114,7 +114,8 @@ describe("the Linux folder spawner: the peer fence's policy, nothing widened", (
     // The runtime's quarantine is MOSS's own (`<MOSS home>/quarantine`, as for a local bot), never a `.winter` home.
     expect(i.winterHome).toBe(w.moss);
     expect((i.brand as { homeDirName: string }).homeDirName).toBe(".moss");
-    expect((r as { stderr: string }).stderr).toContain("moved aside");
+    // What was moved aside the runtime says itself (one line per path); MOSS doesn't say it a second time.
+    expect((r as { stderr: string }).stderr).not.toContain("moss: moved aside");
   });
 
   test("refused: a working folder outside its roots, no sandbox here, no runtime entry; what it left running is stopped", async () => {
@@ -187,6 +188,10 @@ describe("live on Linux: a peer's call in its folder under real bubblewrap (the 
     expect(readFileSync(join(w.project, "notes.txt"), "utf8")).toBe("kept\n");
     expect(existsSync(join(w.project, "sub", ".git", "hooks", "post-checkout"))).toBe(false);
     expect(existsSync(join(w.project, ".husky", "pre-commit"))).toBe(false);
+    // The new repository's hooks were moved aside, not the repository; the command is told which paths, one line each.
+    expect(existsSync(join(w.project, "sub", ".git"))).toBe(true);
+    expect(out(r)).toContain(`[sandbox] ${join(w.project, "sub", ".git", "hooks")}: moved to`);
+    expect(out(r)).toContain(`[sandbox] ${join(w.project, ".husky")}: moved to`);
     expect(holding(w.project, "PLANTED")).toEqual([]);
     expect(existsSync(outside)).toBe(false);
     // The repository's own .git stays as it was.
