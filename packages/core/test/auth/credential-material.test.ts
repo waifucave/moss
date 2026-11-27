@@ -245,7 +245,9 @@ describe("child-parser contract (clover-sdk coerceMaterial)", () => {
     // packages/runtime/src/provider/keychain-store.ts` EMPTY; the mirror stands.
     // 0.0.89 → 0.0.90 (Linux: the held-names patterns gathered once, the walk's order and shares): `git diff v0.0.89
     // v0.0.90 -- packages/runtime/src/provider/keychain-store.ts` EMPTY; the mirror stands.
-    expect(pkg.version).toBe("0.0.90");
+    // 0.0.90 → 0.0.91 (the `./sandbox` entry; Linux: swaps moved aside by identity, the opt-in sweep, never delete): `git diff
+    // v0.0.90 v0.0.91 -- packages/runtime/src/provider/keychain-store.ts` EMPTY; the mirror stands.
+    expect(pkg.version).toBe("0.0.91");
   });
 
 
