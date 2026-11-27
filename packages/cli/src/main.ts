@@ -5,7 +5,7 @@ import { migrateEarlierLayout, parseServerArgs, profileNote, serverBinary, serve
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { existsSync, readFileSync, mkdirSync, realpathSync } from "node:fs";
-import { resolveMossHome, isDefaultMossHome, OtherInstallHomeRefused, KeychainSecretStore, startDaemon, stopWithin, TOKEN_NAMES, loadSettings, CORE_VERSION, runWorkflowSubprocess, runAutomationWorker, AUTOMATION_WORKER_ARG, processSatisfiesRequirement, runRuntimeWorkflowWorker, RUNTIME_WORKFLOW_WORKER_ARG, runRuntimeStateProbe, runRuntimesProbe, keychainUnlocked, processStartSecondsViaSysctl, runEmbeddedProbe, runDevKeychainAdopt, DEV_KEYCHAIN_ADOPT_ARG, resolveMossProfile, splitTag, sdkLocalMcpServers, installMossProcessIdentity, loginEnable, loginDisable, loginRemove, loginStatus, liveLoginOsDeps, superviseLoop, UPDATE_RESTART_EXIT_CODE, readInstallMarker, writeInstallMarker, removeInstallMarker, updatesItself, startDaemonThroughOs, windowsUserSid, windowsProfilePath, stopDaemonCleanly, stopThroughOs, mossCall, checkDaemonServer, processImage, spawnDisclaimed, bunRunner, resolveEndpoint, endpointPresent, endpointAnswers, tlsEnvRefusal, TLS_ENV_REFUSAL_EXIT, DIST_BUILD, rawEnvironment, homeRefusal, type LoginSpec, type DaemonRun, type DaemonStartResult, dyldRefusal, testBuildStartRefusal, testKeychainRefusal, loadBundledManifest, loadPrebuiltHostBundles, runEngineInstall, runEngineReset, ENGINE_INSTALL_USAGE, ENGINE_RESET_USAGE, runErase, dropMossOsItems, openMossSecretStore, keychainService, tombstoneProblem } from "@waifucave/moss-core";
+import { resolveMossHome, isDefaultMossHome, OtherInstallHomeRefused, KeychainSecretStore, startDaemon, stopWithin, TOKEN_NAMES, loadSettings, CORE_VERSION, runWorkflowSubprocess, runAutomationWorker, AUTOMATION_WORKER_ARG, processSatisfiesRequirement, runRuntimeWorkflowWorker, RUNTIME_WORKFLOW_WORKER_ARG, runRuntimeStateProbe, runRuntimesProbe, keychainUnlocked, processStartSecondsViaSysctl, runEmbeddedProbe, runDevKeychainAdopt, DEV_KEYCHAIN_ADOPT_ARG, resolveMossProfile, splitTag, sdkLocalMcpServers, installMossProcessIdentity, hostExecutable, loginEnable, loginDisable, loginRemove, loginStatus, liveLoginOsDeps, superviseLoop, UPDATE_RESTART_EXIT_CODE, readInstallMarker, writeInstallMarker, removeInstallMarker, updatesItself, startDaemonThroughOs, windowsUserSid, windowsProfilePath, stopDaemonCleanly, stopThroughOs, mossCall, checkDaemonServer, processImage, spawnDisclaimed, bunRunner, resolveEndpoint, endpointPresent, endpointAnswers, tlsEnvRefusal, TLS_ENV_REFUSAL_EXIT, DIST_BUILD, rawEnvironment, homeRefusal, type LoginSpec, type DaemonRun, type DaemonStartResult, dyldRefusal, testBuildStartRefusal, testKeychainRefusal, loadBundledManifest, loadPrebuiltHostBundles, runEngineInstall, runEngineReset, ENGINE_INSTALL_USAGE, ENGINE_RESET_USAGE, runErase, dropMossOsItems, openMossSecretStore, keychainService, tombstoneProblem } from "@waifucave/moss-core";
 import type { CredentialRow, SecretStore, Settings } from "@waifucave/moss-core";
 import { METHODS, type ApprovalPolicy, type Task } from "@waifucave/moss-protocol";
 import { POLICY_ORDER } from "./tui/policy-order";
@@ -1566,7 +1566,11 @@ async function runAutostartCommand(sub: string | undefined, rest: readonly strin
   const base = currentLoginSpec(app);
   // Windows: the task and its logon trigger name this user by SID.
   const winUser = base.os === "win32" ? await windowsUserSid(bunRunner) : undefined;
-  const spec: LoginSpec = winUser ? { ...base, winUser } : base;
+  const withUser: LoginSpec = winUser ? { ...base, winUser } : base;
+  // Windows and Linux: the host's on-demand task or unit runs the host executable the apps' records name (host-exe.ts's one rule);
+  // written again by every enable and disable, so an upgrade or another install moves it.
+  const hostBin = (sub === "enable" || sub === "disable") && isDefaultMossHome(withUser.home, withUser.profile) ? hostExecutable(withUser.home, withUser.os) : undefined;
+  const spec: LoginSpec = hostBin ? { ...withUser, host: { bin: hostBin.bin } } : withUser;
   // One login unit per profile, serving the profile's default home: a unit for another home would
   // take over the profile's label.
   if (sub !== "status" && sub !== undefined && !isDefaultMossHome(spec.home, spec.profile)) {

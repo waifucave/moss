@@ -5,7 +5,7 @@ export { bootstrapMossDir, resolveMossHome, isDefaultMossHome } from "./moss-dir
 export { resolveEndpoint, homePipeId, isPipe, endpointPresent, WINDOWS_PIPE_PREFIX, type DaemonPlatform, type Endpoint } from "./platform/transport";
 export {
   loginEnable, loginDisable, loginRemove, loginStatus, readUnit, liveLoginOsDeps, bunRunner, startDaemonThroughOs, windowsUserSid, windowsProfilePath, parseProfileImagePath, stopDaemonCleanly, stopThroughOs,
-  renderLaunchdPlist, renderSystemdUnit, renderSchtasksXml, schtasksFallbackProblem, loginLabel, loginUnitPath,
+  hostExecutable, renderLaunchdPlist, renderSystemdUnit, renderSchtasksXml, schtasksFallbackProblem, loginLabel, loginUnitPath,
   systemdUnitName, schtasksTaskName, SUPERVISE_ARGS,
   superviseLoop, backoffMs, UPDATE_RESTART_EXIT_CODE,
   type LoginSpec, type LoginOsDeps, type LoginStatus, type LoginState, type Runner, type DaemonStartResult, type CleanStopResult, type CleanStopDeps,

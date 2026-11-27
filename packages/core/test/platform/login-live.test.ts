@@ -74,7 +74,15 @@ describe("live login commands (recorded, never run)", () => {
     expect(u.calls).toEqual([
       "schtasks /End /TN \\MOSS\\moss-core", "schtasks /Delete /F /TN \\MOSS\\moss-core",
       "schtasks /End /TN \\MOSS\\moss-app", "schtasks /Delete /F /TN \\MOSS\\moss-app",
+      "schtasks /End /TN \\MOSS\\moss-host", "schtasks /Delete /F /TN \\MOSS\\moss-host",
     ]);
+    // A host task an older install left, with no host installed now: deleted before the others are written.
+    const d = recorder();
+    await liveLoginOsDeps(d.run, noFile).register(spec("win32"), { loginOn: true, tasks: [{ name: "\\MOSS\\moss-core", xml: "<x/>" }], drop: ["\\MOSS\\moss-host"] });
+    expect(d.calls).toEqual(["schtasks /Delete /F /TN \\MOSS\\moss-host", "schtasks /Create /F /TN \\MOSS\\moss-core /XML /tmp/task.xml"]);
+    const q = recorder();
+    expect(await liveLoginOsDeps(q.run, noFile).hostDefined!(spec("win32"))).toBe(true);
+    expect(q.calls).toEqual(["schtasks /Query /TN \\MOSS\\moss-host"]);
   });
 
   test("the Windows user's SID from whoami /user", async () => {

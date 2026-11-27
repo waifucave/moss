@@ -11,8 +11,8 @@
 //   `appRecordsSource` reads `<home>/apps/<program>.json` the same way.
 // * A start on macOS checks the helper's code signature first (its fixed identifier, Apple's chain, MOSS's team, a
 //   Developer ID leaf for dist) and starts it through Launch Services (`open -n -g -a`), never as the engine's child.
-//   Windows and Linux start a recorded install only, through the host's task or user unit (`moss-host`), which their
-//   packages install (not yet built: say so where it fails).
+//   Windows and Linux start a recorded install only, through the host's task or user unit (`moss-host`), which the login
+//   manager writes beside the app's own (`autostart enable`, platform/login/host-exe.ts says which install it runs).
 // * A source checkout (not a dist build) may name its own start (`MOSS_HOST_COMMAND`, a JSON argv), which the engine
 //   runs as its child in its own process group, so a run that started the engine ends the host with it.
 import { execFileSync, spawn } from "node:child_process";
@@ -126,7 +126,7 @@ export function hostRequirement(profile: MossProfile, team: string = MOSS_TEAM_I
   return `identifier "${PROGRAM_IDENTIFIERS.host[profile]}" and anchor apple generic${developerId ? ` and ${DEVELOPER_ID_CLAUSES}` : ""} and certificate leaf[subject.OU] = "${team}"`;
 }
 
-/** The host's task and unit names on Windows and Linux (installed by the apps' packages beside the app's own). */
+/** The host's task and unit names on Windows and Linux (written by `moss-core autostart enable` beside the app's own: platform/login/manager.ts). */
 export function hostTaskName(profile: MossProfile): string {
   return profile === "dev" ? "\\MOSS\\moss-host-dev" : "\\MOSS\\moss-host";
 }

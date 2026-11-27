@@ -5,11 +5,12 @@
 // `enable` writes the daemon's definition (and the app's, when `spec.app` is set) and turns the login
 // trigger on; `disable` turns only the trigger off, so the running pair keeps running and either side
 // can still start the other through the OS; `remove` stops and removes everything.
+import { hostTaskName } from "../../host/world";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   appTaskName, appUnitPath, loginLabel, loginUnitPath, parkedPlistPath, renderAppSchtasksXml,
-  renderAppSystemdUnit, renderLaunchdPlist, renderSchtasksXml, renderSystemdUnit, renderXdgAutostart,
+  hostUnitPath, renderAppSystemdUnit, renderHostSchtasksXml, renderHostSystemdUnit, renderLaunchdPlist, renderSchtasksXml, renderSystemdUnit, renderXdgAutostart,
   schtasksTaskName, systemdUnitName, xdgAutostartPath, type LoginSpec,
 } from "./render";
 
@@ -23,6 +24,8 @@ export interface LoginStatus {
    *  task's logon trigger is on (Windows). */
   readonly registered: boolean;
   readonly label: string;
+  /** Windows and Linux: whether the host's on-demand task or unit is defined (macOS: no such definition). */
+  readonly host?: boolean;
 }
 
 /** A Task Scheduler definition to register (Windows). */
@@ -34,12 +37,14 @@ export interface LoginOsDeps {
    *  macOS: bootstrap the job when login start is on and it is not loaded (which starts it).
    *  Linux: `daemon-reload`, then `enable --now` the daemon's unit, or `disable` it (no `--now`).
    *  Windows: `schtasks /Create /F /XML` each task. Returns false on failure. */
-  register(spec: LoginSpec, opts: { readonly loginOn: boolean; readonly tasks: readonly TaskDef[] }): Promise<boolean>;
+  register(spec: LoginSpec, opts: { readonly loginOn: boolean; readonly tasks: readonly TaskDef[]; readonly drop?: readonly string[] }): Promise<boolean>;
   /** Uninstall: stop and unregister everything (bootout / `disable --now` / `schtasks /Delete`). */
   unregister(spec: LoginSpec): Promise<void>;
   /** The OS's view: "on" when the job is loaded (macOS), the unit enabled (Linux) or the daemon's
    *  task has its logon trigger on (Windows); "off" when installed but not; "absent" otherwise. */
   query(spec: LoginSpec): Promise<"on" | "off" | "absent">;
+  /** Windows: whether the host's task is registered (Linux reads its unit file). */
+  hostDefined?(spec: LoginSpec): Promise<boolean>;
 }
 
 function write(path: string, text: string): void {
@@ -52,13 +57,13 @@ function remove(path: string | null): void {
 }
 
 /** Write the definitions for the OS, with the login trigger on or off. */
-function writeDefinitions(spec: LoginSpec, loginOn: boolean): TaskDef[] {
+function writeDefinitions(spec: LoginSpec, loginOn: boolean): { tasks: TaskDef[]; drop: string[] } {
   if (spec.os === "darwin") {
     const item = loginUnitPath(spec)!;
     const parked = parkedPlistPath(spec);
     write(loginOn ? item : parked, renderLaunchdPlist(spec));
     remove(loginOn ? parked : item);
-    return [];
+    return { tasks: [], drop: [] };
   }
   if (spec.os === "linux") {
     write(loginUnitPath(spec)!, renderSystemdUnit(spec));
@@ -67,24 +72,31 @@ function writeDefinitions(spec: LoginSpec, loginOn: boolean): TaskDef[] {
       if (loginOn) write(xdgAutostartPath(spec)!, renderXdgAutostart(spec));
     }
     if (!loginOn) remove(xdgAutostartPath(spec));
-    return [];
+    // The host's unit, refreshed on every enable and disable (an upgrade moves the executable); with no host installed, none stays.
+    if (spec.host) write(hostUnitPath(spec)!, renderHostSystemdUnit(spec));
+    else remove(hostUnitPath(spec));
+    return { tasks: [], drop: [] };
   }
   const tasks: TaskDef[] = [{ name: schtasksTaskName(spec.profile), xml: renderSchtasksXml(spec, loginOn) }];
   if (spec.app) tasks.push({ name: appTaskName(spec.profile), xml: renderAppSchtasksXml(spec) });
-  return tasks;
+  // The host's task: written again on every enable and disable; with no host installed, a task left by an older one is deleted.
+  const drop: string[] = [];
+  if (spec.host) tasks.push({ name: hostTaskName(spec.profile), xml: renderHostSchtasksXml(spec) });
+  else drop.push(hostTaskName(spec.profile));
+  return { tasks, drop };
 }
 
 /** Turn login start on: write the definitions and register them. Idempotent. */
 export async function loginEnable(spec: LoginSpec, os: LoginOsDeps): Promise<LoginStatus> {
-  const tasks = writeDefinitions(spec, true);
-  const ok = await os.register(spec, { loginOn: true, tasks });
+  const { tasks, drop } = writeDefinitions(spec, true);
+  const ok = await os.register(spec, { loginOn: true, tasks, drop });
   return { state: ok ? "enabled" : "disabled", unitPath: loginUnitPath(spec), registered: ok, label: loginLabel(spec.profile) };
 }
 
 /** Turn login start off, keeping the daemon startable on demand and the running pair running. */
 export async function loginDisable(spec: LoginSpec, os: LoginOsDeps): Promise<LoginStatus> {
-  const tasks = writeDefinitions(spec, false);
-  await os.register(spec, { loginOn: false, tasks });
+  const { tasks, drop } = writeDefinitions(spec, false);
+  await os.register(spec, { loginOn: false, tasks, drop });
   return { state: "disabled", unitPath: loginUnitPath(spec), registered: false, label: loginLabel(spec.profile) };
 }
 
@@ -94,6 +106,7 @@ export async function loginRemove(spec: LoginSpec, os: LoginOsDeps): Promise<Log
   remove(loginUnitPath(spec));
   if (spec.os === "darwin") remove(parkedPlistPath(spec));
   remove(appUnitPath(spec));
+  remove(hostUnitPath(spec));
   remove(xdgAutostartPath(spec));
   return { state: "not-installed", unitPath: loginUnitPath(spec), registered: false, label: loginLabel(spec.profile) };
 }
@@ -106,7 +119,8 @@ export async function loginStatus(spec: LoginSpec, os: LoginOsDeps): Promise<Log
   if (spec.os === "darwin") state = existsSync(unitPath!) ? "enabled" : existsSync(parkedPlistPath(spec)) ? "disabled" : "not-installed";
   else if (spec.os === "linux") state = !existsSync(unitPath!) ? "not-installed" : q === "on" ? "enabled" : "disabled";
   else state = q === "on" ? "enabled" : q === "off" ? "disabled" : "not-installed";
-  return { state, unitPath, registered: q === "on", label: loginLabel(spec.profile) };
+  const host = spec.os === "linux" ? existsSync(hostUnitPath(spec)!) : spec.os === "win32" ? (await os.hostDefined?.(spec)) === true : undefined;
+  return { state, unitPath, registered: q === "on", label: loginLabel(spec.profile), ...(host !== undefined ? { host } : {}) };
 }
 
 /** Read a written unit back (diagnostics/tests). */

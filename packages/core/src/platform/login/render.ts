@@ -18,6 +18,7 @@
 // the app through Launch Services.
 import { posix } from "node:path";
 import { homedir as realHomedir } from "node:os";
+import { hostTaskName, hostUnitName } from "../../host/world";
 import type { MossProfile } from "../../profile";
 import type { DaemonPlatform } from "../transport";
 
@@ -38,6 +39,9 @@ export interface LoginSpec {
   readonly winUser?: string;
   /** The app, on a computer that runs it: its executable (macOS: the `.app` bundle). */
   readonly app?: { readonly bin: string };
+  /** Windows and Linux, the background host: the executable the engine's on-demand task or unit starts as `<bin> --moss-program=host`
+   *  (`hostExecutable`, host-exe.ts, picks it from the apps' records). Absent: no host is installed here, so none is defined. */
+  readonly host?: { readonly bin: string };
   /** Windows, a server install: the binary the logon task falls back to when `bin` is missing or won't start
    *  (`<bin>.old`: a self-update's swap is two renames there, and a power cut between them leaves no `bin`). */
   readonly fallbackBin?: string;
@@ -104,6 +108,11 @@ export function parkedPlistPath(spec: Pick<LoginSpec, "home" | "profile">): stri
 /** Linux: the app's unit file. */
 export function appUnitPath(spec: LoginSpec): string | null {
   return spec.os === "linux" ? join(systemdUserDir(spec), appUnitName(spec.profile)) : null;
+}
+
+/** Linux: the host's unit file. */
+export function hostUnitPath(spec: LoginSpec): string | null {
+  return spec.os === "linux" ? join(systemdUserDir(spec), hostUnitName(spec.profile)) : null;
 }
 
 /** Linux: the XDG autostart entry that starts the app with the desktop session (§3.1). */
@@ -212,6 +221,31 @@ PartOf=graphical-session.target
 [Service]
 Type=simple
 ExecStart=${systemdArg(spec.app.bin)}
+${env.join("\n")}
+Restart=no
+`;
+}
+
+/** What makes a program the host (apps/desktop/src/main/host-program.ts's `HOST_PROGRAM_ARG`): MOSS Code's own executable, started with it. */
+export const HOST_PROGRAM_ARG = "--moss-program=host";
+
+/** The host's `systemd --user` unit, started on demand by the engine (`systemctl --user start moss-host.service`, `hostUnitName`),
+ *  never at login (no [Install]): the host draws, so it belongs to the graphical session as the app's unit does (its DISPLAY or
+ *  WAYLAND_DISPLAY come from the user manager's environment, which the engine checks before it starts the unit), and the engine
+ *  starts it, so systemd does not restart it. `ConditionPathExists` makes it inert once the executable is gone. */
+export function renderHostSystemdUnit(spec: LoginSpec): string {
+  if (!spec.host) throw new Error("renderHostSystemdUnit needs spec.host");
+  const env = [systemdEnv("MOSS_HOME", spec.home)];
+  if (spec.profile === "dev") env.push(systemdEnv("MOSS_PROFILE", "dev"));
+  return `[Unit]
+Description=MOSS host
+ConditionPathExists=${systemdPath(spec.host.bin)}
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=${systemdArg(spec.host.bin)} ${HOST_PROGRAM_ARG}
 ${env.join("\n")}
 Restart=no
 `;
@@ -365,5 +399,20 @@ export function renderAppSchtasksXml(spec: LoginSpec): string {
     logon: "none",
     command: spec.app.bin,
     args: "",
+  });
+}
+
+/** The host's on-demand task (no trigger), which the engine starts with `schtasks /Run /TN \MOSS\moss-host` (`hostTaskName`): the
+ *  installed host executable with `--moss-program=host`, as the logged-on user in their interactive session (it draws), never
+ *  elevated (`renderTask`'s principal: InteractiveToken, LeastPrivilege), and never in the engine's job object. */
+export function renderHostSchtasksXml(spec: LoginSpec): string {
+  if (!spec.host) throw new Error("renderHostSchtasksXml needs spec.host");
+  return renderTask({
+    description: `${spec.profile === "dev" ? "MOSS host (dev)" : "MOSS host"}`,
+    uri: hostTaskName(spec.profile),
+    user: spec.winUser,
+    logon: "none",
+    command: spec.host.bin,
+    args: HOST_PROGRAM_ARG,
   });
 }

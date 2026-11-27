@@ -15,7 +15,7 @@
 // Its fuses are flipped here, with the app's own settings, since electron-builder flips only the app's.
 //
 // Windows and Linux: no helper bundle. The host is the app's own executable started with `--moss-program=host` (the
-// engine's task `\MOSS\moss-host` and user unit `moss-host.service`, which those packages install), since neither OS
+// engine's task `\MOSS\moss-host` and user unit `moss-host.service`, which `moss-core autostart enable` writes, pointing at it), since neither OS
 // signs a running image (spec §3.1: the hello's `surface` and the caller check stand in there).
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";

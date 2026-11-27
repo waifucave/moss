@@ -5,6 +5,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { hostTaskName, hostUnitName } from "../../host/world";
 import type { LoginOsDeps, TaskDef } from "./manager";
 import { appTaskName, appUnitName, loginLabel, loginUnitPath, schtasksTaskName, systemdUnitName, type LoginSpec } from "./render";
 
@@ -86,7 +87,7 @@ export function liveLoginOsDeps(run: Runner = bunRunner, taskXml: TaskXmlWriter 
     finally { file.cleanup(); }
   }
   return {
-    async register(spec, { loginOn, tasks }) {
+    async register(spec, { loginOn, tasks, drop }) {
       if (spec.os === "darwin") {
         // Login start off: the plist is parked and a running job is left alone.
         if (!loginOn) return true;
@@ -103,6 +104,7 @@ export function liveLoginOsDeps(run: Runner = bunRunner, taskXml: TaskXmlWriter 
         return (await run(loginOn ? ["systemctl", "--user", "enable", "--now", unit] : ["systemctl", "--user", "disable", unit])).ok;
       }
       let ok = true;
+      for (const name of drop ?? []) await run(["schtasks", "/Delete", "/F", "/TN", name]);
       for (const t of tasks) ok = (await createTask(t)) && ok;
       return ok;
     },
@@ -115,10 +117,11 @@ export function liveLoginOsDeps(run: Runner = bunRunner, taskXml: TaskXmlWriter 
       if (spec.os === "linux") {
         await run(["systemctl", "--user", "disable", "--now", systemdUnitName(spec.profile)]);
         await run(["systemctl", "--user", "stop", appUnitName(spec.profile)]);
+        await run(["systemctl", "--user", "stop", hostUnitName(spec.profile)]);
         await run(["systemctl", "--user", "daemon-reload"]);
         return;
       }
-      for (const name of [schtasksTaskName(spec.profile), appTaskName(spec.profile)]) {
+      for (const name of [schtasksTaskName(spec.profile), appTaskName(spec.profile), hostTaskName(spec.profile)]) {
         await run(["schtasks", "/End", "/TN", name]);
         await run(["schtasks", "/Delete", "/F", "/TN", name]);
       }
@@ -135,6 +138,9 @@ export function liveLoginOsDeps(run: Runner = bunRunner, taskXml: TaskXmlWriter 
       }
       const r = await run(["schtasks", "/Query", "/TN", schtasksTaskName(spec.profile), "/XML"]);
       return r.ok ? logonTriggerState(r.out) : "absent";
+    },
+    async hostDefined(spec) {
+      return spec.os === "win32" && (await run(["schtasks", "/Query", "/TN", hostTaskName(spec.profile)])).ok;
     },
   };
 }

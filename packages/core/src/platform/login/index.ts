@@ -1,5 +1,6 @@
 export * from "./render";
 export * from "./manager";
+export * from "./host-exe";
 export * from "./supervise";
 export * from "./start";
 export * from "./stop";
