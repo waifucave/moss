@@ -16,9 +16,9 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: "all: every job. acceptance: only the acceptance run (and the names and layout checks), to run it again alone. acceptance-linux: only the Linux acceptance (lane LX), which no other choice but `all` and `acceptance` runs. acceptance-windows: only the Windows acceptance (lane WA), likewise"
+        description: "all: every job. acceptance: only the acceptance run (and the names and layout checks), to run it again alone. acceptance-linux: only the Linux acceptance (lane LX), which no other choice but `all` and `acceptance` runs. acceptance-windows: only the Windows acceptance (lane WA), likewise. computers-windows: only the `computers` unit with both engines on one Windows runner (lane XC, owed item 7), likewise"
         type: choice
-        options: [all, acceptance, acceptance-linux, acceptance-windows]
+        options: [all, acceptance, acceptance-linux, acceptance-windows, computers-windows]
         default: all
       # scripts/ci/lane start sets these two: a lane's run is as big as its change. `scoped` runs the jobs the files changed since `base`
       # need (scripts/ci-changes.ts: the same areas a pull request gets, with every one's FULL checks and the acceptance units it
@@ -153,7 +153,7 @@ jobs:
             # A push to an integration branch is the tip: every area.
             push) bun scripts/ci-changes.ts --all --why "a push to an integration branch runs everything" ;;
             # A manual run of the acceptance alone: no change, so no area but the acceptance run (every unit of it).
-            *) if [ "$ONLY" = acceptance ] || [ "$ONLY" = acceptance-linux ] || [ "$ONLY" = acceptance-windows ]; then
+            *) if [ "$ONLY" = acceptance ] || [ "$ONLY" = acceptance-linux ] || [ "$ONLY" = acceptance-windows ] || [ "$ONLY" = computers-windows ]; then
                  bun scripts/ci-changes.ts --only-acceptance --why "a manual run of only: $ONLY"
                elif [ "$SCOPE" = scoped ] && [ -n "$BASE" ]; then
                  # The lane's own changes since its merge-base with the integration branch; a base this runner cannot fetch runs everything.
@@ -1376,7 +1376,7 @@ jobs:
   acceptance:
     name: acceptance · ${{ matrix.unit }}
     needs: changes
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event.inputs.only != 'acceptance-linux' && github.event.inputs.only != 'acceptance-windows' && needs.changes.outputs.acceptance == 'true'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event.inputs.only != 'acceptance-linux' && github.event.inputs.only != 'acceptance-windows' && github.event.inputs.only != 'computers-windows' && needs.changes.outputs.acceptance == 'true'
     runs-on: macos-latest
     timeout-minutes: 45
     strategy:
@@ -1462,7 +1462,7 @@ jobs:
   acceptance-linux:
     name: acceptance-linux · ${{ matrix.unit }}
     needs: changes
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.only != 'acceptance-windows' && needs.changes.outputs.acceptance == 'true'
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.only != 'acceptance-windows' && github.event.inputs.only != 'computers-windows' && needs.changes.outputs.acceptance == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -1607,6 +1607,74 @@ jobs:
         with:
           name: acceptance-windows-${{ matrix.unit }}
           path: ${{ runner.temp }}/acceptance-windows-${{ matrix.unit }}
+          retention-days: 7
+          if-no-files-found: warn
+
+  # Windows as one of the two computers (lane XC, owed item 7): the `computers` unit (two engines, Alpha and Beta, each its
+  # own home, paired over their link sidecars on loopback, no relay) with both engines on one windows-latest runner, the
+  # holder's peer commands under the Windows fence. Only when asked (`scripts/ci/lane start --only computers-windows`), as
+  # `acceptance-windows`, until it is green; it is then the matrix's `computers` row there (drop that job's exclude).
+  computers-windows:
+    name: computers unit · windows
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.only == 'computers-windows'
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      MOSS_PINNED_BUN: "0"
+      MOSS_ACCEPT_TICK_MIN: "10"
+      MOSS_ACCEPT_TIME_SCALE: "3"
+      MOSS_ACCEPT_MEASURE: "mac-only"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch; the version is RUST_TOOLCHAIN
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: native/link -> target
+
+      - name: Build moss-link
+        run: cargo build --release --locked --manifest-path native/link/Cargo.toml
+
+      # The holder runs a peer's Bash under the Windows fence, which starts only once `moss-core sandbox setup` has run.
+      - name: Windows fence · build srt-win from the pinned source
+        shell: pwsh
+        run: scripts/ci/windows-fence/build-launcher.ps1
+
+      - name: Windows fence · build moss-core.exe
+        shell: bash
+        run: for i in 1 2 3; do bun scripts/build-daemon.ts --target windows-x64 && exit 0; sleep 20; done; exit 1
+
+      - name: Windows fence · sandbox setup, from the protected copy
+        timeout-minutes: 40
+        shell: pwsh
+        run: scripts/ci/windows-fence/setup.ps1
+
+      - name: The computers unit on Windows (both engines)
+        run: bun scripts/ci/acceptance-unit.ts computers "$RUNNER_TEMP/computers-windows"
+        env:
+          MOSS_ACCEPTANCE_LINK_BIN: ${{ github.workspace }}/native/link/target/release/moss-link.exe
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() }}
+        with:
+          name: computers-windows
+          path: ${{ runner.temp }}/computers-windows
           retention-days: 7
           if-no-files-found: warn
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 # lane: run CI on GitHub for the branch you are on, so many lanes can be checked at once without queuing on one Mac.
 #
-#   scripts/ci/lane start [--all] [--parked] [--only acceptance|acceptance-linux|acceptance-windows]
+#   scripts/ci/lane start [--all] [--parked] [--only acceptance|acceptance-linux|acceptance-windows|computers-windows]
 #                                               push this branch, start CI on it, print the run's number and address.
 #                                               The run is SCOPED: the jobs your branch's changes since its merge-base with
 #                                               origin/lane-int/moss need (every area you touched with its full checks, the acceptance
@@ -18,7 +18,8 @@
 #                                               list often answers HTTP 502; this does not need it); default: HEAD
 #
 # Windows acceptance: only with `--only acceptance-windows`, until it is green; then it joins the ordinary run (the one condition to flip is on the
-# `acceptance-windows` job in .github/workflows/ci.yml).
+# `acceptance-windows` job in .github/workflows/ci.yml). `--only computers-windows` runs the `computers` unit alone with both engines on one Windows
+# runner (lane XC, owed item 7), likewise.
 # `run` defaults to the newest run of this branch's HEAD commit. `--only acceptance` runs just the acceptance units (and the names and
 # layout checks), to run them again after a fix. What a lane reads is `lane gate`: every job but the Windows ones, plus the acceptance
 # run (a red Windows job shows in the table and does not fail the lane gate). The gate prints its scope: which areas ran and which were
@@ -93,7 +94,7 @@ case "$cmd" in
       case "$1" in
         --all) scope=all; shift ;;
         --parked) parked=true; shift ;;
-        --only) only="${2:-}"; { [ "$only" = acceptance ] || [ "$only" = acceptance-linux ] || [ "$only" = acceptance-windows ]; } || die "--only takes acceptance, acceptance-linux or acceptance-windows"; shift 2 ;;
+        --only) only="${2:-}"; { [ "$only" = acceptance ] || [ "$only" = acceptance-linux ] || [ "$only" = acceptance-windows ] || [ "$only" = computers-windows ]; } || die "--only takes acceptance, acceptance-linux, acceptance-windows or computers-windows"; shift 2 ;;
         *) die "unknown option $1 (scripts/ci/lane with no arguments prints the usage)" ;;
       esac
     done
