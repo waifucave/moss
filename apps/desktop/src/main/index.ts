@@ -3149,7 +3149,10 @@ ipcMain.on("moss:press-seen", (event) => {
   const f = event.senderFrame;
   const win = BrowserWindow.fromWebContents(event.sender);
   if (f === null || f.detached || win === null) return;
-  sends.seen(win.id, frameChainOf(f));
+  const taken = sends.seen(win.id, frameChainOf(f));
+  // A test build's one line when a page's trusted pointerdown found no press of the main process's to name its frame for (the
+  // press's own mouse-down never came through `before-mouse-event`, or was spent or late): window id only.
+  if (!taken && (typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string")) log(`press: a pointerdown was reported in window ${win.id} with no press to take it`);
 });
 // The preload's synchronous ask, from a frame's capture-phase keydown: whether that key-down is the window's held key binding's
 // (its down or a repeat), which the page must not get. Main's `before-input-event` already ran for that same event.
@@ -3382,6 +3385,8 @@ function watchWindow(win: BrowserWindow): void {
     cursors.set(id, at);
     windowDrags.down(id, { button: mouse.button, x: mouse.x, y: mouse.y });
     menus.input(id);
+    // A test build's one line per mouse down the main process saw (kind, window id, point only).
+    if (typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") log(`press: a mouse down was recorded in window ${id} at ${Math.round(mouse.x)},${Math.round(mouse.y)}`);
     if (isBackgroundWindow(id)) sends.input(id);
     else {
       // Which frame it landed in is that frame's own report a moment later (the preload's trusted pointerdown, `moss:press-seen`);

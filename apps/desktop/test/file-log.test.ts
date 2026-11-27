@@ -156,6 +156,8 @@ const KEPT: string[] = [
   "focus: moss/pill folded while key: key back to the window it took it from",
   "tray: moss/pill names a command moss/pill doesn't have",
   "keys: 3 command key(s) bound",
+  "press: a mouse down was recorded in window 4 at 120,33",
+  "press: a pointerdown was reported in window 4 with no press to take it",
   "keys: moss/shell:new down from its key",
   "keys: moss/shell:new ran from its key",
   "touches: four-finger tap turned on",
@@ -393,7 +395,7 @@ describe("what MOSS Code writes to its log file", () => {
       if (m > 0) dynamic[rel] = m;
     }
     expect(counts).toEqual({
-      "answer-key.ts": 17, "browser/frame-sender.ts": 2, "host-runtime.ts": 6, "housing.ts": 1, "card-replace.ts": 2, "index.ts": 183, "overlap.ts": 1, "pair/optional-calls.ts": 1,
+      "answer-key.ts": 17, "browser/frame-sender.ts": 2, "host-runtime.ts": 6, "housing.ts": 1, "card-replace.ts": 2, "index.ts": 185, "overlap.ts": 1, "pair/optional-calls.ts": 1,
       "pair/pair.ts": 19, "pair/setup-retry.ts": 2, "prefs.ts": 1, "preview-control.ts": 4, "touch-tap.ts": 5, "tray.ts": 1, "ui/electron.ts": 17, "ui/model.ts": 2,
       "ui/runtime.ts": 13, "ui/strings.ts": 2, "ui/theme.ts": 5, "ui/web-views.ts": 10,
     });

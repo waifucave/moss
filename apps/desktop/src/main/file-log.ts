@@ -67,6 +67,8 @@ export const KEEP: RegExp[] = [
   kp(String.raw`ipc: ${DEC} s in ${DEC}/s \(${IPC_PAIRS}\) out ${DEC}/s \(${IPC_PAIRS}\) cpu(?: ${PROC} ${DEC}%){0,24}(?: calls \(${IPC_CALLS}\))?`),
   kp(String.raw`diag: cpu over ${DEC} s(?: ${PROC}:\d{1,9} -?${DEC}%){1,40}`),
   // the press check and the refusals
+  kp(String.raw`press: a mouse down was recorded in window ${N} at -?${N},-?${N}`),
+  kp(String.raw`press: a pointerdown was reported in window ${N} with no press to take it`),
   kp(String.raw`send: refused \((?:not a place the user's words go|MOSS Code isn't running|the frame reported no user activation)\)(?: \(\d{1,6} like it left out\))?`),
   kp(String.raw`overlap: (?:the OS window list wasn't read for a press \((?:no window list here|no window id)\); the in-page check stands alone|the OS window list read for a press \(${N} above, ${N} of this program's own(?:; headless: its own only)?(?:; no point: a keyboard press)?\))`),
   // sealed pages and cards

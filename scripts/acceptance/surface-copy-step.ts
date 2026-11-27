@@ -203,6 +203,9 @@ export async function surfaceCopyStep(ctx: ExampleCtx, session: string): Promise
       const now = await cdp.centerOf(s, SEND).catch(() => undefined);
       if (now !== undefined) btn = now;
     }
+    // What the click meets, for a red that leaves no refusal line: the circle's centre, the page's size, and the element under that point.
+    const under = await cdp.evaluate(s, `(() => { const e = document.elementFromPoint(${btn.x}, ${btn.y}); const r = document.querySelector('${SEND}')?.getBoundingClientRect(); return JSON.stringify({ size: [innerWidth, innerHeight], circle: r ? [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)] : null, under: e ? e.tagName.toLowerCase() + (e.className ? '.' + String(e.className).split(' ')[0] : '') + (e.getAttribute('data-role') ? '[data-role=' + e.getAttribute('data-role') + ']' : '') : null, textLen: document.querySelector('${BOX}')?.value.length ?? null }); })()`).catch((e: unknown) => `evaluate failed: ${String(e)}`);
+    console.log(`acceptance: surface-copy: the copy pill's press at ${Math.round(btn.x)},${Math.round(btn.y)}: ${String(under)}`);
     await cdp.click(s, btn.x, btn.y);
     await until("the user's words in the bot's conversation, sent by the copy pill", 40_000, async () => (JSON.stringify(await ctx.history(session)).includes(tag) ? true : undefined),
       async () => `the app's log: ${ctx.appLog().split("\n").filter((l) => /send:/.test(l)).slice(-3).join(" | ")}`);
