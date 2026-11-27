@@ -614,6 +614,10 @@ jobs:
           # by the "verified" branch (root-owned /opt), its host says host.ready, and a script with the app token is refused.
           # The chain the "verified" branch reads, as the package left it (owner, group, mode): said before the check.
           for p in / /opt /opt/moss /opt/moss/moss-app /opt/moss/resources /opt/moss/resources/host /opt/moss/resources/host/moss-host /opt/moss-code /opt/moss-code/moss-code; do stat -c '%U:%G %a %n' "$p" || true; done
+          # GitHub's runner image leaves /opt itself 0777 (run 46001319525: everything the packages install is root 0755);
+          # Ubuntu's and Fedora's base systems ship it 0755. Made as a person's system has it, so the proof checks the
+          # packages and not the runner.
+          sudo chmod 0755 /opt
           xvfb-run -a scripts/with-private-secret-service.sh bun scripts/release/app-role-check.ts --core /opt/moss/resources/daemon/moss-core --app /opt/moss/moss-app --app /opt/moss-code/moss-code --host /opt/moss/resources/host/moss-host --expect verified
           # Removing MOSS leaves MOSS Code, its `moss` command and its profile working.
           sudo apt-get remove -y -qq moss

@@ -32,7 +32,8 @@ const expect = arg("--expect")[0];
 // through the task `\MOSS\moss-host` or the user unit `moss-host.service`, packages/core/src/host/world.ts, and neither
 // package installs one: the engine's log says "no task …" or "systemctl refused …"), so this script plays that task: it
 // starts the installed host itself, outside the engine's tree, as `<exe> --moss-program=host` on the same home, and its
-// connection goes through the same default check.
+// connection goes through the same default check. Lane MQ's lane/mq-12 installs the task and the unit (the login
+// manager, at the app's first launch); once it is merged the proof switches to the engine starting the host itself.
 const host = arg("--host")[0];
 if (core === undefined || apps.length === 0 || (expect !== "verified" && expect !== "unverified")) {
   console.log("usage: bun scripts/release/app-role-check.ts --core <moss-core> --app <exe> [--app <exe>] [--host <exe>] --expect verified|unverified");
