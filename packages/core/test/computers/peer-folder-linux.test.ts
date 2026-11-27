@@ -66,7 +66,7 @@ describe("a Linux holder hands a peer's call its folder (the executor)", () => {
 });
 
 /** A fake runtime entry: records the run's inputs, answers as told. */
-function fakeEntry(o: { ready?: boolean; leftBehind?: boolean; posture?: string } = {}) {
+function fakeEntry(o: { ready?: boolean; leftBehind?: boolean; refuse?: string } = {}) {
   const runs: Record<string, unknown>[] = [];
   let stopped = 0;
   const entry = {
@@ -75,8 +75,9 @@ function fakeEntry(o: { ready?: boolean; leftBehind?: boolean; posture?: string 
     buildHostSandboxRunInputs: (i: Record<string, unknown>) => ({ ...i, built: true }),
     runCommand: async (i: Record<string, unknown>) => {
       runs.push(i);
+      if (o.refuse !== undefined) throw new Error(o.refuse);
       (i.onStdout as (b: Buffer) => void)(Buffer.from("out\n"));
-      return { exitCode: 0, timedOut: false, aborted: false, streamKilled: false, posture: o.posture ?? "sandboxed",sandboxOverrideRequested: false, quarantined: ["/w/sub/.git"], ...(o.leftBehind ? { leftBehind: { pid: 1, stop: () => { stopped++; }, done: Promise.resolve(), onOutput: () => {} } } : {}) };
+      return { exitCode: 0, timedOut: false, aborted: false, streamKilled: false, posture: "sandboxed",sandboxOverrideRequested: false, quarantined: ["/w/sub/.git"], ...(o.leftBehind ? { leftBehind: { pid: 1, stop: () => { stopped++; }, done: Promise.resolve(), onOutput: () => {} } } : {}) };
     },
   };
   return { entry: async () => entry as never, runs, stopped: () => stopped };
@@ -121,10 +122,10 @@ describe("the Linux folder spawner: the peer fence's policy, nothing widened", (
     expect(await peerFolderSpawnerLinux({ fence: peer, root, folder, entry: fakeEntry().entry }).run(run(w.home))).toMatchObject({ kind: "refused", reason: expect.stringContaining("runs only in") });
     expect(await peerFolderSpawnerLinux({ fence: peer, root, folder, entry: fakeEntry({ ready: false }).entry }).run(run(w.project))).toEqual({ kind: "refused", reason: "no bubblewrap here" });
     expect(await peerFolderSpawnerLinux({ fence: peer, root, folder, entry: async () => { throw new Error("missing"); } }).run(run(w.project))).toMatchObject({ kind: "refused", reason: expect.stringContaining("0.0.91") });
-    // A run the runtime says wasn't sandboxed: refused, its output withheld.
-    for (const posture of ["config-disabled", "excluded", "override-requested"]) {
-      expect(await peerFolderSpawnerLinux({ fence: peer, root, folder, entry: fakeEntry({ posture }).entry }).run(run(w.project))).toMatchObject({ kind: "refused", reason: expect.stringContaining(posture) });
-    }
+    // The entry's runCommand refuses before it starts a run it wouldn't sandbox (0.0.91's requireSandboxed): that refusal
+    // is the call's, with the runtime's reason.
+    const plain = fakeEntry({ refuse: "this command would run outside the sandbox (config-disabled), and the caller requires the sandbox: refused before it started" });
+    expect(await peerFolderSpawnerLinux({ fence: peer, root, folder, entry: plain.entry }).run(run(w.project))).toMatchObject({ kind: "refused", reason: expect.stringContaining("refused before it started") });
     const left = fakeEntry({ leftBehind: true });
     const r = await peerFolderSpawnerLinux({ fence: peer, root, folder, entry: left.entry }).run(run(w.project));
     expect(left.stopped()).toBe(1);
@@ -170,9 +171,10 @@ describe("live on Linux: a peer's call in its folder under real bubblewrap (the 
     const cmd = "mv proj proj-old 2>/dev/null; mkdir -p proj/.git/hooks 2>/dev/null; echo PLANTED > proj/.git/hooks/post-checkout 2>/dev/null; echo PLANTED > proj/.git/config 2>/dev/null; echo done";
     const r = await exec(w).run("Bash", { command: cmd }, ctx(w.work, { folder: w.work }));
     expect(out(r)).toContain("done");
-    const configs = [join(w.work, "proj", ".git", "config"), join(w.work, "proj-old", ".git", "config")].filter((p) => existsSync(p));
-    expect(configs.length).toBeGreaterThan(0);
-    for (const c of configs) expect(readFileSync(c, "utf8")).toBe("ORIGINAL\n");
+    // The mount is the mechanism: the folder holding a held .git can't be renamed at all, so no proj-old, and the real
+    // .git is where it was, its config unchanged (the end-of-run identity check is the second line, unit-tested in the SDK).
+    expect(existsSync(join(w.work, "proj-old"))).toBe(false);
+    expect(readFileSync(join(w.work, "proj", ".git", "config"), "utf8")).toBe("ORIGINAL\n");
     expect(holding(w.work, "PLANTED").filter((p) => p.includes(".git"))).toEqual([]);
   }, 60_000);
 
@@ -189,5 +191,15 @@ describe("live on Linux: a peer's call in its folder under real bubblewrap (the 
     expect(existsSync(outside)).toBe(false);
     // The repository's own .git stays as it was.
     expect(readFileSync(join(w.project, ".git", "config"), "utf8")).toBe("ORIGINAL\n");
+  }, 60_000);
+
+  linuxTest("run on this (the daemon's) main thread, directly; the user's /run/user is hidden whole (the runtime's own)", async () => {
+    const w = world();
+    expect((await import("node:worker_threads")).isMainThread).toBe(true);
+    const uid = process.getuid?.() ?? 0;
+    const cmd = `ls -A /run/user/${uid} 2>/dev/null | wc -l; ls -A /run/user 2>/dev/null | wc -l; echo done`;
+    const r = await exec(w).run("Bash", { command: cmd }, ctx(w.work, { folder: w.work }));
+    const lines = String((r.output as { stdout?: string }).stdout ?? "").trim().split("\n");
+    expect(lines).toEqual(["0", "0", "done"]);
   }, 60_000);
 });

@@ -73,8 +73,6 @@ export function peerFolderSpawnerLinux(o: PeerFolderSpawnerOptions): FencedSpawn
         });
         // A peer's call adopts nothing: what it left running ends with it.
         if (res.leftBehind !== undefined) { res.leftBehind.stop(); stderr += "moss: what the command left running was stopped (another computer's command runs only while it runs)\n"; }
-        // Never anything but sandboxed (the settings name no way out; a runtime that said otherwise ran it plain).
-        if (res.posture !== "sandboxed") return { kind: "refused", reason: `this computer's sandbox didn't hold the command (${res.posture}): its output is withheld` };
         if ((res.quarantined?.length ?? 0) > 0) stderr += `moss: moved aside what the command made where repositories and settings are held: ${res.quarantined!.join(", ")}\n`;
         if (res.spawnError !== undefined) return { kind: "refused", reason: `the command couldn't start: ${res.spawnError}` };
         if (res.timedOut) return { kind: "timeout", stdout, stderr, shell: "sh" };
