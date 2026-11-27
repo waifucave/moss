@@ -1012,6 +1012,13 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     await Bun.sleep(15_000);
     const after = poolProcs();
     console.log(`[e2e] background stop: it began: ${existsSync(began)}; the child's late write after the stop: ${existsSync(late)}; pool processes seen while it ran ${running}, after the stop ${after}; told: ${JSON.stringify(wakes.find((w) => w.task === lid)?.status)}`);
+    if (!existsSync(began)) {
+      // Why it didn't start, from the command's own log and what the host was told (the launcher's refusal says its code here).
+      const logPath = /written to (\S+\.log)/.exec(long.text)?.[1];
+      let said = "(no log)";
+      try { said = logPath === undefined ? "(no path)" : readFileSync(logPath, "utf8").replace(/\s+/g, " ").slice(0, 1200); } catch (err) { said = `(unreadable: ${err instanceof Error ? err.message : String(err)})`; }
+      console.log(`[e2e] background did not begin: its log: ${said}; told: ${JSON.stringify(wakes.find((w) => w.task === lid))}; scratch exists ${existsSync(scratch)}`);
+    }
     expect(existsSync(began)).toBe(true);
     expect(stopped?.isError).toBe(false);
     expect(wakes.find((w) => w.task === lid)).toMatchObject({ status: "stopped" });
