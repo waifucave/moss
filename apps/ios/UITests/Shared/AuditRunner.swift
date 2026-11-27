@@ -95,13 +95,43 @@ enum AuditRunner {
         func isOwn(_ bar: XCUIElement) -> Bool {
             bar.descendants(matching: e.elementType).allElementsBoundByIndex.contains { $0.frame == frame && $0.label == e.label }
         }
+        func overlaps(_ r: CGRect) -> Bool {
+            let o = frame.intersection(r)
+            return !o.isNull && o.width > 0 && o.height > 0
+        }
         for (name, bar) in [("header", header), ("composer", composer)] where bar.exists {
-            let overlap = frame.intersection(bar.frame)
-            guard !overlap.isNull, overlap.width > 0, overlap.height > 0 else { continue }
+            // The composer's chrome is its bar's frame plus the system's fade above it (across the screen's width);
+            // the header gets no band.
+            let fade = name == "composer" ? composerFadeBand(above: bar.frame) : .null
+            guard overlaps(bar.frame) || overlaps(fade) else { continue }
             if isOwn(bar) { return nil }
-            return name
+            return overlaps(bar.frame) ? name : "composer fade"
         }
         return nil
+    }
+
+    /// The height of the soft fade the system draws above the composer's bar: the conversation's
+    /// `.scrollEdgeEffectStyle(.soft, for: .bottom)`. Measured once, not read (the system exposes no value): in the
+    /// audit's own screenshots on the iOS 26.5 simulator (CI's), at the default and the largest text size alike, the
+    /// content under it first changes 38.33 points above the bar's top edge (a card's border column; the plain
+    /// background visibly dims from 19 points). Re-measure it if the effect changes; AUDIT NEAR FADE says when a
+    /// failing element sits just above this band.
+    static let composerFadeHeight: CGFloat = 38
+
+    static func composerFadeBand(above bar: CGRect) -> CGRect {
+        CGRect(x: -10_000, y: bar.minY - composerFadeHeight, width: 20_000, height: composerFadeHeight)
+    }
+
+    /// A failing element on a conversation screen whose frame lies within twice the fade's height above the composer's
+    /// bar but outside the band: printed, so a changed effect is noticed rather than failing or passing silently.
+    static func nearFade(_ element: XCUIElement?, in app: XCUIApplication) -> Bool {
+        guard let e = element, e.exists else { return false }
+        let composer = app.descendants(matching: .any).matching(identifier: "chrome-composer").firstMatch
+        guard composer.exists else { return false }
+        let top = composer.frame.minY
+        let near = CGRect(x: -10_000, y: top - 2 * composerFadeHeight, width: 20_000, height: composerFadeHeight)
+        let o = e.frame.intersection(near)
+        return !o.isNull && o.width > 0 && o.height > 0
     }
 
     static func run(bundleID: String, size: String?, in test: XCTestCase) throws {
@@ -139,6 +169,9 @@ enum AuditRunner {
                 if let bar = underChrome(issue.element, in: app) {
                     print("AUDIT UNDER CHROME \(bar) \(name) \(size ?? "default"): \(element) (frame \(issue.element?.frame ?? .zero))")
                     return nil
+                }
+                if nearFade(issue.element, in: app) {
+                    print("AUDIT NEAR FADE \(name) \(size ?? "default"): \(element) (frame \(issue.element?.frame ?? .zero)) within twice the fade's \(composerFadeHeight) points above the composer: re-measure the fade if this repeats")
                 }
                 if let known = knownContrast.first(where: { $0.app == bundleID && $0.screen == name && $0.element == element }) {
                     matchedKnown.insert("\(known.screen)\t\(known.element)")
