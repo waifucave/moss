@@ -66,20 +66,30 @@ reach, because it needs something that isn't in a test run.
   hand-over waits on a card on the HOLDER ("Studio's MOSS has a new key: accept it?") with the key's four words,
   answered there by the person, never by the computer presenting the key. What is still owed here is the item below:
   on Linux and Windows a program key proves less to begin with.
-- **A program key on Linux and Windows.** The `app` role isn't verified there yet: no signature check, only the app
-  token and the caller check, which shuts out a sandboxed process or one the daemon started. So a program key there
-  proves "a process running as you that registered first", not the signed app. This is the open before-release item.
-  On macOS the app role takes only a peer signed with the team's Developer ID for one named program, and the hello's
-  surface must be that program.
+- **The app role on Linux and Windows: ruled, built, and said** (the owner's ruling of 2026-11-27, "Allow, and say
+  so"; lane XC, `platform/app-image.ts`). On macOS the app role takes only a peer signed with the team's Developer ID
+  for one named program, and the hello's surface must be that program. Linux and Windows have no signature to check,
+  so the engine checks what they allow:
+  - Linux: the peer held by its pidfd; its executable MOSS's, MOSS Code's or the host's and not replaced; nothing
+    tracing it. A root-owned package install is "verified". An AppImage or a home install is "unverified", accepted
+    and logged.
+  - Windows: the per-user install's executable, at medium integrity or higher, never in the engine's job.
+
+  That refuses a script replaying the app token. It doesn't stop a program already running as the person outside the
+  sandbox: one that starts the real app under LD_PRELOAD or as a child it traces, replaces a user-writable install,
+  or, with `ptrace_scope` 0, attaches to the running app. Such a program can act as MOSS there: approve cards, those
+  other computers act on included, and register a program key. On a kernel before 6.5, a pid reused between the
+  connection and its hello could stand in for the app.
+
+  Approvals and trust changes work on those OSes as on a Mac, by the owner's choice. The site's security page says
+  this in plain words. Not done, by the same ruling: a second factor (a phone's signature) for those abilities there.
 - **A lost key on this computer, from the terminal, on Linux and Windows.** When an app's key here is lost, its new
-  key waits on a card on this computer. The card is answered by another of the person's devices' own keys, or on
-  macOS also by the signed app's own press (lane XC, xc-6b; `surfaces/rpc.ts` `device.programKey.reset`).
-  `moss device key reset <program>` sends the person to that card wherever it can be answered. On Linux and Windows
-  with nothing else to answer it (no phone, no MOSS Code key, no other computer), the terminal takes the new key
-  itself, or opens a 10-minute window for one registration, and the card becomes an OK-only notice. There it rests
-  on the CLI caller check alone: the person's own terminal, outside the sandbox and not under a process the daemon
-  started. That is no weaker than the item above (the app role has no signature check there, so any first key
-  already proves only "a process running as you"), and it tightens with that item.
+  key waits on a card on this computer. The card is answered by another of the person's devices' own keys, or by
+  the checked app's own press (lane XC, xc-6b; `surfaces/rpc.ts` `device.programKey.reset`): macOS by its signature,
+  Linux and Windows by its image (the item above). `moss device key reset <program>` sends the person to that card
+  wherever it can be answered. Only a daemon with no app check at all (`appPeer: "none"`, the tests') and nothing else
+  to answer it has the terminal take the new key itself, or open a 10-minute window for one registration (the card becomes an
+  OK-only notice); there it rests on the CLI caller check alone.
 - **A peer's command writing its folder on Windows** (step 3b). On a macOS or Linux holder, another computer's
   command writes the folder it runs in where a bot there would: on the holder reviewer's "safe" where the level's own
   shell roots cover it, or after the person's yes to the holder's card (a one-call RequestAccess grant).

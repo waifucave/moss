@@ -23,20 +23,23 @@
 //            out injected libraries and task ports, the packaged app's Electron fuses turn off ELECTRON_RUN_AS_NODE,
 //            NODE_OPTIONS and the inspector and load only its integrity-checked app.asar (`electron-builder.yml`),
 //            and the app must refuse Chromium's remote-debugging switches (lane E's, spec §3.1).
-//   Linux    no check, and none is faked: the kernel keeps no code signature for a running process (IMA appraisal
-//            is not something a desktop distribution turns on), and any process of the user's can start the app
-//            under LD_PRELOAD or ptrace it. The fence (the floor) and the daemon's lineage stand alone there.
-//   Windows  no check, and none is faked: Authenticode signs FILES, and a running process's image name can be made
-//            to point at another file (a running .exe can be renamed and a signed one put in its place), while any
-//            process of the user's can open the signed app with full access and write code into it (no hardened
-//            runtime short of Microsoft's protected processes). A check there would pass the very process it is
-//            meant to stop. The fence (AppContainer and the daemon's job) stands alone there.
+//   Linux    no signature: the kernel keeps none for a running process (IMA appraisal is not something a desktop
+//            distribution turns on), and any process of the user's can start the app under LD_PRELOAD or as a
+//            child it traces. What the OS does allow is checked (`app-image.ts`, lane XC: the owner's ruling "Allow,
+//            and say so"): the image is the programs' executable, not replaced, not traced; a root-owned install is
+//            "verified", a user-writable one "unverified" but accepted. It stops a script replaying the token; it
+//            proves "a process running as you", never "MOSS".
+//   Windows  no signature (the first release is unsigned, and Authenticode signs FILES: any process of the user's can
+//            open the app with full access and write code into it). What the OS allows is checked (`app-image.ts`):
+//            the image is the per-user install's executable, at medium integrity or higher; never in the daemon's
+//            job (the caller check). The same limit as Linux.
 //
 // Never throws: any failure (a symbol missing, a non-zero OSStatus) is "not the app".
 import { dlopen, FFIType, ptr, read, type Pointer } from "bun:ffi";
 import { appRequirement, MOSS_TEAM_ID, DEVELOPER_ID_CLAUSES, type MossProgramName } from "../bundled-identities";
 import type { MossProfile } from "../profile";
 import type { PeerFacts } from "./caller-probe";
+import { appImageCheck } from "./app-image";
 import type { DaemonPlatform } from "./transport";
 
 /** The test-marked build's label (scripts/test-build.ts): `false` in every real build, a string only in a test one. */
@@ -261,10 +264,12 @@ function appRequirementSelf(): string {
 }
 
 /** The daemon's `app` peer check on `os` for `profile`: macOS checks the signature and names the program
- *  (`appPeerProgram`); Linux and Windows have none to make (`"none"`; see the head of this file), so the hello's
- *  `surface` and the caller check stand in for the program there. */
-export function defaultAppPeerCheck(os: DaemonPlatform, profile: MossProfile): AppPeerPolicy {
-  const base: AppPeerPolicy = os === "darwin" ? appPeerProgram(profile) : "none";
+ *  (`appPeerProgram`); Linux and Windows check the image (`appImageCheck`; see the head of this file), which names no
+ *  program, so the hello's `surface` stands in for the program there. */
+export function defaultAppPeerCheck(os: DaemonPlatform, profile: MossProfile, log?: (line: string) => void): AppPeerPolicy {
+  // Linux and Windows (lane XC, the owner's ruling of 2026-11-27): the image checks those OSes allow (`app-image.ts`),
+  // passing without naming a program, so the hello's surface still stands for it there.
+  const base: AppPeerPolicy = os === "darwin" ? appPeerProgram(profile) : appImageCheck(os, log === undefined ? {} : { log });
   // A test-marked build (compiled out of a real one: the define folds this branch and `withTestHarnessPeer` goes with it).
   return typeof __MOSS_TEST_BUILD__ === "string" ? withTestHarnessPeer(base) : base;
 }

@@ -114,10 +114,15 @@ describe("the app peer-image check", () => {
     expect(appPeerProgram("dev", { satisfies: (req) => () => req.includes('"com.waifucave.moss.host"') })(peer)).toBe(false);
   });
 
-  test("Linux and Windows make no check (none is faked, and it is named); macOS does", () => {
-    expect(defaultAppPeerCheck("linux", "dist")).toBe("none");
-    expect(defaultAppPeerCheck("win32", "dev")).toBe("none");
+  test("every OS checks: macOS the signature, Linux and Windows the image (app-image.ts); none names nothing to a script", () => {
+    const linux = defaultAppPeerCheck("linux", "dist"), windows = defaultAppPeerCheck("win32", "dev");
+    expect(linux).toBeFunction();
+    expect(windows).toBeFunction();
     expect(defaultAppPeerCheck("darwin", "dist")).toBeFunction();
+    // A peer whose process is gone (no pid) is never the app, on either.
+    const gone = { pid: null, ancestors: [], probe: {}, floor: "outside-floor" as const };
+    expect(check(linux)(gone)).toBe(false);
+    expect(check(windows)(gone)).toBe(false);
   });
 
   test("only an audit token counts: no handle, a pid-only handle or a token-less one is refused", () => {

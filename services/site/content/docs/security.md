@@ -5,6 +5,15 @@ description: If you find a security problem in MOSS, report it privately through
 
 MOSS runs bots and agents with real access to your computer: your files, your commands, a browser, and a link to your other devices. Reports about any of that are welcome, and taken seriously.
 
+## What the engine can tell about its own apps
+
+When you approve something in MOSS or MOSS Code, the engine has to trust that the press came from the real app. How sure it can be depends on your system.
+
+- **macOS** checks each app's code signature while it runs: only MOSS's signed apps, which refuse injected code and debuggers, can answer for you.
+- **Linux and Windows** have no such check. MOSS checks what they do allow. On Linux, the app's file must be MOSS's own and unchanged, and no other program may be tracing it. A file installed by your package manager also counts as verified, while an AppImage or a copy in your home folder doesn't. On Windows, the app's file must be MOSS's own install, at medium integrity or above.
+
+That stops a script that copied MOSS's connection key. It can't stop a program that already runs as you. Such a program could start the real app with its own code loaded into it, or replace a copy of the app that you can write. On Linux with `kernel.yama.ptrace_scope` set to 0, it could also attach to the running app. Such a program could approve cards as MOSS, including the ones your other devices act on. If something you don't trust runs on your Linux or Windows computer outside MOSS's sandbox, treat that computer as able to act as you in MOSS.
+
 ## How to report
 
 Please don't open a public issue, discussion or pull request for a security problem. Report it privately on GitHub instead: in the repository, open **Security**, then **Advisories**, then **Report a vulnerability**, or go straight to [the form](https://github.com/waifucave/moss/security/advisories/new).

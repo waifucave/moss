@@ -39,6 +39,7 @@
     "test/fence/win-driver.e2e.test.ts": "the Windows shell tools through the real bot driver and embedded runtime: Windows only, with MOSS_WIN_RUNTIME_E2E=1, which the windows-fence workflow's unit job sets",
     "test/fence/win-fenced.e2e.test.ts": "the Windows fence end to end (real pool principals through srt-win): Windows only, with MOSS_WIN_FENCE_E2E=1, which the windows-fence workflow's jobs set after sandbox setup",
     "test/ipc/session-set-model-review.test.ts": "one live model-convergence case runs only with its env, on every OS",
+    "test/platform/app-image.test.ts": "the app role's live image check on Windows (a per-user install's exe, its integrity): Windows only (the windows-fence unit job runs it there)",
     "test/platform/win-job.test.ts": "Windows' job objects: Windows only",
     "test/platform/win-pipe.test.ts": "Windows' named pipes: Windows only",
     "test/runtime-sdk/embedded-live-path-protection.test.ts": "a live run with its env only, on every OS",

@@ -111,7 +111,7 @@ export function programKeyMethods(deps: ProgramKeyMethodsDeps): Record<string, M
         if (lost.get(program) === entry) lost.delete(program);
         if (!d.allowed || d.by !== "card") return;
         // Who said yes: another device's own key, or another program's key here (never the asking program's own); an
-        // unsigned press only where the app role is checked by its signature.
+        // unsigned press only where the app role is checked (macOS by its signature, Linux and Windows by its image).
         const s = d.signed;
         const ok = s !== undefined ? !(s.device === input.device && (s.program ?? "code") === program) : deps.sealedPressProvesPerson?.() === true;
         if (!ok) {
@@ -141,16 +141,15 @@ export function programKeyMethods(deps: ProgramKeyMethodsDeps): Record<string, M
       if (program === "code" && t.codeIsSingleKey(device)) throw new MossRpcError(ERR.INVALID_REQUEST, "MOSS Code's key is this desktop's single answer key: device.answerKey.set replaces it", { code: "single-key" });
       if (t.keyOf(device, program) === undefined) return { none: true };
       const waiting = lost.get(program);
-      // Where the card can be answered (macOS: the signed app's own press; anywhere: another device's own key), the
-      // terminal sends the person to it.
+      // Where the card can be answered (the checked app's own press: every OS's daemon, by its signature or its image;
+      // anywhere: another device's own key), the terminal sends the person to it.
       const answerable = deps.sealedPressProvesPerson?.() === true || deps.otherSigners?.(program) === true;
       if (waiting !== undefined && answerable) return waiting.card === undefined ? {} : { card: waiting.card };
       if (waiting !== undefined) {
-        // Linux and Windows, and nothing else of the person's can answer the card: the terminal takes the waiting key
-        // itself, and the card becomes a notice. This rests on the CLI caller check alone (the person's own terminal:
-        // outside the sandbox, not under a process the daemon started). That is no weaker than the open before-release
-        // item there: the `app` role has no signature check on Linux and Windows, so any first key already proves only
-        // "a process running as you". It tightens with that item.
+        // A daemon whose app role isn't checked at all (`appPeer: "none"`), and nothing else of the person's can answer
+        // the card: the terminal takes the waiting key itself, and the card becomes a notice. This rests on the CLI
+        // caller check alone (the person's own terminal: outside the sandbox, not under a process the daemon started),
+        // no weaker than an unchecked app role, whose first key proves only "a process running as you".
         waiting.ctl.abort();
         lost.delete(program);
         await t.adoptLost(waiting.input);
