@@ -112,9 +112,12 @@ export { forgetRemovedPlugin } from "../registry/leftovers";
 /** A component's install (`plugins.install`): the user's install door, the asking plugin its provenance. */
 export type ComponentInstallDoor = (pluginId: string, source: InstallSource) => Promise<{ id: string; state: string; treeHash: string; card?: string; more?: unknown[] }>;
 
+/** How long a plugin removal waits for the plugin's processes to stop. */
+const REMOVE_STOP_DEADLINE_MS = 10_000;
+
 export function pluginRegistryMethods(o: {
   opened: OpenedRegistry;
-  host: Pick<PluginHost, "restart">;
+  host: Pick<PluginHost, "restart"> & Partial<Pick<PluginHost, "stop">>;
   home: string;
   /** The user's home (tests pass a temp one): a pasted server's own folders in it are opened to it (`wrap-reads.ts`). */
   userHome?: string;
@@ -309,7 +312,24 @@ export function pluginRegistryMethods(o: {
         const children = registry.list().filter((c) => c.parent === now.id).map((c) => c.id);
         // What it leaves goes first: a secret that can't be deleted stops the removal, so no later plugin under the same
         // id finds it (#332's second review).
-        await forgetRemovedPlugin({ home: o.home, ...(o.secrets !== undefined ? { secrets: o.secrets } : {}), record: now, children, ...(deleteData === true ? { deleteData: true } : {}) });
+        // Its processes stop first (its module and, through it, its servers), each with a deadline: on Windows a folder a process still
+        // has open can't be moved, and a removal that can't move it leaves the plugin switched OFF with everything else kept, said so.
+        if (o.host.stop !== undefined) {
+          for (const pid of [now.id, ...children]) {
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            await Promise.race([o.host.stop(pid, "being removed").catch(() => undefined), new Promise<void>((r) => { timer = setTimeout(r, REMOVE_STOP_DEADLINE_MS); })]);
+            clearTimeout(timer);
+          }
+        }
+        try {
+          await forgetRemovedPlugin({ home: o.home, ...(o.secrets !== undefined ? { secrets: o.secrets } : {}), record: now, children, ...(deleteData === true ? { deleteData: true } : {}) });
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException).code;
+          if (code !== "EBUSY" && code !== "EPERM" && code !== "EACCES" && code !== "ENOTEMPTY") throw err;
+          try { registry.setEnabled(id, false); } catch { /* it stays as it is */ }
+          o.log?.(`plugins: removing ${id} stopped: its data folder is still in use (${code}); it is switched off and nothing else was removed`);
+          throw new ContractError("refused", `${id} couldn't be removed because a file in its data folder is still in use. It is switched off and nothing else was removed; try again in a moment.`);
+        }
         // This computer's record for the id goes too: a later install under it is never pinned.
         o.indexes?.setPinned(id, false);
         rmSync(folder, { recursive: true, force: true });

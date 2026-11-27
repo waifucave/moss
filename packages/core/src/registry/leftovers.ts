@@ -24,7 +24,48 @@ import { PluginSecretFiles } from "./secret-files";
  *  Its data folder is kept, as the spec says (§5.4), but moved out of the id's path to
  *  `<home>/plugin-data/.removed/<id>/<when>-<tree hash>/`, keyed to that install, so another publisher's plugin with
  *  the same id starts with an empty one. No plugin id starts with a dot. */
-export async function forgetRemovedPlugin(o: { home: string; secrets?: Pick<SecretStore, "list" | "delete">; record: Pick<PluginRecord, "id" | "source" | "treeHash" | "okHash" | "provenance">; children: readonly string[]; now?: () => number; deleteData?: boolean }): Promise<{ dataKeptAt?: string }> {
+/** Tries before a rename or removal of a plugin's data folder is given up on EBUSY/EPERM/ENOTEMPTY (Windows keeps a folder a process still has open): a few tries over about 2.4 s. */
+export const BUSY_TRIES = 9;
+export const BUSY_WAIT_MS = 300;
+const BUSY = new Set(["EBUSY", "EPERM", "EACCES", "ENOTEMPTY"]);
+
+/** Runs `fn`, again after a short wait while it fails busy; the last failure is thrown. `sleep` is the test's seam. */
+export function retryBusy(fn: () => void, sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))): void | Promise<void> {
+  try { return fn(); } catch (e) {
+    // Only a failure takes the slow path: a success is done in the same tick, as before.
+    if (!BUSY.has((e as NodeJS.ErrnoException).code ?? "")) throw e;
+    return (async () => {
+      for (let i = 2; ; i++) {
+        await sleep(BUSY_WAIT_MS);
+        try { return fn(); } catch (err) {
+          if (i >= BUSY_TRIES || !BUSY.has((err as NodeJS.ErrnoException).code ?? "")) throw err;
+        }
+      }
+    })();
+  }
+}
+
+export async function forgetRemovedPlugin(o: { home: string; secrets?: Pick<SecretStore, "list" | "delete">; record: Pick<PluginRecord, "id" | "source" | "treeHash" | "okHash" | "provenance">; children: readonly string[]; now?: () => number; deleteData?: boolean; sleep?: (ms: number) => Promise<void> }): Promise<{ dataKeptAt?: string }> {
+  // Its data folder goes FIRST: on Windows a folder a process still holds open can't be moved or deleted, and a removal that
+  // can't do that stops here with nothing else forgotten (its secrets and settings still there), never half-removed.
+  const data = pluginPath(join(o.home, "plugin-data"), o.record.id);
+  let kept: string | undefined;
+  // The user asked for its data to go too (`plugin.remove`'s `deleteData`): its folder, and what earlier removals of
+  // the same id set aside.
+  if (o.deleteData === true) {
+    const first = retryBusy(() => rmSync(data, { recursive: true, force: true }), o.sleep);
+    if (first !== undefined) await first;
+    const second = retryBusy(() => rmSync(join(o.home, "plugin-data", ".removed", ...o.record.id.split("/")), { recursive: true, force: true }), o.sleep);
+    if (second !== undefined) await second;
+  } else if (existsSync(data)) {
+    const hash = (o.record.okHash ?? o.record.treeHash ?? "unknown").replace(/^sha256:/, "").slice(0, 16);
+    kept = join(o.home, "plugin-data", ".removed", ...o.record.id.split("/"), `${new Date(o.now?.() ?? Date.now()).toISOString().replace(/[:.]/g, "-")}-${hash}`);
+    const to = kept;
+    mkdirSync(join(to, ".."), { recursive: true, mode: 0o700 });
+    const moved = retryBusy(() => renameSync(data, to), o.sleep);
+    if (moved !== undefined) await moved;
+    writeFileSync(join(to, ".moss-removed.json"), JSON.stringify({ id: o.record.id, source: o.record.source, treeHash: o.record.treeHash, okHash: o.record.okHash, provenance: o.record.provenance, removedAt: o.now?.() ?? Date.now() }), { mode: 0o600 });
+  }
   const ids = [o.record.id, ...o.children];
   for (const pluginId of ids) {
     if (o.secrets !== undefined) for (const meta of await o.secrets.list({ kind: "plugin", pluginId })) await o.secrets.delete(meta.ref);
@@ -33,21 +74,7 @@ export async function forgetRemovedPlugin(o: { home: string; secrets?: Pick<Secr
   }
   // Its secrets' files (`${secretFile:…}`) go with it.
   new PluginSecretFiles(o.home).releasePlugin(o.record.id);
-  const data = pluginPath(join(o.home, "plugin-data"), o.record.id);
-  // The user asked for its data to go too (`plugin.remove`'s `deleteData`): its folder, and what earlier removals of
-  // the same id set aside.
-  if (o.deleteData === true) {
-    rmSync(data, { recursive: true, force: true });
-    rmSync(join(o.home, "plugin-data", ".removed", ...o.record.id.split("/")), { recursive: true, force: true });
-    return {};
-  }
-  if (!existsSync(data)) return {};
-  const hash = (o.record.okHash ?? o.record.treeHash ?? "unknown").replace(/^sha256:/, "").slice(0, 16);
-  const kept = join(o.home, "plugin-data", ".removed", ...o.record.id.split("/"), `${new Date(o.now?.() ?? Date.now()).toISOString().replace(/[:.]/g, "-")}-${hash}`);
-  mkdirSync(join(kept, ".."), { recursive: true, mode: 0o700 });
-  renameSync(data, kept);
-  writeFileSync(join(kept, ".moss-removed.json"), JSON.stringify({ id: o.record.id, source: o.record.source, treeHash: o.record.treeHash, okHash: o.record.okHash, provenance: o.record.provenance, removedAt: o.now?.() ?? Date.now() }), { mode: 0o600 });
-  return { dataKeptAt: kept };
+  return kept === undefined ? {} : { dataKeptAt: kept };
 }
 
 
