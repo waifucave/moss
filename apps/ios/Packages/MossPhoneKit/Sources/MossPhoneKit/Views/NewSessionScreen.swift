@@ -53,19 +53,11 @@ public struct NewSessionScreen: View {
                             }
                             .accessibilityAddTraits(model.typedFolder.isEmpty && model.pickedFolder == f ? [.isSelected] : [])
                         }
-                        // The prompt drawn by the app in the readable grey while the field is empty: the system draws its
-                        // own placeholder fainter than any colour given it, and the contrast audit failed that (the
-                        // element it couldn't name on this screen). The field's label still says what it is for.
-                        TextField("Another folder: type or paste a path", text: $model.typedFolder, prompt: Text(""), axis: .vertical)
+                        // The prompt in the readable grey (the system's placeholder grey is fainter).
+                        TextField("Another folder: type or paste a path", text: $model.typedFolder,
+                                  prompt: Text("Another folder: type or paste a path").foregroundStyle(Theme.subtle), axis: .vertical)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
                             .font(.system(.body, design: .monospaced))
-                            .overlay(alignment: .leading) {
-                                if model.typedFolder.isEmpty {
-                                    Text("Another folder: type or paste a path").font(.system(.body, design: .monospaced))
-                                        .foregroundStyle(Theme.subtle).lineLimit(1)
-                                        .allowsHitTesting(false).accessibilityHidden(true)
-                                }
-                            }
                     } header: { FormHeader("Folder") } footer: { Text("Folders of your existing sessions come first. A path is the folder's place on your computer.").foregroundStyle(Theme.subtle) }
                     if let e = model.errorText { Section { Label(e, systemImage: "exclamationmark.circle").foregroundStyle(.secondary) } }
                 }

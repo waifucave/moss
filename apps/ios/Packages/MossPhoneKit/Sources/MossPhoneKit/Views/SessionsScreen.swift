@@ -34,7 +34,7 @@ public struct SessionsScreen: View {
             // Room under the bar: the first project's header row sat inside the soft shadow of the bar's glass buttons, and
             // the contrast audit read its grey against that shadow (the header's element is the whole row).
             TopBar(waiting: cards.waitingCount, plusLabel: "New session", onSettings: onSettings, onBell: onBell, onSearch: { searching = true }, onPlus: onNew)
-                .listRow(bottom: 16)
+                .listRow(bottom: 28)
             if searching {
                 SearchField(text: $query, prompt: "Search sessions", onCancel: { searching = false; query = "" }).listRow(top: 8, bottom: 8)
             }

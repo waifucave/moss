@@ -196,9 +196,15 @@ final class CardGateUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["1 question still needs an answer."].exists, "it says why")
         let window = app.buttons["Window"].firstMatch
         scroll(app, up: true, until: { window.isHittable })
+        // The box may still be moving after the scroll: a tap then can land beside the option. Tap once more if the
+        // pick didn't take, and wait for it.
+        sleep(1)
         window.tap()
+        let picked = NSPredicate(format: "isSelected == true")
+        if XCTWaiter.wait(for: [expectation(for: picked, evaluatedWith: window)], timeout: 3) != .completed { window.tap() }
+        XCTAssertEqual(XCTWaiter.wait(for: [expectation(for: picked, evaluatedWith: window)], timeout: 5), .completed, "Window is picked")
         XCTAssertTrue(app.buttons["Saturday"].firstMatch.isSelected, "the first question's pick stays")
-        XCTAssertTrue(submit.isEnabled, "each question has an answer")
+        XCTAssertEqual(XCTWaiter.wait(for: [expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: submit)], timeout: 5), .completed, "each question has an answer")
         submit.tap()
         XCTAssertTrue(app.descendants(matching: .any)["Which day should I book the train for?"].waitForNonExistence(timeout: 10), "answered: the box goes")
         app.terminate()
