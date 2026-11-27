@@ -62,8 +62,10 @@ reach, because it needs something that isn't in a test run.
   - An unpackaged, headless or test run, and Linux with no Secret Service, keep the key in memory only: a new key on
     every start, which that computer's own table already refuses after the first.
 
-  What's owed: a card on the HOLDER ("Studio's MOSS has a new key: accept it?"), answered there by the person, never
-  by the computer presenting the key. Lane XC, after step 4 merges.
+  Built (lane XC, xc-6): a key rotated with its hand-over reaches the paired computers with no card; a new key with no
+  hand-over waits on a card on the HOLDER ("Studio's MOSS has a new key: accept it?") with the key's four words,
+  answered there by the person, never by the computer presenting the key. What is still owed here is the item below:
+  on Linux and Windows a program key proves less to begin with.
 - **A program key on Linux and Windows.** The `app` role isn't verified there yet: no signature check, only the app
   token and the caller check, which shuts out a sandboxed process or one the daemon started. So a program key there
   proves "a process running as you that registered first", not the signed app. This is the open before-release item.
@@ -84,10 +86,10 @@ reach, because it needs something that isn't in a test run.
   Windows a peer's command writes only its own temp folder. On Linux, bubblewrap holds a run-later place by its path
   at the command's start, and the folder holding it can be renamed during the run: `mv proj proj-old && mkdir -p
   proj/.git/hooks` puts a planted repo at the held path while the real `.git` moves away (the review's blocker on
-  24516c887). Holding the names by identity (device and inode at the start, renames through an opened parent, a
-  repo's parents not renamable) is lane/xc-3c-linux-held-names, for the local bots' wider levels and peers alike.
-  Windows waits on its fence's deny depth being checked for a peer's folder. Both wait on the same items as the
-  local grants.
+  24516c887). The agent runtime now holds those names against that (0.0.89: a held name's quarantine checks its parent
+  against the walk's identity; a walk that can't finish fails closed; 0.0.90: one budget per command, smallest folders
+  first), so Linux waits only on a ruling to give a peer's command its folder there as on macOS. Windows waits on its
+  fence's deny depth being checked for a peer's folder.
 - **A bot committing on another computer.** Every `.git` is denied whole to a peer's command, as to a local bot's
   sandboxed one; a commit is the outside-the-sandbox card on the bot's own computer only. A peer's form of that card
   (on the holder, run as the person there) is not built. One backlog item for both.

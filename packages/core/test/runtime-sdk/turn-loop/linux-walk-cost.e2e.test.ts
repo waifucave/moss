@@ -15,7 +15,7 @@ import type { BotSessionContext, EffectiveBot } from "../../../src/bots/service"
 import { botPaths } from "../../../src/bots/paths";
 import { BotSessionDriver, type BotDriverDeps } from "../../../src/runtime-sdk/turn-loop/driver";
 import { MossFence } from "../../../src/fence/fence";
-import { botSandboxSettings, leftOutRoots } from "../../../src/fence/sandbox-settings";
+import { botSandboxSettings } from "../../../src/fence/sandbox-settings";
 import { describeWithEmbeddedRuntime } from "../../helpers/embedded-runtime";
 
 const temps: string[] = [];
@@ -74,14 +74,12 @@ describeWithEmbeddedRuntime("a bot's Bash on Linux with today's write roots: wha
       mkdirSync(ctx.paths.root, { recursive: true });
       const fence = new MossFence({ os: "linux", home: userDir, mossHome, temp });
       let roots = 0;
-      let leftOut = 0;
       const sandbox = (c: BotSessionContext) => {
         const t = Date.now();
         const s = botSandboxSettings(fence.forCaller(c.caller).policy(), {
           mossHome, userHome: userDir, level, ownFolders: [c.paths.scratch, c.paths.root], pathFolders: [],
         });
         roots = s.filesystem?.allowWrite?.length ?? 0;
-        leftOut = leftOutRoots(s).length;
         const dw = s.filesystem?.denyWrite ?? [];
         logs.push(`MOSS's sandbox drawn in ${Date.now() - t} ms: ${roots} roots, ${dw.length} write denies (${dw.filter((d) => d.includes("*")).length} globs), ${(s.filesystem?.denyRead ?? []).length} read denies`);
         return s;
@@ -115,7 +113,7 @@ describeWithEmbeddedRuntime("a bot's Bash on Linux with today's write roots: wha
       } finally {
         await driver.stop();
       }
-      return { steady: ms[1], first: ms[0]!, roots, leftOut };
+      return { steady: ms[1], first: ms[0]!, roots };
     };
     // The numbers are the point (the controller reads them): printed, no bound. With the MOSS home inside the user's
     // home, fully automatic already draws the home as its entries (sandboxSettingsOf's `except`), about 100 roots
@@ -124,7 +122,7 @@ describeWithEmbeddedRuntime("a bot's Bash on Linux with today's write roots: wha
     // top folders: its roots are counted (on the same layout, with few files) rather than timed again; the same roots
     // cost the same walk.
     const auto = { tiny: await timeTurns("automatic", 1, 10, 1), big: await timeTurns("automatic", 100, 3_000, 1) };
-    console.log(`linux walk cost at automatic: tiny home ${auto.tiny.first} ms (${auto.tiny.roots} roots), 100-folder home ${auto.big.first} ms (${auto.big.roots} roots, ${auto.big.leftOut} left out), added per command ${auto.big.first - auto.tiny.first} ms`);
+    console.log(`linux walk cost at automatic: tiny home ${auto.tiny.first} ms (${auto.tiny.roots} roots), 100-folder home ${auto.big.first} ms (${auto.big.roots} roots), added per command ${auto.big.first - auto.tiny.first} ms`);
     const rootsAt = (level: "automatic" | "accept-edits") => {
       const { userDir, mossHome } = homeShaped(100, 10);
       const temp = join(userDir, "tmp-moss");
@@ -135,7 +133,6 @@ describeWithEmbeddedRuntime("a bot's Bash on Linux with today's write roots: wha
       return s.filesystem?.allowWrite?.length ?? 0;
     };
     console.log(`linux walk cost at accept-edits: the same 100-folder layout draws ${rootsAt("accept-edits")} roots (fully automatic ${rootsAt("automatic")})`);
-    expect(auto.big.leftOut).toBe(0);
     // Agent runtime 0.0.89 walks the roots on one budget per command (400,000 entries, 3 s) and fails closed past it:
     // the ~300 s a command on 0.0.88 is now about a second; 10 s is the bound, the bot's own folder written either way.
     expect(auto.big.first - auto.tiny.first).toBeLessThan(10_000);

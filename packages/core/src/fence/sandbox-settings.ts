@@ -206,10 +206,6 @@ export function botSandboxSettings(policy: SandboxPolicy, o: {
   pathFolders?: readonly string[];
   /** A folder's entries, as `readdirSync` with types gives them (tests pass a fake; `ordinaryTopFolders`). */
   list?: (dir: string) => readonly { name: string; isDirectory(): boolean; isSymbolicLink(): boolean }[];
-  /** Test seam for the Linux look (`linuxHoldProblem`): its own disk and limits. */
-  linuxWalk?: Parameters<typeof linuxHoldProblem>[1];
-  /** Test seam: leave out the Linux roots the runtime's walk can't hold, whatever `LINUX_LEAVE_OUT_UNHELD` says. */
-  linuxLeaveOut?: boolean;
 }): SandboxSettingsConfig {
   const wide = o.level === "accept-edits" || o.level === "automatic";
   const os: Os = o.windows ? "windows" : process.platform === "darwin" ? "macos" : "linux";
@@ -236,124 +232,18 @@ export function botSandboxSettings(policy: SandboxPolicy, o: {
   // Fail closed: a root a deny would cover is left out (a deny wins inside the runtime, so it would write nothing
   // there anyway; leaving it out says so). None is, for the folders MOSS draws (sandbox-settings.test's invariant).
   const covered = (out.filesystem?.allowWrite ?? []).filter((r) => !rootCovered(r, runLater, os) && !holdsFolded(r, o.mossHome, os));
-  // Linux (lane XC 3c): the runtime holds a pattern's matches only as far as its walk reaches (`linuxHoldProblem`); a
-  // root of the user's whose walk can't finish there, or that holds a repository inside `node_modules`, isn't handed to
-  // it at all, so the command runs with the narrower roots, and a write it can't make says why (`leftOutRoots`).
-  // Off (`LINUX_LEAVE_OUT_UNHELD`): every root is handed, and the runtime (0.0.90) drops the ones its walk can't finish
-  // this command, largest first (the owner's ruling: the whole home, the largest may drop, the bot is told).
-  const leftOut: LeftOutRoot[] = [];
-  const keptWrite = os !== "linux" || !(o.linuxLeaveOut ?? LINUX_LEAVE_OUT_UNHELD) ? covered : covered.filter((r) => {
-    if (!pathWithin(r, o.userHome, os) || pathWithin(r, o.mossHome, os) || own.some((f) => pathWithin(r, f, os))) return true;
-    const why = linuxHoldProblem(r, o.linuxWalk);
-    if (why === undefined) return true;
-    leftOut.push({ root: r, why });
-    return false;
-  });
-  const settings: SandboxSettingsConfig = {
+  // Linux: every root is handed; the agent runtime (0.0.90) drops, for that command, the ones its walk can't finish,
+  // largest first, and says so (the owner's ruling, 2026-11-27: the whole home stays the shell's reach at fully
+  // automatic, the largest may drop per command, the bot is told: driver.ts `droppedRootsNote`).
+  return {
     ...out,
     filesystem: {
       ...out.filesystem,
-      allowWrite: keptWrite,
+      allowWrite: covered,
       denyWrite: [...new Set([...(out.filesystem?.denyWrite ?? []), ...runLater])],
       denyRead: [...new Set([...(out.filesystem?.denyRead ?? []), ...secrets])],
     },
   };
-  if (leftOut.length > 0) LEFT_OUT.set(settings, leftOut);
-  return settings;
-}
-
-/** Whether `botSandboxSettings` leaves out, on Linux, a user's write root the runtime's walk can't hold. Off: from
- *  agent runtime 0.0.89 the runtime fails closed itself (a root whose walk can't finish within its per-command budget
- *  isn't handed as writable), and from 0.0.90 it walks the smallest first, so the largest are what drop; MOSS doesn't
- *  walk the roots a second time before each command (the owner's ruling, 2026-11-27: the whole home stays the shell's
- *  reach at fully automatic, the largest folders may drop per command, the bot is told). */
-export const LINUX_LEAVE_OUT_UNHELD = false;
-
-/** A write root MOSS didn't hand the runtime on Linux, and why (`linuxHoldProblem`). */
-export interface LeftOutRoot { root: string; why: string }
-const LEFT_OUT = new WeakMap<SandboxSettingsConfig, LeftOutRoot[]>();
-
-/** The write roots `botSandboxSettings` left out of these settings (Linux, lane XC 3c), for the note a refused write
- *  gets. */
-export function leftOutRoots(settings: SandboxSettingsConfig | undefined): readonly LeftOutRoot[] {
-  return settings === undefined ? [] : LEFT_OUT.get(settings) ?? [];
-}
-
-/** A path from the disk as a note shows it: control and bidirectional characters as `?`, at most 200 characters. */
-function shownPath(p: string): string {
-  const t = p.replace(/[\u0000-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/g, "?");
-  return t.length > 200 ? `${t.slice(0, 199)}…` : t;
-}
-
-/** The runtime's own walk for a pattern-shaped deny on Linux (the agent runtime 0.0.90's `perCommandExpander`): one
- *  budget per command, 400,000 entries and 3 s from its first walk, across every write root: the working folder first
- *  on the whole budget, then the roots smallest first by their last walk, a root never walked on a fair share of
- *  what's left; 16 levels down, `node_modules` walked to 64. A root the runtime can't finish it doesn't hand as
- *  writable (it fails closed itself), so on a big home the largest folders are what drop for that command.
- *  These must be the runtime's numbers, never larger: a root this check passes past the runtime's limit would be one
- *  the runtime drops anyway. */
-export const LINUX_WALK = { maxVisited: 400_000, maxDepth: 16 } as const;
-/** How many entries the look for repositories inside `node_modules` reads under one root. */
-const NODE_MODULES_BUDGET = 50_000;
-const HOLD_TTL_MS = 10_000;
-const holdCache = new Map<string, { at: number; why: string | undefined }>();
-
-/** Why the runtime's Linux sandbox wouldn't hold every run-later place under `root`, or undefined: its walk
- *  (`LINUX_WALK`) can't finish there, so a `.git` past it would be writable; or a `.git` or `*.git` sits inside
- *  `node_modules`, which that walk skips. A look that can't finish either fails closed. Kept for a few seconds (the
- *  sandbox is drawn at each turn's start and read again by the file tools). */
-export function linuxHoldProblem(root: string, o: { list?: (dir: string) => readonly { name: string; isDirectory(): boolean; isSymbolicLink(): boolean }[]; now?: number; limits?: { maxVisited: number; maxDepth: number; nodeModules: number } } = {}): string | undefined {
-  const now = o.now ?? Date.now();
-  const hit = o.list === undefined ? holdCache.get(root) : undefined;
-  if (hit !== undefined && now - hit.at < HOLD_TTL_MS) return hit.why;
-  const list = o.list ?? ((d: string) => readdirSync(d, { withFileTypes: true }));
-  const lim = o.limits ?? { ...LINUX_WALK, nodeModules: NODE_MODULES_BUDGET };
-  const held = new Set([...heldNames(), ".moss"].filter((n) => !n.includes("/")));
-  // Exactly as the runtime's regexes match on Linux (case as written: `anyCase` leaves names alone there), so this walk
-  // never stops where the runtime's goes on.
-  const isHeld = (name: string) => [...held].some((h) => (h.startsWith("*") ? name.endsWith(h.slice(1)) : name === h));
-  const isRepo = (name: string) => name.endsWith(".git");
-  let why: string | undefined;
-  // The runtime's walk, as it runs: entries counted as listed, a matched name not walked into, node_modules skipped.
-  let visited = 0;
-  const modules: string[] = [];
-  const walk = (dir: string, depth: number): boolean => {
-    let entries: readonly { name: string; isDirectory(): boolean; isSymbolicLink(): boolean }[];
-    try { entries = list(dir); } catch { return true; }
-    for (const e of entries) {
-      if (++visited > lim.maxVisited) return false;
-      if (isHeld(e.name)) continue;
-      if (!e.isDirectory() || e.isSymbolicLink()) continue;
-      const at = posix.join(dir, e.name);
-      if (e.name === "node_modules") { modules.push(at); continue; }
-      if (depth + 1 > lim.maxDepth) return false;
-      if (!walk(at, depth + 1)) return false;
-    }
-    return true;
-  };
-  if (!walk(root, 0)) why = `${root} holds more than the sandbox can check for repositories (over ${lim.maxVisited.toLocaleString("en")} entries or ${lim.maxDepth} folders deep), so a .git past that wouldn't be held`;
-  // Inside node_modules: any repository at all (a package installed from git keeps its .git), looked for to its end.
-  if (why === undefined) {
-    let left = lim.nodeModules;
-    const stack = [...modules];
-    find: while (stack.length > 0) {
-      const dir = stack.pop()!;
-      let entries: readonly { name: string; isDirectory(): boolean; isSymbolicLink(): boolean }[];
-      try { entries = list(dir); } catch { continue; }
-      for (const e of entries) {
-        if (--left < 0) { why = `${root} holds more inside node_modules than the sandbox can check for repositories`; break find; }
-        const at = posix.join(dir, e.name);
-        // The path is the disk's names, not MOSS's: control characters folded out and clamped before it reaches a note.
-        if (isRepo(e.name)) { why = `${root} holds a repository inside node_modules (${shownPath(at)}), where the sandbox doesn't hold a .git`; break find; }
-        if (e.isDirectory() && !e.isSymbolicLink()) stack.push(at);
-      }
-    }
-  }
-  if (o.list === undefined) {
-    if (holdCache.size > 256) holdCache.clear();
-    holdCache.set(root, { at: now, why });
-  }
-  return why;
 }
 
 /** Control characters: never in a drawn root or a granted folder. */
