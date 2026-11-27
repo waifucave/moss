@@ -630,7 +630,26 @@ export interface TaskFrames {
  *  start (every one but a foreground command, `is_backgrounded: false`, by the pause's own rule; a later
  *  `task_updated` that backgrounds one too), and ends at its notification or an update to a final status; when the query
  *  ends, every task it had ends with it. The subagents' own frames (`parent_tool_use_id`) are theirs, not the session's. */
+/** Names and flags only, never an input or a result's text: each Bash/PowerShell call's name and whether it asked to run in the background, and
+ *  whether its result says it did ("background" in the text), to see what a runtime that sends no task frame did with the call. */
+export function noteToolFrames(m: unknown, names: Map<string, string>, log: (line: string) => void): void {
+  const msg = m as { type?: unknown; message?: { content?: unknown } };
+  const content = msg?.message?.content;
+  if (!Array.isArray(content)) return;
+  for (const b of content as { type?: unknown; id?: unknown; name?: unknown; input?: { run_in_background?: unknown }; tool_use_id?: unknown; content?: unknown }[]) {
+    if (msg.type === "assistant" && b?.type === "tool_use" && typeof b.id === "string" && typeof b.name === "string" && /^(Bash|PowerShell)$/.test(b.name)) {
+      names.set(b.id, b.name);
+      log(`moss-code: tool call ${b.name} run_in_background=${typeof b.input?.run_in_background === "boolean" ? String(b.input.run_in_background) : "unset"}`);
+    } else if (msg.type === "user" && b?.type === "tool_result" && typeof b.tool_use_id === "string" && names.has(b.tool_use_id)) {
+      const text = typeof b.content === "string" ? b.content : JSON.stringify(b.content ?? "");
+      log(`moss-code: tool result of ${names.get(b.tool_use_id)} says background=${/background/i.test(text)}`);
+      names.delete(b.tool_use_id);
+    }
+  }
+}
+
 export function reportingTasks(q: AcpQuery, tell: TaskFrames, log?: (line: string) => void): AcpQuery {
+  const names = new Map<string, string>();
   const say = (fn: () => void) => {
     try { fn(); } catch { /* a report never stops the agent */ }
   };
@@ -641,6 +660,7 @@ export function reportingTasks(q: AcpQuery, tell: TaskFrames, log?: (line: strin
           try {
             for await (const m of target) {
               const msg = m as { type?: unknown; subtype?: unknown; task_id?: unknown; is_backgrounded?: unknown; parent_tool_use_id?: unknown; patch?: { is_backgrounded?: unknown; status?: unknown } };
+              if (log !== undefined) say(() => noteToolFrames(m, names, log));
               if (msg?.type === "system" && typeof msg.task_id === "string") {
                 // Kinds and ids only (never a command or its output): what the runtime told, for a session that reads as not waiting.
                 say(() => log?.(`moss-code: task frame ${typeof msg.subtype === "string" ? msg.subtype : "?"} ${msg.task_id as string} backgrounded=${typeof msg.is_backgrounded === "boolean" ? String(msg.is_backgrounded) : "unset"}${typeof msg.parent_tool_use_id === "string" && msg.parent_tool_use_id !== "" ? " (a subagent's)" : ""}`));

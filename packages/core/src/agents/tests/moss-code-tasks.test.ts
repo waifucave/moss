@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Options } from "@waifucave/clover-agent-sdk";
 import { FakeFence } from "../../contracts/fakes/fence";
-import { MossCodeBackend, reportingTasks, type MossCodeDeps } from "../moss-code/backend";
+import { MossCodeBackend, noteToolFrames, reportingTasks, type MossCodeDeps } from "../moss-code/backend";
 import { waitFor } from "./world";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "moss-code-tasks-")));
@@ -93,5 +93,14 @@ test("reportingTasks logs each task frame's kind and id, never anything else", a
   const told = reportingTasks(q, { started() {}, ended() {}, gone() {} }, (l) => lines.push(l));
   for await (const _ of told as AsyncIterable<unknown>) { /* drained */ }
   expect(lines).toEqual(["moss-code: task frame task_started t1 backgrounded=true", "moss-code: task frame task_notification t1 backgrounded=unset"]);
+  expect(lines.join("\n")).not.toContain("SECRET");
+});
+
+test("noteToolFrames logs a shell call's name and background flag and whether its result says background, never the input or output", () => {
+  const lines: string[] = [];
+  const names = new Map<string, string>();
+  noteToolFrames({ type: "assistant", message: { content: [{ type: "tool_use", id: "u1", name: "Bash", input: { command: "echo SECRET-CMD", run_in_background: true } }, { type: "tool_use", id: "u2", name: "Read", input: {} }] } }, names, (l) => lines.push(l));
+  noteToolFrames({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "u1", content: "Command running in background SECRET-OUT" }, { type: "tool_result", tool_use_id: "u2", content: "x" }] } }, names, (l) => lines.push(l));
+  expect(lines).toEqual(["moss-code: tool call Bash run_in_background=true", "moss-code: tool result of Bash says background=true"]);
   expect(lines.join("\n")).not.toContain("SECRET");
 });
