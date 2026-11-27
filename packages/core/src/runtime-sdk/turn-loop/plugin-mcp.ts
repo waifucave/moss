@@ -1063,6 +1063,12 @@ export class PluginMcp {
     return this.#listingWatchers.add(() => fn());
   }
 
+  /** The daemon is stopping: from here a listing in flight ends quietly. The host stops the plugins' workers (their channels
+   *  close) before `close()` runs, so a listing caught by that is no crash and nothing to retry or say. */
+  beginShutdown(): void {
+    this.#closed = true;
+  }
+
   close(): void {
     this.#closed = true;
     for (const [key] of [...this.#expected]) this.#release(key);

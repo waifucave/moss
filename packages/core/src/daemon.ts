@@ -5540,6 +5540,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       coworkEvents?.stop();
       mark("the browser host and cowork events");
       server.stop(); coworkService?.close(); mark("the IPC server and cowork's close");
+      pluginMcp?.beginShutdown(); // before the workers stop: a plugin listing in flight then ends quietly, no retry against a worker that won't come back
       mcp?.stopAll(); lspManager?.killAllNow(); void lspManager?.stopAll(); pluginSupervisor.stopAll(); bgRegistry.killAll();
       mark("the MCP servers, LSPs, plugin supervisor and background commands");
       settingsWatcher?.stop(); // closes the fs.watch handle on settings.json — no leaked watcher past shutdown

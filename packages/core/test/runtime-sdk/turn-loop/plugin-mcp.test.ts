@@ -718,6 +718,36 @@ test("a plugin the host stopped on purpose (being removed) while it was listed: 
   }
 }, 15_000);
 
+test("the daemon stopping while a plugin's server is being listed (beginShutdown, then the host closes its channels): the listing ends quietly, no 'worker went' line, no second open", async () => {
+  const folder = mkdtempSync(join(tmpdir(), "moss-a3-pmcp-"));
+  temps.push(folder);
+  const registry = fakeRegistry([entry("moss/web", "web", { type: "host", tools: { WebSearch: "preload", WebFetch: "preload" } })], { "moss/web": folder }, {}, { "moss/web": { granted: ["network:mcp.exa.ai", "network:public"] } });
+  let closed = false;
+  let opened = 0;
+  const host = {
+    async openMcp(): Promise<McpChannel> {
+      opened++;
+      const out = new Listeners<Record<string, unknown>>();
+      return { send() {}, onMessage: (fn: (m: Record<string, unknown>) => void) => out.add(fn), close() { closed = true; }, get closed() { return closed; } };
+    },
+    // The plugin reads as running: it is the daemon that is stopping, not the host that stopped this plugin on purpose.
+    status: () => ({ pluginId: "moss/web", crashes: 0, state: "running" }) as never,
+  };
+  const logs: string[] = [];
+  const mcp = new PluginMcp({ registry, host, self: () => "Studio", log: (l) => logs.push(l) });
+  try {
+    const listing = mcp.refresh();
+    await new Promise((r) => setTimeout(r, 30));
+    mcp.beginShutdown(); // the daemon's stop, before the plugin supervisor stops the workers
+    closed = true; // the worker went: its channel closes under the listing
+    await listing;
+    expect(logs.filter((l) => l.includes("worker went") || l.includes("listing again"))).toEqual([]);
+    expect(opened).toBe(1);
+  } finally {
+    mcp.close();
+  }
+}, 15_000);
+
 test("a worker that goes during the listing (its channel closes): listed again on the next worker at once, never a 30 s wait; one that keeps going says why", async () => {
   const folder = mkdtempSync(join(tmpdir(), "moss-a3-pmcp-"));
   temps.push(folder);
