@@ -4231,7 +4231,9 @@ async function computersRun(): Promise<void> {
       const real = realpathSync.native(join(betaUser, "project"));
       if (r === undefined) return fail("the bot was given no result");
       // The whole result when it fails (a refusal's reason comes last: run 45940374811 cut srt-win's own words off).
-      if (r.isError || !r.text.includes(real) || !r.text.includes(BETA_NOTE)) fail(`the output doesn't show Beta's folder and file (${r.text.slice(0, 1_500)})`);
+      // Windows: Beta's shell is Git Bash, whose `pwd` spells D:\a\x as /d/a/x (run 46018500065).
+      const posix = process.platform === "win32" ? real.replace(/^([A-Za-z]):\\/, (_m, d: string) => `/${d.toLowerCase()}/`).replace(/\\/g, "/") : real;
+      if (r.isError || !(r.text.includes(real) || r.text.includes(posix)) || !r.text.includes(BETA_NOTE)) fail(`the output doesn't show Beta's folder and file (isError ${r.isError}: ${r.text.slice(0, 1_500)})`);
       if (!r.text.startsWith("now on Beta: home/Beta/project")) fail(`the result's first line doesn't say where the shell now is (${r.text.split("\n")[0]})`);
       // Step 3b at fully automatic: no card ever; a command that writes gets Beta's folder only on its reviewer's
       // "safe", and this engine has no model to judge it, so it runs with only its own temp folder, and says why.
