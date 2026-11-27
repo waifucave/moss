@@ -10,7 +10,7 @@
 // is written that run. Accepted residual: what a plugin left in a home from before these records, with no record, stays
 // for whatever tree next comes under its id (it asks for its OK as any new tree does).
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import type { PluginProvenance } from "@waifucave/moss-protocol";
 import { ContractError } from "../contracts/common";
 import type { PluginRecord } from "../contracts/plugin-registry";
@@ -71,7 +71,7 @@ export class RemovalIncomplete extends Error {
 }
 
 /** The "removing" mark: what a half-done removal needs to finish on the next attempt (the record's own facts, where the data went). */
-interface Mark { record: unknown; children: readonly string[]; deleteData: boolean; kept?: string; at: number }
+interface Mark { record: { treeHash?: string; okHash?: string }; children: readonly string[]; kept?: string; at: number }
 const markPath = (home: string, id: string): string => `${pluginPath(join(home, "plugin-data", ".removing"), id)}.json`;
 
 /** Makes `parts` under `base` one directory at a time, each a real directory: a link (symlink or junction) planted at any of them is refused, never followed. */
@@ -88,6 +88,16 @@ function mkdirNoLink(base: string, parts: readonly string[]): string {
     if (st.isSymbolicLink() || !st.isDirectory()) throw new ContractError("refused", `${dir} is not a plain folder (a link or a file is there)`);
   }
   return dir;
+}
+
+/** Whether a removing mark is there for `id` (a half-done removal): the plugin must be removed again, not switched on. */
+export function hasRemovingMark(home: string, id: string): boolean {
+  return readMark(home, id) !== undefined;
+}
+
+/** Drops a removing mark (a reinstall or update of the id owns it now). */
+export function clearRemovingMark(home: string, id: string): void {
+  try { rmSync(markPath(home, id), { force: true }); } catch { /* none */ }
 }
 
 function writeMark(home: string, id: string, mark: Mark): void {
@@ -140,9 +150,14 @@ export function pendingRemovals(home: string): string[] {
  *  was done, and the next attempt (every step is idempotent) finishes it from the mark. */
 export async function forgetRemovedPlugin(o: { home: string; secrets?: Pick<SecretStore, "list" | "delete">; record: Pick<PluginRecord, "id" | "source" | "treeHash" | "okHash" | "provenance">; children: readonly string[]; now?: () => number; deleteData?: boolean; sleep?: Sleep; platform?: string; rename?: (from: string, to: string) => void }): Promise<{ dataKeptAt?: string }> {
   const data = pluginPath(join(o.home, "plugin-data"), o.record.id);
-  const resumed = readMark(o.home, o.record.id);
-  let kept: string | undefined = resumed?.kept;
-  const deleteData = o.deleteData === true || resumed?.deleteData === true;
+  // The mark is used only for the install it was written for (same tree and OK hashes) and only for where its data went; whether data is
+  // deleted is the CALLER's choice, always, never the mark's.
+  const found = readMark(o.home, o.record.id);
+  const resumed = found !== undefined && found.record?.treeHash === o.record.treeHash && found.record?.okHash === o.record.okHash ? found : undefined;
+  if (found !== undefined && resumed === undefined) clearRemovingMark(o.home, o.record.id);
+  const keptRoot = join(o.home, "plugin-data", ".removed", ...o.record.id.split("/"));
+  let kept: string | undefined = resumed?.kept !== undefined && resolve(resumed.kept).startsWith(resolve(keptRoot) + sep) ? resumed.kept : undefined;
+  const deleteData = o.deleteData === true;
   const busy = busyCodes(o.platform);
   const codeOf = (e: unknown): string | undefined => (e as NodeJS.ErrnoException).code;
   // The data folder's step: its busy failure is `DataFolderBusy`, and only that.
@@ -168,7 +183,7 @@ export async function forgetRemovedPlugin(o: { home: string; secrets?: Pick<Secr
   // From here the data is gone from its place: a failure says what was done, and the mark lets the next attempt finish.
   const done: string[] = [];
   if (kept !== undefined || deleteData) done.push(deleteData ? "its data folder was deleted" : "its data folder was moved aside");
-  try { writeMark(o.home, o.record.id, { record: o.record, children: o.children, deleteData, ...(kept !== undefined ? { kept } : {}), at: o.now?.() ?? Date.now() }); } catch { /* a missing mark only means the next attempt reads the folder as gone */ }
+  try { writeMark(o.home, o.record.id, { record: { ...(o.record.treeHash !== undefined ? { treeHash: o.record.treeHash } : {}), ...(o.record.okHash !== undefined ? { okHash: o.record.okHash } : {}) }, children: o.children, ...(kept !== undefined ? { kept } : {}), at: o.now?.() ?? Date.now() }); } catch { /* a missing mark only means the next attempt reads the folder as gone */ }
   const step = async (name: string, fn: () => void | Promise<void>): Promise<void> => {
     try { await retryBusyAsync(async () => { await fn(); }, o.sleep, o.platform); } catch (e) { throw new RemovalIncomplete(done, name, codeOf(e), e instanceof Error ? e.message.slice(0, 200) : undefined); }
     done.push(name);

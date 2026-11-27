@@ -79,8 +79,9 @@ export interface DaemonPluginHost {
   proxyFor(pluginId: string): PluginProxy | undefined;
   /** The pid of the process a plugin's host half runs in now, if one is up (a test kills only a process it started). */
   pidOf(pluginId: string): number | undefined;
-  /** Ends the plugin's OWN host process if it has one up (a removal moves its data folder, which a running process may hold open on Windows). */
-  stopOwn(pluginId: string): void;
+  /** Ends the plugin's OWN host process if it has one up, and, for a top-level plugin (its whole tree is going), the tree's shared process too (a
+   *  removal moves its data folder, which a running process may hold open on Windows). Answers the pids it ended. */
+  stopOwn(pluginId: string): number[];
   /** The user's side of plugin settings (`plugin.settings.get`/`set`). */
   readonly settings: PluginSettings;
   /** The capability gate without the process check, for a component's call (`plugin.layer.api`, process `ui`). */
@@ -796,9 +797,14 @@ export async function startPluginHost(o: StartPluginHostOptions): Promise<Daemon
     pluginSecrets: pluginSecretsOf(o.secrets),
     proxyFor,
     stopOwn(pluginId) {
-      const key = `own:${pluginId}`;
-      const live = processes.get(key);
-      if (live !== undefined && !live.peer.closed) endOwn({ key, live })();
+      const ended: number[] = [];
+      for (const key of pluginId.includes("/") ? [`own:${pluginId}`] : [`own:${pluginId}`, `shared:${pluginId}`]) {
+        const live = processes.get(key);
+        if (live === undefined || live.peer.closed) continue;
+        if (live.pid !== undefined) ended.push(live.pid);
+        endOwn({ key, live })();
+      }
+      return ended;
     },
     pidOf(pluginId) {
       const r = recordOf(pluginId);

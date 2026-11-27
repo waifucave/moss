@@ -199,6 +199,8 @@ describe("plugin.* over the registry", () => {
       expect((await m["plugin.remove"]!({ id: "tarot" }, CLI).catch((e: Error) => e.message)) as string).toContain("locked");
       expect(existsSync(join(home, "plugins", "tarot"))).toBe(true);
       expect(opened.registry.get("tarot")).toBeDefined();
+      // Half removed (a "removing" mark): it can't be switched on again with its keys gone; it is removed again instead.
+      expect((await m["plugin.setEnabled"]!({ id: "tarot", enabled: true }, CLI).catch((e: Error) => e.message)) as string).toContain("finish removing it first");
     } finally {
       opened.close();
     }

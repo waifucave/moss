@@ -112,6 +112,49 @@ describe("each stage of a removal failing", () => {
   });
 });
 
+describe("a stale removing mark", () => {
+  const failing = { list: async () => [{ ref: "r1" }] as never, delete: async () => { throw busy("EBUSY"); } };
+  const half = async (w: ReturnType<typeof world>, record: never, deleteData: boolean) => forgetRemovedPlugin({ home: w.home, record, children: [], secrets: failing, sleep: noWait, now: () => 1, deleteData }).catch((e: unknown) => e);
+
+  test("a part-way removal that chose 'delete its data', then a reinstall, then a removal that KEEPS data: the new data is kept, never deleted by the old choice", async () => {
+    const w = world();
+    expect(await half(w, rec, true)).toBeInstanceOf(RemovalIncomplete);
+    expect(pendingRemovals(w.home)).toEqual(["busy-plugin"]);
+    // The same install comes back (same tree and OK hashes) and holds data again; the user removes it choosing to keep its data.
+    mkdirSync(w.data, { recursive: true });
+    writeFileSync(join(w.data, "new.txt"), "new");
+    const kept = join(w.home, "plugin-data", ".removed", "busy-plugin", "old-set-aside");
+    mkdirSync(kept, { recursive: true });
+    writeFileSync(join(kept, "older.txt"), "older");
+    const out = await forgetRemovedPlugin({ home: w.home, record: rec, children: [], sleep: noWait, now: () => 2, deleteData: false });
+    expect(out.dataKeptAt !== undefined && readFileSync(join(out.dataKeptAt, "new.txt"), "utf8")).toBe("new");
+    expect(readFileSync(join(kept, "older.txt"), "utf8")).toBe("older");
+  });
+
+  test("a mark of another install (different tree hash) is ignored and cleared", async () => {
+    const w = world();
+    expect(await half(w, rec, false)).toBeInstanceOf(RemovalIncomplete);
+    expect(pendingRemovals(w.home)).toEqual(["busy-plugin"]);
+    mkdirSync(w.data, { recursive: true });
+    writeFileSync(join(w.data, "other.txt"), "other");
+    const other = { ...(rec as object), treeHash: "sha256:different", okHash: "sha256:other" } as never;
+    const out = await forgetRemovedPlugin({ home: w.home, record: other, children: [], sleep: noWait, now: () => 3 });
+    expect(out.dataKeptAt).toBeDefined();
+    expect(pendingRemovals(w.home)).toEqual([]);
+  });
+
+  test("a mark whose 'kept' lies outside .removed/<id>/ is not used as where the data went", async () => {
+    const w = world();
+    expect(await half(w, rec, false)).toBeInstanceOf(RemovalIncomplete);
+    const mark = join(w.home, "plugin-data", ".removing", "busy-plugin.json");
+    const m = JSON.parse(readFileSync(mark, "utf8")) as { kept?: string };
+    m.kept = join(temp(), "elsewhere");
+    writeFileSync(mark, JSON.stringify(m));
+    const out = await forgetRemovedPlugin({ home: w.home, record: rec, children: [], sleep: noWait, now: () => 4 });
+    expect(out.dataKeptAt).toBeUndefined();
+  });
+});
+
 describe("a link planted under plugin-data/.removed", () => {
   test.skipIf(process.platform === "win32")("a symlink at .removed/<id> is refused, never followed", async () => {
     const w = world();

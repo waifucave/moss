@@ -4455,19 +4455,13 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       // daemon's one broker once the parts are up (`pluginsBroker`); before, they wait for it, bounded.
       ...pluginRegistryMethods({ stopProcesses: async (id) => {
         // What a plugin runs outside its module: its own host process, its supervised process and its stdio servers.
-        const pid = pluginHost?.pidOf(id);
-        pluginHost?.stopOwn(id);
+        // Only a process this call really ended is waited for and named (never another plugin's shared one).
+        const ended = pluginHost?.stopOwn(id) ?? [];
         pluginSupervisor.stop(id);
         await stdioMcp?.stopPlugin(id).catch(() => undefined);
-        const left: string[] = [];
-        if (pid !== undefined) {
-          for (let i = 0; i < 10; i++) {
-            try { process.kill(pid, 0); } catch { return left; }
-            await new Promise((r) => setTimeout(r, 200));
-          }
-          left.push("its host process");
-        }
-        return left;
+        const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+        for (let i = 0; i < 10 && ended.some(alive); i++) await new Promise((r) => setTimeout(r, 200));
+        return ended.some(alive) ? ["its host process"] : [];
       }, beforeRemove: (id) => askCloudComputers(id, "remove"), beforeDisable: (id) => askCloudComputers(id, "switch-off"), componentInstalls: (door) => { componentInstall = door; }, onRestart: (id) => notices.userRestarted(id), opened, host: pluginHost.host, home: mossHome, secrets: contractSecrets, os: hostOs(), openCard: brokerCardOpener(pluginsBroker), emit: (event) => void mossServer?.coreEvent(event), log: (line) => console.error(line), ...(pluginIndexes ? { indexes: pluginIndexes } : {}), ...(opened.updater ? { updater: opened.updater } : {}), ...(pluginReviews ? { reviews: pluginReviews } : {}) }),
       ...pluginUiParts.methods,
       // The deletion lane: Settings › Erase everything (`home.erase`): on the person's yes the apps quit, the engine stops,
