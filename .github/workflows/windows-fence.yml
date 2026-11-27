@@ -99,12 +99,14 @@ jobs:
 
   # The daemon as it runs for real: a standard user's, started by its password startup task, so in Session 0 with a
   # password logon. The user's unelevated setup refuses with exit 2; an administrator sets the sandbox up for it from
-  # the user's protected copy; the same end-to-end suite runs inside the user's task; the administrator removes it.
+  # the user's protected copy; the same end-to-end suite runs inside the user's task; the administrator removes it. The pass in the administrator's own
+  # session (every launch fails closed there) is the next job, in parallel: each pass is 25-30 minutes on the shared runner,
+  # and together they outgrew one 60-minute step (94f6dda49 and 216da6fce, every test passed, the removal cut off).
   standard-user:
     name: windows fence · a standard user's startup task (Session 0)
     if: ${{ inputs.only != 'e2e' }}
     runs-on: windows-latest
-    timeout-minutes: 75
+    timeout-minutes: 100
     defaults:
       run:
         shell: pwsh
@@ -116,8 +118,28 @@ jobs:
       - *install
       - *daemon
       - name: Set up, run the fenced suite as the user's task, remove
-        timeout-minutes: 60
-        run: scripts/ci/windows-fence/standard-user.ps1
+        timeout-minutes: 75
+        run: scripts/ci/windows-fence/standard-user.ps1 -Pass session0
+
+
+  standard-user-interactive:
+    name: windows fence · a standard user's own session (fails closed)
+    if: ${{ inputs.only != 'e2e' }}
+    runs-on: windows-latest
+    timeout-minutes: 100
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - *checkout
+      - *bun
+      - *where
+      - *launcher
+      - *install
+      - *daemon
+      - name: Set up, run the fenced suite as the user's task, remove
+        timeout-minutes: 75
+        run: scripts/ci/windows-fence/standard-user.ps1 -Pass interactive
 
   # Windows on Arm (lane WS7): what runs on GitHub's arm64 Windows image (`windows-11-arm`, free for public
   # repositories). The launcher is built natively for arm64 with MOSS's patches and its digest compared with the arm64

@@ -4,6 +4,10 @@
 # that user from the user's protected copy; the user's own unelevated `sandbox setup` must say it needs elevation
 # (exit 2); then the fenced end-to-end suite runs inside the user's task, and the administrator removes the sandbox.
 # The user and its password are made here, for this job alone; the password is never printed or written.
+# -Pass: "interactive" (only the pass in the administrator's own session, where every launch must fail closed),
+# "session0" (only the password startup task's pass) or "both". The workflow runs the two as parallel jobs: each pass is
+# 25-30 minutes on the shared runner, and together they outgrew one step's cap as tests were added.
+param([ValidateSet("both", "interactive", "session0")][string]$Pass = "both")
 . "$PSScriptRoot/lib.ps1"
 $name = "mossowner"
 $bytes = New-Object byte[] 24; [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
@@ -111,11 +115,15 @@ $own = @(
   "set TEMP=$userProfile\AppData\Local\Temp", "set TMP=$userProfile\AppData\Local\Temp",
   "set HOMEDRIVE=C:", "set HOMEPATH=$($userProfile.Substring(2))"
 )
-Invoke-AsUserHere "e2e-interactive" ($own + $e2e) 2400
-$here = Get-Content (Join-Path $ci "e2e-interactive.log") -Raw
+if ($Pass -ne "session0") {
+  Invoke-AsUserHere "e2e-interactive" ($own + $e2e) 2400
+  $here = Get-Content (Join-Path $ci "e2e-interactive.log") -Raw
+}
 # 2. As a password startup task runs it ("whether the user is logged on or not"): Session 0 (spec §14.1 item 2).
-$code = Invoke-AsUser "e2e" $e2e 2400
-$text = Get-Content (Join-Path $ci "e2e.log") -Raw
+if ($Pass -ne "interactive") {
+  $code = Invoke-AsUser "e2e" $e2e 2400
+  $text = Get-Content (Join-Path $ci "e2e.log") -Raw
+}
 # The uninstaller's order: the user forgets its own grants, then the administrator removes the rest.
 $null = Invoke-AsUser "forget" @("`"$ucore`" sandbox forget", "echo exit=%ERRORLEVEL%", "`"$prot\srt-win.exe`" user status") 300
 $forgot = Get-Content (Join-Path $ci "forget.log") -Raw
@@ -142,10 +150,12 @@ function Assert-FailedClosed([string]$Text, [string]$Where, [string]$Known) {
   if ($Text -notmatch [regex]::Escape($Known)) { throw "the fenced suite failed as the standard user $Where for another reason than the known one ($Known)" }
   Write-Output "::warning::as the standard user ${Where}: every launch refused, none ran ($Known); a live check"
 }
-Assert-FailedClosed $here "in the administrator's interactive session" "BaseNamedObjects, READ_CONTROL|WRITE_DAC): NTSTATUS 0xC0000022"
-if ($text -notmatch "session: 0") { throw "the user's task didn't run in Session 0" }
-if ($text -notmatch "exit=0") { throw "the fenced suite failed as the standard user in Session 0 (a password startup task)" }
-Write-Output "the fenced suite passed as the standard user in Session 0"
+if ($Pass -ne "session0") { Assert-FailedClosed $here "in the administrator's interactive session" "BaseNamedObjects, READ_CONTROL|WRITE_DAC): NTSTATUS 0xC0000022" }
+if ($Pass -ne "interactive") {
+  if ($text -notmatch "session: 0") { throw "the user's task didn't run in Session 0" }
+  if ($text -notmatch "exit=0") { throw "the fenced suite failed as the standard user in Session 0 (a password startup task)" }
+  Write-Output "the fenced suite passed as the standard user in Session 0"
+}
 if ($removeCode -ne 0) { throw "remove for the standard user exited $removeCode" }
 if ($left.Count -gt 0) { throw "forget and remove left $($left.Count) thing(s)" }
 Write-Output "a standard user: setup refused unelevated, set up by the administrator, the suite passed in Session 0, every launch failed closed in another user's session, forget and remove left nothing"
