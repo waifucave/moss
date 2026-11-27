@@ -38,6 +38,18 @@ const env: Record<string, string> = {
 };
 const started: ChildProcess[] = [];
 const log = () => { try { return readFileSync(join(home, "logs", "daemon.log"), "utf8"); } catch { return ""; } };
+/** What each started process printed, and how it ended (said when a step fails). */
+const output = new Map<string, { text: string; exit?: string }>();
+const watch = (name: string, p: ChildProcess) => {
+  const o = { text: "" } as { text: string; exit?: string };
+  output.set(name, o);
+  const add = (b: Buffer) => { o.text = (o.text + b.toString()).slice(-20_000); };
+  p.stdout?.on("data", add);
+  p.stderr?.on("data", add);
+  p.on("exit", (code, signal) => { o.exit = `exited ${code ?? signal}`; });
+  p.on("error", (e) => { o.exit = `didn't start: ${e.message}`; });
+};
+const said = () => [...output].map(([n, o]) => `--- ${n} (${o.exit ?? "running"}) ---\n${o.text.split("\n").slice(-40).join("\n")}`).join("\n");
 const say = (s: string) => console.log(`app-role-check: ${s}`);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function until<T>(what: string, ms: number, f: () => T | undefined | Promise<T | undefined>): Promise<T> {
@@ -45,7 +57,7 @@ async function until<T>(what: string, ms: number, f: () => T | undefined | Promi
   for (;;) {
     const v = await f();
     if (v !== undefined) return v;
-    if (Date.now() > end) throw new Error(`${what}: not within ${ms} ms\n--- the engine's log (last 60 lines) ---\n${log().split("\n").slice(-60).join("\n")}`);
+    if (Date.now() > end) throw new Error(`${what}: not within ${ms} ms\n--- the engine's log (last 60 lines) ---\n${log().split("\n").slice(-60).join("\n")}\n${said()}`);
     await sleep(500);
   }
 }
@@ -57,8 +69,9 @@ const stop = (p: ChildProcess) => {
 
 let failed = false;
 try {
-  const engine = spawn(core, ["daemon", "run"], { env, stdio: "ignore", detached: process.platform !== "win32", windowsHide: true });
+  const engine = spawn(core, ["daemon", "run"], { env, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true });
   started.push(engine);
+  watch("the engine", engine);
   const token = await until("the engine's app token", 120_000, () => (existsSync(join(home, "run", "app.token")) ? readFileSync(join(home, "run", "app.token"), "utf8").trim() : undefined));
   say(`the installed engine (${core}) is up on its own home`);
 
@@ -69,8 +82,9 @@ try {
 
   for (const app of apps) {
     const before = log().length;
-    const p = spawn(app, [], { env, stdio: "ignore", detached: process.platform !== "win32" });
+    const p = spawn(app, [], { env, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
     started.push(p);
+    watch(app, p);
     const line = await until(`${app}: the engine taking its app connection`, 180_000, () => {
       const fresh = log().slice(before);
       const refusedLine = /\[moss\] an app connection was refused: .*/.exec(fresh)?.[0];
@@ -86,7 +100,9 @@ try {
   say(`the host said host.ready: ${ready}`);
 } catch (e) {
   failed = true;
-  console.log(`app-role-check: FAILED: ${e instanceof Error ? e.message : String(e)}`);
+  const message = e instanceof Error ? e.message : String(e);
+  console.log(`app-role-check: FAILED: ${message}`);
+  if (!message.includes("--- the engine (")) console.log(said());
 } finally {
   // The engine first (it ends the host it started), then what is left.
   spawnSync(core, ["autostart", "stop"], { env, stdio: "ignore", timeout: 30_000, windowsHide: true });
