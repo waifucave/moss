@@ -25,8 +25,8 @@ enum AuditRunner {
     struct KnownContrast { let app: String; let screen: String; let element: String; let reason: String; let owed: String }
     static let knownContrast: [KnownContrast] = [
         .init(app: "com.waifucave.moss.code.ios", screen: "sessions", element: "moss",
-              reason: "the first project header: its row-wide frame took in the top bar's glass-button shadow (the pictures show it); the row is the element whatever its text's width, so the list now leaves room under its top bar (16 points weren't enough; Settings' 20 cleared its header; now 28); to be removed when a run shows it stale",
-              owed: "lane/iw-4"),
+              reason: "pinned section header on the list's material; the screenshot shows clean grey on white; cause not found (room under the bar and an opaque ground didn't clear it; the same headers further down pass)",
+              owed: "a real iPhone look"),
     ]
 
     /// A known entry names an element by its label's first line (a question's label goes on over several lines), its
