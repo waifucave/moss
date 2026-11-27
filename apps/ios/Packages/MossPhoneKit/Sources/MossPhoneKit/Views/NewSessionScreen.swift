@@ -62,6 +62,9 @@ public struct NewSessionScreen: View {
                     if let e = model.errorText { Section { Label(e, systemImage: "exclamationmark.circle").foregroundStyle(.secondary) } }
                 }
             }
+            // Room under the bar, as in Settings: the first section's header row sat inside the soft shadow of the bar's
+            // glass Start button, and the contrast audit read its grey against that shadow.
+            .contentMargins(.top, 20, for: .scrollContent)
             .navigationTitle("New session")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

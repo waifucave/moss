@@ -27,9 +27,6 @@ enum AuditRunner {
         .init(app: "com.waifucave.moss.code.ios", screen: "sessions", element: "moss",
               reason: "the first project header: its row-wide frame took in the top bar's glass-button shadow (the pictures show it); the row is the element whatever its text's width, so the list now leaves room under its top bar (16 points weren't enough; Settings' 20 cleared its header; now 28); to be removed when a run shows it stale",
               owed: "lane/iw-4"),
-        .init(app: "com.waifucave.moss.code.ios", screen: "newSession", element: "-",
-              reason: "the audit gives it no element, so its pictures can't name it; not the folder field's placeholder (it still failed with the placeholder in the readable grey); the likeliest is the system's light-grey chevron of the Agent picker row, drawn outside the accessibility tree",
-              owed: "lane/iw-4"),
     ]
 
     /// A known entry names an element by its label's first line (a question's label goes on over several lines), its
