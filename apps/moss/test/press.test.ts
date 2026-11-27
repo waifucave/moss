@@ -231,6 +231,21 @@ describe("a press on a card MOSS draws", () => {
     expect(await answerPress(c.deps, { token: c.token, option: "allow_once", senderKey: SENDER, frame: FRAME, windowId: WIN, press: P1 })).toEqual({ accepted: true });
   });
 
+  test("a click whose point main never learned is refused (press again), never taken for a key press; a real key press takes the keyboard rule", async () => {
+    const r = await rig();
+    const cover = () => undefined;
+    const token = r.sealed.mint("card_juniper_book", OWN_ELEMENT, { parent: PARENT }, WIN)!.token;
+    press1(r.sealed, token);
+    r.record.mouseDown(WIN); // no point
+    r.record.frameSaw(WIN, FRAME);
+    expect(await answerPress({ ...r.deps, cover }, { token, option: "allow_once", senderKey: SENDER, frame: FRAME, windowId: WIN, press: P1 })).toEqual({ accepted: false, reason: "the press wasn't checked just now: press it again" });
+    expect(r.e.answered()).toEqual([]);
+    const keyed = r.sealed.mint("card_juniper_book", OWN_ELEMENT, { parent: PARENT }, WIN)!.token;
+    press1(r.sealed, keyed);
+    r.record.keyDown(WIN, FRAME);
+    expect(await answerPress({ ...r.deps, cover }, { token: keyed, option: "allow_once", senderKey: SENDER, frame: FRAME, windowId: WIN, press: P1 })).toEqual({ accepted: true });
+  });
+
   test("refused while MOSS's key isn't registered", async () => {
     const r = await rig({ register: false });
     expect(await go(r, r.press("card_juniper_book"))).toMatchObject({ accepted: false, reason: "this computer's answer key for MOSS isn't registered yet" });

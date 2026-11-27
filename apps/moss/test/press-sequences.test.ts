@@ -99,10 +99,13 @@ describe("generated press sequences", () => {
           if (how === "click") {
             const d = downs.get(win)!;
             expect([where, d.report?.frame, w.c.now - d.at <= PRESS_BOUND_MS, d.report!.at - d.at <= REPORT_MS]).toEqual([where, frame, true, true]);
+            // and, counting only the time main was not running (the credit, capped), never past PRESS_MS.
+            expect([where, w.c.now - d.at - Math.min(STALL_CREDIT_MAX_MS, w.watch.credit(d.at, w.c.now)) <= PRESS_MS]).toEqual([where, true]);
             d.spent = true;
           } else if (how === "key") {
             const k = keys.get(win)!;
             expect([where, k.frame, w.c.now - k.at <= PRESS_BOUND_MS]).toEqual([where, frame, true]);
+            expect([where, w.c.now - k.at - Math.min(STALL_CREDIT_MAX_MS, w.watch.credit(k.at, w.c.now)) <= PRESS_MS]).toEqual([where, true]);
             k.spent = true;
           }
         } else {

@@ -646,11 +646,14 @@ async function ready(): Promise<void> {
       // showed whole and uncovered: a cover drawn a moment before the press is in that report, while the page's last timer-driven
       // verdict (up to ~200 ms old and longer when the renderer is starved) is not. Taken first, so a refused answer spends it.
       const fresh = sealed.takeFresh(token, press);
-      if (fresh !== "ok") {
-        log(`sealed: answer refused (${fresh === "covered" ? "the button was covered or not shown at the press" : fresh === "late" ? "the page's visibility report didn't come in time" : `no visibility report came with the press${sealed.noneWhy !== undefined ? ` (${sealed.noneWhy})` : ""}`})`);
+      // A pointer press whose point was never learned (its "received" came more than 2 s after the mouse-down) can't be cover-checked: refused,
+      // never taken for a keyboard press (press-point.ts).
+      const noPoint = fresh === "ok" && pressPoints.lacksPoint(token, press);
+      if (fresh !== "ok" || noPoint) {
+        log(`sealed: answer refused (${noPoint ? "the press's pointer point wasn't known" : fresh === "covered" ? "the button was covered or not shown at the press" : fresh === "late" ? "the page's visibility report didn't come in time" : `no visibility report came with the press${sealed.noneWhy !== undefined ? ` (${sealed.noneWhy})` : ""}`})`);
         // Most often the button wasn't laid out yet (it had only just been drawn): nothing is wrong with it, and the page says to
         // press again (`again`), never that the answer failed.
-        return { accepted: false, again: true, reason: fresh === "covered" ? NOT_SHOWN_REASON : NOT_CHECKED_REASON };
+        return { accepted: false, again: true, reason: !noPoint && fresh === "covered" ? NOT_SHOWN_REASON : NOT_CHECKED_REASON };
       }
       // One place at a time (lane RT): a press is taken only where the engine's router placed the card (the island's frame
       // for a card on the island, the window's for one in the window). The app's own card page (the window's strip, or the

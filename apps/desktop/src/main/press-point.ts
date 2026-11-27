@@ -13,6 +13,8 @@ export const DOWN_FOR_PRESS_MS = 2_000;
 interface Saved {
   load: string;
   n: number;
+  /** The page's word for the press's kind: only a "key" press may have no point. */
+  kind: "pointer" | "key";
   point?: { x: number; y: number };
 }
 
@@ -28,7 +30,7 @@ export class PressPoints {
     if (cur !== undefined) this.saved.delete(token);
     if (this.saved.size >= MAX_TOKENS) this.saved.delete(this.saved.keys().next().value!);
     const point = down !== undefined && now - down.at >= 0 && now - down.at <= DOWN_FOR_PRESS_MS ? { x: down.x, y: down.y } : undefined;
-    this.saved.set(token, { load: press.load, n: press.n, ...(point !== undefined ? { point } : {}) });
+    this.saved.set(token, { load: press.load, n: press.n, kind: press.kind === "key" ? "key" : "pointer", ...(point !== undefined ? { point } : {}) });
   }
 
   /** The press's own saved point (undefined for a press that had none, and for one never heard: the keyboard-press rule). */
@@ -36,5 +38,14 @@ export class PressPoints {
     const cur = this.saved.get(token);
     if (cur === undefined || press === undefined || cur.load !== press.load || cur.n !== press.n) return undefined;
     return cur.point;
+  }
+
+  /** Whether the press was a pointer press whose point was never learned (the renderer was starved past DOWN_FOR_PRESS_MS between the input and
+   *  its handler, so no recent mouse-down was found): the answer is refused ("press it again"), because with no point the cover check can't
+   *  run and a pointer press is never taken for a keyboard one. A press with no saved record at all counts as one too. */
+  lacksPoint(token: string, press: PressRef | undefined): boolean {
+    const cur = this.saved.get(token);
+    if (cur === undefined || press === undefined || cur.load !== press.load || cur.n !== press.n) return true;
+    return cur.kind === "pointer" && cur.point === undefined;
   }
 }

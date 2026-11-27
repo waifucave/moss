@@ -7,7 +7,7 @@ GlobalRegistrator.register();
 afterAll(async () => {
   await GlobalRegistrator.unregister();
 });
-import { FRESH_SETTLE_MS, buttonPage } from "../src/main/sealed-pages";
+import { FRESH_SETTLE_MS, buttonPage, ownCardPage } from "../src/main/sealed-pages";
 import { parsePressRef } from "../src/main/press-bound";
 
 type Call = { what: string; press: unknown };
@@ -72,7 +72,7 @@ describe("the sealed page numbers its trusted presses", () => {
     const second = calls.slice(5);
     expect(second.map((c) => c.what)).toEqual(["pressed:received", "fresh:true", "answer:approve"]);
     const p2 = parsePressRef(second[0]!.press)!;
-    expect(p2).toEqual({ load: p1.load, n: 2 });
+    expect(p2).toEqual({ load: p1.load, n: 2, kind: "pointer" });
     for (const c of second) expect(c.press).toEqual(p2);
     window.dispatchEvent(new Event("pagehide"));
   });
@@ -90,4 +90,33 @@ describe("the sealed page numbers its trusted presses", () => {
     }
     expect(loads[0]).not.toBe(loads[1]);
   }, 10_000);
+});
+
+describe("the page says which kind of press it was", () => {
+  test("a button page's press is a pointer press; the app's own card says pointer for a click and key only for a click with no detail and no pointer type", async () => {
+    const calls: Call[] = [];
+    load(buttonPage({ cardId: "c1", token: "t", option: "approve", label: "Approve", kind: "approve" }), calls);
+    await wait(800);
+    fire(document.querySelector(".seal-button")!, true);
+    expect(parsePressRef(calls.find((c) => c.what === "pressed:received")!.press)).toMatchObject({ n: 1, kind: "pointer" });
+    await wait(FRESH_SETTLE_MS + 60);
+    window.dispatchEvent(new Event("pagehide"));
+
+    const kinds: (string | undefined)[] = [];
+    for (const [detail, pointerType] of [[0, ""], [1, "mouse"], [0, "touch"]] as const) {
+      const own: Call[] = [];
+      load(ownCardPage({ cardId: "c1", token: "t", origin: "x", issuedAt: 0, expiresAt: null, options: [{ id: "approve", kind: "approve", label: "Approve" }, { id: "deny", kind: "deny", label: "Deny" }], fields: {} } as never), own);
+      document.dispatchEvent(new Event("pointerover"));
+      await wait(1_150);
+      const e = new Event("click", { bubbles: true });
+      Object.defineProperty(e, "isTrusted", { value: true });
+      Object.defineProperty(e, "detail", { value: detail });
+      Object.defineProperty(e, "pointerType", { value: pointerType });
+      document.querySelector(".seal-button[data-kind=approve]")!.dispatchEvent(e);
+      kinds.push(parsePressRef(own.find((c) => c.what === "pressed:received")?.press)?.kind);
+      await wait(FRESH_SETTLE_MS + 60);
+      window.dispatchEvent(new Event("pagehide"));
+    }
+    expect(kinds).toEqual(["key", "pointer", "pointer"]);
+  }, 15_000);
 });

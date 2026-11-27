@@ -53,7 +53,8 @@ const FRESH_SCRIPT = `
   // answer only on the report that carries the same number (press-bound.ts).
   const loadId = (() => { let h = ""; try { const a = new Uint8Array(12); crypto.getRandomValues(a); for (const x of a) h += (x < 16 ? "0" : "") + x.toString(16); } catch (e) { h = ""; } while (h.length < 24) h += Math.floor(Math.random() * 16).toString(16); return h; })();
   let pressSeq = 0;
-  const numberPress = (e) => (e.isTrusted === true ? { load: loadId, n: ++pressSeq } : undefined);
+  // The kind is the trusted event's own: a click with no detail and no pointer type is a keyboard activation; anything else is a pointer press.
+  const numberPress = (e) => (e.isTrusted === true ? { load: loadId, n: ++pressSeq, kind: (e.type === "click" && e.detail === 0 && e.pointerType === "") ? "key" : "pointer" } : undefined);
   const askFresh = (btn, press) => new Promise((resolve) => {
     const t0 = performance.now();
     let done = false;

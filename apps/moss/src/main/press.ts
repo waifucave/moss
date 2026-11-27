@@ -315,7 +315,11 @@ export async function answerPress(d: PressDeps, a: { token: string; option: stri
   const stacked = w === undefined ? "not MOSS's window" : stackingRule(d.placementOf(cardId), w);
   if (stacked !== undefined) return refuse(stacked);
   // 4b. The overlap check, at the click's own point.
-  const cover = d.cover?.(a.windowId, how === "click" ? d.record.lastPoint(a.windowId) : undefined);
+  // A click whose point main never learned can't be cover-checked: refused ("press again"), never taken for a keyboard press. Only a real key down
+  // (`how` "key": main's own evidence) takes the keyboard rule.
+  const clickAt = how === "click" ? d.record.lastPoint(a.windowId) : undefined;
+  if (how === "click" && clickAt === undefined && d.cover !== undefined) return refuse("MOSS didn't learn where the press landed", "the press wasn't checked just now: press it again");
+  const cover = d.cover?.(a.windowId, clickAt);
   if (cover !== undefined) return refuse(`a window lies over the button: ${cover}`, `${cover.startsWith("one of MOSS's own") ? "one of MOSS's own windows" : "another MOSS window"} lies over the button: move it away and press again`, true);
   // 5. The key.
   const key = await d.keyReady(2_000);

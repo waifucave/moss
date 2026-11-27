@@ -71,3 +71,26 @@ describe("the placement is read when the answer arrives, never at the press", ()
     expect(pressMayBeTaken({ from: "window", placed: { kind: "island" }, front: false })).toBe(false);
   });
 });
+
+describe("a pointer press with no point is refused; only a key press takes the keyboard rule", () => {
+  test("lacksPoint: a pointer press whose mouse-down was never learned (received more than 2 s late) lacks its point; a key press, a pointer press with a point, and an unheard press do as stated", () => {
+    const points = new PressPoints();
+    // The renderer was starved: "received" came 2.5 s after the mouse-down, so no recent mouse-down was found.
+    points.save("starved", { ...ref(1), kind: "pointer" }, { x: 3, y: 4, at: 1_000 }, 3_500);
+    expect(points.pointOf("starved", ref(1))).toBeUndefined();
+    expect(points.lacksPoint("starved", ref(1))).toBe(true);
+    // A press with no kind said is a pointer press (the stricter rule).
+    points.save("nokind", ref(1), undefined, 3_500);
+    expect(points.lacksPoint("nokind", ref(1))).toBe(true);
+    // A real keyboard press has no point and takes the keyboard rule.
+    points.save("key", { ...ref(1), kind: "key" }, undefined, 3_500);
+    expect(points.lacksPoint("key", ref(1))).toBe(false);
+    // A pointer press with its point is checked at it.
+    points.save("ok", { ...ref(1), kind: "pointer" }, { x: 3, y: 4, at: 3_400 }, 3_500);
+    expect(points.lacksPoint("ok", ref(1))).toBe(false);
+    // A press never heard, or another press's number, is refused too.
+    expect(points.lacksPoint("never", ref(1))).toBe(true);
+    expect(points.lacksPoint("ok", ref(2))).toBe(true);
+    expect(points.lacksPoint("ok", undefined)).toBe(true);
+  });
+});

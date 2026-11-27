@@ -20,16 +20,20 @@ export const PRESS_BOUND_MS = 10_000;
 export interface PressRef {
   load: string;
   n: number;
+  /** What kind of press the page says it was, from the trusted event: a pointer press (a mouse, pen or touch click) or a keyboard activation.
+   *  Only "received" needs it (the app refuses a pointer press whose point it never learned; only a real key press takes the keyboard rule). */
+  kind?: "pointer" | "key";
 }
 
 /** A page's press reference as a message carries it, or undefined for anything that is not one (the page is never trusted to send a
  *  well-formed value: a bad one is no press). */
 export function parsePressRef(v: unknown): PressRef | undefined {
   if (v === null || typeof v !== "object") return undefined;
-  const { load, n } = v as { load?: unknown; n?: unknown };
+  const { load, n, kind } = v as { load?: unknown; n?: unknown; kind?: unknown };
   if (typeof load !== "string" || !/^[0-9a-f]{16,32}$/.test(load)) return undefined;
   if (typeof n !== "number" || !Number.isSafeInteger(n) || n < 1 || n > 1_000_000_000) return undefined;
-  return { load, n };
+  if (kind !== undefined && kind !== "pointer" && kind !== "key") return undefined;
+  return { load, n, ...(kind !== undefined ? { kind } : {}) };
 }
 
 export type FreshVerdict = "ok" | "covered" | "late" | "none";
