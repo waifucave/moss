@@ -152,7 +152,7 @@ import { plainText } from "./bots/service";
 import { ClientBuilds } from "./registry/client-builds";
 import { botDriverFactory, botFileFence, botSandbox, withBotKeyReads, withSecretReads } from "./runtime-sdk/turn-loop/driver";
 import { fencedSpawner } from "./fence/fenced-process";
-import { endWindowsBackgroundOf, endWindowsBackgroundOn, stopWindowsBackground, windowsShellTools } from "./fence/win-shell-tools";
+import { answerWindowsTask, endWindowsBackgroundOf, endWindowsBackgroundOn, windowsShellTools } from "./fence/win-shell-tools";
 import { botCoreTools } from "./runtime-sdk/turn-loop/wiring";
 import { defaultTreeRoot } from "./tree/root";
 import { hostOs } from "./tree/names";
@@ -4840,6 +4840,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
           // Rule B: the level a background command starts under, so lowering it ends the command (below, after the parts).
           level: () => levelOfSession(ctx),
           // Rule B: a background command's end comes back to the conversation as a background task's notification.
+          // The conversation's task report: a bot's Windows background command counts in its `waiting` as an agent's does.
+          tasks: { started: (id: string) => daemonParts?.bots?.host.taskStarted(ctx.sessionId, id), ended: (id: string) => daemonParts?.bots?.host.taskEnded(ctx.sessionId, id) },
           ...(ctx.wake === undefined ? {} : { wake: (input: { task: string; status: "completed" | "failed" | "stopped"; text: string }) => ctx.wake!(input) }),
         });
         botShellRoots = (conversation, bot, level) => {
@@ -4939,7 +4941,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
           side: { tools: (id) => side()?.tools(id) ?? [] },
           agents: { manager: () => agents()?.manager, backends: agentBackendIds, levelOf: (ctx) => ctx.level, definition: definitionOf, modelsOf: (backend) => startOptions.options(backend) },
           // Lane WS7: on Windows the core's background commands stop by their id through TaskStop.
-          ...(process.platform === "win32" ? { stopTask: (ctx: BotSessionContext, id: string) => stopWindowsBackground(ctx.sessionId, id) } : {}),
+          ...(process.platform === "win32" ? { stopTask: (ctx: BotSessionContext, id: string) => answerWindowsTask(ctx.sessionId, "TaskStop", { task_id: id }) } : {}),
         });
         // Whether the conversation's shell can already write `folder`: inside its drawn write roots now (at accept edits
         // the home's ordinary top-level folders), by real paths only. On any doubt, no (the card is asked).

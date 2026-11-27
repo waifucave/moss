@@ -81,6 +81,35 @@ describe("MOSS's coding agent's background tasks", () => {
     expect(out.length).toBe(4);
     expect(told).toEqual(["+t1", "-t1", "gone"]);
   });
+
+  test("Windows: the host's own PreToolUse hook answers TaskStop and TaskOutput for this session's core commands; anything else is left to the runtime", async () => {
+    let hooks: NonNullable<Options["hooks"]> | undefined;
+    const asked: string[] = [];
+    const quiet = (args: { prompt: AsyncIterable<string>; options: Options }) => {
+      hooks = args.options.hooks;
+      async function* run() { yield { type: "system", subtype: "init", model: MODEL, permissionMode: "default" }; for await (const _ of args.prompt) { /* idle */ } }
+      return Object.assign(run(), { interrupt: async () => {}, setModel: async () => {}, setPermissionMode: async () => {}, setEffort: async () => {}, supportedModels: async () => [] });
+    };
+    const fence = new FakeFence({ home: root, mossHome: join(root, ".moss") });
+    const backend = new MossCodeBackend({
+      clock: { now: () => Date.now() } as never, defaultModel: () => MODEL, sandboxReady: () => true, pause: { mayAct: () => true },
+      baseOptions: (o) => ({ model: o.model, cwd: o.cwd, env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin" }, settingSources: [] }) as Options,
+      query: quiet as never,
+      windowsTask: async (session, tool, input) => { asked.push(`${session} ${tool} ${JSON.stringify(input)}`); return (input as { task_id?: string }).task_id === "win_bg_00000001" ? { text: "Stopped win_bg_00000001.", isError: false } : null; },
+    });
+    const s = await backend.start({ sessionId: "s_win", root, bridge: { name: "moss_testbridge", command: "x", args: [], env: {}, tools: [] }, fence: fence.policy(), inProcessBridge: { type: "sdk", name: "moss_testbridge", instance: {} } as never });
+    try {
+      const own = (hooks?.PreToolUse ?? []).find((m) => m.matcher === "TaskStop|TaskOutput");
+      expect(own).toBeDefined();
+      const run = async (tool: string, input: unknown) => (await own!.hooks[0]!({ tool_name: tool, tool_input: input } as never, "id", { signal: new AbortController().signal }) ) as { hookSpecificOutput?: { toolResult?: unknown } };
+      expect((await run("TaskStop", { task_id: "win_bg_00000001" })).hookSpecificOutput?.toolResult).toEqual({ content: "Stopped win_bg_00000001." });
+      // Not this session's (or not a core command's) id: no answer, the runtime's own tool runs.
+      expect(await run("TaskStop", { task_id: "bash_1" })).toEqual({});
+      expect(asked[0]).toBe('s_win TaskStop {"task_id":"win_bg_00000001"}');
+    } finally {
+      await s.stop();
+    }
+  }, 30_000);
 });
 
 test("reportingTasks logs each task frame's kind and id, never anything else", async () => {

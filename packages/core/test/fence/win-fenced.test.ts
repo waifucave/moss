@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import type { Caller, Level } from "@waifucave/moss-protocol";
 import { MossFence } from "../../src/fence/fence";
-import { endWindowsBackgroundOf, endWindowsBackgroundOn, escapedSandbox, stopWindowsBackground, windowsBackgroundOf, windowsShellTools, WIN_SHELL_BACKGROUND_ENGINE, WIN_SHELL_BACKGROUND_PER_SESSION } from "../../src/fence/win-shell-tools";
+import { answerWindowsTask, endWindowsBackgroundOf, endWindowsBackgroundOn, escapedSandbox, stopWindowsBackground, windowsBackgroundOf, windowsShellTools, WIN_SHELL_BACKGROUND_ENGINE, WIN_SHELL_BACKGROUND_PER_SESSION } from "../../src/fence/win-shell-tools";
 import {
   existingDenies, existingDeniesOf, grantsConflict, parsePersistentRoots, parseProfileExclusions, strayRoots, treeWithin, planFromPolicy, planFromSettings, profileExcludeCandidates, quarantineWin, shellArgv, winChainIsClean, winChildEnv, winExecArgv, lateFenceStep, profileBusy, PROFILE_BUSY_WAIT_LINE, watchedReadDenies, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
   type WinFencedDeps,
@@ -642,21 +642,19 @@ describe("a background command on Windows (rule B, lane WS7)", () => {
     expect(readFileSync(log, "utf8")).toContain("[moss: the command exited with code 0]");
     expect(windowsBackgroundOf("bg-a")).toEqual([]);
   }, 30_000);
-  test("the session's task reporting hears a command start (id, short label) and end, in that order and before the wake; an agent's text names no TaskStop", async () => {
+  test("the session's task reporting hears a command start (id, short label) and end, in that order and before the wake", async () => {
     const s = slow();
     const events: string[] = [];
     const cwd = mkdtempSync(join(tmpdir(), "ws7-bg-"));
     const moss = mkdtempSync(join(tmpdir(), "ws7-moss-"));
     const caller = { kind: "session", sessionId: "bg-rep", sessionKind: "agent" } as Extract<Caller, { kind: "session" }>;
     const t = Object.fromEntries(windowsShellTools({
-      spawner: s.spawner, caller, kind: "side-thread", cwd: () => cwd, userHome: "C:\\h", temp: "C:\\t", mossHome: moss, sandbox: () => ({}), stoppable: false,
+      spawner: s.spawner, caller, kind: "side-thread", cwd: () => cwd, userHome: "C:\\h", temp: "C:\\t", mossHome: moss, sandbox: () => ({}),
       wake: async (w) => { events.push(`wake ${w.task}`); },
       tasks: { started: (id, label) => { events.push(`started ${id} ${label}`); }, ended: (id) => { events.push(`ended ${id}`); } },
     }).map((x) => [x.name, x]));
     const r = await t.Bash!.run({ command: "sleep 6\nsecond line", description: "wait a bit", run_in_background: true });
     expect(r.isError).toBe(false);
-    expect(r.text).not.toContain("TaskStop");
-    expect(t.Bash!.description).not.toContain("TaskStop");
     const id = idOf(r.text);
     expect(events).toEqual([`started ${id} wait a bit`]);
     s.release[0]!();
@@ -671,9 +669,31 @@ describe("a background command on Windows (rule B, lane WS7)", () => {
     }).map((x) => [x.name, x]));
     const r2 = await t2.Bash!.run({ command: "npm run watch\nmore", run_in_background: true });
     expect(seen).toEqual(["npm run watch"]);
-    expect(r2.text).toContain("TaskStop");
     await stopWindowsBackground("bg-rep2", idOf(r2.text));
     expect(windowsBackgroundOf("bg-rep2")).toEqual([]);
+  }, 30_000);
+  test("answerWindowsTask: TaskStop and TaskOutput answer for this session's running command only; any other id, tool or session is left alone", async () => {
+    const s = slow();
+    const { t } = make(s.spawner, "bg-ans", []);
+    const id = idOf((await t.Bash!.run({ command: "long", run_in_background: true })).text);
+    // Never another session's, a runtime task's id, a malformed id, or another tool.
+    expect(await answerWindowsTask("bg-other", "TaskStop", { task_id: id })).toBeNull();
+    expect(await answerWindowsTask("bg-other", "TaskOutput", { task_id: id })).toBeNull();
+    expect(await answerWindowsTask("bg-ans", "TaskStop", { task_id: "bash_1" })).toBeNull();
+    expect(await answerWindowsTask("bg-ans", "TaskStop", { task_id: `${id}/../x` })).toBeNull();
+    expect(await answerWindowsTask("bg-ans", "TaskStop", {})).toBeNull();
+    expect(await answerWindowsTask("bg-ans", "Bash", { task_id: id })).toBeNull();
+    expect(windowsBackgroundOf("bg-ans")).toEqual([id]);
+    const out = await answerWindowsTask("bg-ans", "TaskOutput", { task_id: id });
+    expect(out!.isError).toBe(false);
+    expect(out!.text).toContain("still running");
+    expect(out!.text).toContain("line two");
+    const stopped = await answerWindowsTask("bg-ans", "TaskStop", { task_id: id });
+    expect(stopped!.isError).toBe(false);
+    expect(stopped!.text).toContain(`Stopped ${id}`);
+    expect(windowsBackgroundOf("bg-ans")).toEqual([]);
+    // Gone: nothing left to answer for.
+    expect(await answerWindowsTask("bg-ans", "TaskStop", { task_id: id })).toBeNull();
   }, 30_000);
   test("TaskStop's stop ends it (its session's only) and it is told as stopped; at most two run per session", async () => {
     const s = slow();
@@ -763,6 +783,8 @@ describe("a background command on Windows (rule B, lane WS7)", () => {
       ["bg-h1", () => { paused = true; gateFns.forEach((f) => f()); }, "the user paused the bots"],
       ["bg-h2", () => { paused = false; runs = false; gateFns.forEach((f) => f()); }, "this computer stopped running the bots"],
       ["bg-h3", () => { runs = true; botFns.forEach((f) => f({ type: "bot_removed", id: "nova" })); }, "its bot was removed or archived", { bot: "nova" }],
+      // An agent's command (`sessionKind: "agent"`) ends with the pause too, as a bot's does.
+      ["bg-h6", () => { paused = true; gateFns.forEach((f) => f()); }, "the user paused the bots", { sessionKind: "agent" }],
       ["bg-h5", () => void endWindowsBackgroundOf("bg-h5", "its conversation was deleted"), "its conversation was deleted"],
     ];
     for (const [session, act, why, more] of cases) {
@@ -785,6 +807,11 @@ describe("a background command on Windows (rule B, lane WS7)", () => {
     level = "ask"; levelFns.forEach((f) => f());
     const end = await told(wakes, id);
     expect(end).toMatchObject({ status: "stopped", text: expect.stringContaining("the approval level was lowered") });
+    // An agent's command ends when its level drops, as a bot's does.
+    level = "accept-edits";
+    const aid = await start("bg-h7", { level: () => level, sessionKind: "agent" });
+    level = "ask"; levelFns.forEach((f) => f());
+    expect(await told(wakes, aid)).toMatchObject({ status: "stopped" });
     off();
   }, 30_000);
 });

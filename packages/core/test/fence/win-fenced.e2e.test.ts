@@ -25,7 +25,7 @@ import { botApprovalCheck, runsLaterPlace, windowsFileToolInput } from "../../sr
 import { FakeClock } from "../../src/contracts/fakes/clock";
 import type { BotSessionContext } from "../../src/bots/service";
 import type { CanUseTool } from "@waifucave/clover-agent-sdk";
-import { agentShellTools, stopWindowsBackground, windowsShellTools } from "../../src/fence/win-shell-tools";
+import { agentShellTools, answerWindowsTask, stopWindowsBackground, windowsBackgroundOf, windowsShellTools } from "../../src/fence/win-shell-tools";
 import { planFromSettings, profileExcludeCandidates, QUARANTINE_COPY_LIMITS, quarantineWin, watchedReadDenies, windowsShells } from "../../src/fence/win-fenced";
 import { fencedExecutor } from "../../src/computers/fenced-executor";
 import { resolveEndpoint } from "../../src/platform/transport";
@@ -920,6 +920,38 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
       rmSync(remote, { recursive: true, force: true });
     }
   }, 600_000);
+
+  test("MOSS's coding agent's background command on Windows: reported started and ended, TaskOutput reads it, TaskStop (another session's refused) stops it and its processes, and its end is told", async () => {
+    const project = join(home, "ws8-agent-bg");
+    rmSync(project, { recursive: true, force: true });
+    mkdirSync(project, { recursive: true });
+    const agent = { kind: "session", sessionId: "e2e-agent-bg", sessionKind: "agent" } as Extract<Caller, { kind: "session" }>;
+    const events: string[] = [];
+    const agentTools = Object.fromEntries(agentShellTools({
+      spawner: fencedSpawner({ fence }), caller: agent, cwd: () => project, userHome: home, temp: fence.temp, mossHome: moss,
+      sandbox: () => botSandbox(withSecretReads({ filesystem: { allowWrite: [project], denyWrite: [], denyRead: [moss] } }, { userHome: home, os: "windows" }), { userHome: home, os: "windows" }),
+      wake: async (w) => { events.push(`wake ${w.status}`); },
+      tasks: { started: (id, label) => { events.push(`started ${id} ${label}`); }, ended: (id) => { events.push(`ended ${id}`); } },
+    }).map((t) => [t.name, t]));
+    const r = await call(agentTools.Bash!, { command: "echo bg-began; sleep 600; echo never", description: "agent wait", run_in_background: true });
+    expect(r.isError).toBe(false);
+    const id = /win_bg_[0-9a-f]{8}/.exec(r.text)![0];
+    expect(events).toEqual([`started ${id} agent wait`]);
+    expect(windowsBackgroundOf("e2e-agent-bg")).toEqual([id]);
+    let out = await answerWindowsTask("e2e-agent-bg", "TaskOutput", { task_id: id });
+    for (let i = 0; i < 100 && !out?.text.includes("bg-began"); i++) { await Bun.sleep(100); out = await answerWindowsTask("e2e-agent-bg", "TaskOutput", { task_id: id }); }
+    expect(out?.text).toContain("still running");
+    expect(out?.text).toContain("bg-began");
+    // Another session can't see or stop it, and the id is no one else's.
+    expect(await answerWindowsTask("e2e-other-session", "TaskStop", { task_id: id })).toBeNull();
+    expect(windowsBackgroundOf("e2e-agent-bg")).toEqual([id]);
+    const stopped = await answerWindowsTask("e2e-agent-bg", "TaskStop", { task_id: id });
+    expect(stopped?.text).toContain(`Stopped ${id}`);
+    for (let i = 0; i < 100 && !events.includes("wake stopped"); i++) await Bun.sleep(100);
+    expect(events).toEqual([`started ${id} agent wait`, `ended ${id}`, "wake stopped"]);
+    expect(windowsBackgroundOf("e2e-agent-bg")).toEqual([]);
+    rmSync(project, { recursive: true, force: true });
+  }, 300_000);
 
   test("rule 8c (lane WS8): a new conversation's sidecar made while a background command runs is stamped for it, and it runs on; a new protected root ends it", async () => {
     wakes.length = 0;

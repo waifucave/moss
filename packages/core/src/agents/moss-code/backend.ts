@@ -126,6 +126,11 @@ export interface MossCodeDeps {
    *  names in place of the runtime's own, which has no Windows sandbox. Given, the runtime's `Bash` and `PowerShell` are
    *  left out of the session's tools. */
   windowsShell?: (o: { sessionId: string; root: string; sandbox: () => NonNullable<Options["sandbox"]> }) => readonly CoreToolDef[];
+  /** Lane WS: a Windows background command of the session is the core's, not the runtime's, so the runtime's `TaskStop` and
+   *  `TaskOutput` don't know its id: this answers the call (the host's own PreToolUse hook answers it, agent SDK 0.0.87)
+   *  when the id is one of THIS session's commands, and is null for anything else, which goes on to the runtime
+   *  untouched (`answerWindowsTask`). */
+  windowsTask?: (session: string, tool: string, input: unknown) => Promise<{ text: string; isError: boolean } | null>;
   log?(line: string): void;
   /** A bot's child: its command sandbox by the bot's own builder and its run-later check (agents/bot-child.ts).
    *  Required for a spec that names a bot: without it the child doesn't start. */
@@ -454,7 +459,19 @@ export class MossCodeBackend implements AgentBackend {
       }],
     }];
     const ownCalls = [...pauseHook, ...fenceHook, ...escapeHook];
-    const hooks = mergedHooks(base.hooks, { PreToolUse: ownCalls, UserPromptSubmit: turnHook, PostToolUse: afterCall, PostToolUseFailure: afterCall }, { last: { PreToolUse: ownCalls } });
+    // Windows: the core's background commands answer the runtime's task tools (only the first list: it runs once).
+    const windowsTask = deps.windowsTask;
+    const taskCalls: HookCallbackMatcher[] = windowsTask === undefined ? [] : [{
+      matcher: "TaskStop|TaskOutput",
+      hooks: [async (input) => {
+        const call = input as { tool_name?: unknown; tool_input?: unknown };
+        if (typeof call.tool_name !== "string") return {};
+        let answer: { text: string; isError: boolean } | null = null;
+        try { answer = await windowsTask(spec.shellSession, call.tool_name, call.tool_input); } catch { answer = null; }
+        return answer === null ? {} : { hookSpecificOutput: { hookEventName: "PreToolUse", toolResult: { content: answer.text, ...(answer.isError ? { isError: true } : {}) } } };
+      }],
+    }];
+    const hooks = mergedHooks(base.hooks, { PreToolUse: [...ownCalls, ...taskCalls], UserPromptSubmit: turnHook, PostToolUse: afterCall, PostToolUseFailure: afterCall }, { last: { PreToolUse: ownCalls } });
     // Spelled as the runtime can check them (`runtimeDenyForms`): a rule's place is also a sandbox deny inside it.
     const denyOs = process.platform === "darwin" ? "macos" : process.platform === "win32" ? "windows" : "linux";
     const denials = [...(base.permissions?.deny ?? []), ...fileToolDenials(runtimeDenyForms(fence.denyRead, { os: denyOs }), runtimeDenyForms(fence.denyWrite, { os: denyOs }))];

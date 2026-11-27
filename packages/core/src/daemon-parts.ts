@@ -33,7 +33,7 @@ import { peerFence, type PeerWriteFolder } from "./fence/peer-floor";
 import { peerFolderSpawnerLinux } from "./fence/peer-folder-linux";
 import { hostPathFolders } from "./agents/bot-child";
 import { sweepPeerFolders } from "./computers/fenced-executor";
-import { agentShellTools } from "./fence/win-shell-tools";
+import { agentShellTools, answerWindowsTask } from "./fence/win-shell-tools";
 import { browserAppHandlers } from "./browser/app-port";
 import { browserRpcHandlers } from "./browser/rpc-handlers";
 import { startBrowser, type DaemonBrowser, type StartBrowserOptions } from "./browser/daemon";
@@ -513,6 +513,7 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
               baseOptions: (s) => embeddedSessionOptions({ home: input.mossHome, spawn: a.spawn }, s),
               defaultModel: a.defaultModel, ...(a.defaultEffort ? { defaultEffort: a.defaultEffort } : {}), ...(a.fillProvider ? { fillProvider: a.fillProvider } : {}),
               // Its background tasks that will wake a session (§9.5 "Waiting"): the host's graph.
+              ...(process.platform === "win32" ? { windowsTask: answerWindowsTask } : {}),
               tasks: { started: (s, t) => d.host.taskStarted(s, t), ended: (s, t) => d.host.taskEnded(s, t), gone: (s) => d.host.tasksGone(s) },
               // Windows (lane WS8): its Bash and PowerShell are MOSS's, under the fence's Windows leg, on the agent's own
               // sandbox and as its own caller; it runs there once the fence is set up (`moss-core sandbox setup`).
@@ -526,6 +527,7 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
                     // A background command: its end comes back as a note in the agent's session (it wakes it), and the
                     // host's graph hears it start and end as it does the runtime's own tasks (the runtime never sees a
                     // host tool's command, so it sends no task frames for it).
+                    level: () => d.levelOf(here),
                     wake: ({ text }) => d.host.deliver(s.sessionId, { from: "note", label: "Background command", text, by: { kind: "core" } }),
                     tasks: { started: (id) => d.host.taskStarted(s.sessionId, id), ended: (id) => d.host.taskEnded(s.sessionId, id) },
                   }),
