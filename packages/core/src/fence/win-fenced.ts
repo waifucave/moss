@@ -1000,7 +1000,7 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
           // A folder the launcher couldn't start the command in is said in words, not as its JSON line and exit code.
           if (ran.kind === "exited") {
             const refused = explainLauncherCwd(ran.code, ran.stderr);
-            if (refused !== null) result = { ...result, stderr: `${refused}\n` };
+            if (refused !== null) result = { ...result, stderr: `${refused}\n${result.stderr}` };
           }
           const after = gitPlaces(roots);
           for (const p of after.configs) if (!configBefore.has(p)) configBefore.set(p, null);

@@ -44,4 +44,8 @@ describe("the launcher's working-folder refusals, in words", () => {
       expect(missingFolderNote(join(d, "f.txt", "below"))).toContain("isn't there");
     } finally { rmSync(d, { recursive: true, force: true }); }
   });
+  test("a command's own exit 16/27 with a matching line before more output of its own is not taken for the launcher's", () => {
+    const own = `${JSON.stringify({ code: "cwd_unusable", cwd: "C:\\x", exists: false })}\nmy tool failed for its own reasons\n`;
+    expect(explainLauncherCwd(27, own)).toBeNull();
+  });
 });

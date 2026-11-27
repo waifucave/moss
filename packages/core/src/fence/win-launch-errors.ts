@@ -9,7 +9,10 @@ export const LAUNCHER_EXIT_CWD_UNUSABLE = 27;
 /** The launcher's typed refusal in plain words, or null when this is not one (any other exit, or no such line). */
 export function explainLauncherCwd(code: number, stderr: string): string | null {
   if (code !== LAUNCHER_EXIT_MAPPED_DRIVE && code !== LAUNCHER_EXIT_CWD_UNUSABLE) return null;
-  for (const line of stderr.split(/\r?\n/)) {
+  // Only the LAST line of stderr: the launcher prints its refusal as the end of what it says, and a sandboxed command that
+  // itself exits 16 or 27 and prints a matching line leaves its own words after it, or its line is not the last.
+  const lines = stderr.split(/\r?\n/).filter((l) => l.trim() !== "");
+  for (const line of lines.slice(-1)) {
     const t = line.trim();
     if (!t.startsWith("{") || !t.endsWith("}")) continue;
     let o: Record<string, unknown>;
