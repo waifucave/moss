@@ -997,7 +997,7 @@ const BUNDLED_LISTED = /\[plugins\] plugin MCP moss\/web\/web: (listed \d+ tool\
 // installs (acceptance-echo, no network) stands for every served one on the boots after its install.
 const BUNDLED_FAILED = /\[plugins\] plugin MCP [^:\n]*: (?:its tools couldn't be listed|its plugin's worker went)[^\n]*/;
 const ECHO_LISTED = /\[plugins\] plugin MCP acceptance-echo\/echo: listed \d+ tool\(s\)/;
-const bundledBoots: { run: number; log: string; listed?: string; ms?: number; echoMs?: number; graceMs: number; waited?: Promise<void>; t0?: number; endedForCopy?: number }[] = [];
+const bundledBoots: { run: number; log: string; listed?: string; ms?: number; echoMs?: number; graceMs: number; waited?: Promise<void>; t0?: number; endedForCopy?: number; requestsAtListed?: number }[] = [];
 /** Requests the fake had when each daemon started: the turns after it are that boot's. */
 const requestsAtBoot: number[] = [];
 function watchBundledListing(run: number, log: string, graceMs = 0): void {
@@ -1012,6 +1012,7 @@ function watchBundledListing(run: number, log: string, graceMs = 0): void {
       if (m && boot.listed === undefined) {
         boot.listed = m[1]!.trim();
         boot.ms = Date.now() - t0;
+        boot.requestsAtListed = fake?.requests.length;
       }
       if (boot.echoMs === undefined && ECHO_LISTED.test(text)) boot.echoMs = Date.now() - t0;
       // The first boot of a full run has no plugin yet; an upgrade's first boot has the old run's.
@@ -1298,7 +1299,10 @@ async function bundledMcpStep(n = stepNo("each boot lists the bundled web tools"
       // the row's own doing on a home every row shares (a packaged run), not a listing that failed.
       const failed = readLog(b.log).split("\n").map((l) => l.match(BUNDLED_FAILED)?.[0]).find((m) => m !== undefined && !/acceptance crash:/.test(m));
       if (failed !== undefined) fail(`daemon ${b.run}: ${failed.slice(0, 400)}`);
-      const first = (fake?.requests ?? []).slice(requestsAtBoot[b.run] ?? 0).find((r) => r.path.endsWith("/messages") && r.keyMatched);
+      // A turn that went out before the servers' listing is a turn made with the list as it was: the product reopens the session with the
+      // new list before its NEXT turn ("the plugins' tools changed ... opened again"), so the first turn judged is the first one after the listing. A slow
+      // runner lists the web server seconds after the run's first turn.
+      const first = (fake?.requests ?? []).slice(Math.max(requestsAtBoot[b.run] ?? 0, b.requestsAtListed ?? 0)).find((r) => r.path.endsWith("/messages") && r.keyMatched);
       // Without a turn on this boot, the listing's time stands in for the owner's first turn, at twice the wait.
       const limit = first === undefined ? BUNDLED_MCP_NO_TURN_MS : BUNDLED_MCP_CEILING_MS;
       const from = b.graceMs > 0 ? `the registry opening (the run holds it ${b.graceMs / 1000} s after the socket answers)` : "the socket answering";
