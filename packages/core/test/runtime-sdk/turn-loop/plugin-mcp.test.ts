@@ -693,6 +693,31 @@ test("each server lists on its own: one installed while another hangs is served 
   }
 }, 15_000);
 
+test("a plugin the host stopped on purpose (being removed) while it was listed: the listing ends quietly, no 'worker went' line", async () => {
+  const folder = mkdtempSync(join(tmpdir(), "moss-a3-pmcp-"));
+  temps.push(folder);
+  const registry = fakeRegistry([entry("moss/web", "web", { type: "host", tools: { WebSearch: "preload", WebFetch: "preload" } })], { "moss/web": folder }, {}, { "moss/web": { granted: ["network:mcp.exa.ai", "network:public"] } });
+  const real = fakeHost();
+  let closed = false;
+  const host = {
+    async openMcp(plugin: string, server: string): Promise<McpChannel> {
+      if (closed) return real.host.openMcp(plugin, server);
+      const out = new Listeners<Record<string, unknown>>();
+      setTimeout(() => { closed = true; }, 50);
+      return { send() {}, onMessage: (fn: (m: Record<string, unknown>) => void) => out.add(fn), close() { closed = true; }, get closed() { return closed; } };
+    },
+    status: () => ({ pluginId: "moss/web", crashes: 0, state: "stopped", reason: "being removed" }) as never,
+  };
+  const logs: string[] = [];
+  const mcp = new PluginMcp({ registry, host, self: () => "Studio", log: (l) => logs.push(l) });
+  try {
+    await mcp.refresh();
+    expect(logs.filter((l) => l.includes("worker went") || l.includes("listing again"))).toEqual([]);
+  } finally {
+    mcp.close();
+  }
+}, 15_000);
+
 test("a worker that goes during the listing (its channel closes): listed again on the next worker at once, never a 30 s wait; one that keeps going says why", async () => {
   const folder = mkdtempSync(join(tmpdir(), "moss-a3-pmcp-"));
   temps.push(folder);

@@ -651,6 +651,11 @@ export class PluginMcp {
     return true;
   }
 
+  /** Whether the host has stopped the plugin on purpose (a removal, a switch-off), as against a worker that failed. */
+  #stoppedOnPurpose(pluginId: string): boolean {
+    try { return this.#o.host.status?.(pluginId)?.state === "stopped"; } catch { return false; }
+  }
+
   /** What the host says of a plugin that isn't running (`restarting: the worker failed: …`), for a log line. */
   #why(pluginId: string): string {
     try {
@@ -681,6 +686,9 @@ export class PluginMcp {
             // The channel closed under the listing: its plugin's worker went (a crash, a reload; the host closes its
             // channels then). Once more, on the worker that replaces it; a plugin that keeps failing fails here.
             if ((err as { code?: unknown } | null)?.code !== "closed" || this.#closed || this.#want.get(key) === undefined) throw err;
+            // Stopped on purpose (being removed, switched off): nothing crashed, the server isn't wanted any more or its
+            // last listing stands, so the listing ends quietly instead of retrying against a worker that won't come back.
+            if (this.#stoppedOnPurpose(c.pluginId)) return;
             this.#o.log?.(`plugin MCP ${c.pluginId}/${this.#nameOf(c)}: its plugin's worker went during the listing${this.#why(c.pluginId)}; listing again`);
             listed = await this.#list(key, c);
           }

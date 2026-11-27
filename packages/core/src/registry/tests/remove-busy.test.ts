@@ -195,8 +195,21 @@ describe("a link planted under plugin-data/.removed", () => {
 describe.skipIf(process.platform !== "win32")("a data folder a process holds open (Windows)", () => {
   test("the removal stops with DataFolderBusy and everything else kept; once the process is gone it goes through", async () => {
     const w = world();
-    const child = Bun.spawn(["cmd.exe", "/c", "ping -n 60 127.0.0.1 > nul"], { cwd: w.data, stdout: "ignore", stderr: "ignore" });
+    // A file inside held open with no delete sharing (what a running plugin's log or db is), so the folder can't be renamed;
+    // the child says "ready" once it holds it.
+    const held = join(w.data, "held.lock").replace(/'/g, "''");
+    const child = Bun.spawn(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+      `$f=[IO.File]::Open('${held}','OpenOrCreate','ReadWrite','None'); [Console]::Out.WriteLine('ready'); [Console]::Out.Flush(); Start-Sleep -Seconds 120`], { stdout: "pipe", stderr: "ignore" });
     try {
+      const reader = child.stdout.getReader();
+      let seen = "";
+      const deadline = Date.now() + 30_000;
+      while (!seen.includes("ready") && Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        seen += new TextDecoder().decode(value);
+      }
+      expect(seen).toContain("ready");
       await expect(forgetRemovedPlugin({ home: w.home, record: rec, children: [], sleep: noWait })).rejects.toBeInstanceOf(DataFolderBusy);
       expect(existsSync(w.data)).toBe(true);
       expect(existsSync(w.settings)).toBe(true);
