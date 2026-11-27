@@ -428,7 +428,7 @@ else if (a === "autostart" && b === "enable") console.log("autostart: registered
 else if (a === "autostart" && b === "start") { appendFileSync(${JSON.stringify(launchRequests)}, Math.floor(Date.now() / 1000) + "\\n"); console.log("autostart: start asked (stand-in: the acceptance run starts the core)"); }
 else { console.error("acceptance: the stand-in launcher doesn't do " + a + " " + b); process.exit(1); }
 `);
-  const built = spawnSync(process.execPath, ["build", "--compile", source, "--outfile", standInBin], { encoding: "utf8" });
+  const built = spawnSync(process.execPath, ["build", "--no-macros", "--compile", source, "--outfile", standInBin], { encoding: "utf8" });
   if (built.status !== 0) console.error(`acceptance: the stand-in launcher did not compile (the reopen rows will fail): ${built.stderr}`);
 } else writeFileSync(standInBin, `#!/bin/sh
 case "$1 $2" in
