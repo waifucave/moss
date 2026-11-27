@@ -642,6 +642,39 @@ describe("a background command on Windows (rule B, lane WS7)", () => {
     expect(readFileSync(log, "utf8")).toContain("[moss: the command exited with code 0]");
     expect(windowsBackgroundOf("bg-a")).toEqual([]);
   }, 30_000);
+  test("the session's task reporting hears a command start (id, short label) and end, in that order and before the wake; an agent's text names no TaskStop", async () => {
+    const s = slow();
+    const events: string[] = [];
+    const cwd = mkdtempSync(join(tmpdir(), "ws7-bg-"));
+    const moss = mkdtempSync(join(tmpdir(), "ws7-moss-"));
+    const caller = { kind: "session", sessionId: "bg-rep", sessionKind: "agent" } as Extract<Caller, { kind: "session" }>;
+    const t = Object.fromEntries(windowsShellTools({
+      spawner: s.spawner, caller, kind: "side-thread", cwd: () => cwd, userHome: "C:\\h", temp: "C:\\t", mossHome: moss, sandbox: () => ({}), stoppable: false,
+      wake: async (w) => { events.push(`wake ${w.task}`); },
+      tasks: { started: (id, label) => { events.push(`started ${id} ${label}`); }, ended: (id) => { events.push(`ended ${id}`); } },
+    }).map((x) => [x.name, x]));
+    const r = await t.Bash!.run({ command: "sleep 6\nsecond line", description: "wait a bit", run_in_background: true });
+    expect(r.isError).toBe(false);
+    expect(r.text).not.toContain("TaskStop");
+    expect(t.Bash!.description).not.toContain("TaskStop");
+    const id = idOf(r.text);
+    expect(events).toEqual([`started ${id} wait a bit`]);
+    s.release[0]!();
+    for (let i = 0; i < 100 && !events.includes(`wake ${id}`); i++) await Bun.sleep(10);
+    expect(events).toEqual([`started ${id} wait a bit`, `ended ${id}`, `wake ${id}`]);
+    // A command with no description is labelled by its first line.
+    const s2 = slow();
+    const seen: string[] = [];
+    const t2 = Object.fromEntries(windowsShellTools({
+      spawner: s2.spawner, caller: { ...caller, sessionId: "bg-rep2" }, kind: "side-thread", cwd: () => cwd, userHome: "C:\\h", temp: "C:\\t", mossHome: moss, sandbox: () => ({}),
+      wake: async () => {}, tasks: { started: (_i, label) => { seen.push(label); }, ended: () => { throw new Error("a report never stops the command"); } },
+    }).map((x) => [x.name, x]));
+    const r2 = await t2.Bash!.run({ command: "npm run watch\nmore", run_in_background: true });
+    expect(seen).toEqual(["npm run watch"]);
+    expect(r2.text).toContain("TaskStop");
+    await stopWindowsBackground("bg-rep2", idOf(r2.text));
+    expect(windowsBackgroundOf("bg-rep2")).toEqual([]);
+  }, 30_000);
   test("TaskStop's stop ends it (its session's only) and it is told as stopped; at most two run per session", async () => {
     const s = slow();
     const wakes: { task: string; status: string }[] = [];

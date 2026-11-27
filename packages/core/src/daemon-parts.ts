@@ -523,6 +523,11 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
                   windowsShell: (s: { sessionId: string; root: string; sandbox: () => SandboxSettingsConfig }) => agentShellTools({
                     spawner, caller: { kind: "session", sessionId: s.sessionId, sessionKind: "agent" } as Extract<Caller, { kind: "session" }>,
                     cwd: () => s.root, sandbox: s.sandbox, userHome: input.userHome, temp: fence.temp, mossHome: input.mossHome,
+                    // A background command: its end comes back as a note in the agent's session (it wakes it), and the
+                    // host's graph hears it start and end as it does the runtime's own tasks (the runtime never sees a
+                    // host tool's command, so it sends no task frames for it).
+                    wake: ({ text }) => d.host.deliver(s.sessionId, { from: "note", label: "Background command", text, by: { kind: "core" } }),
+                    tasks: { started: (id) => d.host.taskStarted(s.sessionId, id), ended: (id) => d.host.taskEnded(s.sessionId, id) },
                   }),
                 };
               })() : {}),

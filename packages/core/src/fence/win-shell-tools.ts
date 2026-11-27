@@ -139,7 +139,7 @@ const INPUT_SCHEMA: Record<string, unknown> = {
     command: { type: "string", description: "The command to run" },
     timeout: { type: "number", description: `Optional timeout in milliseconds (max ${WIN_SHELL_MAX_TIMEOUT_MS})` },
     description: { type: "string", description: "A short description of what the command does" },
-    run_in_background: { type: "boolean", description: "Run the command in the background: the call answers at once with its task id and a log file to Read; you are told when it ends, and TaskStop stops it" },
+    run_in_background: { type: "boolean", description: "Run the command in the background: the call answers at once with its task id and a log file to Read; you are told when it ends" },
     dangerouslyDisableSandbox: { type: "boolean", description: "Ask the user, on a card, to run this one command outside the sandbox's folder limits" },
   },
   required: ["command"],
@@ -167,6 +167,13 @@ export interface WindowsShellToolsOptions {
   /** The session's approval level now (the daemon's `levelOfSession`): a background command records it at its start,
    *  and the daemon ends it when the level drops below that (`windowsBackgroundLevelLowered`). */
   readonly level?: () => Level | undefined;
+  /** What a session's task reporting is told of a background command, as the runtime's frames tell it of its own (the
+   *  runtime never sees a host tool's command): started with its id and short label, and ended (exit, stop or refusal).
+   *  Told before the end's notification (`wake`). */
+  readonly tasks?: { started(id: string, label: string): void; ended(id: string): void };
+  /** Whether `TaskStop` reaches these commands (the bots' do: `stopWindowsBackground`); false says only that it ends
+   *  with its session and is told when it ends. Default true. */
+  readonly stoppable?: boolean;
 }
 
 /** Rule E, a command outside the sandbox on Windows: still a sandbox principal (there is no fenced way to run as the
@@ -198,11 +205,11 @@ function resultText(r: { stdout: string; stderr: string; code?: number | null; t
 /** Lane WS8: MOSS's coding agent's Bash and PowerShell on Windows, in place of the runtime's (which has no Windows
  *  sandbox): the same fenced tools, held to the very sandbox settings the agent's runtime is given (its own policy: the
  *  MOSS home denied whole, the user's home denied but its root), under the agent session's own caller (rules 3b and 3c
- *  keep it apart from every bot's command). Never outside the sandbox (an agent's escape is refused, no card), and never
- *  in the background (refused with the reason: an agent's background commands aren't served on Windows yet). The pool's
+ *  keep it apart from every bot's command). Never outside the sandbox (an agent's escape is refused, no card), and in the
+ *  background only where its end can be told (`wake`, `tasks`: the daemon gives them). The pool's
  *  accounts are shared with the bots' commands: each is reset after every command. */
-export function agentShellTools(o: Omit<WindowsShellToolsOptions, "kind" | "wake" | "level">): CoreToolDef[] {
-  return windowsShellTools({ ...o, kind: "side-thread" });
+export function agentShellTools(o: Omit<WindowsShellToolsOptions, "kind" | "level" | "stoppable">): CoreToolDef[] {
+  return windowsShellTools({ ...o, kind: "side-thread", stoppable: false });
 }
 
 /** The two tools, for a session on Windows. */
@@ -231,7 +238,7 @@ export function windowsShellTools(o: WindowsShellToolsOptions): CoreToolDef[] {
       const base = o.sandbox();
       const sandbox = escape ? escapedSandbox(base, o) : base;
       const cwd = o.cwd();
-      if (inBackground) return startBackground(name, shell, i.command, cwd, sandbox);
+      if (inBackground) return startBackground(name, shell, i.command, cwd, sandbox, i.description);
       const r = await o.spawner.run({
         command: i.command, cwd, env: { TMPDIR: win32.normalize(cwd) }, timeoutMs: Math.min(asked, WIN_SHELL_MAX_TIMEOUT_MS),
         who: { caller: o.caller }, shell, sandbox,
@@ -248,7 +255,7 @@ export function windowsShellTools(o: WindowsShellToolsOptions): CoreToolDef[] {
     },
   });
   /** Rule B: start a background command and answer at once (or with the refusal, when it comes within a second). */
-  const startBackground = async (name: string, shell: "bash" | "powershell", command: string, cwd: string, sandbox: SandboxSettingsConfig): Promise<CoreToolResult> => {
+  const startBackground = async (name: string, shell: "bash" | "powershell", command: string, cwd: string, sandbox: SandboxSettingsConfig, description?: unknown): Promise<CoreToolResult> => {
     const id = `win_bg_${randomBytes(4).toString("hex")}`;
     // The log is written by the daemon, outside the sandbox, while the command runs: in a folder the command can
     // write (its own, say) the command could swap the log, or a folder above it, for a link or a junction and have the
@@ -298,12 +305,15 @@ export function windowsShellTools(o: WindowsShellToolsOptions): CoreToolDef[] {
       levelAtStart: o.level?.(), levelNow: () => o.level?.(),
     };
     background.set(id, task);
+    const label = (typeof description === "string" && description.trim() !== "" ? description : command).trim().split(/\r?\n/)[0]!.slice(0, 80);
+    try { o.tasks?.started(id, label); } catch { /* a report never stops the command */ }
     const finished = run.then(async (r) => {
       const status: "completed" | "failed" | "stopped" = abort.signal.aborted ? "stopped" : r.kind === "exited" && r.code === 0 ? "completed" : "failed";
       const how = r.kind === "refused" ? `was refused: ${r.reason}` : abort.signal.aborted ? (task.why === undefined ? "was stopped" : `was stopped: ${task.why}`) : r.kind === "timeout" ? `ran past ${WIN_SHELL_BACKGROUND_MAX_MS / 3_600_000} hours and was ended` : `exited with code ${r.code}`;
       put(`\n[moss: the command ${how}]\n`);
       try { closeSync(fd); } catch { /* closed */ }
       background.delete(id);
+      try { o.tasks?.ended(id); } catch { /* a report never stops the command */ }
       settle();
       const tail = r.kind === "refused" ? "" : resultText(r).slice(-2_000);
       const text = `Background ${name} command ${id} ${how}. Its whole output is in ${log}.${tail === "" ? "" : `\nThe end of its output:\n${tail}`}`;
@@ -314,7 +324,7 @@ export function windowsShellTools(o: WindowsShellToolsOptions): CoreToolDef[] {
     // still busy past its wait) comes back as the task's notification.
     const early = await Promise.race([finished, Bun.sleep(1_000).then(() => null)]);
     if (early !== null && early.r.kind === "refused") return { text: `${name} was refused: ${early.r.reason}`, isError: true };
-    return { text: `Command running in the background with ID: ${id}. Its output is being written to ${log} (read it with Read). You will be told when it ends; TaskStop with this id stops it.`, isError: false };
+    return { text: `Command running in the background with ID: ${id}. Its output is being written to ${log} (read it with Read). You will be told when it ends${o.stoppable === false ? "." : "; TaskStop with this id stops it."}`, isError: false };
   };
   return [
     tool("Bash", "bash", windowsShellDescription("Bash", o)),
@@ -326,7 +336,7 @@ export function windowsShellTools(o: WindowsShellToolsOptions): CoreToolDef[] {
  *  exactly as written, with none of the runtime's shell guidance, so it is all here, in MOSS's words). It says what this
  *  session may do: a background command only where its end can be told (`wake`), leaving the sandbox only from a bot's
  *  own conversation. Every parameter of `INPUT_SCHEMA` is named (a unit test holds that). */
-export function windowsShellDescription(name: "Bash" | "PowerShell", o: Pick<WindowsShellToolsOptions, "kind" | "wake">): string {
+export function windowsShellDescription(name: "Bash" | "PowerShell", o: Pick<WindowsShellToolsOptions, "kind" | "wake" | "stoppable">): string {
   const bash = name === "Bash";
   const lines = [
     bash
@@ -344,7 +354,7 @@ export function windowsShellDescription(name: "Bash" | "PowerShell", o: Pick<Win
     `- \`timeout\`: milliseconds before it is ended (default ${WIN_SHELL_DEFAULT_TIMEOUT_MS}, at most ${WIN_SHELL_MAX_TIMEOUT_MS}).`,
     o.wake === undefined
       ? "- `run_in_background`: not available in this session; every command runs in the foreground."
-      : `- \`run_in_background\`: for something long (a server, a watch, a long build): the call answers at once with a task id and a log file; read the log with Read, you are told when it ends, and TaskStop with the id stops it. At most ${WIN_SHELL_BACKGROUND_PER_SESSION} at once in a conversation, and fewer when the computer is busy.`,
+      : `- \`run_in_background\`: for something long (a server, a watch, a long build): the call answers at once with a task id and a log file; read the log with Read, you are told when it ends${o.stoppable === false ? "" : ", and TaskStop with the id stops it"}. At most ${WIN_SHELL_BACKGROUND_PER_SESSION} at once in a conversation, and fewer when the computer is busy.`,
     o.kind === "bot"
       ? "- `dangerouslyDisableSandbox`: true asks the user, on a card, to run this one command outside the sandbox (it can then write the user's files and reach the network; MOSS's folder stays closed). Only for a command that truly needs it, never in the background; leave it out otherwise."
       : "- `dangerouslyDisableSandbox`: leave it out: this session's commands never leave the sandbox, and a call with it is refused.",
