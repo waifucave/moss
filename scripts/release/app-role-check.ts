@@ -8,7 +8,7 @@
 //   bun scripts/release/app-role-check.ts --core <installed moss-core> --app <installed app exe> [--app …] --expect verified|unverified
 //
 // Linux runs it under xvfb-run and scripts/with-private-secret-service.sh (the apps draw windows; the engine's secrets go
-// to a private keyring). The engine's keychain service is a throwaway one of this run's.
+// to a private keyring). The engine keeps its own keychain service (a release refuses a test's).
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -33,9 +33,11 @@ if (core === undefined || apps.length === 0 || (expect !== "verified" && expect 
 }
 
 const home = realpathSync.native(mkdtempSync(join(tmpdir(), "moss-app-role-check-")));
-const env: Record<string, string> = {
-  ...(process.env as Record<string, string>), MOSS_HOME: home, MOSS_KEYCHAIN_SERVICE: `moss-app-role-check-${process.pid}`,
-};
+// The release engine as a person runs it: its own keychain service (a release refuses a test's MOSS_KEYCHAIN_SERVICE,
+// run 45988405527), on a disposable runner whose keychain is its own (Linux: the private keyring of
+// with-private-secret-service.sh; Windows: the runner's Credential Manager, gone with the runner).
+const { MOSS_KEYCHAIN_SERVICE: _test, ...inherited } = process.env as Record<string, string>;
+const env: Record<string, string> = { ...inherited, MOSS_HOME: home };
 const started: ChildProcess[] = [];
 const log = () => { try { return readFileSync(join(home, "logs", "daemon.log"), "utf8"); } catch { return ""; } };
 /** What each started process printed, and how it ended (said when a step fails). */
