@@ -3948,11 +3948,17 @@ async function smoke(): Promise<void> {
                   cdp = win.webContents.debugger.isAttached();
                 } catch { /* fall back to sendInputEvent */ }
               }
-              const dispatch = !inputAllowed
+              const dispatchRaw = !inputAllowed
                 ? async (_kind: "mouseMoved" | "mousePressed" | "mouseReleased") => { /* refused: test input stays in test runs */ }
                 : cdp
                   ? async (kind: "mouseMoved" | "mousePressed" | "mouseReleased") => { await win.webContents.debugger.sendCommand("Input.dispatchMouseEvent", { type: kind, x: centerX, y: centerY, ...(kind === "mouseMoved" ? {} : { button: "left", clickCount: 1 }) }).catch(() => undefined); }
                   : async (kind: "mouseMoved" | "mousePressed" | "mouseReleased") => { void win.webContents.sendInputEvent({ type: kind === "mouseMoved" ? "mouseMove" : kind === "mousePressed" ? "mouseDown" : "mouseUp", x: centerX, y: centerY, ...(kind === "mouseMoved" ? {} : { button: "left" as const }) }); };
+              // CDP-dispatched input does not pass `before-mouse-event`, where a person's click makes main learn its point (press-point.ts): this
+              // test input says so itself, in main, with the coordinates it is about to press (never a page's word), as that handler would.
+              const dispatch = async (kind: "mouseMoved" | "mousePressed" | "mouseReleased") => {
+                if (kind === "mousePressed" && inputAllowed) windowDowns.set(win.id, { x: centerX, y: centerY, at: Date.now() });
+                await dispatchRaw(kind);
+              };
               log(`sealed-click: input via ${!inputAllowed ? "refused" : cdp ? "cdp" : "sendInputEvent"}`);
               await dispatch("mouseMoved");
               if (missFirst === true && frame.parent !== null) {
@@ -4074,11 +4080,16 @@ async function smoke(): Promise<void> {
               fbCdp = w.webContents.debugger.isAttached();
             } catch { /* fall back to sendInputEvent */ }
           }
-          const fbDispatch = !fbInputAllowed
+          const fbDispatchRaw = !fbInputAllowed
             ? async (_kind: "mouseMoved" | "mousePressed" | "mouseReleased") => { /* refused: test input stays in test runs */ }
             : fbCdp
               ? async (kind: "mouseMoved" | "mousePressed" | "mouseReleased") => { await w.webContents.debugger.sendCommand("Input.dispatchMouseEvent", { type: kind, x: centerX, y: centerY, ...(kind === "mouseMoved" ? {} : { button: "left", clickCount: 1 }) }).catch(() => undefined); }
               : async (kind: "mouseMoved" | "mousePressed" | "mouseReleased") => { void w.webContents.sendInputEvent({ type: kind === "mouseMoved" ? "mouseMove" : kind === "mousePressed" ? "mouseDown" : "mouseUp", x: centerX, y: centerY, ...(kind === "mouseMoved" ? {} : { button: "left" as const }) }); };
+          // As above: this test input is not seen by `before-mouse-event`, so main learns the point it presses itself.
+          const fbDispatch = async (kind: "mouseMoved" | "mousePressed" | "mouseReleased") => {
+            if (kind === "mousePressed" && fbInputAllowed) windowDowns.set(w.id, { x: centerX, y: centerY, at: Date.now() });
+            await fbDispatchRaw(kind);
+          };
           log(`sealed-click: fallback input via ${!fbInputAllowed ? "refused" : fbCdp ? "cdp" : "sendInputEvent"}`);
           await fbDispatch("mouseMoved");
           await new Promise((r) => setTimeout(r, 1300));

@@ -293,7 +293,7 @@ describe.if(enabled)("the sealed card in Electron (E-M3 end-to-end)", () => {
 
   onCi("a press with no fresh report is refused (test build drops the report)", async () => {
     const r = await runApp({ click: { cardId: CARD_ID, element: "button:allow_once" }, dropFresh: true });
-    expect(r.output).toContain("sealed: answer refused (no visibility report came with the press)");
+    expect(r.output).toContain("sealed: answer refused (no visibility report came with the press (no report))");
     expect(answerCallsOf(r.home), r.output).toHaveLength(0);
   }, 120_000);
 
