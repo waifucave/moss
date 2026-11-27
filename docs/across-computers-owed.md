@@ -70,14 +70,15 @@ reach, because it needs something that isn't in a test run.
   so"; lane XC, `platform/app-image.ts`). On macOS the app role takes only a peer signed with the team's Developer ID
   for one named program, and the hello's surface must be that program. Linux and Windows have no signature to check,
   so the engine checks what they allow:
-  - Linux: the peer held by its pidfd; its executable MOSS's, MOSS Code's or the host's and not replaced; nothing
-    tracing it. A root-owned package install is "verified". An AppImage or a home install is "unverified", accepted
-    and logged.
+  - Linux: the peer held by its pidfd; its executable named as MOSS's, MOSS Code's or the host's and not replaced;
+    nothing tracing it. At its root-owned package path it is "verified". Anywhere else it is "unverified", accepted and
+    logged, if `resources/app.asar` is beside it (an AppImage, a home install).
   - Windows: the per-user install's executable, at medium integrity or higher, never in the engine's job.
 
-  That refuses a script replaying the app token. It doesn't stop a program already running as the person outside the
-  sandbox: one that starts the real app under LD_PRELOAD or as a child it traces, replaces a user-writable install,
-  or, with `ptrace_scope` 0, attaches to the running app. Such a program can act as MOSS there: approve cards, those
+  That refuses only a script replaying the app token that doesn't pose as the app's file. It doesn't stop a program
+  already running as the person outside the sandbox: one that copies itself to a file with our name beside an
+  `app.asar` (accepted as unverified), starts the real app under LD_PRELOAD (even the verified `/opt` install) or as a
+  child it traces, replaces a user-writable install, or, with `ptrace_scope` 0, attaches to the running app. Such a program can act as MOSS there: approve cards, those
   other computers act on included, and register a program key. On a kernel before 6.5, a pid reused between the
   connection and its hello could stand in for the app.
 
