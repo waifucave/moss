@@ -118,16 +118,18 @@ describeWithEmbeddedRuntime("tool results are projected as each call of a batch 
     const d = daemon!;
     const cwd = realpathSync(mkdtempSync(join(tmpdir(), "moss-per-call-e2e-cwd-")));
     const target = join(cwd, "quick.txt");
-    // The Bash writes a marker only AFTER its sleep: the Write's result arriving while the marker is still
-    // absent proves it arrived before the Bash finished -- causal, not a millisecond gap.
-    const marker = join(cwd, "bash-finished");
+    // The Bash stamps the wall clock (ms, the same machine's clock the test reads) when its sleep ENDS, and prints it. The Write's result
+    // must have reached the client before that instant: two real events ordered by the clock, with no margin to tune (a slow sandbox start,
+    // such as the held-names walk before a sandboxed Bash on Linux, only moves the Bash's own start and end together). A file marker
+    // written by the Bash was not used: under the Linux sandbox it did not always land where the test looked.
+    const NOW = `perl -MTime::HiRes=time -e 'printf "%d", time()*1000'`;
     const script = [
       `CALL Write ${JSON.stringify({ file_path: target, content: "written first\n" })}`,
-      `+CALL Bash ${JSON.stringify({ command: `sleep ${SLEEP_SECONDS}; touch ${marker}; echo slow-one` })}`,
+      `+CALL Bash ${JSON.stringify({ command: `sleep ${SLEEP_SECONDS}; echo bash-end-ms=$(${NOW}); echo slow-one` })}`,
     ].join("\n");
-    let markerWhenWriteArrived: boolean | undefined;
+    let writeArrivedMs: number | undefined;
     client.onEvent = (e) => {
-      if (markerWhenWriteArrived === undefined && e.type === "tool_result" && (e as ToolResultEvent).fileDiff !== undefined) markerWhenWriteArrived = existsSync(marker);
+      if (writeArrivedMs === undefined && e.type === "tool_result" && (e as ToolResultEvent).fileDiff !== undefined) writeArrivedMs = Date.now();
     };
 
     const { sessionId } = await client.call<{ sessionId: string }>(METHODS.sessionCreate, {
@@ -159,8 +161,10 @@ describeWithEmbeddedRuntime("tool results are projected as each call of a batch 
     // THE fix: the Write's result reached the attached client live BEFORE the Bash had finished, in order.
     const live = client.events.filter((e) => e.event.type === "tool_result" && e.event.sessionId === sessionId);
     expect(live.map((e) => (e.event as ToolResultEvent).callId)).toEqual(ids);
-    expect(markerWhenWriteArrived).toBe(false);
-    expect(existsSync(marker)).toBe(true);
+    const bashEnded = /bash-end-ms=(\d+)/.exec(bash.output);
+    expect(bashEnded).not.toBeNull();
+    expect(writeArrivedMs).toBeDefined();
+    expect(writeArrivedMs!).toBeLessThan(Number(bashEnded![1]));
     client.onEvent = undefined;
 
     // The hooks lane's diff rides the early event — nothing was lost by projecting it before the round ended.
