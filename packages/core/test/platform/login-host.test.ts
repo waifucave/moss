@@ -176,3 +176,48 @@ describe("which executable the host's definition runs (one rule for MOSS and MOS
     expect(hostExecutable(mkdtempSync(join(tmpdir(), "moss-host-exe-none-")), "linux", () => true)).toBeUndefined();
   });
 });
+
+describe("an app uninstalled between launches: the remaining app's enable repoints or removes the definition", () => {
+  test("Linux: MOSS Code removed, MOSS remains: the unit is repointed at MOSS's carried copy; MOSS removed too: the unit goes", async () => {
+    const h = mkdtempSync(join(tmpdir(), "moss-host-swap-"));
+    mkdirSync(join(h, "apps"));
+    const rec = (program: string, bundlePath: string) => writeFileSync(join(h, "apps", `${program}.json`), JSON.stringify({ record: 1, program, bundlePath, release: "1.2.0", carries: { engine: true, host: true }, seenAt: 1 }));
+    rec("code", "/opt/moss-code");
+    rec("moss", "/opt/moss");
+    let present = ["/opt/moss-code", "/opt/moss-code/moss-code", "/opt/moss", "/opt/moss/resources/host/moss-host"];
+    const exists = (p: string) => present.includes(p);
+    const base = spec("linux");
+    const f = fakeOs();
+    const launch = async () => { const hx = hostExecutable(h, "linux", exists); await loginEnable({ ...base, ...(hx ? { host: { bin: hx.bin } } : {}) }, f.os); };
+    await launch();
+    expect(readFileSync(hostUnitPath(base)!, "utf8")).toContain('ExecStart="/opt/moss-code/moss-code"');
+    present = present.filter((p) => !p.startsWith("/opt/moss-code"));
+    await launch();
+    expect(readFileSync(hostUnitPath(base)!, "utf8")).toContain('ExecStart="/opt/moss/resources/host/moss-host"');
+    present = [];
+    await launch();
+    expect(existsSync(hostUnitPath(base)!)).toBe(false);
+  });
+
+  test("Windows: the task is registered again with MOSS's copy, then dropped when nothing carries the host", async () => {
+    const h = mkdtempSync(join(tmpdir(), "moss-host-swap-win-"));
+    mkdirSync(join(h, "apps"));
+    const rec = (program: string, bundlePath: string) => writeFileSync(join(h, "apps", `${program}.json`), JSON.stringify({ record: 1, program, bundlePath, release: "1.2.0", carries: { engine: true, host: true }, seenAt: 1 }));
+    const code = "C:\\Code", moss = "C:\\Moss";
+    rec("code", code);
+    rec("moss", moss);
+    let present = [code, `${code}\\MOSS Code.exe`, moss, `${moss}\\resources\\host\\moss-host.exe`];
+    const exists = (p: string) => present.includes(p);
+    const f = fakeOs();
+    const launch = async () => { const hx = hostExecutable(h, "win32", exists); await loginEnable({ ...spec("win32"), ...(hx ? { host: { bin: hx.bin } } : {}) }, f.os); };
+    await launch();
+    expect(f.calls.at(-1)!.tasks![1]!.xml).toContain(`<Command>${code}\\MOSS Code.exe</Command>`);
+    present = present.filter((p) => !p.startsWith(code));
+    await launch();
+    expect(f.calls.at(-1)!.tasks![1]!.xml).toContain(`<Command>${moss}\\resources\\host\\moss-host.exe</Command>`);
+    present = [];
+    await launch();
+    expect(f.calls.at(-1)!.tasks!.map((t) => t.name)).toEqual(["\\MOSS\\moss-core"]);
+    expect(f.calls.at(-1)!.drop).toEqual(["\\MOSS\\moss-host"]);
+  });
+});

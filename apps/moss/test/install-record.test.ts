@@ -47,8 +47,13 @@ test("a copy that carries the host helper says so (lane PK): the engine starts t
   for (const profile of ["dist", "dev"] as const) expect(hostHelperIn(bundle, profile)).toBe(hostHelperPath(bundle, profile));
   expect(carriesHost(bundle, "dist", "darwin", (p) => p === helper)).toBe(true);
   expect(carriesHost(bundle, "dist", "darwin", () => false)).toBe(false);
-  // No helper bundle on Windows and Linux: the host there is MOSS Code's own executable.
-  expect(carriesHost(bundle, "dist", "linux", () => true)).toBe(false);
+  // Windows and Linux: no helper bundle; the host is MOSS Code's app carried in resources/host, found by the file at record time.
+  expect(carriesHost("/opt/moss", "dist", "linux", (p) => p === "/opt/moss/resources/host/moss-host")).toBe(true);
+  expect(carriesHost("/opt/moss", "dist", "linux", () => false)).toBe(false);
+  expect(carriesHost("/opt/moss", "dist", "linux", (p) => p === "/opt/moss/resources/host/moss-host.exe")).toBe(false);
+  expect(carriesHost("C:\\Program Files\\MOSS", "dist", "win32", (p) => p === "C:\\Program Files\\MOSS\\resources\\host\\moss-host.exe")).toBe(true);
+  expect(carriesHost("C:\\Program Files\\MOSS", "dist", "win32", () => false)).toBe(false);
+  expect(carriesHost("/opt/moss", "dist", "freebsd" as NodeJS.Platform, () => true)).toBe(false);
   expect(writeOwnRecord(home, { bundlePath: bundle, release: "1.2.0", carriesEngine: true, carriesHost: true, now: 7 }, () => {})).toBe(true);
   expect(AppInstallRecord.parse(JSON.parse(readFileSync(recordPath(home), "utf8"))).carries).toEqual({ engine: true, host: true });
 });
