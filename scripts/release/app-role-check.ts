@@ -5,12 +5,12 @@
 // of the image check: "verified image" for a root-owned package install, "unverified image" for a user-writable one), and
 // its host must say `host.ready`. And the negative: a script holding the home's app token is refused the app role.
 //
-//   bun scripts/release/app-role-check.ts --core <installed moss-core> --app <installed app exe> [--app …] [--host <installed host exe>] --expect verified|unverified
+//   bun scripts/release/app-role-check.ts --core <installed moss-core> --app <installed app exe> [--app …] [--host <installed host exe> | --engine-starts-host] --expect verified|unverified
 //
 // Linux runs it under xvfb-run and scripts/with-private-secret-service.sh (the apps draw windows; the engine's secrets go
 // to a private keyring). The engine keeps its own keychain service (a release refuses a test's).
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { hello } from "../acceptance/client";
@@ -28,25 +28,39 @@ function arg(name: string): string[] {
 const core = arg("--core")[0];
 const apps = arg("--app");
 const expect = arg("--expect")[0];
-// The installed host's executable. No package installs the host's start yet (the engine starts it on Windows and Linux
-// through the task `\MOSS\moss-host` or the user unit `moss-host.service`, packages/core/src/host/world.ts, and neither
-// package installs one: the engine's log says "no task …" or "systemctl refused …"), so this script plays that task: it
-// starts the installed host itself, outside the engine's tree, as `<exe> --moss-program=host` on the same home, and its
-// connection goes through the same default check. Lane MQ's lane/mq-12 installs the task and the unit (the login
-// manager, at the app's first launch); once it is merged the proof switches to the engine starting the host itself.
+// How the host starts. `--engine-starts-host` (Windows): the real path. The engine starts the host through its task
+// `\MOSS\moss-host` (packages/core/src/host/world.ts), which the login manager writes on `moss-core autostart enable`
+// from the apps' records (lane MQ's mq-12, platform/login/host-exe.ts). `autostart` serves only the profile's DEFAULT
+// home, and the task starts the host with no environment of its own (so on the default home), so this mode runs on the
+// runner's default home: only under GitHub Actions, and only when that home doesn't exist yet. The apps connect (the
+// engine writes their records), `autostart enable` writes the task, the engine's next start of the host goes through
+// it (its starts retry for about two minutes), and the host's connection must pass the same default check.
+// `--host <exe>` (Linux): the stand-in. The engine starts the host there through `systemctl --user start
+// moss-host.service`, which needs a user systemd manager with a graphical session in its environment (world.ts reads
+// DISPLAY or WAYLAND_DISPLAY from `systemctl --user show-environment`); the packages job's runner has no user manager
+// for the runner account and its display is xvfb-run's, outside any systemd session. So this script plays the unit: it
+// starts the installed host itself, outside the engine's tree, as `<exe> --moss-program=host` on the same home, and
+// its connection goes through the same default check.
 const host = arg("--host")[0];
-if (core === undefined || apps.length === 0 || (expect !== "verified" && expect !== "unverified")) {
-  console.log("usage: bun scripts/release/app-role-check.ts --core <moss-core> --app <exe> [--app <exe>] [--host <exe>] --expect verified|unverified");
+const engineStartsHost = process.argv.includes("--engine-starts-host");
+if (core === undefined || apps.length === 0 || (expect !== "verified" && expect !== "unverified") || (engineStartsHost && host !== undefined)) {
+  console.log("usage: bun scripts/release/app-role-check.ts --core <moss-core> --app <exe> [--app <exe>] [--host <exe> | --engine-starts-host] --expect verified|unverified");
+  process.exit(2);
+}
+const defaultHome = join(process.env.USERPROFILE ?? process.env.HOME ?? "", ".moss");
+if (engineStartsHost && (process.env.GITHUB_ACTIONS !== "true" || process.platform !== "win32" || existsSync(defaultHome))) {
+  console.log(`app-role-check: --engine-starts-host runs only on a fresh Windows GitHub runner (the default home ${defaultHome} must not exist yet)`);
   process.exit(2);
 }
 
-const home = realpathSync.native(mkdtempSync(join(tmpdir(), "moss-app-role-check-")));
+const home = engineStartsHost ? (mkdirSync(defaultHome, { recursive: true }), realpathSync.native(defaultHome)) : realpathSync.native(mkdtempSync(join(tmpdir(), "moss-app-role-check-")));
 // The release engine as a person runs it: its own keychain service (a release refuses a test's MOSS_KEYCHAIN_SERVICE,
 // run 45988405527), on a disposable runner whose keychain is its own (Linux: the private keyring of
 // with-private-secret-service.sh; Windows: the runner's Credential Manager, gone with the runner).
-const { MOSS_KEYCHAIN_SERVICE: _test, ...inherited } = process.env as Record<string, string>;
+const { MOSS_KEYCHAIN_SERVICE: _test, MOSS_HOME: _home, ...inherited } = process.env as Record<string, string>;
 // Usage-inert as every daemon outside the tests (test/usage/script-daemons.test.ts): no usage source of the runner's is read.
-const env: Record<string, string> = { ...inherited, ...USAGE_INERT_ENV, MOSS_HOME: home };
+// On the default home no MOSS_HOME is set (the apps, the engine, `autostart` and the host's task all resolve it alike).
+const env: Record<string, string> = { ...inherited, ...USAGE_INERT_ENV, ...(engineStartsHost ? {} : { MOSS_HOME: home }) };
 const started: ChildProcess[] = [];
 const log = () => { try { return readFileSync(join(home, "logs", "daemon.log"), "utf8"); } catch { return ""; } };
 /** What each started process printed, and how it ended (said when a step fails). */
@@ -122,16 +136,41 @@ try {
     });
     say(line);
   }
-  const ready = await until("the host's host.ready", 180_000, () => /\[host\] ready: .*/.exec(log())?.[0]);
-  say(`the host said host.ready: ${ready}`);
+  if (engineStartsHost) {
+    // The apps' records are the engine's now; the login manager writes the host's task from them.
+    const before = log().length;
+    const en = spawnSync(core, ["autostart", "enable"], { env, encoding: "utf8", timeout: 120_000, windowsHide: true });
+    say(`moss-core autostart enable: exit ${en.status}: ${`${en.stdout ?? ""}${en.stderr ?? ""}`.trim().slice(0, 400)}`);
+    if (en.status !== 0) throw new Error("autostart enable failed");
+    const query = spawnSync("schtasks", ["/Query", "/TN", "\\MOSS\\moss-host", "/XML"], { encoding: "utf8", timeout: 30_000, windowsHide: true });
+    const command = /<Command>([^<]*)<\/Command>/.exec(query.stdout ?? "")?.[1];
+    say(`the host's task: ${query.status === 0 ? `runs ${command ?? "(no command)"}` : `not there (${(query.stderr ?? "").trim().slice(0, 200)})`}`);
+    if (query.status !== 0 || command === undefined) throw new Error("autostart enable wrote no host task");
+    // The engine's next start goes through the task (nothing here starts the host); its connection is checked like any
+    // app's, and only a host connection the check took can say host.ready (below).
+    const ready = await until("the host started by the engine through its task saying host.ready", 180_000, () => {
+      const fresh = log().slice(before);
+      const refusedLine = /\[moss\] an app connection was refused: .*/.exec(fresh)?.[0];
+      if (refusedLine !== undefined) throw new Error(`a connection was refused: ${refusedLine}`);
+      return /\[host\] ready: .*/.exec(fresh)?.[0];
+    });
+    const startLine = log().slice(before).split("\n").find((l) => l.includes("[host] starting the host from"));
+    say(`the engine: ${startLine?.replace(/^.*?\[host\]/, "[host]") ?? "(no start line)"}`);
+    if (startLine === undefined) throw new Error("host.ready came without the engine starting the host");
+    say(`the host said host.ready: ${ready}`);
+  }
+  if (!engineStartsHost) {
+    const ready = await until("the host's host.ready", 180_000, () => /\[host\] ready: .*/.exec(log())?.[0]);
+    say(`the host said host.ready: ${ready}`);
+  }
 } catch (e) {
   failed = true;
   const message = e instanceof Error ? e.message : String(e);
   console.log(`app-role-check: FAILED: ${message}`);
   if (!message.includes("--- the engine (")) console.log(said());
 } finally {
-  // The engine first (it ends the host it started), then what is left.
-  spawnSync(core, ["autostart", "stop"], { env, stdio: "ignore", timeout: 30_000, windowsHide: true });
+  // The engine first (it ends the host it started), then what is left. On the default home the login entries go too.
+  spawnSync(core, ["autostart", engineStartsHost ? "remove" : "stop"], { env, stdio: "ignore", timeout: 60_000, windowsHide: true });
   for (const p of started.reverse()) stop(p);
   await sleep(1_000);
   rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
