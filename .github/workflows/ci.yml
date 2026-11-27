@@ -556,8 +556,9 @@ jobs:
         with:
           workspaces: native/link -> target
 
+      # rpmbuild for the rpm; a display, a session bus and a keyring for the installed apps' app-role check.
       - name: rpmbuild, for the rpm
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends rpm
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends rpm dbus gnome-keyring libsecret-1-0 xvfb xauth x11-utils
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -609,6 +610,9 @@ jobs:
           grep -q 'profile moss-app-host /opt/moss/resources/host/moss-host' /etc/apparmor.d/moss-app
           case "$(readlink -f /usr/bin/moss)" in /opt/moss-code/resources/daemon/moss-core|/opt/moss/resources/daemon/moss-core) ;; *) echo "::error::moss is not a daemon of ours"; exit 1;; esac
           MOSS_HOME="$(mktemp -d)" moss --version
+          # The app role through the installed engine's own caller check (lane XC, platform/app-image.ts): each installed app gets it
+          # by the "verified" branch (root-owned /opt), its host says host.ready, and a script with the app token is refused.
+          xvfb-run -a scripts/with-private-secret-service.sh bun scripts/release/app-role-check.ts --core /opt/moss/resources/daemon/moss-core --app /opt/moss/moss-app --app /opt/moss-code/moss-code --expect verified
           # Removing MOSS leaves MOSS Code, its `moss` command and its profile working.
           sudo apt-get remove -y -qq moss
           test ! -e /opt/moss/resources/daemon/install.json

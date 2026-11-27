@@ -110,6 +110,13 @@ export function checkWin(dist: string, version: string): void {
   const host = join(dirs.moss, "resources", HOST_TREE_DIR, hostExecutableName("win"));
   must("MOSS carries the host (resources/host/moss-host.exe)", existsSync(host) && statSync(host).size > 0);
   must("and it runs MOSS Code's own code", readFileSync(join(dirs.moss, "resources", HOST_TREE_DIR, "resources", "app.asar")).equals(readFileSync(join(dirs.code, "resources", "app.asar"))));
+  // The app role through the installed engine's own caller check (lane XC, platform/app-image.ts): each installed app gets
+  // it (a per-user install: the "unverified" branch, never verified on Windows), its host says host.ready, and a script with
+  // the app token is refused (scripts/release/app-role-check.ts).
+  const role = run([process.execPath, join(dirname(fileURLToPath(import.meta.url)), "app-role-check.ts"), "--core", join(dirs.code, "resources", "daemon", engineFile("win")),
+    "--app", join(dirs.moss, `${APPS.moss.product}.exe`), "--app", join(dirs.code, `${APPS.code.product}.exe`), "--expect", "unverified"]);
+  console.log(role.out);
+  must("the installed apps get the app role through the engine's own check, its host says host.ready, a script with the token is refused", role.status === 0, role.out.split("\n").slice(-5).join(" | "));
   // Removing one app leaves the other working: MOSS first (MOSS Code stays), then MOSS Code. `_?=<dir>` makes the uninstaller
   // synchronous (it otherwise copies itself aside and returns at once); it leaves its own exe and folder behind.
   for (const key of ["moss", "code"] as const) {
