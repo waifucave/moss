@@ -66,7 +66,7 @@ describe("a Linux holder hands a peer's call its folder (the executor)", () => {
 });
 
 /** A fake runtime entry: records the run's inputs, answers as told. */
-function fakeEntry(o: { ready?: boolean; leftBehind?: boolean } = {}) {
+function fakeEntry(o: { ready?: boolean; leftBehind?: boolean; posture?: string } = {}) {
   const runs: Record<string, unknown>[] = [];
   let stopped = 0;
   const entry = {
@@ -76,7 +76,7 @@ function fakeEntry(o: { ready?: boolean; leftBehind?: boolean } = {}) {
     runCommand: async (i: Record<string, unknown>) => {
       runs.push(i);
       (i.onStdout as (b: Buffer) => void)(Buffer.from("out\n"));
-      return { exitCode: 0, timedOut: false, aborted: false, streamKilled: false, posture: "sandboxed", sandboxOverrideRequested: false, quarantined: ["/w/sub/.git"], ...(o.leftBehind ? { leftBehind: { pid: 1, stop: () => { stopped++; }, done: Promise.resolve(), onOutput: () => {} } } : {}) };
+      return { exitCode: 0, timedOut: false, aborted: false, streamKilled: false, posture: o.posture ?? "sandboxed",sandboxOverrideRequested: false, quarantined: ["/w/sub/.git"], ...(o.leftBehind ? { leftBehind: { pid: 1, stop: () => { stopped++; }, done: Promise.resolve(), onOutput: () => {} } } : {}) };
     },
   };
   return { entry: async () => entry as never, runs, stopped: () => stopped };
@@ -104,6 +104,8 @@ describe("the Linux folder spawner: the peer fence's policy, nothing widened", (
     expect(settings.filesystem.allowWrite).toEqual([root, w.project]);
     expect(i.writableRoots).toEqual([root, w.project]);
     expect("network" in settings).toBe(false);
+    expect(settings.enabled).toBe(true);
+    expect(settings.allowUnsandboxedCommands).toBe(false);
     expect(settings.filesystem.denyWrite).toContain(w.moss);
     expect(settings.filesystem.denyRead).toContain(w.moss);
     for (const s of secretReadPlaces("linux", w.home)) expect(settings.filesystem.denyRead).toContain(s.path);
@@ -119,6 +121,10 @@ describe("the Linux folder spawner: the peer fence's policy, nothing widened", (
     expect(await peerFolderSpawnerLinux({ fence: peer, root, folder, entry: fakeEntry().entry }).run(run(w.home))).toMatchObject({ kind: "refused", reason: expect.stringContaining("runs only in") });
     expect(await peerFolderSpawnerLinux({ fence: peer, root, folder, entry: fakeEntry({ ready: false }).entry }).run(run(w.project))).toEqual({ kind: "refused", reason: "no bubblewrap here" });
     expect(await peerFolderSpawnerLinux({ fence: peer, root, folder, entry: async () => { throw new Error("missing"); } }).run(run(w.project))).toMatchObject({ kind: "refused", reason: expect.stringContaining("0.0.91") });
+    // A run the runtime says wasn't sandboxed: refused, its output withheld.
+    for (const posture of ["config-disabled", "excluded", "override-requested"]) {
+      expect(await peerFolderSpawnerLinux({ fence: peer, root, folder, entry: fakeEntry({ posture }).entry }).run(run(w.project))).toMatchObject({ kind: "refused", reason: expect.stringContaining(posture) });
+    }
     const left = fakeEntry({ leftBehind: true });
     const r = await peerFolderSpawnerLinux({ fence: peer, root, folder, entry: left.entry }).run(run(w.project));
     expect(left.stopped()).toBe(1);
