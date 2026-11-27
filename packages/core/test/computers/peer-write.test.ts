@@ -210,8 +210,9 @@ describe("the denies inside the folder: the local bot sandbox's own", () => {
         expect([os, by, level, "why" in d]).toEqual([os, by, level, true]);
       }
     }
-    // Linux follows macOS's rule now (lane XC): the person's yes gives the folder.
-    expect(decide(w, "linux", "answer", "ask")).toEqual({ folder: w.project });
+    // Linux follows macOS's rule now (lane XC): the person's yes gives the folder (judged on POSIX paths, so not on a
+    // Windows runner, whose temp paths aren't one).
+    if (hostOs() !== "windows") expect(decide(w, "linux", "answer", "ask")).toEqual({ folder: w.project });
     // A service that handed a folder anyway on a Windows holder: the executor's own gate gives none, with the reason.
     let given: unknown = "unset";
     const e = fencedExecutor({

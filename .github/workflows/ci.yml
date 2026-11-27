@@ -773,6 +773,14 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Linux: another computer's command in its folder runs under the agent runtime's bubblewrap sandbox
+      # (fence/peer-folder-linux.ts); its live tests need bubblewrap and unprivileged user namespaces, as the core job has.
+      - name: bubblewrap (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends bubblewrap socat
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: The tree and the computers, with lane B's conformance suites
         working-directory: packages/core
         run: bun test --timeout 30000 test/tree test/computers src/contracts/tests/tree.test.ts src/contracts/tests/computer-registry.test.ts

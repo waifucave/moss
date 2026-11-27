@@ -160,8 +160,10 @@ export const CLOVER_ALLOWLIST: readonly AllowlistEntry[] = [
       "packages/core/test/cowork/guest-query.test.ts",
       "packages/core/test/cowork/provider-broker.integration.test.ts",
       "packages/core/test/cowork/fixtures/guest-runtime-refusal.ts",
+      "packages/core/src/fence/peer-folder-linux.ts",
+      "packages/core/test/computers/peer-folder-linux.test.ts",
     ],
-    why: "keys the SDK reads by its own names whatever the brand: the host sandbox's run inputs and the host code policy (`winterHome`), the Cowork guest's runtime config, and the variables a brandless embedded session reads in the guest refusal fixture",
+    why: "keys the SDK reads by its own names whatever the brand: the host sandbox's run inputs (the Linux peer folder's `buildHostSandboxRunInputs` too) and the host code policy (`winterHome`), the Cowork guest's runtime config, and the variables a brandless embedded session reads in the guest refusal fixture",
   },
   {
     id: "retired-app-bundle",

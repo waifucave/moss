@@ -115,7 +115,7 @@ describe("the Linux folder spawner: the peer fence's policy, nothing widened", (
     expect(settings.filesystem.denyRead).toContain(w.moss);
     for (const s of secretReadPlaces("linux", w.home)) expect(settings.filesystem.denyRead).toContain(s.path);
     for (const d of folder.denyWrite) expect(settings.filesystem.denyWrite).toContain(d);
-    // The runtime's quarantine is MOSS's own (`<MOSS home>/quarantine`, as for a local bot), never a `.winter` home.
+    // The runtime's quarantine is MOSS's own (`<MOSS home>/quarantine`, as for a local bot), never the runtime's default brand home.
     expect(i.winterHome).toBe(w.moss);
     expect((i.brand as { homeDirName: string }).homeDirName).toBe(".moss");
     // The new-match sweep, for exactly this call's two roots.
