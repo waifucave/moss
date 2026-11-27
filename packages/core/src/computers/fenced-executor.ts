@@ -17,7 +17,7 @@
 // right before each: no other peer command can then swap it for a link between the service's check and the spawn (a
 // temp-only one can't write its parent, and one granted a folder elsewhere can't reach it).
 import { createHash } from "node:crypto";
-import { lstatSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, lstatSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Caller, Os } from "@waifucave/moss-protocol";
 import { fenceContextFor, ownFoldersOf } from "../contracts/fence";
@@ -57,6 +57,8 @@ export interface FencedExecutorOptions {
   holderNotice?: (text: string) => void;
   /** The clock for that window (tests). */
   now?: () => number;
+  /** The daemon's log (a peer call's temp folder that couldn't be removed). */
+  log?: (line: string) => void;
 }
 
 /** How often one folder may raise the holder's notice. */
@@ -87,11 +89,31 @@ export function peerFolderParent(temp: string, mossHome?: string): string {
   return mossHome === undefined ? temp : join(temp, `moss-peer-${createHash("sha256").update(mossHome).digest("hex").slice(0, 12)}`);
 }
 
+/** Removes a peer call's own temp folder, and never throws: a folder in it the command left closed to its owner (a
+ *  `chmod 000`, or a mode the sweep put back) is opened u+rwx, never through a link, and the removal tried again; what
+ *  still can't go is left for the next start's sweep (`sweepPeerFolders`) and said in the log. */
+export function removePeerRoot(root: string, log?: (line: string) => void): void {
+  try { rmSync(root, { recursive: true, force: true }); return; } catch { /* below */ }
+  const open = (dir: string): void => {
+    let st;
+    try { st = lstatSync(dir); } catch { return; }
+    if (!st.isDirectory()) return; // a link or a file: never followed
+    try { if ((st.mode & 0o700) !== 0o700) chmodSync(dir, (st.mode & 0o7777) | 0o700); } catch { return; }
+    let names: string[] = [];
+    try { names = readdirSync(dir); } catch { return; }
+    for (const n of names) open(join(dir, n));
+  };
+  open(root);
+  try { rmSync(root, { recursive: true, force: true }); } catch (e) {
+    log?.(`[computers] another computer's call left its temp folder ${root} (${e instanceof Error ? e.message : String(e)}); the next start removes it`);
+  }
+}
+
 /** Removes the peer folders a stopped daemon left behind (at start: no peer call runs yet). */
 export function sweepPeerFolders(temp: string, mossHome: string): void {
   const parent = peerFolderParent(temp, mossHome);
   try { if (!lstatSync(parent).isDirectory()) return; } catch { return; }
-  for (const name of readdirSync(parent)) if (name.startsWith("peer-")) rmSync(join(parent, name), { recursive: true, force: true });
+  for (const name of readdirSync(parent)) if (name.startsWith("peer-")) removePeerRoot(join(parent, name));
 }
 
 /** The PATH a fenced Bash call sees: the system's standard places, never the daemon's own PATH. */
@@ -199,7 +221,7 @@ export function fencedExecutor(o: FencedExecutorOptions): ToolExecutor {
         // A spawner that throws ran nothing we can vouch for: refused, with the reason.
         return { output: { error: `this computer's fenced process failed to start: ${e instanceof Error ? e.message : String(e)}` }, isError: true };
       } finally {
-        if (peerRoot !== undefined) rmSync(peerRoot, { recursive: true, force: true });
+        if (peerRoot !== undefined) removePeerRoot(peerRoot, o.log);
       }
       // The sandbox's own word on the run's end (what it moved aside, a folder it couldn't fully check) joins the note,
       // never the command's output: a command can't print it, and its output can't push it out.

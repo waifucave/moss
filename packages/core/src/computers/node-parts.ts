@@ -154,7 +154,7 @@ export function nodeParts(o: {
   return {
     ...(approvals && typeof approvals.get === "function" ? { askUser: brokerAsker({ broker: approvals, ...(o.canSign ? { canSign: o.canSign } : {}), ...(o.log ? { log: o.log } : {}) }) } : {}),
     ...(o.answers ? { answers: { devices: o.answers.devices, ledger: new FileAnswerLedger(usedAnswersPath(o.answers.mossHome), o.answers.clock), render: callCardRenderer(sha256) } } : {}),
-    ...(o.bash ? { executor: fencedExecutor({ spawner: o.bash.spawner, home: o.bash.home, ...(o.bash.temp === undefined ? {} : { temp: o.bash.temp }), ...(o.bash.mossHome === undefined ? {} : { mossHome: o.bash.mossHome }), ...(o.bash.peerSpawner === undefined ? {} : { peerSpawner: o.bash.peerSpawner }), ...(o.bash.peerFloor === undefined ? {} : { peerFloor: o.bash.peerFloor }), ...(holderNotice === undefined ? {} : { holderNotice }), os: o.bash.os ?? hostOs() }) } : {}),
+    ...(o.bash ? { executor: fencedExecutor({ spawner: o.bash.spawner, home: o.bash.home, ...(o.bash.temp === undefined ? {} : { temp: o.bash.temp }), ...(o.bash.mossHome === undefined ? {} : { mossHome: o.bash.mossHome }), ...(o.bash.peerSpawner === undefined ? {} : { peerSpawner: o.bash.peerSpawner }), ...(o.bash.peerFloor === undefined ? {} : { peerFloor: o.bash.peerFloor }), ...(holderNotice === undefined ? {} : { holderNotice }), ...(o.log === undefined ? {} : { log: o.log }), os: o.bash.os ?? hostOs() }) } : {}),
     terminals: approvals ? { confirmPaste: confirmPasteVia(approvals, o.computer) } : {},
     reviewer: peerReviewer(o.reviewer, o.log),
     // A broker (or a late-bound proxy for one) without `get` finds no card: a clean "no such card", not a TypeError.

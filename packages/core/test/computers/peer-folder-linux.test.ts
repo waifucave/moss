@@ -6,7 +6,7 @@
 // a working folder outside them. Live on Linux under real bubblewrap (the runtime's `./sandbox` entry, agent runtime
 // 0.0.91): the reviewer's rename and a planted hook.
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Caller } from "@waifucave/moss-protocol";
@@ -183,6 +183,25 @@ describe("the Linux folder spawner: the peer fence's policy, nothing widened", (
     const b = await run({ unswept: [], notMoved: [{ path: join(w.tmp, "peer-x", ".git"), why: "EACCES" }] });
     expect(b.notices).toEqual([]);
     expect(b.r.isError).toBe(false);
+  });
+
+  test.skipIf(hostOs() === "windows" || process.getuid?.() === 0)("a call's temp folder left with a chmod 000 folder in it is still removed, and the call never throws", async () => {
+    const w = world();
+    let root = "";
+    const spawner: FencedSpawner = { available: true, run: async (): Promise<FencedRunResult> => ({ kind: "exited", code: 0, stdout: "", stderr: "", shell: "sh" }) };
+    const exec = fencedExecutor({ spawner, home: w.home, temp: w.tmp, mossHome: w.moss, os: "linux", peerFloor: { userHome: w.home, mossHome: w.moss, os: "linux", pathFolders: () => [] },
+      peerSpawner: (r) => {
+        root = r;
+        // What a command leaves: a folder in its temp root, with something in it, closed to everyone.
+        mkdirSync(join(r, "locked", "deep"), { recursive: true });
+        writeFileSync(join(r, "locked", "deep", "f"), "x");
+        chmodSync(join(r, "locked"), 0o000);
+        return spawner;
+      } });
+    const r = await exec.run("Bash", { command: "true" }, ctx(w.project, { folder: w.project }));
+    expect(r.isError).toBe(false);
+    expect(root).not.toBe("");
+    expect(existsSync(root)).toBe(false);
   });
 
   test("the executor carries the spawner's note beside the command's output", async () => {
