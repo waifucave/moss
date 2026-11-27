@@ -22,6 +22,9 @@ import { CORE_BRAND } from "../runtime-sdk/brand";
 
 type SandboxEntry = typeof import("@waifucave/clover-agent-runtime/sandbox");
 
+/** The advice for a repository another computer's command made in its folder here (moved aside at its end). */
+export const PEER_NEW_REPO_ADVICE = "[MOSS] A new repository can't be made by another computer's command on this computer; make it here outside the sandbox (a bot here, which asks first, or the person), then run the rest from there.";
+
 /** The entry, loaded at the first Linux folder run (only Linux holders need it). */
 const loadEntry = (): Promise<SandboxEntry> => import("@waifucave/clover-agent-runtime/sandbox");
 
@@ -74,6 +77,8 @@ export function peerFolderSpawnerLinux(o: PeerFolderSpawnerOptions): FencedSpawn
         // A peer's call adopts nothing: what it left running ends with it.
         if (res.leftBehind !== undefined) { res.leftBehind.stop(); stderr += "moss: what the command left running was stopped (another computer's command runs only while it runs)\n"; }
         // What the runtime moved aside it says itself on the command's stderr, one line per path (0.0.91 movedAsideNote).
+        // A new repository among it: what the asking bot can do instead (a peer's command never leaves the sandbox here).
+        if (/\[sandbox\] [^\n]*?\.git: moved to /.test(stderr)) stderr += `${PEER_NEW_REPO_ADVICE}\n`;
         if (res.spawnError !== undefined) return { kind: "refused", reason: `the command couldn't start: ${res.spawnError}` };
         if (res.timedOut) return { kind: "timeout", stdout, stderr, shell: "sh" };
         return { kind: "exited", code: res.exitCode ?? 1, stdout, stderr, shell: "sh" };

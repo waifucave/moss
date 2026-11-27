@@ -188,10 +188,12 @@ describe("live on Linux: a peer's call in its folder under real bubblewrap (the 
     expect(readFileSync(join(w.project, "notes.txt"), "utf8")).toBe("kept\n");
     expect(existsSync(join(w.project, "sub", ".git", "hooks", "post-checkout"))).toBe(false);
     expect(existsSync(join(w.project, ".husky", "pre-commit"))).toBe(false);
-    // The new repository's hooks were moved aside, not the repository; the command is told which paths, one line each.
-    expect(existsSync(join(w.project, "sub", ".git"))).toBe(true);
-    expect(out(r)).toContain(`[sandbox] ${join(w.project, "sub", ".git", "hooks")}: moved to`);
+    // MOSS holds every .git whole, so the new repository is moved aside whole (as macOS refuses making it), its files
+    // kept; the command is told each path, one line each, and what to do instead.
+    expect(existsSync(join(w.project, "sub", ".git"))).toBe(false);
+    expect(out(r)).toContain(`[sandbox] ${join(w.project, "sub", ".git")}: moved to`);
     expect(out(r)).toContain(`[sandbox] ${join(w.project, ".husky")}: moved to`);
+    expect(out(r)).toContain("A new repository can't be made by another computer's command on this computer");
     expect(holding(w.project, "PLANTED")).toEqual([]);
     expect(existsSync(outside)).toBe(false);
     // The repository's own .git stays as it was.
