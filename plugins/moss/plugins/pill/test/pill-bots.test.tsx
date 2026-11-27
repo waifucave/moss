@@ -48,4 +48,28 @@ describe("the pill's bots", () => {
     expect(shown).toEqual([{ id: "b_alpha", name: "Alpha 2" }, { id: "b_vega", name: "Vega" }]);
     expect(lists).toBe(1);
   });
+
+  test("a first read that fails is tried again, so the pill is not left with no bot", async () => {
+    let lists = 0;
+    const api = {
+      bots: {
+        list: async () => {
+          lists++;
+          if (lists === 1) throw new Error("bot.list needs the capability bots.read, which moss/pill's OK doesn't list");
+          return [{ id: "b_alpha", name: "Alpha" }];
+        },
+      },
+    } as never;
+    let shown: readonly { id: string; name: string }[] = [];
+    const Host = () => {
+      shown = usePillBots(api);
+      return h("div", null, shown.length);
+    };
+    render(h(Host));
+    await tick();
+    expect(shown).toEqual([]);
+    await act(async () => { await new Promise((r) => setTimeout(r, 400)); });
+    expect(lists).toBe(2);
+    expect(shown).toEqual([{ id: "b_alpha", name: "Alpha" }]);
+  });
 });
