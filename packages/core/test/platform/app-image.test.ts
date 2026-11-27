@@ -18,9 +18,14 @@ import { TEST_ONLY_CORE_STRINGS } from "../../../../scripts/test-build";
 const MARKER = "MOSS_APP_IMAGE_LOOSE_SEAM";
 const temps: string[] = [];
 const kids: ChildProcess[] = [];
-afterAll(() => {
-  for (const k of kids.splice(0)) { try { k.kill("SIGKILL"); } catch { /* gone */ } }
-  for (const d of temps.splice(0)) rmSync(d, { recursive: true, force: true });
+afterAll(async () => {
+  // Each child ended and waited for first: Windows won't remove an executable a process still runs from.
+  await Promise.all(kids.splice(0).map((k) => new Promise<void>((done) => {
+    if (k.exitCode !== null || k.signalCode !== null) return done();
+    k.once("exit", () => done());
+    try { k.kill("SIGKILL"); } catch { done(); }
+  })));
+  for (const d of temps.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 });
 function temp(prefix: string): string {
   const d = realpathSync.native(mkdtempSync(join(tmpdir(), prefix)));
@@ -122,7 +127,7 @@ describe("what rides the check", () => {
 describe("the seam is compiled out of a release", () => {
   const build = async (define: Record<string, string>) => {
     // As the release's `compile:core` builds (packages/cli/package.json): no minify, the defines alone fold the branch.
-    const r = await Bun.build({ entrypoints: [join(import.meta.dir, "../../src/platform/app-image.ts")], target: "bun", define });
+    const r = await Bun.build({ entrypoints: [join(import.meta.dir, "../../src/platform/app-image.ts")], target: "bun", define, ...{ macros: false } });
     expect(r.success).toBe(true);
     return (await Promise.all(r.outputs.map((o) => o.text()))).join("\n");
   };
@@ -168,7 +173,7 @@ describe("live on Linux: the real /proc facts", () => {
     expect(judgeLinuxImage(linuxFacts(peer(ours.pid)), undefined)).toMatchObject({ ok: false, why: expect.stringContaining("replaced") });
   });
 
-  linuxTest("traced (started by a parent that traces it, as Yama's scope 1 allows): refused", () => {
+  linuxTest("traced (started by a parent that traces it, as Yama's scope 1 allows): refused", async () => {
     if (spawnSync("python3", ["-c", "0"]).status !== 0) throw new Error("python3 is needed for the traced case");
     const dir = temp("xc-app-image-traced-");
     const exe = join(dir, "moss-code");
@@ -188,16 +193,17 @@ time.sleep(30)`;
     kids.push(tracer);
     let out = "";
     tracer.stdout!.on("data", (b: Buffer) => { out += b.toString(); });
-    for (let i = 0; i < 50 && !/\d+\n/.test(out); i++) Bun.sleepSync(100);
+    // Awaited, not slept: the tracer's output arrives on the event loop.
+    for (let i = 0; i < 100 && !/\d+\n/.test(out); i++) await Bun.sleep(100);
     const pid = Number(out.trim());
     expect(pid).toBeGreaterThan(0);
-    Bun.sleepSync(200);
+    await Bun.sleep(200);
     const f = linuxFacts(peer(pid));
     try {
       expect(f.tracer).toBe(tracer.pid!);
       expect(judgeLinuxImage(f, undefined)).toMatchObject({ ok: false, why: expect.stringContaining("traced") });
     } finally { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
-  });
+  }, 30_000);
 });
 
 describe("live on Windows: the real image and integrity", () => {
