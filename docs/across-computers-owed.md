@@ -91,7 +91,9 @@ reach, because it needs something that isn't in a test run.
     floor carries over: no network, the per-call temp root, the secret places and the MOSS home denied. A
     temp-only call still runs under MOSS's fence. At the command's end the call's two roots are swept
     (`sweepRoots`): a new repository or run-later name it made there is moved aside whole, never deleted, and a folder
-    the sweep couldn't fully read is said to the bot (the person should look).
+    the sweep couldn't fully read is said to the bot (the person should look). The holder's notice for the person
+    there (`holderNotice`, one per folder per hour) reaches only the daemon's log until the engine has a notice the
+    apps show (its own lane, which also serves the "two relays" notice).
   - The Linux limit, for a LOCAL bot too (backlog, after the first release): bubblewrap can't refuse a name that
     doesn't exist yet, so a local bot's sandboxed command can make a new repository with hooks in a folder it writes
     (macOS refuses the write). The sweep isn't used there: after the fact it can't tell the command's new files from
