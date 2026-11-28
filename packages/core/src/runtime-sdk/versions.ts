@@ -2,7 +2,7 @@ import { SDK_VERSION } from "@waifucave/clover-agent-sdk";
 
 /** The exact peer versions this daemon was written against (P8b-3). The ^ ranges in package.json
  *  are what INSTALLS; these are what the tests PROVE installed. Bump together with the pins. */
-export const REQUIRED_WINTER_AGENT_SDK = "0.0.91";
+export const REQUIRED_WINTER_AGENT_SDK = "0.0.92";
 /**
  * THE CODING AGENT BINARY, on its own pin since A-M1. Code sessions run embedded and no session spawns
  * it any more; it is lane K's (the coding agent that becomes an ACP agent, spec §9.3), and the tests that
@@ -11,7 +11,11 @@ export const REQUIRED_WINTER_AGENT_SDK = "0.0.91";
  * builds its own.
  */
 export const CODING_AGENT_BINARY_VERSION = "0.0.55";
-/** Bumped to 0.0.91 (2026-11-27): the runtime's command sandbox as a public subpath (`./sandbox`: a host's run, always
+/** Bumped to 0.0.92 (2026-11-28): on Linux a write root inside one whose walk can't finish stays writable when its own
+ *  walk covered it (the bot's project under a huge home folder), the roots a command couldn't write are said on every
+ *  command (exit 0 too) in Bash's note outside the output cap, the end sweep covers a kept root inside a dropped swept
+ *  folder, and a root bound back under a read-denied folder gets its denies mounted again after it.
+ *  Earlier: bumped to 0.0.91 (2026-11-27): the runtime's command sandbox as a public subpath (`./sandbox`: a host's run, always
  *  local and required to be sandboxed), which MOSS runs another computer's command in its folder under on Linux; on Linux a
  *  held entry swapped during a command is moved aside by its identity (a link by its target), the new-match sweep is
  *  opt-in per call (`sweepRoots`: MOSS asks it for a peer's call only) and honest (`unswept`, `notMoved`), nothing is ever

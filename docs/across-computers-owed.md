@@ -83,7 +83,7 @@ reach, because it needs something that isn't in a test run.
 - **A peer's command writing its folder on Windows** (step 3b). On a macOS or Linux holder, another computer's
   command writes the folder it runs in where a bot there would: on the holder reviewer's "safe" where the level's own
   shell roots cover it, or after the person's yes to the holder's card (a one-call RequestAccess grant).
-  - Linux (lane XC, the controller's ruling, option (a); waits on agent runtime 0.0.91's `./sandbox` entry): MOSS's own
+  - Linux (lane XC, the controller's ruling, option (a); done, agent runtime 0.0.91's `./sandbox` entry): MOSS's own
     bubblewrap held a run-later place by its path at the command's start, so `mv proj proj-old && mkdir -p
     proj/.git/hooks` could put a planted repo at the held path (the review's blocker on 24516c887). A call given its
     folder now runs under the agent runtime's own sandbox, the one a local bot's Bash gets
