@@ -723,7 +723,10 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
       const took = `${Math.round((Date.now() - started) / 1000)} s`;
       if (r.code === 0) { grantedExcludes.set(grantKey, excludes); return null; }
       profileGrants.delete(grantKey);
-      return `the read grant on your profile didn't complete (srt-win exit ${r.code}, ${took}): commands can't read your home folder yet`;
+      // srt-win's own words (its `error:` line, else its last line), so a refusal in no time at all says what it was.
+      const said = r.stderr.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== "");
+      const why = (said.find((l) => /\berror\b/i.test(l)) ?? said[said.length - 1] ?? "").replace(/^srt-win:\s*/, "").slice(0, 240);
+      return `the read grant on your profile didn't complete (srt-win exit ${r.code}, ${took}${why === "" ? "" : `: ${why}`}): commands can't read your home folder yet`;
     })();
     profileGrants.set(grantKey, p);
     return p;

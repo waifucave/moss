@@ -822,6 +822,24 @@ describe("the exclusions follow the fenced set (rule 8b, lane WS7)", () => {
     expect(grants).toBeGreaterThan(1); // the refresh was tried, and failed
     expect(grew).toBe(1);
   }, 30_000);
+  test.skipIf(process.platform === "win32")("a profile read grant that fails at once says srt-win's own error line, not only its exit code", async () => {
+    const m = machine();
+    const dir = mkdtempSync(join(tmpdir(), "ws-grant-why-"));
+    const launcher = join(dir, "quick-srt.sh");
+    writeFileSync(launcher, "#!/bin/sh\nexit 0\n");
+    chmodSync(launcher, 0o755);
+    const exec = m.deps.exec;
+    const deps: WinFencedDeps = { ...m.deps, launcher, exec: (argv, o) => (argv[1] === "profile" && argv[2] === "grant"
+      ? Promise.resolve({ code: 1, stdout: "", stderr: "srt-win: launching\nsrt-win: error: no setup record for this user (looked in C:\\Users\\x\\AppData)\n" })
+      : exec(argv[0] === launcher ? [m.deps.launcher, ...argv.slice(1)] : argv, o)) };
+    const s = winFencedSpawner({ fence: m.fence, deps, grantAhead: false });
+    const r = await s.run({ ...runOf(m.home), timeoutMs: 10_000 });
+    const text = r.kind === "exited" ? r.stderr : r.kind === "refused" ? r.reason : "";
+    expect(text).toContain("srt-win exit 1");
+    expect(text).toContain("error: no setup record for this user");
+    expect(text).not.toContain("launching");
+    rmSync(dir, { recursive: true, force: true });
+  }, 30_000);
   test("rule 8c's decision (lane WS8): a new protected root ends the command; a new match of a protected pattern is stamped for its account, live", () => {
     const sidecar = "C:\\h\\.moss\\projects\\p\\s9.provider-state.jsonl";
     expect(lateFenceStep({ freshReads: [], excludesGrew: false, sid: "S-1-5-21-9" })).toEqual({ kind: "none" });
