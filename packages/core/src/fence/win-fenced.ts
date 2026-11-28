@@ -993,8 +993,11 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
           })();
           const ran = await runCommand({ ...r, env: minimalChildEnv() }, { shell: runShell, argv })
             .finally(() => { if (fenceWatch !== null) clearInterval(fenceWatch); });
-          // What was stamped late is this process's hold for this account: let go now the command has ended.
-          if (stampedLate && memberSid !== null) {
+          // What was stamped late is this process's hold for this account: let go now the command has ended. So is what the command's
+          // own launch stamped when the command was ENDED from outside (a stop, a time limit): the launcher was killed with its job,
+          // so it never took its per-exec denies off, and a deny that names a folder (a coding session's whole MOSS home) would keep
+          // that account from entering any folder under it for every later command until the daemon ended (the hold is this process's).
+          if ((stampedLate || ran.kind === "timeout") && memberSid !== null) {
             await deps.exec([deps.launcher, "acl", "restore", "--holder-pid", String(process.pid), "--sandbox-user-sid", memberSid], { timeoutMs: 120_000 });
           }
           mark("exec");

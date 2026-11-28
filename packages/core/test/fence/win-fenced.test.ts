@@ -916,6 +916,24 @@ describe("the exclusions follow the fenced set (rule 8b, lane WS7)", () => {
     expect(text).not.toContain("launching");
     rmSync(dir, { recursive: true, force: true });
   }, 30_000);
+  test.skipIf(process.platform === "win32")("a command ended from outside (a stop, a time limit) has its account's holds let go: its killed launcher never took its per-exec denies off", async () => {
+    const m = machine();
+    const dir = mkdtempSync(join(tmpdir(), "ws-stop-restore-"));
+    const launcher = join(dir, "slow-srt.sh");
+    writeFileSync(launcher, "#!/bin/sh\n/bin/sleep 30\nexit 0\n");
+    chmodSync(launcher, 0o755);
+    const exec = m.deps.exec;
+    const deps: WinFencedDeps = { ...m.deps, launcher, exec: (argv, o) => exec(argv[0] === launcher ? [m.deps.launcher, ...argv.slice(1)] : argv, o) };
+    const s = winFencedSpawner({ fence: m.fence, deps, grantAhead: false });
+    const stopped = new AbortController();
+    setTimeout(() => stopped.abort(), 400);
+    const r = await s.run({ ...runOf(m.home), timeoutMs: 20_000, signal: stopped.signal });
+    expect(r.kind).toBe("timeout");
+    const restores = m.execs.filter((a) => a[1] === "acl" && a[2] === "restore");
+    expect(restores.length).toBe(1);
+    expect(restores[0]).toContain("--holder-pid");
+    rmSync(dir, { recursive: true, force: true });
+  }, 40_000);
   test("rule 8c's decision (lane WS8): a new protected root ends the command; a new match of a protected pattern is stamped for its account, live", () => {
     const sidecar = "C:\\h\\.moss\\projects\\p\\s9.provider-state.jsonl";
     expect(lateFenceStep({ freshReads: [], excludesGrew: false, sid: "S-1-5-21-9" })).toEqual({ kind: "none" });
