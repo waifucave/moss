@@ -5,15 +5,6 @@ description: If you find a security problem in MOSS, report it privately through
 
 MOSS runs bots and agents with real access to your computer: your files, your commands, a browser, and a link to your other devices. Reports about any of that are welcome, and taken seriously.
 
-## What the engine can tell about its own apps
-
-When you approve something in MOSS or MOSS Code, the engine has to trust that the press came from the real app. How sure it can be depends on your system.
-
-- **macOS** checks each app's code signature while it runs: only MOSS's signed apps, which refuse injected code and debuggers, can answer for you.
-- **Linux and Windows** have no such check, so MOSS checks the little they allow. On Linux, the app must run from a file with MOSS's name, laid out as MOSS's app, not replaced while it runs, and not traced by another program. Only a copy installed by your package manager, owned by the system, counts as verified; an AppImage or a copy in your home folder is accepted but noted as unverified. On Windows, the app must run from the file MOSS's installer put in your user folder, at medium integrity or above. On both, the check doesn't tell MOSS, MOSS Code and the background host apart: a run of any of their files can say it is any of the three.
-
-These checks only turn away a script that copied MOSS's connection key and doesn't pose as the app. They can't stop a program that already runs as you, and they don't prove that the app is MOSS. Such a program could put its own code in a file named and laid out like MOSS's. It could start the real app with its own code loaded into it, even the copy your package manager installed. It could also replace a copy of the app that you can write. On Linux with `kernel.yama.ptrace_scope` set to 0, it could attach to the running app. Any of these lets it approve cards as MOSS, including the ones your other devices act on. If something you don't trust runs on your Linux or Windows computer outside MOSS's sandbox, treat that computer as able to act as you in MOSS.
-
 ## How to report
 
 Please don't open a public issue, discussion or pull request for a security problem. Report it privately on GitHub instead: in the repository, open **Security**, then **Advisories**, then **Report a vulnerability**, or go straight to [the form](https://github.com/waifucave/moss/security/advisories/new).

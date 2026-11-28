@@ -215,8 +215,7 @@ export interface MossServerDeps {
   /** Test seam: the peer of a socket. */
   probe?(socket: object): PeerFacts;
   /** Whether an `app` hello's peer is the signed MOSS app. Default: this OS's check for the running profile
-   *  (`defaultAppPeerCheck`: macOS by audit token; Linux and Windows by the image, `app-image.ts`). Tests inject one,
-   *  or `"none"`. */
+   *  (`defaultAppPeerCheck`: macOS by audit token; `"none"` on Linux and Windows). Tests inject one, or `"none"`. */
   readonly appPeer?: AppPeerPolicy;
   /** K's bridge tokens, and the session's bot for the hello's caller. Without it a `bridge` hello is checked
    *  against tokens minted here (`MossTokens`), with no pid check. */
@@ -279,9 +278,8 @@ export interface MossServer {
   /** `app.quit{reason}` to these app connections (the pair's `tellAppQuit`). */
   tellAppQuit(reason: PairStopReason, connIds: readonly string[]): void;
   connections(): readonly MossConn[];
-  /** Whether this server checks an `app` connection (its app-peer policy isn't "none"): macOS by its signature, Linux
-   *  and Windows by its image (lane XC, xc-6b; the owner's ruling of 2026-11-27, "Allow, and say so": an unsigned press
-   *  in a sealed frame then stands for the person on every OS, and the docs say what Linux and Windows can't prove). */
+  /** Whether this server checks an `app` connection by its signature (its app-peer policy isn't "none": macOS), so the
+   *  program it names is the signed app's (lane XC, xc-6b: an unsigned press in a sealed frame then stands for the person). */
   appPeerChecked(): boolean;
   /** Closes every connection `match` picks that the server can close itself (a link's, through its `end`); how many. */
   endConnections(match: (conn: MossConn) => boolean): number;
@@ -396,7 +394,7 @@ export function createMossServer(deps: MossServerDeps): MossServer {
     handles.set(socket, h);
     return h;
   };
-  const appPeer: AppPeerPolicy = deps.appPeer ?? defaultAppPeerCheck(os, resolveMossProfile(), (line) => deps.log?.(line));
+  const appPeer: AppPeerPolicy = deps.appPeer ?? defaultAppPeerCheck(os, resolveMossProfile());
   const peerOf = (socket: object): PeerFacts => {
     if (deps.probe) return deps.probe(socket);
     const handle = handleOf(socket);

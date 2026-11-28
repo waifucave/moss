@@ -886,6 +886,9 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         let grant: { code: number; stdout: string; stderr: string };
         let saidWaiting = false;
         for (;;) {
+          // A command stopped while it waits (TaskStop, its session ending) stops waiting: whoever stopped it isn't held
+          // for the rest of the bound. No grant is held between passes (the count was given back below).
+          if (r.signal?.aborted) return { kind: "refused", reason: "cancelled before it started" };
           grant = await grantsInTurn(() => {
             heldGrants.inFlight++;
             return deps.exec(sessionGrantArgs({ launcher: deps.launcher, sid: grantSid, holderPid: process.pid }), {
@@ -899,7 +902,12 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
             saidWaiting = true;
             try { r.onOutput?.(`${PROFILE_BUSY_WAIT_LINE}\n`, "stderr"); } catch { /* a listener never fails the command */ }
           }
-          await Bun.sleep(deps.profileBusyPollMs ?? 1_000);
+          // The pause ends early on the command's stop.
+          await new Promise<void>((done) => {
+            const onAbort = () => { clearTimeout(t); done(); };
+            const t = setTimeout(() => { r.signal?.removeEventListener("abort", onAbort); done(); }, deps.profileBusyPollMs ?? 1_000);
+            r.signal?.addEventListener("abort", onAbort, { once: true });
+          });
         }
         try {
           mark("grant");

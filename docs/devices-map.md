@@ -173,6 +173,5 @@ the signed app's own press; never by the new key itself. `moss device key reset 
 card. On Linux and Windows with nothing else to answer it, the terminal takes the key itself, and the card becomes an
 OK-only notice (docs/across-computers-owed.md).
 
-On Linux and Windows the app role is checked by the app's image, not a signature (platform/app-image.ts; the owner's
-ruling "Allow, and say so"), so a program key there proves "MOSS's executable, or a program running as you that started
-or replaced it", not the signed app (docs/across-computers-owed.md).
+On Linux and Windows the app role is not yet verified (the open before-release item), so a program key there proves "a
+process running as you that registered first", not the signed app.

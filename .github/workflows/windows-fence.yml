@@ -203,7 +203,7 @@ jobs:
 
       - name: Core · the plugin host's link, the plugin guard, the secrets store and the ACL read-back on Windows
         working-directory: packages/core
-        run: bun test --timeout 60000 src/plugin-host/tests/process.test.ts src/plugin-host/tests/windows-link.test.ts src/registry/tests/plugin-guard-windows.test.ts src/registry/tests/remove-busy.test.ts src/secrets/tests/windows-store.test.ts test/platform/win-acl.test.ts test/platform/caller-probe.test.ts test/platform/one-shot-pipes-windows.test.ts test/platform/app-image.test.ts
+        run: bun test --timeout 60000 src/plugin-host/tests/process.test.ts src/plugin-host/tests/windows-link.test.ts src/registry/tests/plugin-guard-windows.test.ts src/registry/tests/remove-busy.test.ts src/secrets/tests/windows-store.test.ts test/platform/win-acl.test.ts test/platform/caller-probe.test.ts test/platform/one-shot-pipes-windows.test.ts
 
       - name: Core · a bot session on the embedded runtime, the fenced shell tools swapped in (agent SDK 0.0.91)
         working-directory: packages/core

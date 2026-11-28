@@ -888,6 +888,21 @@ describe("a session grant while another process writes the profile grant (srt-wi
     expect(streamed.filter((t) => t === `${PROFILE_BUSY_WAIT_LINE}\n`).length).toBe(1);
   });
 
+  test("a command stopped while it waits stops waiting at once: cancelled before it started, no grant left counted", async () => {
+    const { m, s } = spawnerWith(1_000, 60_000);
+    const ac = new AbortController();
+    const started = Date.now();
+    const pending = s.run({ ...runOf(m.home), signal: ac.signal });
+    setTimeout(() => ac.abort(), 50);
+    const r = await pending;
+    expect(r).toEqual({ kind: "refused", reason: "cancelled before it started" });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    // A later command isn't held by a count the stopped one left: its grant goes through at once.
+    const { m: m2, s: s2 } = spawnerWith(0, 0);
+    await s2.run(runOf(m2.home)).catch(() => undefined);
+    expect(m2.execs.filter(isSessionGrant).length).toBe(1);
+  });
+
   test("the engine's own profile grant waits it out the same way (and the command's read note says nothing failed)", async () => {
     const m = machine();
     let busy = 0;
