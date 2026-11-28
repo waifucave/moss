@@ -890,7 +890,9 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
       for (const a of accounts) Bun.spawnSync(["icacls", shut, "/deny", `${a}:(RX)`], { stdout: "ignore", stderr: "ignore" });
       const closed = await call(at(shut).Bash!, { command: "echo hi" }, { refusal: true });
       console.log(`[e2e] cwd shut: ${closed.text.replace(/\s+/g, " ").slice(0, 400)}`);
-      // A deny on the folder alone doesn't always stop the logon from making it current (it did not on the runner: the command
+      // NO local-drive ERROR_DIRECTORY reproduction exists yet: a deny ACE on the folder alone does NOT stop the sandbox logon from
+      // making it current (on the runner the command ran and printed "hi"), so nobody should assume this case reaches `cwd_unusable`;
+      // the one cause found so far is a stale per-exec deny on a folder ABOVE the cwd (a killed launcher's), see the stop test. A deny on the folder alone doesn't always stop the logon from making it current (it did not on the runner: the command
       // ran): whichever happens, it is never called a mapped drive, and when it is refused it says the account can't enter.
       expect(closed.text).not.toContain("DRIVE_REMOTE");
       expect(closed.text).not.toMatch(/mapped|network/i);
