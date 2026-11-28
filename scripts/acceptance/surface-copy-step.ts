@@ -197,15 +197,26 @@ export async function surfaceCopyStep(ctx: ExampleCtx, session: string): Promise
     await sleep(1_500);
     const before = JSON.stringify(await ctx.history(session));
     if (before.includes(tag)) fail("the copy pill sent the user's words on a click the page made itself");
-    let btn = await until("the copy pill's Send circle", 15_000, async () => cdp.centerOf(s, SEND).catch(() => undefined));
-    for (let i = 0; i < 10; i++) {
-      await sleep(250);
-      const now = await cdp.centerOf(s, SEND).catch(() => undefined);
-      if (now !== undefined) btn = now;
-    }
-    // What the click meets, for a red that leaves no refusal line: the circle's centre, the page's size, and the element under that point.
-    const under = await cdp.evaluate(s, `(() => { const e = document.elementFromPoint(${btn.x}, ${btn.y}); const r = document.querySelector('${SEND}')?.getBoundingClientRect(); return JSON.stringify({ size: [innerWidth, innerHeight], circle: r ? [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)] : null, under: e ? e.tagName.toLowerCase() + (e.className ? '.' + String(e.className).split(' ')[0] : '') + (e.getAttribute('data-role') ? '[data-role=' + e.getAttribute('data-role') + ']' : '') : null, textLen: document.querySelector('${BOX}')?.value.length ?? null }); })()`).catch((e: unknown) => `evaluate failed: ${String(e)}`);
-    console.log(`acceptance: surface-copy: the copy pill's press at ${Math.round(btn.x)},${Math.round(btn.y)}: ${String(under)}`);
+    // The refused click can leave the pill re-laying itself out (it shrinks, then grows with the text): wait until the page's size and the
+    // circle's rectangle are the same in two reads in a row, then take the centre from that read, never from one taken while it moved.
+    type Read = { size: [number, number]; circle: [number, number, number, number] | null; textLen: number | null };
+    const readPill = async (): Promise<Read | undefined> => {
+      const raw = await cdp.evaluate(s, `(() => { const r = document.querySelector('${SEND}')?.getBoundingClientRect(); return JSON.stringify({ size: [innerWidth, innerHeight], circle: r ? [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)] : null, textLen: document.querySelector('${BOX}')?.value.length ?? null }); })()`).catch(() => undefined);
+      return typeof raw === "string" ? (JSON.parse(raw) as Read) : undefined;
+    };
+    let last: Read | undefined;
+    const settled = await until("the copy pill to settle (its size and its Send circle unchanged in two reads)", 15_000, async () => {
+      const now = await readPill();
+      const same = now !== undefined && now.circle !== null && last !== undefined && JSON.stringify(now) === JSON.stringify(last);
+      last = now;
+      if (!same) { await sleep(250); return undefined; }
+      return now;
+    });
+    const btn = { x: settled.circle![0] + settled.circle![2] / 2, y: settled.circle![1] + settled.circle![3] / 2 };
+    // What the click meets: the element under that point must be the Send circle (or inside it); a moved layout says so here.
+    const hit = String(await cdp.evaluate(s, `(() => { const e = document.elementFromPoint(${btn.x}, ${btn.y}); return e && e.closest('${SEND}') ? 'send' : (e ? e.tagName.toLowerCase() + (e.className ? '.' + String(e.className).split(' ')[0] : '') : 'nothing'); })()`).catch((e: unknown) => `evaluate failed: ${String(e)}`));
+    console.log(`acceptance: surface-copy: the copy pill's press at ${Math.round(btn.x)},${Math.round(btn.y)}: ${JSON.stringify({ ...settled, under: hit })}`);
+    if (hit !== "send") fail(`the copy pill's Send circle is not under the point the press was aimed at (${Math.round(btn.x)},${Math.round(btn.y)}): that point holds ${hit}, the page is ${settled.size.join("x")} and the circle ${JSON.stringify(settled.circle)}: the pill's layout moved`);
     await cdp.click(s, btn.x, btn.y);
     await until("the user's words in the bot's conversation, sent by the copy pill", 40_000, async () => (JSON.stringify(await ctx.history(session)).includes(tag) ? true : undefined),
       async () => `the app's log: ${ctx.appLog().split("\n").filter((l) => /send:/.test(l)).slice(-3).join(" | ")}`);
