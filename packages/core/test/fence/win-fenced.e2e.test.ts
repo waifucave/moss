@@ -919,6 +919,32 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
       if (ok) Bun.spawnSync(["net", "use", `${letter}:`, "/delete", "/y"], { stdin: "ignore", timeout: 60_000 });
       rmSync(remote, { recursive: true, force: true });
     }
+  test("a stopped command whose sandbox denies a folder ABOVE the scratch root leaves nothing behind: plain commands on every account still run in the scratch folder", async () => {
+    // The stopped command's launcher is killed with its job, so it never takes its per-exec denies off: a deny on the MOSS home (a coding
+    // session's) once kept its pool account out of every folder under it. Its release is the daemon's, after the stop and before the
+    // next command's first stamp. The pool has four accounts: six plain commands in a row reach each of them, the poisoned one included.
+    const outside = join(home, "ws-stop-above");
+    rmSync(outside, { recursive: true, force: true });
+    mkdirSync(outside, { recursive: true });
+    const stopWakes: { task: string; status: string }[] = [];
+    const denying = Object.fromEntries(windowsShellTools({
+      spawner: fencedSpawner({ fence }), caller: CALLER, kind: "bot", cwd: () => outside, userHome: home, temp: fence.temp, mossHome: moss,
+      sandbox: () => botSandbox(withSecretReads({ filesystem: { allowWrite: [outside], denyWrite: [], denyRead: [moss] } }, { userHome: home, os: "windows" }), { userHome: home, os: "windows" }),
+      wake: async (w) => { stopWakes.push({ task: w.task, status: w.status }); },
+    }).map((t) => [t.name, t]));
+    const long = await call(denying.Bash!, { command: "echo above-began; sleep 600; echo never", run_in_background: true });
+    const id = /win_bg_[0-9a-f]{8}/.exec(long.text)![0];
+    await Bun.sleep(4_000); // it is running (its launcher holds its denies)
+    await stopWindowsBackground(CALLER.sessionId, id);
+    for (let i = 0; i < 60 && !stopWakes.some((w) => w.task === id); i++) await Bun.sleep(500);
+    const here: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      const r = await call(tools.Bash!, { command: "echo plain-ok" });
+      here.push(r.text.trim().slice(0, 120));
+    }
+    console.log(`[e2e] after a stop with a deny above scratch: ${JSON.stringify(here)}`);
+    for (const t of here) expect(t).toContain("plain-ok");
+    rmSync(outside, { recursive: true, force: true });
   }, 600_000);
 
   test("MOSS's coding agent's background command on Windows: reported started and ended, TaskOutput reads it, TaskStop (another session's refused) stops it and its processes, and its end is told", async () => {

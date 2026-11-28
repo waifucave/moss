@@ -930,7 +930,7 @@ describe("the exclusions follow the fenced set (rule 8b, lane WS7)", () => {
     const r = await s.run({ ...runOf(m.home), timeoutMs: 20_000, signal: stopped.signal });
     expect(r.kind).toBe("timeout");
     const restores = m.execs.filter((a) => a[1] === "acl" && a[2] === "restore");
-    expect(restores.length).toBe(1);
+    expect(restores.length).toBe(2);
     expect(restores[0]).toContain("--holder-pid");
     rmSync(dir, { recursive: true, force: true });
   }, 40_000);

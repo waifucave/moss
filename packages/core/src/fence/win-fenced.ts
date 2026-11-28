@@ -822,6 +822,15 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
       const lease = await leaseFresh(leases, { ...got.marker, members }, deps.ownerSid!);
       mark("lease");
       if (!lease.ok) return refuse(lease.reason);
+      // Before this command's first stamp: whatever an earlier command of this process stamped on this account and never took off
+      // (its launcher killed, crashed or cut off before it ended) is let go. The account is ours alone now, so the release (this
+      // process's holds for it) is idempotent and takes nothing from a command that is running; a deny left naming a folder would
+      // keep the account out of everything under it (a launch refused with a working-folder error).
+      {
+        const leased = got.marker.members.find((m) => m.principal === lease.principal)?.principalSid ?? null;
+        if (leased !== null) await deps.exec([deps.launcher, "acl", "restore", "--holder-pid", String(process.pid), "--sandbox-user-sid", leased], { timeoutMs: 120_000 });
+        mark("clear");
+      }
       let runHome: string | null = null;
       let flight: PlanInFlight | null = null;
       try {
