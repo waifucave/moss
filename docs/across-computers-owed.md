@@ -99,8 +99,8 @@ reach, because it needs something that isn't in a test run.
     (macOS refuses the write). The sweep isn't used there: after the fact it can't tell the command's new files from
     the person's, and at fully automatic the roots are the whole home. A proper fix needs who made each file: an
     overlay upper layer for the write roots, or seccomp user notification on the creating calls.
-  - Windows: a peer's command writes only its own temp folder; it waits on its fence's deny depth being checked for a
-    peer's folder.
+  - Windows: a peer's command writes only its own temp folder. The ruled design (Linux's rule, checked by identity)
+    is `docs/windows-peer-folder.md`; its code waits on lane WA's two branches in `win-fenced.ts`.
 - **A bot committing on another computer.** Every `.git` is denied whole to a peer's command, as to a local bot's
   sandboxed one; a commit is the outside-the-sandbox card on the bot's own computer only. A peer's form of that card
   (on the holder, run as the person there) is not built. One backlog item for both.
