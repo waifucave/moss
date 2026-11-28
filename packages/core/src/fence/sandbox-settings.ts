@@ -23,7 +23,7 @@
 // reads and writes, so one made mid-run is denied too; a write-deny on a name inside each kept folder, so the
 // runtime's ancestor fence denies creating, removing or renaming the kept folder itself (its entry, not its insides:
 // #356's review); and no `.git/hooks` (nor `<name>.git/hooks`) anywhere under a write root, as the macOS profile has.
-import { lstatSync, mkdirSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { posix, win32 } from "node:path";
 import type { SandboxSettingsConfig } from "@waifucave/clover-agent-sdk";
 import type { Level, Os } from "@waifucave/moss-protocol";
@@ -370,34 +370,85 @@ export function shellRunLaterDenies(roots: readonly string[], o: { userHome: str
   const pathFolders = [...o.pathFolders, ...FIXED_PATH_FOLDERS, ...FIXED_HOME_PATH_FOLDERS.map((f) => p.join(o.userHome, ...f.split("/")))];
   for (const f of pathFolders) if (!CONTROL.test(f) && roots.some((r) => isInsideOrSame(f, r, o.os) || isInsideOrSame(r, f, o.os))) out.push(f);
   out.push(...configNamed(roots, o).filter((x) => !CONTROL.test(x)));
-  out.push(...heldLinkTargets(roots, names, o).filter((x) => !CONTROL.test(x)));
+  out.push(...heldLinkTargets(roots, names, { userHome: o.userHome, os: o.os, mossHome: o.mossHome }).filter((x) => !CONTROL.test(x)));
   return [...new Set(out)];
 }
 
+/** How many links one held name's chain follows at most (as the kernel's own limit for a path: 40). */
+const LINK_HOPS_MAX = 40;
+
 /**
- * The real files behind held names that are LINKS (a stow-managed home: `~/.zshrc` → `~/dotfiles/zshrc`), where the
- * target lies in a write root. A deny by name holds the link itself; a write through it lands on the target (Seatbelt
- * checks the resolved path, bubblewrap mounts no link), so the target is denied too. Looked for at the names' plain
- * spelling directly in each root and in the user's home (where stow puts them; the home needn't be a root for its
- * link's target to be one), one `lstat` each: names with a wildcard or a folder in them aren't looked up. A link whose
- * target is missing names nothing yet (a later turn's draw sees it).
+ * The paths behind held names that are LINKS (a stow-managed home: `~/.zshrc` → `~/dotfiles/zshrc`), where they lie in
+ * a write root. A deny by name holds the link itself; a write through it lands on what it resolves to (Seatbelt checks
+ * the resolved path, bubblewrap mounts no link). So the chain is followed one hop at a time (each link read, and each
+ * part of the path it names, so `~/dotfiles` being a link itself is seen), and denied in a write root are:
+ *  - every LINK met on the way (`~/dotfiles` → `~/Dropbox/dotfiles`: replacing that link would point the held name
+ *    elsewhere), and
+ *  - the END, whether it exists or not (a dangling `~/.envrc` → `~/dotfiles/envrc` would otherwise let the bot make
+ *    the file it names: the end is then the real path of its folder plus its last name).
+ * Never a path that is, or holds, a write root, the bot's own folders or the MOSS home (`~/.vscode` → `~/Projects` would
+ * make a whole root read-only): only the link itself is held then, by its name.
+ * Looked up at the names' plain spelling directly in each root and in the user's home (where stow puts them; the home
+ * needn't be a root for its link's target to be one), one `lstat` each. Not looked up (the stated gap): a name with a
+ * wildcard or a folder in it (`~/.config/git`), and a link deeper than a root's top level. Windows' junctions as held
+ * names are untested (a Windows fence test is lane WA's follow-up). Each lookup is a synchronous `lstat`, so a root on a
+ * file system that doesn't answer holds the draw that long (no bound is possible there).
  */
-export function heldLinkTargets(roots: readonly string[], names: readonly string[], o: { userHome: string; os: Os; lstat?: (p: string) => { isSymbolicLink(): boolean } | undefined; realpath?: (p: string) => string | undefined }): string[] {
+export function heldLinkTargets(roots: readonly string[], names: readonly string[], o: {
+  userHome: string; os: Os; mossHome?: string;
+  lstat?: (p: string) => { isSymbolicLink(): boolean } | undefined;
+  readlink?: (p: string) => string | undefined;
+  realpath?: (p: string) => string | undefined;
+}): string[] {
   const p = o.os === "windows" ? win32 : posix;
   const lstat = o.lstat ?? ((x: string) => { try { return lstatSync(x); } catch { return undefined; } });
+  const readlink = o.readlink ?? ((x: string) => { try { return readlinkSync(x); } catch { return undefined; } });
   const realpath = o.realpath ?? ((x: string) => { try { return realpathSync.native(x); } catch { return undefined; } });
-  const plain = names.filter((n) => !/[*?[\]{}]/.test(n) && !n.includes("/"));
+  const plain = names.filter((n) => !/[*?[\]{}]/.test(n) && !n.includes("/") && !n.includes("\\"));
+  const protectedPlaces = [...roots, ...(o.mossHome !== undefined ? [o.mossHome] : [])];
+  // A path is denied only in a write root, and never one that is or holds a root, the bot's folders (roots) or the MOSS home.
+  const deniable = (x: string) => roots.some((r) => isInsideOrSame(x, r, o.os)) && !protectedPlaces.some((r) => isInsideOrSame(r, x, o.os));
   const out: string[] = [];
   for (const dir of [...new Set([...roots, o.userHome])]) {
     for (const n of plain) {
       const at = p.join(dir, n);
       if (lstat(at)?.isSymbolicLink() !== true) continue;
-      const target = realpath(at);
-      if (target === undefined || target === at) continue;
-      if (roots.some((r) => isInsideOrSame(target, r, o.os))) out.push(target);
+      const chain = linkChain(at, { p, lstat, readlink, realpath });
+      for (const link of chain.links) if (link !== at && deniable(link)) out.push(link);
+      if (chain.end !== undefined && chain.end !== at && deniable(chain.end)) out.push(chain.end);
     }
   }
   return [...new Set(out)];
+}
+
+/** The links a path meets as it resolves, one hop at a time (each part of the path, and each link's target in turn), and
+ *  where it ends: the real path when it exists, else its existing folder's real path plus the rest; undefined past
+ *  `LINK_HOPS_MAX` links (a loop). */
+function linkChain(start: string, f: { p: typeof posix; lstat: (x: string) => { isSymbolicLink(): boolean } | undefined; readlink: (x: string) => string | undefined; realpath: (x: string) => string | undefined }): { links: string[]; end: string | undefined } {
+  const { p } = f;
+  const links: string[] = [];
+  let parts = p.resolve(start).split(p.sep).filter(Boolean);
+  let cur = p.parse(p.resolve(start)).root;
+  let hops = 0;
+  while (parts.length > 0) {
+    const part = parts.shift()!;
+    const next = p.join(cur, part);
+    const st = f.lstat(next);
+    if (st === undefined) {
+      // Missing from here on: the real path of what exists, plus the rest (a dangling link's end).
+      const base = f.realpath(cur) ?? cur;
+      return { links, end: p.join(base, part, ...parts) };
+    }
+    if (!st.isSymbolicLink()) { cur = next; continue; }
+    if (++hops > LINK_HOPS_MAX) return { links, end: undefined };
+    links.push(next);
+    const target = f.readlink(next);
+    if (target === undefined) return { links, end: undefined };
+    const resolved = p.resolve(cur, target);
+    parts = [...resolved.split(p.sep).filter(Boolean), ...parts];
+    cur = p.parse(resolved).root;
+  }
+  return { links, end: f.realpath(cur) ?? cur };
 }
 
 /** How many folders the look for repositories' configs walks under all the roots together, each time it runs. */
