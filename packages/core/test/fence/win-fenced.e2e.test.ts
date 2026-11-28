@@ -919,6 +919,8 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
       if (ok) Bun.spawnSync(["net", "use", `${letter}:`, "/delete", "/y"], { stdin: "ignore", timeout: 60_000 });
       rmSync(remote, { recursive: true, force: true });
     }
+  }, 600_000);
+
   test("a stopped command whose sandbox denies a folder ABOVE the scratch root leaves nothing behind: plain commands on every account still run in the scratch folder", async () => {
     // The stopped command's launcher is killed with its job, so it never takes its per-exec denies off: a deny on the MOSS home (a coding
     // session's) once kept its pool account out of every folder under it. Its release is the daemon's, after the stop and before the
@@ -932,15 +934,42 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
       sandbox: () => botSandbox(withSecretReads({ filesystem: { allowWrite: [outside], denyWrite: [], denyRead: [moss] } }, { userHome: home, os: "windows" }), { userHome: home, os: "windows" }),
       wake: async (w) => { stopWakes.push({ task: w.task, status: w.status }); },
     }).map((t) => [t.name, t]));
+    // PROBE (what is left on the account, and who holds it): the processes of the pool accounts and the launcher with their parents, the
+    // DENY entries on the folders, and, when a plain command is refused, what releasing each launcher's holds does.
+    const launcherExe = join(process.env.ProgramFiles ?? "C:\\Program Files", "MOSS Sandbox", currentUserSid()!, "srt-win.exe");
+    const ps = (cmd: string): string => Bun.spawnSync(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd], { stdout: "pipe", stderr: "pipe" }).stdout.toString().trim();
+    const procs = (): string => ps(`Get-CimInstance Win32_Process | ForEach-Object { $o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction SilentlyContinue; $u = if ($o) { "$($o.User)" } else { '' }; if ($u -like 'moss-sb-*' -or $_.Name -eq 'srt-win.exe') { "$($_.ProcessId)<-$($_.ParentProcessId) $($_.Name) $u" } }`).replace(/\r?\n/g, " | ");
+    const denies = (): string => [moss, scratch, outside].map((d) => `${d.slice(-14)}: ${Bun.spawnSync(["icacls", d], { stdout: "pipe" }).stdout.toString().split(/\r?\n/).filter((l) => /\(DENY|\(N\)|:\(.*\bN\b/i.test(l) || l.includes("moss-sb")).map((l) => l.trim().replace(d, "").slice(0, 90)).join(" ; ") || "no sandbox entries"}`).join(" || ");
     const long = await call(denying.Bash!, { command: "echo above-began; sleep 600; echo never", run_in_background: true });
     const id = /win_bg_[0-9a-f]{8}/.exec(long.text)![0];
     await Bun.sleep(4_000); // it is running (its launcher holds its denies)
+    const before = procs();
+    console.log(`[probe] running: ${before}`);
+    console.log(`[probe] running: denies ${denies()}`);
     await stopWindowsBackground(CALLER.sessionId, id);
     for (let i = 0; i < 60 && !stopWakes.some((w) => w.task === id); i++) await Bun.sleep(500);
+    await Bun.sleep(3_000);
+    const after = procs();
+    console.log(`[probe] after the stop: ${after}`);
+    console.log(`[probe] after the stop: denies ${denies()}`);
+    const launcherPids = [...before.matchAll(/(\d+)<-\d+ srt-win\.exe/g)].map((m) => m[1]!);
+    console.log(`[probe] launcher pids before the stop ${launcherPids.join(",")}; alive after: ${launcherPids.filter((p) => new RegExp(`\\b${p}<-`).test(after)).join(",") || "none"}`);
     const here: string[] = [];
+    let refused = false;
     for (let i = 0; i < 6; i++) {
       const r = await call(tools.Bash!, { command: "echo plain-ok" });
-      here.push(r.text.trim().slice(0, 120));
+      here.push(r.text.trim().slice(0, 160));
+      if (!r.text.includes("plain-ok") && !refused) {
+        refused = true;
+        console.log(`[probe] refused at command ${i + 1}: ${r.text.replace(/\s+/g, " ").slice(0, 400)}`);
+        console.log(`[probe] refused: processes ${procs()}`);
+        console.log(`[probe] refused: denies ${denies()}`);
+        const sids = ps("(Get-LocalUser | Where-Object Name -like 'moss-sb-*' | ForEach-Object { $_.Name + '=' + $_.SID.Value }) -join ','").split(",").filter((x) => x !== "");
+        const rel = (pid: string, sid: string) => { const o = Bun.spawnSync([launcherExe, "acl", "restore", "--holder-pid", pid, "--sandbox-user-sid", sid], { stdout: "pipe", stderr: "pipe" }); return `${o.exitCode} ${(o.stderr.toString() + o.stdout.toString()).replace(/\s+/g, " ").slice(0, 200)}`; };
+        for (const pid of launcherPids) for (const x of sids) console.log(`[probe] acl restore --holder-pid ${pid} for ${x.split("=")[0]}: ${rel(pid, x.split("=")[1]!)}`);
+        const again = await call(tools.Bash!, { command: "echo plain-ok" });
+        console.log(`[probe] after releasing the stopped launcher's holds: ${again.text.replace(/\s+/g, " ").slice(0, 300)}`);
+      }
     }
     console.log(`[e2e] after a stop with a deny above scratch: ${JSON.stringify(here)}`);
     for (const t of here) expect(t).toContain("plain-ok");
