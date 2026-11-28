@@ -3,7 +3,8 @@
 Lane XC, 2026-11-28. This is the design for owed item "a peer's command writing its folder on Windows"
 (`docs/across-computers-owed.md`, step 3b). The controller ruled that Windows follows Linux's rule: hold what exists,
 sweep afterwards, and check identity. Reviewer a8f9eaf75511cf722 read the first version and asked for four changes,
-which are folded in below (§2.2, §2.3, §3, §4).
+which are folded in below (§2.2, §2.3, §3, §4). The second reading added the known-folder table (§2.2), the renamed
+known folder (§3) and failing closed on a failed move (§3b). With those written in, the design is approved.
 
 No code is written yet. The code waits until lane WA's `wa-win-tasks` (the hold release on a stop) and
 `wa-launch-line` have landed, because both edit `packages/core/src/fence/win-fenced.ts`.
@@ -59,6 +60,11 @@ Before the command runs, MOSS records:
 
 The cap is 10,000 records in all. Past the cap the call gets no folder: it runs temp-only, and the bot is told.
 
+**The known-folder table** is kept separately, in memory, for the call only. It holds the identity of EVERY folder
+the start walk lists, by path and identity, and §3 reads it. It isn't under the 10,000 cap: it is bounded by the walk's
+own budget (200,000 entries per root), because it holds only the folders that walk already reads. Each entry costs one
+bigint lstat at the start; the probe measures that cost on the runner (§5, test 0).
+
 ### 2.3 What is checked after the run
 
 Every check goes from the root down, one lstat per component, and never through a link.
@@ -90,7 +96,7 @@ Every check goes from the root down, one lstat per component, and never through 
 5. **New matches.** A match that is neither at a recorded path nor has a recorded identity is new, and is moved aside
    as today.
 
-Whatever can't be moved, whatever was read only in part, and every "moved" or "hard link" line reaches the bot as
+Whatever can't be moved also puts the folder on the unchecked list (§3b). Whatever can't be moved, whatever was read only in part, and every "moved" or "hard link" line reaches the bot as
 structured `endProblems` and `notClean`, as Linux's sweep does (`fencedExecutor`), not only as stderr text. The holder's
 notice says the same.
 
@@ -99,9 +105,15 @@ notice says the same.
 Today `quarantinePatternMatches` skips whatever the second walk didn't read (`unwalked`). On a peer folder it fails
 closed instead, and the order of the walk is what keeps the person's own folders safe:
 
-- **Known folders first.** The after-walk first reads the folders known from the start: those the start walk listed,
-  matched by path AND identity, so a folder swapped in isn't "known". Only then does it read folders the run made.
-- **New folders it didn't read** are moved aside whole. Only the run made them, or moved them into place.
+- **Known folders first.** A known folder is one whose identity is in the known-folder table (§2.2). The after-walk
+  reads the known folders first, then the folders the run made.
+  - **At its own path:** a known identity at its start path is checked as before.
+  - **At another path:** a known identity at another path is one of the person's folders, renamed by the command
+    (`ren src src2`). It is still known: it is checked under the known-folder ceiling, said as "<old> was moved to
+    <new>", and NEVER moved aside.
+  - **A folder swapped in** (a new identity at a known path) isn't known.
+- **New folders it didn't read** are moved aside whole. A folder is new only when its identity isn't in the table:
+  the run made it.
 - **The start's deny-whole folders** keep their records (§2.2) and are checked by identity, not walked.
 - **Why the ceiling below, and not a cap on entries.** The reviewer offered a choice: move unread folders aside whole,
   or cap how many entries a peer command may create. NTFS has no live per-account count of entries (its quotas count
@@ -115,6 +127,29 @@ closed instead, and the order of the walk is what keeps the person's own folders
   - the folder goes on the holder's "unchecked" list;
   - every later peer call to it gets no folder until the person has looked (the holder's notice says which folder,
     and why).
+
+## 3b. A move aside that fails also fails closed
+
+Today `quarantineWin` leaves an entry in place, and names it, when its path goes through a link or a move across
+drives is over `QUARANTINE_COPY_LIMITS`. The second case is normal for a peer folder on D: with the MOSS home on C:.
+
+- **A failed move puts the folder on the unchecked list.** On a peer folder, any check of §2.3 or §3 whose move aside
+  fails (for any reason: a link on the way, the copy limits, a rename error) puts the folder on the same "unchecked"
+  list as the ceiling. No later peer call gets that folder until the person has looked, and the holder's notice names
+  what was left and why.
+- **The list itself.** It is kept in `<mossHome>/run/peer-roots.json` beside the roots' record (§4), so it survives a
+  restart. It is cleared only by the person's answer on the holder.
+- **The quarantine sits on the folder's own volume, so a move aside is a rename, never a copy.**
+  - **Same drive as the MOSS home:** `<mossHome>\quarantine`, as today.
+  - **Any other drive:** `<drive>:\.moss-quarantine\<user SID>\`, at the volume's root. It is outside every write root;
+    if a write root is the volume root itself, there is no such place, and the call gets no folder.
+  - **How it is made:** by the engine, running as the user (never in the sandbox), with a protected DACL that grants
+    full control to the user and SYSTEM alone (no inherited entries, nothing for the sandbox group or its accounts).
+  - **Checked at every use:** it must be a plain folder (not a reparse point), owned by the user, with exactly that
+    DACL. If it isn't (made by someone else first, or changed), it is not used, and the call gets no folder.
+  - **What a move costs:** a rename within one volume. Like every move, it is checked from the root down and never
+    goes through a link (§2.3).
+- **Copying across drives is never used for a peer folder.**
 
 ## 4. The grant's lifetime, also across a crash (change 4)
 
@@ -167,7 +202,16 @@ closed instead, and the order of the walk is what keeps the person's own folders
    forgets the recorded root before its first command, and the record is emptied.
 8. **Junction-held names:** a `.vscode` junction pointing inside a root (its target is write-refused), pointing at the
    root itself (only the name is held, and the root stays writable), and pointing outside (nothing is added).
-9. **Units:**
+9. **A known folder renamed:** `ren A\src src2`, with a test-sized budget the after-walk doesn't reach. `A\src2` is
+   said as moved and is left in place, contents intact.
+10. **A failed move, and the quarantine on D::** the peer folder is on D: (the runner's work drive), with the MOSS home
+    on C:.
+    - A planted `.git` is moved by a rename into `D:\.moss-quarantine\<SID>\`; that folder's DACL is the user and
+      SYSTEM only.
+    - A move that is made to fail (a test hook) puts the folder on the unchecked list, and the next peer call gets no
+      folder.
+    - A pre-made `D:\.moss-quarantine` with another DACL means the call gets no folder.
+11. **Units:**
    - a volume that isn't NTFS refuses the folder in words;
    - the 10,000-record cap;
    - the known-folder ceiling leaves the person's folders in place and puts the folder on the unchecked list.
@@ -178,7 +222,7 @@ Once lane WA's two branches are merged:
 
 1. the probe;
 2. the records and checks of §2;
-3. §3;
+3. §3 and §3b;
 4. the structured end problems;
 5. §4's record and forgets;
 6. `prepare()` in `computers/fenced-executor.ts` admits `windows` on NTFS;
