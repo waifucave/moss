@@ -370,6 +370,33 @@ export function shellRunLaterDenies(roots: readonly string[], o: { userHome: str
   const pathFolders = [...o.pathFolders, ...FIXED_PATH_FOLDERS, ...FIXED_HOME_PATH_FOLDERS.map((f) => p.join(o.userHome, ...f.split("/")))];
   for (const f of pathFolders) if (!CONTROL.test(f) && roots.some((r) => isInsideOrSame(f, r, o.os) || isInsideOrSame(r, f, o.os))) out.push(f);
   out.push(...configNamed(roots, o).filter((x) => !CONTROL.test(x)));
+  out.push(...heldLinkTargets(roots, names, o).filter((x) => !CONTROL.test(x)));
+  return [...new Set(out)];
+}
+
+/**
+ * The real files behind held names that are LINKS (a stow-managed home: `~/.zshrc` → `~/dotfiles/zshrc`), where the
+ * target lies in a write root. A deny by name holds the link itself; a write through it lands on the target (Seatbelt
+ * checks the resolved path, bubblewrap mounts no link), so the target is denied too. Looked for at the names' plain
+ * spelling directly in each root and in the user's home (where stow puts them; the home needn't be a root for its
+ * link's target to be one), one `lstat` each: names with a wildcard or a folder in them aren't looked up. A link whose
+ * target is missing names nothing yet (a later turn's draw sees it).
+ */
+export function heldLinkTargets(roots: readonly string[], names: readonly string[], o: { userHome: string; os: Os; lstat?: (p: string) => { isSymbolicLink(): boolean } | undefined; realpath?: (p: string) => string | undefined }): string[] {
+  const p = o.os === "windows" ? win32 : posix;
+  const lstat = o.lstat ?? ((x: string) => { try { return lstatSync(x); } catch { return undefined; } });
+  const realpath = o.realpath ?? ((x: string) => { try { return realpathSync.native(x); } catch { return undefined; } });
+  const plain = names.filter((n) => !/[*?[\]{}]/.test(n) && !n.includes("/"));
+  const out: string[] = [];
+  for (const dir of [...new Set([...roots, o.userHome])]) {
+    for (const n of plain) {
+      const at = p.join(dir, n);
+      if (lstat(at)?.isSymbolicLink() !== true) continue;
+      const target = realpath(at);
+      if (target === undefined || target === at) continue;
+      if (roots.some((r) => isInsideOrSame(target, r, o.os))) out.push(target);
+    }
+  }
   return [...new Set(out)];
 }
 
