@@ -46,8 +46,9 @@ reach, because it needs something that isn't in a test run.
   between two computers) is answered in one of two ways: by a test phone key, or by the harness signing as MOSS does
   (MOSS's own program key, registered as the app registers it). A real phone that shows the card and signs the answer
   with its own key, checked by the holder, is unproven.
-- **Windows as one of the two.** The `computers` unit runs on macOS and Linux; Windows is out of its set for now (a
-  peer's command there runs under the Windows fence, proven by its own jobs, not by a call from another computer).
+- **Two Windows machines.** The `computers` unit runs on macOS and Linux, and on Windows with both engines on one
+  runner (the `computers-windows` choice of a dispatched run, `scripts/ci/lane start --only computers-windows`; it
+  isn't part of a push's run). Two Windows computers on a real network are unproven, as in the first item.
 
 ## Owed in the code
 
