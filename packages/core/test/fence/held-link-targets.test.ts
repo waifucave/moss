@@ -56,6 +56,44 @@ describe("the targets of held names that are links", () => {
     expect(denies).not.toContain(join(h.elsewhere, "profile"));
   });
 
+  posixTest("a chain: every link met on the way in a write root is denied, as well as the end", () => {
+    // `~/.zshrc` → `~/dotfiles/zshrc` with `~/dotfiles` → `~/Dropbox/dotfiles`: replacing the `~/dotfiles` link would point
+    // the held name at another file, so it is denied too.
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "xc-held-chain-")));
+    temps.push(home);
+    const real = join(home, "Dropbox", "dotfiles");
+    mkdirSync(real, { recursive: true });
+    writeFileSync(join(real, "zshrc"), "# mine\n");
+    symlinkSync(real, join(home, "dotfiles"));
+    symlinkSync(join(home, "dotfiles", "zshrc"), join(home, ".zshrc"));
+    expect(heldLinkTargets([home], [".zshrc"], { userHome: home, os: hostOs() }).sort()).toEqual([join(home, "dotfiles"), join(real, "zshrc")].sort());
+    // Only the Dropbox folder a root: the end is denied, the `~/dotfiles` link (outside every root) isn't.
+    expect(heldLinkTargets([join(home, "Dropbox")], [".zshrc"], { userHome: home, os: hostOs() })).toEqual([join(real, "zshrc")]);
+  });
+
+  posixTest("a dangling link: the path it would resolve to is denied, so the bot can't make it", () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "xc-held-dangling-")));
+    temps.push(home);
+    mkdirSync(join(home, "dotfiles"));
+    symlinkSync(join(home, "dotfiles", "envrc"), join(home, ".envrc"));
+    // Missing two levels down too: the existing folder's real path plus the rest.
+    symlinkSync(join(home, "later", "deep", "zshrc"), join(home, ".zshrc"));
+    expect(heldLinkTargets([home], [".envrc", ".zshrc"], { userHome: home, os: hostOs() }).sort()).toEqual([join(home, "dotfiles", "envrc"), join(home, "later", "deep", "zshrc")].sort());
+  });
+
+  posixTest("a link at a root, or holding one or the MOSS home, makes nothing read-only: only the link is held, by its name", () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "xc-held-at-root-")));
+    temps.push(home);
+    const projects = join(home, "Projects");
+    mkdirSync(join(projects, "app"), { recursive: true });
+    mkdirSync(join(home, ".moss"));
+    symlinkSync(projects, join(home, ".vscode")); // the link's target IS a root
+    symlinkSync(home, join(projects, "app", ".idea")); // the target HOLDS a root
+    symlinkSync(join(home, ".moss"), join(projects, ".envrc")); // the target is the MOSS home
+    const roots = [projects, join(projects, "app")];
+    expect(heldLinkTargets(roots, [".vscode", ".idea", ".envrc"], { userHome: home, os: hostOs(), mossHome: join(home, ".moss") })).toEqual([]);
+  });
+
   test("only plain names are looked up, one lstat each (a wildcard or a folder in a name isn't)", () => {
     const looked: string[] = [];
     heldLinkTargets(["/r"], ["*.git", ".husky", ".git/hooks", ".zshrc"], { userHome: "/h", os: "linux", lstat: (p) => { looked.push(p); return undefined; } });
